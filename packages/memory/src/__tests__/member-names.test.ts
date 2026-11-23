@@ -7,12 +7,13 @@ import {
   type AgentContextSource,
   type Logger,
 } from '@ax/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveMemoryAccess, type MemoryAccess } from '../access.js';
 import {
   AUTH_GET_USER_HOOK,
   MEMBER_NAME_MAX,
+  MEMBER_NAMES_DEADLINE_MS,
   MEMBER_NAMES_FAILED_EVENT,
   memberKeyId,
   memberLabels,
@@ -677,6 +678,156 @@ describe('member names (TASK-1209)', () => {
         expect([...labels]).toEqual([['user:u-bob', 'Bob Smith']]);
       }
       expect(asked).toEqual(['u-bob', 'u-bob']);
+    });
+
+    // TASK-1213: a stalled lookup can't hold up a recall, the block or an
+    // export. The whole round races one timer, and a round that loses names
+    // nobody: a partial set of names can't be checked for collisions. The
+    // stalled tests carry a 2 s test timeout so a missing deadline fails fast.
+    describe('the deadline (TASK-1213)', () => {
+      const never = (): Promise<never> => new Promise<never>(() => {});
+      const SHORT = { deadlineMs: 20 } as const;
+
+      it(
+        'a membership check that never answers: every member reads "a teammate" by the deadline; one warn, code timeout, hook teams:is-member',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus, asked } = authBus(named, never);
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+          expect(asked).toEqual([]);
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.level).toBe('warn');
+          expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: TEAMS_IS_MEMBER_HOOK, code: 'timeout' });
+          const logged = JSON.stringify(logs);
+          for (const secret of ['u-bob', 'u-carol']) expect(logged).not.toContain(secret);
+        },
+        2_000,
+      );
+
+      it(
+        'a name lookup that never answers: nobody is named, not even a member whose name came back in time; hook auth:get-user',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus, asked } = authBus((userId) => (userId === 'u-carol' ? never() : named(userId)));
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+          expect([...asked].sort()).toEqual(['u-bob', 'u-carol']);
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: AUTH_GET_USER_HOOK, code: 'timeout' });
+          const logged = JSON.stringify(logs);
+          for (const secret of ['u-bob', 'Bob', 'u-carol', 'Carol']) expect(logged).not.toContain(secret);
+        },
+        2_000,
+      );
+
+      it(
+        'with a membership check and a name lookup both still out, the warn names the membership hook',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus } = authBus(
+            (userId) => (userId === 'u-carol' ? never() : named(userId)),
+            (input) => (input.userId === 'u-bob' ? never() : onTheTeam(input)),
+          );
+          await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'timeout' });
+        },
+        2_000,
+      );
+
+      it(
+        'a throw before the deadline is not logged as well: the timeout is the call\'s one warn',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus } = authBus(named, (input) => {
+            if (input.userId === 'u-bob') {
+              throw new PluginError({ code: 'store-unavailable', plugin: 'x', message: 'u-bob bob@x.test' });
+            }
+            return never();
+          });
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'timeout' });
+        },
+        2_000,
+      );
+
+      // Something that WOULD name Bob happens after the deadline: his
+      // membership answers, auth is asked, auth answers. The map already
+      // returned must not move.
+      it(
+        'an answer that lands after the deadline changes nothing already returned',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          let answerBob: (value: unknown) => void = () => {};
+          const late = new Promise<unknown>((resolve) => {
+            answerBob = resolve;
+          });
+          const { bus, asked } = authBus(named, (input) => (input.userId === 'u-bob' ? late : onTheTeam(input)));
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+          expect(asked).toEqual([]);
+
+          answerBob({ member: true });
+          await vi.waitFor(() => expect(asked).toEqual(['u-bob']), { interval: 1 });
+          await new Promise((resolve) => setImmediate(resolve));
+
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+          expect(eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT)).toHaveLength(1);
+        },
+        2_000,
+      );
+
+      it('a round that finishes in time names members as before, with no warn', async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus } = authBus(named);
+        const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], 'user:u-alice', { deadlineMs: 1_000 });
+        expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob Smith' });
+        expect(logs).toEqual([]);
+      });
+
+      // Only `setTimeout`/`clearTimeout` are faked: the bus and its stubs
+      // answer on promises, which stay real.
+      it('the deadline is on by default', async () => {
+        expect(MEMBER_NAMES_DEADLINE_MS).toBe(2_000);
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const logs: LoggedEvent[] = [];
+          const { bus } = authBus(named, never);
+          let answer: ReadonlyMap<string, string> | undefined;
+          void memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], undefined).then((labels) => {
+            answer = labels;
+          });
+          await vi.advanceTimersByTimeAsync(MEMBER_NAMES_DEADLINE_MS - 1);
+          expect(answer).toBeUndefined();
+          await vi.advanceTimersByTimeAsync(1);
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(answer === undefined ? undefined : Object.fromEntries(answer)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+          expect(eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT)).toHaveLength(1);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      // The deadline's timer is cleared the moment the round wins, so a
+      // name lookup leaves nothing behind it.
+      it('a round that answers in time leaves no timer running', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const { bus } = authBus(named);
+          const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob'], undefined);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob Smith' });
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
   });
 });

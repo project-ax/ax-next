@@ -59,17 +59,24 @@
  * {@link TEAMMATE_TEXT}, which would pass for a member memory can't name
  * (TASK-1213). Every sink still escapes it (`escapeStatementText`).
  *
- * ## It never fails a read
+ * ## It never fails a read, and never holds one up
  *
  * A name is cosmetic. No service, no account, an answer this can't read, a
- * refused name or a throw: that member reads "a teammate", and the recall or
- * the block answers anyway. A throw is logged once per call, by its codes
- * (`faultLogFields`), never with an id, a name or an email.
+ * refused name or a throw: that member reads "a teammate", and the recall,
+ * the block or the export answers anyway. A throw is logged once per call, by
+ * its codes (`faultLogFields`), never with an id, a name or an email.
+ *
+ * The lookups of one call race one deadline, {@link MEMBER_NAMES_DEADLINE_MS}
+ * (TASK-1213). A round that isn't done by then names nobody, not even a
+ * member whose name already came back: a name can only be shown once every
+ * name it might collide with is in. An answer that lands later changes
+ * nothing already returned.
  */
 
 import {
   clampCodeUnits,
   faultLogFields,
+  PluginError,
   toWellFormedText,
   type AgentContext,
   type HookBus,
@@ -78,6 +85,7 @@ import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 
 import type { MemoryAccess } from './access.js';
 import { isPersonSubject, nameWords, recallAudienceScope } from './audience.js';
+import { PLUGIN_NAME } from './plugin-name.js';
 import { isAgentSubject } from './self-report.js';
 import { SPEAKER_SUBJECT } from './subject.js';
 
@@ -91,12 +99,24 @@ export const TEAMS_IS_MEMBER_HOOK = 'teams:is-member';
 export const TEAMMATE_TEXT = 'a teammate';
 
 /**
- * Logged once per {@link memberLabels} call in which a lookup threw. Bindings
- * are `agentId`, `hook` (which of the two lookups threw first) and that
- * error's codes (`faultLogFields`) only: an error's message may quote the id,
- * the name or the email.
+ * Logged once per {@link memberLabels} call in which a lookup threw, or whose
+ * lookups passed the deadline. Bindings are `agentId`, `hook` and the error's
+ * codes (`faultLogFields`) only: an error's message may quote the id, the name
+ * or the email. For a throw, `hook` is the lookup that threw, for the first
+ * id, in the order asked, whose lookup threw. For the deadline, the code is
+ * `timeout`, and `hook` is `teams:is-member` while any membership check is
+ * still out, else `auth:get-user`. A throw in the same round isn't logged as
+ * well.
  */
 export const MEMBER_NAMES_FAILED_EVENT = 'memory_member_names_failed';
+
+/**
+ * How long one {@link memberLabels} call waits for all of its lookups, in
+ * milliseconds. Primary-key reads take milliseconds. This keeps a stalled one
+ * from costing a turn more than 2 s, and from running a memory block into its
+ * own 15 s deadline, past which the whole block is dropped.
+ */
+export const MEMBER_NAMES_DEADLINE_MS = 2_000;
 
 /** The longest name shown, in UTF-16 code units (channel-slack's sender-name cap). */
 export const MEMBER_NAME_MAX = 80;
@@ -186,6 +206,11 @@ function readsAsAgentName(key: string, agentName: string): boolean {
  * `teams:is-member`, then one `auth:get-user` if and only if it answered
  * `member: true`. Ids are asked in parallel. Never throws.
  *
+ * Never waits past {@link MEMBER_NAMES_DEADLINE_MS} (`opts.deadlineMs`, for
+ * tests) for the whole round. When the round loses that race, every member
+ * key reads {@link TEAMMATE_TEXT}, the names already back included, with one
+ * `timeout` warn ({@link MEMBER_NAMES_FAILED_EVENT}).
+ *
  * The caller counts too (TASK-1213). When `self` is a member key and at least
  * one other member key is on the page, the caller's id goes through the same
  * two lookups, but only so their name joins the check below. It is never a
@@ -218,6 +243,7 @@ export async function memberLabels(
   access: Pick<MemoryAccess, 'visibility' | 'teamId' | 'agentName'>,
   subjects: Iterable<string>,
   self: string | undefined,
+  opts: { deadlineMs?: number } = {},
 ): Promise<ReadonlyMap<string, string>> {
   const labels = new Map<string, string>();
   if (access.visibility !== 'team') return labels;
@@ -246,61 +272,142 @@ export async function memberLabels(
   }
   // Every other member key on the page is asked about, to be shown. So is the
   // caller's own key, only to be counted.
-  const lookups = [...ids].map(([about, userId]) => ({ about, userId, shown: true }));
+  const lookups: Lookup[] = [...ids].map(([about, userId]) => ({ about, userId, shown: true, stage: 'membership' }));
   const selfId = self === undefined ? undefined : memberKeyId(self);
-  if (self !== undefined && selfId !== undefined) lookups.push({ about: self, userId: selfId, shown: false });
-  const faults: Array<{ hook: string; err: unknown }> = [];
-  const found: Array<{ about: string; name: string; shown: boolean }> = [];
-  await Promise.all(
-    lookups.map(async ({ about, userId, shown }) => {
-      let membership: unknown;
-      try {
-        membership = await bus.call<{ teamId: string; userId: string }, unknown>(TEAMS_IS_MEMBER_HOOK, ctx, {
-          teamId,
-          userId,
-        });
-      } catch (err) {
-        faults.push({ hook: TEAMS_IS_MEMBER_HOOK, err });
-        return;
-      }
-      // Exactly `member: true`: anything else is no proof of membership.
-      if (!isRecord(membership) || membership.member !== true) return;
-      try {
-        const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
-        if (!isRecord(user) || user.id !== userId) return;
-        const name = memberName(user.displayName, access.agentName);
-        if (name !== undefined) found.push({ about, name, shown });
-      } catch (err) {
-        faults.push({ hook: AUTH_GET_USER_HOOK, err });
-      }
-    }),
+  if (self !== undefined && selfId !== undefined) {
+    lookups.push({ about: self, userId: selfId, shown: false, stage: 'membership' });
+  }
+  const answers = await beforeDeadline(
+    Promise.all(lookups.map((lookup) => lookUp(bus, ctx, teamId, access.agentName, lookup))),
+    opts.deadlineMs ?? MEMBER_NAMES_DEADLINE_MS,
   );
+  if (answers === TIMED_OUT) {
+    // All or nothing: a name that came back can't be checked against one
+    // that didn't, so nobody is named. `labels` still reads "a teammate" for
+    // every member key, and no lookup ever writes to it.
+    const hook = lookups.some((lookup) => lookup.stage === 'membership') ? TEAMS_IS_MEMBER_HOOK : AUTH_GET_USER_HOOK;
+    warnNamesFailed(
+      ctx,
+      hook,
+      new PluginError({
+        code: 'timeout',
+        plugin: PLUGIN_NAME,
+        hookName: hook,
+        message: 'member name lookups passed their deadline',
+      }),
+    );
+    return labels;
+  }
   // Two different people whose names read the same, word by word, would
   // pass for each other: every member key holding that name reads "a
   // teammate" in this answer instead. The caller's name counts here and is
   // never shown. Within this answer only: see the residuals on
   // {@link memberLabels}.
   const holders = new Map<string, number>();
-  for (const { name } of found) {
+  for (const { name } of answers) {
+    if (name === undefined) continue;
     const key = nameWords(name).join(' ');
     holders.set(key, (holders.get(key) ?? 0) + 1);
   }
-  for (const { about, name, shown } of found) {
-    if (shown && holders.get(nameWords(name).join(' ')) === 1) labels.set(about, name);
-  }
-  const first = faults[0];
-  if (first !== undefined) {
-    try {
-      ctx.logger.warn(MEMBER_NAMES_FAILED_EVENT, {
-        agentId: ctx.agentId,
-        hook: first.hook,
-        ...faultLogFields(first.err),
-      });
-    } catch {
-      // A label is cosmetic, and so is the warning about one.
+  for (const { lookup, name } of answers) {
+    if (name !== undefined && lookup.shown && holders.get(nameWords(name).join(' ')) === 1) {
+      labels.set(lookup.about, name);
     }
   }
+  const fault = answers.find((answer) => answer.fault !== undefined)?.fault;
+  if (fault !== undefined) warnNamesFailed(ctx, fault.hook, fault.err);
   return labels;
+}
+
+/** One id {@link memberLabels} asks about. */
+interface Lookup {
+  readonly about: string;
+  readonly userId: string;
+  /** Shown as a label, or only counted (the caller's own key). */
+  readonly shown: boolean;
+  /** Which lookup is out for this id. Written only by this id's own {@link lookUp}. */
+  stage: 'membership' | 'name' | 'done';
+}
+
+/** What one {@link lookUp} found: a usable name, a throw, or neither. */
+interface LookupAnswer {
+  readonly lookup: Lookup;
+  readonly name?: string;
+  readonly fault?: { readonly hook: string; readonly err: unknown };
+}
+
+/**
+ * One id's lookups: `teams:is-member`, then `auth:get-user` only on exactly
+ * `member: true`. Never throws. It answers with what it found and writes
+ * nothing outside its own `lookup`, so an answer that lands after the
+ * deadline reaches nothing already returned.
+ */
+async function lookUp(
+  bus: HookBus,
+  ctx: AgentContext,
+  teamId: string,
+  agentName: string | undefined,
+  lookup: Lookup,
+): Promise<LookupAnswer> {
+  const { userId } = lookup;
+  let hook = TEAMS_IS_MEMBER_HOOK;
+  try {
+    const membership = await bus.call<{ teamId: string; userId: string }, unknown>(TEAMS_IS_MEMBER_HOOK, ctx, {
+      teamId,
+      userId,
+    });
+    // Exactly `member: true`: anything else is no proof of membership.
+    if (!isRecord(membership) || membership.member !== true) return { lookup };
+    hook = AUTH_GET_USER_HOOK;
+    lookup.stage = 'name';
+    const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
+    if (!isRecord(user) || user.id !== userId) return { lookup };
+    const name = memberName(user.displayName, agentName);
+    return name === undefined ? { lookup } : { lookup, name };
+  } catch (err) {
+    return { lookup, fault: { hook, err } };
+  } finally {
+    lookup.stage = 'done';
+  }
+}
+
+/** What {@link beforeDeadline} answers when the timer wins. */
+const TIMED_OUT = Symbol('member names timed out');
+
+/**
+ * `work`'s answer, or {@link TIMED_OUT} if `ms` pass first. The timer is
+ * unref'd, so it never holds the process open, and it is cleared the moment
+ * `work` settles, so a round that wins leaves no timer behind. (`work` never
+ * rejects here: every {@link lookUp} catches its own throw.)
+ */
+function beforeDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    (timer as { unref?: () => void }).unref?.();
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** The one warn of a {@link memberLabels} call ({@link MEMBER_NAMES_FAILED_EVENT}), by codes only. */
+function warnNamesFailed(ctx: AgentContext, hook: string, err: unknown): void {
+  try {
+    ctx.logger.warn(MEMBER_NAMES_FAILED_EVENT, {
+      agentId: ctx.agentId,
+      hook,
+      ...faultLogFields(err),
+    });
+  } catch {
+    // A label is cosmetic, and so is the warning about one.
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
