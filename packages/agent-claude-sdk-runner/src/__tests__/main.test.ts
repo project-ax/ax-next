@@ -194,6 +194,18 @@ const CONFIG_DIR = mkdtempSync(nodePath.join(os.tmpdir(), 'ax-main-cfg-'));
 afterAll(async () => {
   await fs.rm(CONFIG_DIR, { recursive: true, force: true });
 });
+// TASK-1217: the runner also refuses a CLAUDE_CONFIG_DIR that holds anything
+// but skills/, since only an earlier session could have written the rest. The
+// sandbox gives every session a new one; here every boot shares one, and the
+// transcript directory a boot lays down (`projects/`) would make each later
+// boot look like a reused dir. So each test starts with it emptied back to
+// what a sandbox hands over. Same path throughout: tests assert
+// `${CONFIG_DIR}/projects`.
+beforeEach(async () => {
+  for (const name of await fs.readdir(CONFIG_DIR)) {
+    if (name !== 'skills') await fs.rm(nodePath.join(CONFIG_DIR, name), { recursive: true, force: true });
+  }
+});
 
 // TASK-995: the agent's home (AX_USERFILES_ROOT) and the session scratch root
 // (AX_EPHEMERAL_ROOT) are required; there is no fallback for either. Real
@@ -1282,14 +1294,21 @@ describe('main()', () => {
   // seam). It is bootstrap-fatal and runs BEFORE the resume restore writes the
   // rebuilt jsonl there (#1085): a runner that cannot lay down its own
   // transcript directory must not restore into it or start a turn.
-  it('bootstrap failure: the transcript directory cannot be laid down → exit 2 before the resume restore, no query', async () => {
+  //
+  // The config dir is fresh (empty, so the TASK-1217 boot guard lets it
+  // through) but read-only, so `mkdir $CLAUDE_CONFIG_DIR/projects` fails with
+  // EACCES inside `prepareSession`, after `session.get-config`. (A planted
+  // `projects` file would now be refused by that guard first, before any IPC.)
+  // Root ignores the mode bits, so the case cannot be set up as root.
+  it.skipIf(process.getuid?.() === 0)('bootstrap failure: the transcript directory cannot be laid down → exit 2 before the resume restore, no query', async () => {
     const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-prep-'));
-    onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
-    // `$CLAUDE_CONFIG_DIR/projects` is a regular file, so the directory the
-    // SDK writes its jsonl under cannot be created.
     const cfg = nodePath.join(t, 'cfg');
+    onTestFinished(async () => {
+      await fs.chmod(cfg, 0o755).catch(() => {});
+      await fs.rm(t, { recursive: true, force: true });
+    });
     await fs.mkdir(cfg);
-    await fs.writeFile(nodePath.join(cfg, 'projects'), 'not a directory');
+    await fs.chmod(cfg, 0o555);
     setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg });
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
@@ -1328,7 +1347,9 @@ describe('main()', () => {
         .map((c) => String(c[0]))
         .join('');
       expect(stderrMessages).toContain('session preparation failed');
-      expect(stderrMessages).toContain('EEXIST');
+      expect(stderrMessages).toContain('EACCES');
+      // The session config was fetched first: the failure is prepareSession's.
+      expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
 
       expect(restoreTranscriptForResumeMock).not.toHaveBeenCalled();
       expect(queryMock).not.toHaveBeenCalled();
