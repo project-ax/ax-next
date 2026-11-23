@@ -29,14 +29,16 @@
 // ---------------------------------------------------------------------------
 
 import type { Plugin } from '@ax/core';
-import { ServiceDescriptorSchema } from '@ax/skills-parser';
+import { ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';
 import { findForbiddenVocab } from './forbidden-vocab.js';
 
 const PLUGIN_NAME = '@ax/validator-service';
 
-/** Carrier cap — at most this many services per unit of work. Mirrors the
- *  @ax/skills-parser `SERVICES_MAX` and the @ax/sandbox-protocol wire cap. */
-const SERVICES_MAX = 8;
+/** Carrier cap — at most this many services per unit of work (the on-demand
+ *  ceiling). Mirrors the @ax/skills-parser `SERVICES_MAX` and the
+ *  @ax/sandbox-protocol wire cap. The tighter always-on cap (8) is per connector
+ *  mode, which this validator never sees, so it lives in the connectors schema. */
+const SERVICES_MAX = 16;
 
 /** Input: the (untrusted) service descriptor list to validate. */
 export interface ServicesValidateInput {
@@ -47,6 +49,34 @@ export interface ServicesValidateInput {
 export type ServicesValidateOutput =
   | { verdict: 'clean' }
   | { verdict: 'invalid'; reason: string };
+
+/**
+ * Cross-service port check over already-parsed descriptors. A published
+ * (host-visible) port must not equal another published port, nor a container
+ * port of a different service. Returns a reason naming both services, or null.
+ * A service re-publishing its own container port is not a clash.
+ */
+export function checkPortClashes(services: ServiceDescriptor[]): string | null {
+  const publishedBy = new Map<number, string>();
+  for (const svc of services) {
+    for (const { published } of svc.publishedPorts ?? []) {
+      const other = publishedBy.get(published);
+      if (other !== undefined) {
+        return `published port ${published} is used by both "${other}" and "${svc.name}"`;
+      }
+      publishedBy.set(published, svc.name);
+    }
+  }
+  for (const svc of services) {
+    for (const { published } of svc.publishedPorts ?? []) {
+      for (const owner of services) {
+        if (owner === svc || !owner.ports.includes(published)) continue;
+        return `published port ${published} of "${svc.name}" clashes with a container port of "${owner.name}"`;
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Validate one descriptor list. Pure — exported for direct unit testing and so
@@ -63,6 +93,7 @@ export function validateServices(services: unknown[]): ServicesValidateOutput {
     };
   }
 
+  const parsedList: ServiceDescriptor[] = [];
   for (let i = 0; i < services.length; i++) {
     const raw = services[i];
 
@@ -90,7 +121,17 @@ export function validateServices(services: unknown[]): ServicesValidateOutput {
         reason: `services[${i}]${where}: ${first?.message ?? 'invalid service descriptor'}`,
       };
     }
+    if (parsed.data.job === true && (parsed.data.publishedPorts?.length ?? 0) > 0) {
+      return {
+        verdict: 'invalid',
+        reason: `services[${i}]: job "${parsed.data.name}" cannot have publishedPorts (a job exits; nothing to reach)`,
+      };
+    }
+    parsedList.push(parsed.data);
   }
+
+  const clash = checkPortClashes(parsedList);
+  if (clash !== null) return { verdict: 'invalid', reason: clash };
 
   return { verdict: 'clean' };
 }

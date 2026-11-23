@@ -98,11 +98,64 @@ describe('validateServices (pure)', () => {
     if (r.verdict === 'invalid') expect(r.reason).toMatch(/at most 32/);
   });
 
-  it('rejects more than 8 services (carrier cap)', () => {
-    const services = Array.from({ length: 9 }, (_, i) => ({ ...wellFormed(), name: `svc-${i}` }));
+  it('rejects more than 16 services (carrier cap)', () => {
+    const services = Array.from({ length: 17 }, (_, i) => ({ ...wellFormed(), name: `svc-${i}` }));
     const r = validateServices(services);
     expect(r.verdict).toBe('invalid');
-    if (r.verdict === 'invalid') expect(r.reason).toMatch(/at most 8/);
+    if (r.verdict === 'invalid') expect(r.reason).toMatch(/at most 16/);
+  });
+
+  it('a job with publishedPorts is invalid', () => {
+    const r = validateServices([
+      { ...wellFormed(), job: true, publishedPorts: [{ published: 6000, target: 5432 }] },
+    ]);
+    expect(r.verdict).toBe('invalid');
+    if (r.verdict === 'invalid') expect(r.reason).toMatch(/job.*publishedPorts/);
+  });
+
+  it('a published port equal to another container port is invalid', () => {
+    const r = validateServices([
+      wellFormed(),
+      { ...wellFormed(), name: 'proxy', ports: [8080], publishedPorts: [{ published: 5432, target: 8080 }] },
+    ]);
+    expect(r.verdict).toBe('invalid');
+    if (r.verdict === 'invalid') {
+      expect(r.reason).toContain('proxy');
+      expect(r.reason).toContain('postgres');
+    }
+  });
+
+  it('two services publishing the same port is invalid, naming both', () => {
+    const r = validateServices([
+      { ...wellFormed(), name: 'a', publishedPorts: [{ published: 6000, target: 5432 }] },
+      { ...wellFormed(), name: 'b', ports: [9000], publishedPorts: [{ published: 6000, target: 9000 }] },
+    ]);
+    expect(r.verdict).toBe('invalid');
+    if (r.verdict === 'invalid') {
+      expect(r.reason).toContain('"a"');
+      expect(r.reason).toContain('"b"');
+    }
+  });
+
+  it('the e2e-shaped fixture is clean', () => {
+    const img = (c: string): string => `docker.io/example/${c}@sha256:` + c.repeat(64);
+    const svc = (
+      name: string,
+      c: string,
+      extra: Record<string, unknown> = {},
+    ): Record<string, unknown> => ({ name, image: img(c), ports: [], env: {}, ...extra });
+    const fixture = [
+      svc('configsvr', 'a', { ports: [27019] }),
+      svc('configsvr-init', 'b', { job: true }),
+      svc('shard0', 'c', { ports: [27018] }),
+      svc('shard-init', 'd', { job: true }),
+      svc('mongos', 'e', { ports: [27017], publishedPorts: [{ published: 47017, target: 27017 }] }),
+      svc('mongo-init', 'f', { job: true }),
+      svc('kafka', '1', { ports: [9094], publishedPorts: [{ published: 9294, target: 9094 }] }),
+      svc('redis', '2', { ports: [6379], publishedPorts: [{ published: 6579, target: 6379 }] }),
+      svc('emulator', '3', { ports: [8080] }),
+    ];
+    expect(validateServices(fixture)).toEqual({ verdict: 'clean' });
   });
 
   it('reports the index of the offending service', () => {
