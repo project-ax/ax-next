@@ -24,21 +24,25 @@
 //     (TASK-708). The binary's echo filter drops a message whose text holds
 //     `<local-command-stdout>`, `<local-command-stderr>`, `<bash-stdout>`,
 //     `<bash-stderr>`, `<task-notification>`, `<tick>` or a
-//     `<teammate-message` tag, and one whose first block is
-//     `[Request interrupted by user]`.
+//     `<teammate-message` tag, and an array whose first text block is exactly
+//     one of five CLI lines (`[Request interrupted by user]`, `… for tool
+//     use]`, `No response requested.`, and two that start `The user doesn't
+//     want to`).
 //
 // Turn text is untrusted: a Slack sender, a web chat, a routine prompt or a
 // pasted connector result can all carry it. So the runner puts an invisible
 // U+200B ZERO WIDTH SPACE:
 //
-//   - in front of every `@` that does not follow a letter or a digit. That is
-//     broader than the CLI's own boundary set on purpose: a CLI that widens
-//     the set stays closed, and an email address (`bob@example.com`) is left
-//     as it was. Do not narrow it to "what the CLI matches today";
-//   - right after the `<` of any tag whose name STARTS with one in
-//     CLI_MARKUP_TAGS (a prefix, like the CLI's own `<teammate-message`
-//     check; a closed list, so pasted HTML and code are left alone);
-//   - in front of a text that starts with `[Request interrupted`.
+//   - in front of every `@` that does not follow a letter, a digit or `/`.
+//     That is broader than the CLI's own boundary set on purpose: a CLI that
+//     widens the set stays closed. An email address (`bob@example.com`) and a
+//     path segment (`uploads/@x.csv`, the runner's own attachment paths) are
+//     left as they were. Do not narrow it to "what the CLI matches today";
+//   - right after the `<` of a tag named in CLI_MARKUP_TAGS: the name must end
+//     there (whitespace, `/` or `>`), except `teammate-message`, which the CLI
+//     itself matches as a prefix. `<ticket>` or `<ChannelList />` is left
+//     alone;
+//   - in front of a text that starts with one of those CLI lines.
 //
 // Measured: the CLI reads no file for `​@/path` or `x ​@/path`, and the model
 // gets the text verbatim. Only the CLI's copy carries the character; the
@@ -59,7 +63,8 @@ export const CLI_MARKUP_GUARD = SLASH_TEXT_GUARD;
 /**
  * Tag names the CLI writes into user-role messages itself, from the pinned
  * binary's tag table and its echo filter. Matched case-insensitively, opening
- * or closing, as a PREFIX of the tag name (`<teammate-messages>` too).
+ * or closing; the name must end at whitespace, `/` or `>`, except the ones in
+ * CLI_MARKUP_PREFIX_TAGS.
  */
 export const CLI_MARKUP_TAGS = [
   'system-reminder',
@@ -84,19 +89,28 @@ export const CLI_MARKUP_TAGS = [
   'fork-boilerplate',
 ] as const;
 
-// `@` not preceded by a letter, a digit or the guard itself (idempotent).
-const AT = new RegExp(`(?<![\\p{L}\\p{N}${CLI_MARKUP_GUARD}])@`, 'gu');
-const TAG = new RegExp(`<(?=/?(?:${CLI_MARKUP_TAGS.join('|')}))`, 'gi');
-const INTERRUPTED = '[Request interrupted';
+/** Tags the CLI's echo filter matches as a prefix (`<teammate-message …`). */
+const CLI_MARKUP_PREFIX_TAGS = ['teammate-message'] as const;
+
+/** Starts of the CLI lines that, as an array's first block, lose the echo. */
+const CLI_LINE_STARTS = ['[Request interrupted', 'No response requested', "The user doesn't want to"] as const;
+
+// `@` not preceded by a letter, a digit, `/` or the guard itself (idempotent).
+const AT = new RegExp(`(?<![\\p{L}\\p{N}/${CLI_MARKUP_GUARD}])@`, 'gu');
+const TAG = new RegExp(
+  `<(?=/?(?:(?:${CLI_MARKUP_TAGS.join('|')})(?=[\\s/>])|${CLI_MARKUP_PREFIX_TAGS.join('|')}))`,
+  'gi',
+);
 
 function guardText(text: string): string {
   const out = text.replace(AT, `${CLI_MARKUP_GUARD}@`).replace(TAG, `<${CLI_MARKUP_GUARD}`);
-  return out.trimStart().startsWith(INTERRUPTED) ? `${CLI_MARKUP_GUARD}${out}` : out;
+  const start = out.trimStart();
+  return CLI_LINE_STARTS.some((s) => start.startsWith(s)) ? `${CLI_MARKUP_GUARD}${out}` : out;
 }
 
 /**
  * Returns `content` with every `@` mention, every CLI markup tag and a leading
- * `[Request interrupted` guarded: a string, or each `{ type: 'text', text }`
+ * CLI line guarded: a string, or each `{ type: 'text', text }`
  * block of an array. Everything else is returned as is. Never mutates its
  * input; returns the same reference when nothing changes.
  */

@@ -354,6 +354,9 @@ describe('translateContentBlocks', () => {
     // could name any URL for the provider to fetch.
     { type: 'image', source: { type: 'url', url: 'https://FORGED-IMG.example/x.png' } },
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'FORGED-IMG' } },
+    // PDFs too: they reach the model through `attachment` only.
+    { type: 'document', source: { type: 'url', url: 'https://FORGED-DOC.example/x.pdf' } },
+    { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'FORGED-DOC' } },
   ])('replaces a $type block with a fixed mention, never the block', async (forged) => {
     const out = await translate([{ type: 'text', text: 'hi' }, forged as never], []);
     expect(out).toEqual([

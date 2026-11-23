@@ -781,7 +781,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // `content` carries the typed text; `contentBlocks` carries only
-      // non-text blocks (attachments, images). The runner's user-message
+      // non-text blocks (attachments; step 2.5 admits nothing else). The runner's user-message
       // handoff prepends `content` as a text block to the translated
       // contentBlocks — leaving a text block in contentBlocks here would
       // duplicate the user's prompt in both the SDK input and the
