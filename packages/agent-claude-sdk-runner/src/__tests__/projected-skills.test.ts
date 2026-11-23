@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readProjectedSkillNames, skillRefusal } from '../projected-skills.js';
+import { readProjectedSkills, skillRefusal } from '../projected-skills.js';
 
 // TASK-1207: the claude-sdk runner lets the model invoke a skill only when AX
 // installed it, i.e. when it is a folder in the projection under
@@ -34,7 +34,7 @@ async function plantSkill(name: string): Promise<void> {
   );
 }
 
-describe('readProjectedSkillNames', () => {
+describe('readProjectedSkills', () => {
   it('returns exactly the skill folders: not a stray file, not a symlinked folder', async () => {
     await plantSkill('weekly-report');
     // A connector's usage-note bundle is a projected folder too (the
@@ -47,9 +47,10 @@ describe('readProjectedSkillNames', () => {
     await fs.symlink(outside, path.join(skillsDir, 'linked'));
     const log = vi.fn();
 
-    const names = await readProjectedSkillNames(cfg, log);
+    const projected = await readProjectedSkills(cfg, log);
 
-    expect([...names].sort()).toEqual(['cx-linear-1a2b3c4d', 'weekly-report']);
+    expect([...projected.names].sort()).toEqual(['cx-linear-1a2b3c4d', 'weekly-report']);
+    expect(projected.loadError).toBeUndefined();
     expect(log).not.toHaveBeenCalled();
   });
 
@@ -57,29 +58,34 @@ describe('readProjectedSkillNames', () => {
     await fs.mkdir(cfg, { recursive: true });
     const log = vi.fn();
 
-    const names = await readProjectedSkillNames(cfg, log);
+    const projected = await readProjectedSkills(cfg, log);
 
-    expect(names.size).toBe(0);
+    expect(projected.names.size).toBe(0);
+    // No skills is not a failure: a refusal says "not one of this agent's
+    // skills", which is true.
+    expect(projected.loadError).toBeUndefined();
     expect(log).not.toHaveBeenCalled();
   });
 
-  it('no config dir gives no skills and one log line', async () => {
+  it('no config dir gives no skills, a load error and one log line', async () => {
     const log = vi.fn();
 
-    const names = await readProjectedSkillNames(undefined, log);
+    const projected = await readProjectedSkills(undefined, log);
 
-    expect(names.size).toBe(0);
+    expect(projected.names.size).toBe(0);
+    expect(projected.loadError).toBeDefined();
     expect(log).toHaveBeenCalledTimes(1);
   });
 
-  it('a skills/ path that is not a directory gives no skills and one log line, never a throw', async () => {
+  it('a skills/ path that is not a directory gives no skills, a load error and one log line, never a throw', async () => {
     await fs.mkdir(cfg, { recursive: true });
     await fs.writeFile(skillsDir, 'not a directory');
     const log = vi.fn();
 
-    const names = await readProjectedSkillNames(cfg, log);
+    const projected = await readProjectedSkills(cfg, log);
 
-    expect(names.size).toBe(0);
+    expect(projected.names.size).toBe(0);
+    expect(projected.loadError).toBe('ENOTDIR');
     expect(log).toHaveBeenCalledTimes(1);
     expect(log.mock.calls[0]![0] as string).toContain('ENOTDIR');
   });
@@ -87,15 +93,16 @@ describe('readProjectedSkillNames', () => {
   // Root ignores permission bits, so the chmod below would not make the
   // directory unreadable there; the ENOTDIR case above covers the same branch.
   it.skipIf(process.getuid?.() === 0)(
-    'an unreadable skills/ dir gives no skills and one log line, never a throw',
+    'an unreadable skills/ dir gives no skills, a load error and one log line, never a throw',
     async () => {
       await plantSkill('weekly-report');
       await fs.chmod(skillsDir, 0o000);
       const log = vi.fn();
 
-      const names = await readProjectedSkillNames(cfg, log);
+      const projected = await readProjectedSkills(cfg, log);
 
-      expect(names.size).toBe(0);
+      expect(projected.names.size).toBe(0);
+      expect(projected.loadError).toBe('EACCES');
       expect(log).toHaveBeenCalledTimes(1);
       expect(log.mock.calls[0]![0] as string).toContain('EACCES');
     },
@@ -103,7 +110,7 @@ describe('readProjectedSkillNames', () => {
 });
 
 describe('skillRefusal', () => {
-  const projected: ReadonlySet<string> = new Set(['weekly-report', 'cx-linear-1a2b3c4d']);
+  const projected = { names: new Set(['weekly-report', 'cx-linear-1a2b3c4d']) };
 
   it('lets an installed skill through, including with whitespace or a leading slash', () => {
     expect(skillRefusal({ skill: 'weekly-report' }, projected)).toBeUndefined();
@@ -167,6 +174,25 @@ describe('skillRefusal', () => {
   });
 
   it('refuses everything when nothing is projected', () => {
-    expect(skillRefusal({ skill: 'weekly-report' }, new Set())).toContain('"weekly-report" is not one of this agent\'s skills');
+    expect(skillRefusal({ skill: 'weekly-report' }, { names: new Set() })).toContain('"weekly-report" is not one of this agent\'s skills');
+  });
+
+  // Failing closed is right, but "not one of this agent's skills" would be a
+  // false sentence when the skills exist and could not be read. The refusal
+  // carries the cause instead, for every name, and says nothing about the
+  // error itself (no path, no code).
+  it('says the skills could not be read when the projection failed to load', () => {
+    const broken = { names: new Set<string>(), loadError: 'EACCES' };
+    for (const skill of ['weekly-report', 'update-config', 'x'.repeat(200)]) {
+      const reason = skillRefusal({ skill }, broken);
+      expect(reason, skill).toBeDefined();
+      expect(reason, skill).toContain("this agent's skills couldn't be read when the session started");
+      expect(reason, skill).not.toContain('not one of this agent');
+      expect(reason, skill).not.toContain('EACCES');
+    }
+    expect(skillRefusal({ skill: 'weekly-report' }, broken)).toBe(
+      '"weekly-report" isn\'t available, because this agent\'s skills couldn\'t be read when the ' +
+        'session started. Use the tools you were given.',
+    );
   });
 });

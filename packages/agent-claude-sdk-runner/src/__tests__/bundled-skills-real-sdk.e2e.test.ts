@@ -9,7 +9,7 @@ import type { IpcClient } from '@ax/ipc-protocol';
 import { buildBundledSkillsEnv } from '../bundled-skills-env.js';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { createPreToolUseHook } from '../pre-tool-use.js';
-import { readProjectedSkillNames } from '../projected-skills.js';
+import { readProjectedSkills } from '../projected-skills.js';
 import { buildTelemetryEnv } from '../telemetry-env.js';
 import { ALLOWED_SDK_BUILTINS, DENIED_SDK_BUILTINS } from '../tool-names.js';
 import { stripClaudeCodeEnv } from './real-sdk-env.js';
@@ -198,7 +198,7 @@ async function runOneTurn(likeMain: boolean): Promise<{
                   hooks: [
                     createPreToolUseHook({
                       client,
-                      projectedSkills: await readProjectedSkillNames(cfg),
+                      projectedSkills: await readProjectedSkills(cfg),
                     }),
                   ],
                 },

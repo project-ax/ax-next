@@ -25,7 +25,7 @@ import {
   type CreateToolPolicyOptions,
   type HoldLatch,
 } from '@ax/agent-runner-core';
-import { skillRefusal } from './projected-skills.js';
+import { skillRefusal, type ProjectedSkills } from './projected-skills.js';
 import { classifySdkToolName } from './tool-names.js';
 
 export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
@@ -52,17 +52,18 @@ export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
   onHold?: (toolCallId: string) => void;
   /**
    * The skills AX installed for this session: the folder names under
-   * `$CLAUDE_CONFIG_DIR/skills/`, read once at boot (`readProjectedSkillNames`).
+   * `$CLAUDE_CONFIG_DIR/skills/`, read once at boot (`readProjectedSkills`).
    * A `Skill` call naming anything else (the CLI's bundled skills, a built-in
    * prompt command, a typo) is refused here, without asking the host.
    *
    * Absent means an EMPTY set, so the hook fails closed: every `Skill` call is
-   * refused. `main.ts` always passes it.
+   * refused. `main.ts` always passes it. A projection that could not be read
+   * carries a `loadError`, and the refusal then says so.
    */
-  projectedSkills?: ReadonlySet<string>;
+  projectedSkills?: ProjectedSkills;
 };
 
-const NO_PROJECTED_SKILLS: ReadonlySet<string> = new Set();
+const NO_PROJECTED_SKILLS: ProjectedSkills = { names: new Set() };
 
 export function createPreToolUseHook(
   opts: CreatePreToolUseHookOptions,

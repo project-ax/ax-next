@@ -235,7 +235,7 @@ describe('createPreToolUseHook', () => {
     const hook = createPreToolUseHook({
       client,
       idGen: () => 'id-skill-1',
-      projectedSkills: new Set(['weekly-report']),
+      projectedSkills: { names: new Set(['weekly-report']) },
     });
     const out = await hook(
       preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'update-config' } }),
@@ -256,7 +256,7 @@ describe('createPreToolUseHook', () => {
     const hook = createPreToolUseHook({
       client,
       idGen: () => 'id-skill-2',
-      projectedSkills: new Set(['weekly-report']),
+      projectedSkills: { names: new Set(['weekly-report']) },
     });
     const out = await hook(
       preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'weekly-report' } }),
@@ -286,6 +286,26 @@ describe('createPreToolUseHook', () => {
     const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
     expect(hso.permissionDecision).toBe('deny');
     expect(hso.permissionDecisionReason).toContain('"weekly-report" is not one of this agent\'s skills');
+  });
+
+  it('says the skills could not be read when the projection failed to load', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({
+      client,
+      idGen: () => 'id-skill-5',
+      projectedSkills: { names: new Set(), loadError: 'EACCES' },
+    });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'weekly-report' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([]);
+    const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('deny');
+    expect(hso.permissionDecisionReason).toContain(
+      "this agent's skills couldn't be read when the session started",
+    );
   });
 
   it('leaves non-Skill tools to the host even when no projection was passed', async () => {

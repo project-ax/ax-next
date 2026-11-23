@@ -38,7 +38,7 @@ import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { loadProjectedMcpServers } from './projected-mcp-servers.js';
-import { readProjectedSkillNames } from './projected-skills.js';
+import { readProjectedSkills } from './projected-skills.js';
 import {
   ALLOWED_SDK_BUILTINS,
   DENIED_SDK_BUILTINS,
@@ -182,8 +182,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
 
       // TASK-1207: the skills AX installed, by folder name. The PreToolUse hook
       // refuses a `Skill` call for anything else, which is how the CLI's own
-      // bundled skills stay out of reach. See projected-skills.ts.
-      const projectedSkills = await readProjectedSkillNames(configDir);
+      // bundled skills stay out of reach. A projection that couldn't be read
+      // refuses every call and says why. See projected-skills.ts.
+      const projectedSkills = await readProjectedSkills(configDir);
 
       // TASK-271: bare-ax-name → host-authored activityPhrase, attached to
       // the tool-use chunks/blocks below so the transcript can render a
