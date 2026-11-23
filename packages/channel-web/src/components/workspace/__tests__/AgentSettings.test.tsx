@@ -300,10 +300,10 @@ describe('AgentSettings — Advanced limits', () => {
 
   it('a value above the cap shows the ceiling note and saves anyway', async () => {
     const turn = await openAdvanced();
-    fireEvent.change(turn, { target: { value: '9999' } });
+    fireEvent.change(turn, { target: { value: '500' } });
     expect(screen.getAllByText(/we'll use the ceiling/i).length).toBeGreaterThan(0);
     save();
-    await waitFor(() => expect(patchAgent).toHaveBeenCalledWith('a-quill', { turnLimitMinutes: 9999 }));
+    await waitFor(() => expect(patchAgent).toHaveBeenCalledWith('a-quill', { turnLimitMinutes: 500 }));
   });
 
   it('editing only the turn limit sends only the turn limit', async () => {
