@@ -42,6 +42,7 @@ import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { loadProjectedMcpServers } from './projected-mcp-servers.js';
 import { readProjectedSkills } from './projected-skills.js';
+import { keepCliMarkupAsText } from './cli-markup-text.js';
 import { keepSlashAsText } from './slash-text.js';
 import {
   ALLOWED_SDK_BUILTINS,
@@ -280,7 +281,15 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // its own commands (bundled-skill expansion outside tool.pre-call,
             // `/clear` switching sessions). Only this copy changes; see
             // slash-text.ts.
-            message: { role: 'user', content: keepSlashAsText(next.content) } as never,
+            //
+            // TASK-1220: the same invisible U+200B goes in front of every `@`
+            // mention (the CLI would read that file with no PreToolUse) and
+            // inside every CLI markup tag (the text would pose as the CLI's
+            // own message). See cli-markup-text.ts.
+            message: {
+              role: 'user',
+              content: keepSlashAsText(keepCliMarkupAsText(next.content)),
+            } as never,
           };
         }
       }
