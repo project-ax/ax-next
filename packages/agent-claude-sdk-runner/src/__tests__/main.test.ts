@@ -712,9 +712,11 @@ describe('main()', () => {
     // TASK-1207: the CLI's bundled `loop` skill (it schedules with CronCreate
     // and ScheduleWakeup, which the `tools` allowlist keeps out) and its
     // `claude-api` skill are switched off at the source, in the same floor as
-    // the telemetry flags. A regression that drops the buildBundledSkillsEnv()
-    // spread puts `loop` back in front of the model, and an agent asked to do
-    // something every weekday reports a schedule that never runs.
+    // the telemetry flags. CLAUDE_CODE_DISABLE_CRON also stops the CLI's own
+    // scheduler, which otherwise runs prompts planted in
+    // `<cwd>/.claude/scheduled_tasks.json` (an agent can Write that file) with
+    // no user turn. A regression that drops the buildBundledSkillsEnv() spread
+    // puts `loop` back in front of the model and reopens that self-scheduling path.
     expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
     expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
 

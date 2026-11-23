@@ -439,7 +439,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // telemetry-env.ts for the verified gate chain and ordering contract.
             ...buildTelemetryEnv(),
             // TASK-1207: switch off the CLI's bundled `loop` (cron-backed) and
-            // `claude-api` skills. Same floor as telemetry; see bundled-skills-env.ts.
+            // `claude-api` skills, and the CLI's own scheduler, which would
+            // otherwise run prompts planted in `<cwd>/.claude/scheduled_tasks.json`
+            // with no user turn. Same floor as telemetry; see bundled-skills-env.ts.
             ...buildBundledSkillsEnv(),
             HOME: sdkHome,
             // Redirect npx/uvx fetch caches onto the session scratch root so they
