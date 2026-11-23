@@ -330,13 +330,12 @@ services:
   c:
     image: x@sha256:${'a'.repeat(64)}
 `);
-    if (!r.ok) throw new Error(r.error);
-    expect(r.services.map((s) => s.name)).toEqual(['c']);
-    const reasons = r.invalid.map((i) => i.reason).join('\n');
-    expect(r.invalid.map((i) => i.name).sort()).toEqual(['a', 'b']);
-    expect(reasons).toMatch(/cycle/i);
-    expect(reasons).toContain('a');
-    expect(reasons).toContain('b');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/cycle/i);
+    expect(r.error).toContain('a');
+    expect(r.error).toContain('b');
+    expect(r.error).not.toMatch(/\bc\b/);
   });
 
   it('refuses an unknown depends_on condition', () => {
@@ -350,10 +349,28 @@ services:
       a:
         condition: service_sleepy
 `);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('b');
+    expect(r.error).toContain('service_sleepy');
+  });
+
+  it('unescapes $$ in environment values (list and map forms)', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    environment:
+      - FOO=$$x
+      - BAR=\${KEEP}
+  b:
+    image: x@sha256:${'a'.repeat(64)}
+    environment:
+      BAZ: "$$y"
+`);
     if (!r.ok) throw new Error(r.error);
-    expect(r.services.map((s) => s.name)).toEqual(['a']);
-    expect(r.invalid[0]).toMatchObject({ name: 'b' });
-    expect(r.invalid[0]!.reason).toContain('service_sleepy');
+    expect(r.services[0]!.env).toEqual({ FOO: '$x', BAR: '${KEEP}' });
+    expect(r.services[1]!.env).toEqual({ BAZ: '$y' });
   });
 
   it('never imports host bind mounts as writable paths', () => {

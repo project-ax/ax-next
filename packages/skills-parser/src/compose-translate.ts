@@ -156,14 +156,14 @@ function coerceEnv(raw: unknown): Record<string, string> {
       if (eq === -1) {
         if (entry.length > 0) out[entry] = '';
       } else {
-        out[entry.slice(0, eq)] = entry.slice(eq + 1);
+        out[entry.slice(0, eq)] = unescapeComposeDollars(entry.slice(eq + 1));
       }
     }
     return out;
   }
   if (raw !== null && typeof raw === 'object') {
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-      out[k] = v === null || v === undefined ? '' : String(v);
+      out[k] = v === null || v === undefined ? '' : unescapeComposeDollars(String(v));
     }
   }
   return out;
@@ -496,8 +496,9 @@ export function translateComposeToServices(
 
     const dep = readDependsOn(svc.depends_on);
     if ('badCondition' in dep) {
-      invalid.push({ name, image, reason: dep.badCondition });
-      continue;
+      // Never import half-ordered: a service depending on a refused one would
+      // start without its dependency. Refuse the whole profile.
+      return { ok: false, error: `Refused: ${name}: ${dep.badCondition}` };
     }
 
     const unpinned = !DIGEST_PINNED_IMAGE_RE.test(image);
@@ -541,8 +542,8 @@ export function translateComposeToServices(
     }
   }
 
-  // Start order. Cycle members are refused; the rest are re-sorted without them.
-  let kept = entries;
+  // Start order. A cycle refuses the whole import.
+  const kept = entries;
   let order: string[] = [];
   for (;;) {
     const sorted = sortByDependsOn(kept.map((e) => ({ name: e.desc.name, dependsOn: e.deps })));
@@ -550,17 +551,10 @@ export function translateComposeToServices(
       order = sorted.order;
       break;
     }
-    const members = sorted.cycle.join(', ');
-    for (const e of kept) {
-      if (sorted.cycle.includes(e.desc.name)) {
-        invalid.push({
-          name: e.desc.name,
-          image: e.desc.image,
-          reason: `depends_on cycle between ${members}`,
-        });
-      }
-    }
-    kept = kept.filter((e) => !sorted.cycle.includes(e.desc.name));
+    return {
+      ok: false,
+      error: `Refused: depends_on cycle between ${sorted.cycle.join(', ')}`,
+    };
   }
   const rank = new Map(order.map((n, i) => [n, i]));
   kept.sort((a, b) => rank.get(a.desc.name)! - rank.get(b.desc.name)!);
