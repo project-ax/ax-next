@@ -44,6 +44,7 @@ import { AgentForm } from '../components/admin/AgentForm';
 import { AdminShell } from '../components/admin/AdminShell';
 import { UserProvider } from '../lib/user-context';
 import type { AuthUser } from '../lib/auth';
+import { PROD_TOOL_CATALOG } from '../lib/__tests__/agent-tool-catalog.fixture';
 
 function openAgentDetails(index = 0) {
   const row = screen.getAllByRole('button', { name: /^Details for / })[index]!;
@@ -65,7 +66,9 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   ownerType: 'user',
   visibility: 'personal',
   displayName: 'ax',
-  allowedTools: ['bash'],
+  // A real tool name: the form flags names the tool list doesn't have
+  // (TASK-1214), and lowercase `bash` isn't one.
+  allowedTools: ['Bash'],
   mcpConfigIds: [],
   connectorAttachments: [],
   model: 'anthropic/claude-sonnet-4-6',
@@ -101,6 +104,8 @@ beforeEach(() => {
         teams: [],
         connectors: [],
         models: MODEL_OPTIONS,
+        // GET /admin/agents/tools (TASK-1214).
+        ...PROD_TOOL_CATALOG,
       }),
     ),
   );
@@ -170,6 +175,7 @@ describe('AdminSettings — agents tab', () => {
       if (/\/admin\/connectors(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk({ connectors: [] }));
       }
+      if (url === '/admin/agents/tools') return Promise.resolve(jsonOk(PROD_TOOL_CATALOG));
       return Promise.resolve(jsonOk({ agents: [] }));
     });
 
@@ -179,9 +185,7 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.change(screen.getByLabelText(/name/i), {
       target: { value: 'new-bot' },
     });
-    fireEvent.change(screen.getByLabelText(/allowed tools/i), {
-      target: { value: 'bash' },
-    });
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Bash' }));
 
     // Wait only for the OPTIONS to exist — deliberately NOT for the select's
     // value to settle. Waiting on the value is what let the old bug hide: the
@@ -232,6 +236,7 @@ describe('AdminSettings — agents tab', () => {
       if (/\/admin\/connectors(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk({ connectors: [] }));
       }
+      if (url === '/admin/agents/tools') return Promise.resolve(jsonOk(PROD_TOOL_CATALOG));
       return Promise.resolve(jsonOk({ agents: [] }));
     });
 
@@ -249,9 +254,7 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.change(screen.getByLabelText('Soul'), {
       target: { value: 'I am helpful.' },
     });
-    fireEvent.change(screen.getByLabelText(/allowed tools/i), {
-      target: { value: 'bash' },
-    });
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Bash' }));
     // The Model picker is populated from GET /admin/agents/models — wait for
     // that to land before saving, so the POST carries a real model ref.
     await waitFor(() =>
@@ -274,7 +277,7 @@ describe('AdminSettings — agents tab', () => {
       // TASK-142: the POST body no longer carries systemPrompt — identity is a
       // separate PUT (asserted below).
       expect(body.systemPrompt).toBeUndefined();
-      expect(body.allowedTools).toEqual(['bash']);
+      expect(body.allowedTools).toEqual(['Bash']);
       // TASK-107 — connectors no longer ride mcpConfigIds (MCP-only meaning).
       expect(body.mcpConfigIds).toEqual([]);
       expect(body.visibility).toBe('personal');
@@ -334,6 +337,7 @@ describe('AdminSettings — agents tab', () => {
       if (/\/admin\/connectors(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk({ connectors: [] }));
       }
+      if (url === '/admin/agents/tools') return Promise.resolve(jsonOk(PROD_TOOL_CATALOG));
       return Promise.resolve(jsonOk({ agents: [] }));
     });
 
@@ -343,7 +347,7 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'new-bot' } });
     fireEvent.change(screen.getByLabelText('Identity'), { target: { value: 'I am new-bot.' } });
     fireEvent.change(screen.getByLabelText('Soul'), { target: { value: 'I am helpful.' } });
-    fireEvent.change(screen.getByLabelText(/allowed tools/i), { target: { value: 'bash' } });
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Bash' }));
     await waitFor(() =>
       expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
         'anthropic/claude-sonnet-4-6',
@@ -456,6 +460,7 @@ describe('AdminSettings — agents tab', () => {
       }
       if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
       if (/authored-skills/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
+      if (url === '/admin/agents/tools') return Promise.resolve(jsonOk(PROD_TOOL_CATALOG));
       return Promise.resolve(jsonOk({ agents: [teamAgent] }));
     });
 
@@ -490,7 +495,7 @@ describe('AdminSettings — agents tab', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     fetchMock.mockResolvedValueOnce(
       jsonOk({
-        agents: [sampleAgent({ displayName: 'probe', allowedTools: ['bash', 'read_file'] })],
+        agents: [sampleAgent({ displayName: 'probe', allowedTools: ['Bash', 'routine_list'] })],
       }),
     );
     // The edit view also renders SkillAttachmentsSection (fetches /admin/skills)
@@ -500,7 +505,7 @@ describe('AdminSettings — agents tab', () => {
       const url = String(input);
       if (url === '/admin/agents/agt-1') {
         return Promise.resolve(jsonOk({ agent: sampleAgent({
-          displayName: 'probe', allowedTools: ['bash', 'read_file'],
+          displayName: 'probe', allowedTools: ['Bash', 'routine_list'],
         }) }));
       }
       if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
@@ -509,6 +514,7 @@ describe('AdminSettings — agents tab', () => {
       if (/\/identity$/.test(url)) {
         return Promise.resolve(jsonOk({ identity: 'I am probe.', soul: '' }));
       }
+      if (url === '/admin/agents/tools') return Promise.resolve(jsonOk(PROD_TOOL_CATALOG));
       return Promise.resolve(jsonOk({ teams: [] }));
     });
 
@@ -520,8 +526,8 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
     const nameInput = await screen.findByLabelText(/name/i) as HTMLInputElement;
     expect(nameInput.value).toBe('probe');
-    const tools = screen.getByLabelText(/allowed tools/i) as HTMLInputElement;
-    expect(tools.value).toBe('bash, read_file');
+    expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'routine_list' })).toBeChecked();
   });
 
   it('delete sends DELETE with X-Requested-With: ax-admin (CSRF regression)', async () => {
