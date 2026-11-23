@@ -37,7 +37,8 @@
 // runner's env floor (`bundled-skills-env.ts`). This guard sees only the first
 // half; the runner's `cron-scheduler-real-sdk.e2e.test.ts` pins the second.
 // Others are aliases or companions of a row that already says it (`Agent` is
-// `Task` on the wire; CronList lists what only CronCreate could make), a UI mode
+// `Task` on the wire; CronList lists entries in the CLI scheduler's task file,
+// which is off), a UI mode
 // with no reach (plan mode), inert in an AX session (PushNotification), or
 // plumbing the rail has no word for (the MCP resource readers). A row also has
 // to be worth a person's attention: rows for plumbing would bury the ones that
@@ -121,11 +122,11 @@ const OFF_RAIL = Object.freeze({
   },
   CronDelete: {
     coveredBy: 'builtins.cron-create',
-    why: 'cancels a schedule only CronCreate could make',
+    why: "cancels an entry in the CLI scheduler's task file, and that scheduler is off",
   },
   CronList: {
     coveredBy: 'builtins.cron-create',
-    why: 'lists schedules only CronCreate could make',
+    why: "lists entries in the CLI scheduler's task file, and that scheduler is off",
   },
   ScheduleWakeup: {
     coveredBy: 'builtins.cron-create',
