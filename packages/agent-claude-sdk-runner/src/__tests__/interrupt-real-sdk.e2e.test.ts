@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { stripClaudeCodeEnv } from './real-sdk-env.js';
 
 // ---------------------------------------------------------------------------
 // TASK-688 — the claim the claude-sdk loop stands on, checked against the REAL
@@ -209,7 +210,7 @@ function openQuery(withMcp = false) {
       } } } : {}),
       cwd: tmp,
       env: {
-        ...process.env,
+        ...stripClaudeCodeEnv(),
         HOME: tmp,
         CLAUDE_CONFIG_DIR: path.join(tmp, 'cfg'),
         ANTHROPIC_BASE_URL: baseUrl,

@@ -36,6 +36,9 @@
 //      four keep their own refusal sentences and their `@ax/tool-policy`
 //      rail rows; `Agent` (Task's wire name) reuses Task's, the scheduling
 //      built-ins share one sentence, and everything else shares another.
+//      On the rail, `CronCreate` has a row too (`builtins.cron-create`,
+//      TASK-1207). Every other denied name has no row, and the drift guard's
+//      `OFF_RAIL` holds the written reason why (see `DISABLED_BUILTIN_REASONS`).
 //
 //      WHERE THE ENFORCEMENT ACTUALLY LIVES: `main.ts` passes
 //      `ALLOWED_SDK_BUILTINS` as the SDK's `tools` option (the base set of
@@ -59,11 +62,12 @@
 //      skill-discovery path." Skill is now in `allowedTools` and the SDK
 //      reads USER skills only from $CLAUDE_CONFIG_DIR/skills/ (the host's
 //      read-only projection). The CLI also ships its own BUNDLED skills
-//      (`loop`, `update-config`, `simplify`, …) inside the binary; `loop`
-//      tells the model to schedule with CronCreate/ScheduleWakeup, which the
-//      `tools` allowlist keeps out (TASK-1200), so following it fails with
-//      the CLI's "no such tool" error. Hiding bundled skills is a follow-up.
-//      `settingSources` is `['user']`, so nothing
+//      (`loop`, `update-config`, `simplify`, `init`, …) inside the binary,
+//      and the same `Skill` tool would open them (TASK-1207). `loop` and
+//      `claude-api` are switched off at the source (`buildBundledSkillsEnv()`,
+//      bundled-skills-env.ts); nothing switches off the rest, so pre-tool-use.ts
+//      refuses a `Skill` call for any name that is not a folder in the
+//      projection (projected-skills.ts). `settingSources` is `['user']`, so nothing
 //      the agent writes in its home (`.claude/skills/`, `.claude/settings.json`,
 //      `CLAUDE.md`) is loaded. Skill is NOT a nested-agent bypass; `Task`
 //      still is.
@@ -249,8 +253,9 @@ function notAllowedReason(name: string): string {
   if (name === 'Agent') return `Agent (Task) ${DISABLED_BUILTIN_REASONS.Task.replace(/^Task /, '')}`;
   if (SCHEDULING_BUILTINS.includes(name)) {
     return (
-      `${name} is disabled: a schedule made with it lives only in this session ` +
-      'and never runs. To schedule recurring work, create a routine instead.'
+      `${name} is disabled: it is part of Claude Code's own scheduler, and a ` +
+      'schedule made there would skip the approval routines ask for. To schedule ' +
+      'recurring work, create a routine instead.'
     );
   }
   return (
@@ -278,16 +283,21 @@ function isAllowedSdkBuiltin(sdkName: string): boolean {
  * `rules.ts` already refuses to import THIS module. That makes this the third
  * place the four names are written down — though only two of the three can
  * drift: this record's keys are `Record<DisabledBuiltin, string>`, so the
- * compiler ties them to the array three lines up.
+ * compiler ties them to `DISABLED_BUILTINS`.
  *
  * The hand-maintained copy in `rules.ts` is the drift-prone one, and TASK-245
  * ruled it should STAY hand-maintained: that rail is runner-agnostic and holds
  * the names both runners keep from the agent, not this runner's list. It is
  * held honest from outside instead —
- * `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads this array as
- * text and fails if the rail stops matching. Which matters most when a new SDK
- * arrives and adds a name here on purpose (SECURITY.md now sends upgraders to
- * `KNOWN_SDK_BUILTINS` / `ALLOWED_SDK_BUILTINS` instead).
+ * `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads
+ * `KNOWN_SDK_BUILTINS`, `ALLOWED_SDK_BUILTINS` and `DISABLED_BUILTINS` as text
+ * (renaming any of the three breaks it loudly), recomputes the denied set the
+ * way `DENIED_SDK_BUILTINS` does, and fails unless every name both runners keep
+ * from the agent is a `builtins.*` rail row (these four, plus `CronCreate`
+ * since TASK-1207) or has a written reason in its `OFF_RAIL`, never both. That
+ * matters most when a new SDK arrives: a name added to `KNOWN_SDK_BUILTINS`
+ * and left off `ALLOWED_SDK_BUILTINS` stays red there until someone writes a
+ * row or a reason.
  */
 export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
   WebFetch:

@@ -32,11 +32,13 @@ import {
   type RunnerDeps,
 } from '@ax/agent-runner-core';
 import { HELD_TOOL_RESULT_TEXT } from './held-calls.js';
+import { buildBundledSkillsEnv } from './bundled-skills-env.js';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { loadProjectedMcpServers } from './projected-mcp-servers.js';
+import { readProjectedSkills } from './projected-skills.js';
 import {
   ALLOWED_SDK_BUILTINS,
   DENIED_SDK_BUILTINS,
@@ -162,18 +164,27 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         tools,
       });
 
+      // The CLAUDE_CONFIG_DIR the SDK subprocess gets (providerEnv), falling
+      // back to this process's (where the k8s materializer wrote). Both reads
+      // below happen once, at boot, AFTER runRunner materialized the
+      // projection under `<configDir>/skills/` and BEFORE the model has had a
+      // turn.
+      const configDir =
+        proxyStartup.providerEnv['CLAUDE_CONFIG_DIR'] ?? process.env['CLAUDE_CONFIG_DIR'];
+
       // TASK-760: connector MCP servers. The host projection writes them as a
       // `.mcp.json` per connector bundle under `$CLAUDE_CONFIG_DIR/skills/`, but
       // the SDK CLI never reads a skill dir's `.mcp.json` (only project scope —
       // deliberately off — and plugin roots), so the runner loads them itself
-      // and passes them explicitly below. Read once, at boot, AFTER runRunner
-      // materialized the projection and BEFORE the model has had a turn. Uses
-      // the CLAUDE_CONFIG_DIR the SDK subprocess gets (providerEnv), falling
-      // back to this process's (where the k8s materializer wrote). See
-      // projected-mcp-servers.ts for the trust shape.
-      const connectorMcp = await loadProjectedMcpServers(
-        proxyStartup.providerEnv['CLAUDE_CONFIG_DIR'] ?? process.env['CLAUDE_CONFIG_DIR'],
-      );
+      // and passes them explicitly below. See projected-mcp-servers.ts for the
+      // trust shape.
+      const connectorMcp = await loadProjectedMcpServers(configDir);
+
+      // TASK-1207: the skills AX installed, by folder name. The PreToolUse hook
+      // refuses a `Skill` call for anything else, which is how the CLI's own
+      // bundled skills stay out of reach. A projection that couldn't be read
+      // refuses every call and says why. See projected-skills.ts.
+      const projectedSkills = await readProjectedSkills(configDir);
 
       // TASK-271: bare-ax-name → host-authored activityPhrase, attached to
       // the tool-use chunks/blocks below so the transcript can render a
@@ -427,6 +438,11 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // — unlike the tty-hints above, which are overridable defaults. See
             // telemetry-env.ts for the verified gate chain and ordering contract.
             ...buildTelemetryEnv(),
+            // TASK-1207: switch off the CLI's bundled `loop` (cron-backed) and
+            // `claude-api` skills, and the CLI's own scheduler, which would
+            // otherwise run prompts planted in `<cwd>/.claude/scheduled_tasks.json`
+            // with no user turn. Same floor as telemetry; see bundled-skills-env.ts.
+            ...buildBundledSkillsEnv(),
             HOME: sdkHome,
             // Redirect npx/uvx fetch caches onto the session scratch root so they
             // don't fill the agent's home, which is durable and counts toward the
@@ -572,6 +588,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     holdLatch,
                     isInterrupted: () => stopRequested,
                     onHold: (id) => heldCalls.record(id),
+                    projectedSkills,
                   }),
                 ],
               },
@@ -608,8 +625,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           },
           // Phase 3: the read-only `user` projection ($CLAUDE_CONFIG_DIR/skills/,
           // chmod 0555, written by @ax/installed-skills) is the SOLE USER
-          // skill-discovery path (the CLI's bundled skills ship in the binary;
-          // see tool-names.ts). 'project' is NOT a source: it would load
+          // skill-discovery path. The CLI's bundled skills ship in the binary:
+          // `buildBundledSkillsEnv()` switches off the two it allows, and the
+          // PreToolUse hook refuses every other skill outside the projection
+          // (TASK-1207). 'project' is NOT a source: it would load
           // `<cwd>/.claude/**` (settings hooks, skills), `<cwd>/CLAUDE.md` and
           // `<cwd>/.mcp.json` from the agent's home, which the agent writes
           // freely — `.claude/skills/evil/SKILL.md` would be discovered directly,
