@@ -4159,6 +4159,54 @@ describe('main()', () => {
       }
     });
 
+    // TASK-1217: the CLI reloads its skills (and its settings, when a settings
+    // file existed at start) when they change on disk mid-session, and the
+    // agent's shell can change them (same user). main() wires a ConfigChange
+    // hook that blocks every such reload, without asking the host.
+    it('the wired ConfigChange hook blocks a mid-session skills reload (TASK-1217)', async () => {
+      setEnv(COMPLETE_ENV);
+      wireHomeClient();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const { options } = queryMock.mock.calls[0]![0] as {
+        options: {
+          hooks: {
+            ConfigChange?: Array<{
+              hooks: Array<(input: unknown, id: string | undefined, opts: unknown) => Promise<unknown>>;
+            }>;
+          };
+        };
+      };
+      const hook = options.hooks.ConfigChange?.[0]?.hooks[0];
+      expect(hook).toBeTypeOf('function');
+      const callsBefore = fakeClient.call.mock.calls.length;
+      const eventsBefore = fakeClient.event.mock.calls.length;
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let out: unknown;
+      try {
+        out = await hook!(
+          {
+            hook_event_name: 'ConfigChange',
+            session_id: 'sess-1',
+            transcript_path: '/tmp/t.jsonl',
+            cwd: HOME_DIR,
+            source: 'skills',
+            file_path: `${CONFIG_DIR}/skills/evil/SKILL.md`,
+          },
+          undefined,
+          { signal: new AbortController().signal },
+        );
+      } finally {
+        stderrSpy.mockRestore();
+      }
+      expect(out).toMatchObject({ decision: 'block' });
+      // The runner's own refusal: the host is not asked.
+      expect(fakeClient.call.mock.calls.length).toBe(callsBefore);
+      expect(fakeClient.event.mock.calls.length).toBe(eventsBefore);
+    });
+
     // TASK-995: there is no workspace to flush before a host tool reads the
     // agent's files; they are already where the host reads them. A host tool
     // that reads them forwards straight to `tool.execute-host`, with no other

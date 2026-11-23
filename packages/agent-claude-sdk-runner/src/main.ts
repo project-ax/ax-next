@@ -13,6 +13,7 @@ import type {
 } from '@ax/ipc-protocol';
 import { createInterruptProcesses, ToolTerminationError } from './interrupt-processes.js';
 import { createCanUseTool } from './can-use-tool.js';
+import { createConfigChangeHook } from './config-change.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
   buildActivityPhraseMap,
@@ -622,6 +623,11 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                 ],
               },
             ],
+            // TASK-1217: the CLI reloads its skills (and settings) when they
+            // change on disk mid-session, and the agent's shell can change
+            // them. Block every reload: what the CLI loaded at start is what
+            // it keeps. See config-change.ts.
+            ConfigChange: [{ hooks: [createConfigChangeHook()] }],
           },
           mcpServers: {
             // Connector servers first, keyed by host-minted toolNamespace
