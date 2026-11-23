@@ -18,7 +18,7 @@ No hook, IPC action or schema changes.
 
 **Tech Stack:** TypeScript, vitest. It runs on the pinned `@anthropic-ai/claude-agent-sdk` 0.2.119 / `claude` CLI 2.1.119 native binary. There's no new dependency.
 
-**Spec:** card TASK-1207, `/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/b9feba9b-916e-4979-b5be-adabf94d3c15/scratchpad/TASK-1207/card.md`. Items 1–3 are planned. Item 4 (the live re-walk) is not: walk TASK-1205 already passed it.
+**Spec:** board card TASK-1207 (project-ax TO DO #1). Items 1–3 are planned. Item 4 (the live re-walk) is not: walk TASK-1205 already passed it.
 - **Read first:** the planner's decisions, `.claude/memory/decisions/2026-11-23-TASK-1207.md`, and TASK-1200's shards, `.claude/memory/{decisions,patterns}/2026-11-22-TASK-1200.md`.
 - Append your own rows to the TASK-1207 shard, never to a root archive.
 
