@@ -1078,8 +1078,8 @@ describe('buildPodSpec', () => {
         (spec.initContainers.find((c) => c.name === n) as unknown as { resources: unknown })
           .resources;
       expect(res('svc-big')).toEqual({
-        limits: { cpu: '4000m', memory: '8192Mi' },
-        requests: { cpu: '500m', memory: '8192Mi' },
+        limits: { cpu: '4000m', memory: '4096Mi' },
+        requests: { cpu: '500m', memory: '4096Mi' },
       });
       expect(res('svc-small')).toEqual({
         limits: { cpu: '1', memory: '2048Mi' },

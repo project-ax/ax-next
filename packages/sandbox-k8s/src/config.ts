@@ -92,7 +92,7 @@ export interface SandboxK8sConfig {
   serviceMemoryRequest?: string;
   /** Ceiling for a descriptor's per-service CPU request and limit (millicores). Default: 4000. */
   serviceCpuLimitMaxMillis?: number;
-  /** Ceiling for a descriptor's per-service memory request and limit (MiB). Default: 8192. */
+  /** Ceiling for a descriptor's per-service memory request and limit (MiB). Default: 4096. */
   serviceMemoryLimitMaxMiB?: number;
   /** Size limit (MiB) of a service's writable-path emptyDir when the descriptor sets none. Default: 2048. */
   serviceStorageDefaultMiB?: number;
@@ -277,7 +277,7 @@ export function resolveConfig(
     serviceCpuRequest: raw.serviceCpuRequest ?? '100m',
     serviceMemoryRequest: raw.serviceMemoryRequest ?? '512Mi',
     serviceCpuLimitMaxMillis: raw.serviceCpuLimitMaxMillis ?? 4000,
-    serviceMemoryLimitMaxMiB: raw.serviceMemoryLimitMaxMiB ?? 8192,
+    serviceMemoryLimitMaxMiB: raw.serviceMemoryLimitMaxMiB ?? 4096,
     serviceStorageDefaultMiB: raw.serviceStorageDefaultMiB ?? 2048,
     perServiceColdStartMs: raw.perServiceColdStartMs ?? 120_000,
     proxySocketHostPath: raw.proxySocketHostPath ?? '',
