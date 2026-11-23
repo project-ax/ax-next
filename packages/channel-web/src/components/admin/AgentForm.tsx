@@ -18,10 +18,11 @@ import { movedNotice } from '@/lib/models-copy';
  *
  * Visibility radio toggles the team picker. The teams list comes from
  * `/admin/teams`. `allowedTools` is picked from the tools this deployment
- * really has (GET /admin/agents/tools, `AgentToolPicker`); a saved name we
- * don't have is shown and dropped on save — but only once that list has
- * loaded, so a save while it is loading or after it failed sends the saved
- * list back as it was (TASK-1214).
+ * really has (GET /admin/agents/tools, `AgentToolPicker`); a saved name that
+ * list lacks is flagged with a Remove button, but a plain save sends it back
+ * unchanged: a successful read only proves the name is missing from THIS boot
+ * (some tools load only when configured), so only the owner removes it
+ * (TASK-1214).
  * Connectors are NOT assigned here (TASK-799) — people add them from the
  * workspace rail.
  */
@@ -42,7 +43,7 @@ import {
   type AgentModelOption,
   type Team,
 } from '../../lib/admin';
-import { toolsToSave, type ToolCatalogState } from '@/lib/agent-tool-areas';
+import type { ToolCatalogState } from '@/lib/agent-tool-areas';
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import { AgentToolPicker } from './AgentToolPicker';
@@ -181,8 +182,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   // The tool names the picker offers (GET /admin/agents/tools, TASK-1214).
-  // Only an `ok` read may drop a saved name (`toolsToSave`): `loading` and
-  // `failed` prove nothing, so a save then sends the list back unchanged.
+  // Save never drops a saved name on its own; only the picker's Remove does.
   const [toolCatalog, setToolCatalog] = useState<ToolCatalogState>({ status: 'loading' });
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
@@ -360,9 +360,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     }
     setBusy(true);
     setError(null);
-    // TASK-1214 — names the tool list proved we don't have are dropped here;
-    // until a read succeeds nothing is proved, and the list goes back as is.
-    const allowedTools = toolsToSave(form.allowedTools, toolCatalog);
+    // TASK-1214 — sent as picked, names the tool list lacks included: that
+    // list only describes this boot, so dropping them here would silently
+    // delete tools that exist when, say, a key is set. The picker's Remove
+    // button is the only way they leave. (Deduped on load and by `setTools`.)
+    const allowedTools = form.allowedTools;
     // `mcpConfigIds` carries MCP configs only; connectors are added from the
     // workspace rail, not this form (TASK-799). The wildcard sentinel
     // (`allowedTools=[] && mcpConfigIds=[]`) is reserved for the dev-mode bypass

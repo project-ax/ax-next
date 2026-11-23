@@ -66,7 +66,7 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   ownerType: 'user',
   visibility: 'personal',
   displayName: 'ax',
-  // A real tool name: the form drops names the tool list doesn't have
+  // A real tool name: the form flags names the tool list doesn't have
   // (TASK-1214), and lowercase `bash` isn't one.
   allowedTools: ['Bash'],
   mcpConfigIds: [],

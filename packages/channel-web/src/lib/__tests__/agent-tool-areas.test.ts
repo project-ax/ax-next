@@ -3,7 +3,6 @@ import {
   AUTOMATIC_TOOLS,
   groupAgentTools,
   setTools,
-  toolsToSave,
   unknownTools,
   type ToolCatalogState,
 } from '../agent-tool-areas';
@@ -54,15 +53,6 @@ describe('unknownTools', () => {
   it('proves nothing while loading or after a failed read', () => {
     expect(unknownTools(['routines'], { status: 'loading' })).toEqual([]);
     expect(unknownTools(['routines'], { status: 'failed' })).toEqual([]);
-  });
-});
-
-describe('toolsToSave', () => {
-  it('drops unknown names only after a successful read, and keeps automatic ones', () => {
-    const sel = ['Bash', 'routines', 'search_catalog', 'routine_get'];
-    expect(toolsToSave(sel, ok)).toEqual(['Bash', 'search_catalog', 'routine_get']);
-    expect(toolsToSave(sel, { status: 'failed' })).toEqual(sel);
-    expect(toolsToSave(sel, { status: 'loading' })).toEqual(sel);
   });
 });
 

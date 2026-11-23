@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { AgentToolPicker } from '../AgentToolPicker';
 import type { ToolCatalogState } from '@/lib/agent-tool-areas';
 import { PROD_TOOL_CATALOG } from '@/lib/__tests__/agent-tool-catalog.fixture';
@@ -75,18 +75,36 @@ describe('AgentToolPicker', () => {
     }
   });
 
-  it('says which saved names are not tools, and that saving removes them', () => {
+  it('says which saved names are not available here, without promising to remove them', () => {
     setup({ selected: ['Bash', 'routines'] });
-    const alert = screen.getByRole('alert');
-    expect(alert.textContent).toContain('“routines” isn’t a tool we have');
-    expect(alert.textContent).toContain('Saving removes it');
+    expect(screen.getByRole('alert').textContent).toContain(
+      '“routines” isn’t available here, so listing it does nothing right now. It may be a tool this deployment doesn’t run, or one this list doesn’t control.',
+    );
   });
 
   it('lists several unknown names together', () => {
     setup({ selected: ['a', 'b'] });
     expect(screen.getByRole('alert').textContent).toContain(
-      'These aren’t tools we have, so they do nothing: “a”, “b”. Saving removes them',
+      'These aren’t available here, so listing them does nothing right now: “a”, “b”. They may be tools this deployment doesn’t run, or ones this list doesn’t control.',
     );
+  });
+
+  // A successful read only proves a name is missing from THIS boot (web tools
+  // load only with a key, for one), so nothing removes it unless asked.
+  it('nothing is removed until the owner clicks Remove it', () => {
+    const onChange = setup({ selected: ['Bash', 'routines', 'routine_get'] });
+    expect(onChange).not.toHaveBeenCalled();
+    const remove = within(screen.getByRole('alert')).getByRole('button', { name: 'Remove it' });
+    // Inside the agent form: it must not submit it.
+    expect(remove.getAttribute('type')).toBe('button');
+    fireEvent.click(remove);
+    expect(onChange).toHaveBeenCalledWith(['Bash', 'routine_get']);
+  });
+
+  it('with several unknown names the button says Remove them and removes them all', () => {
+    const onChange = setup({ selected: ['a', 'Bash', 'b'] });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove them' }));
+    expect(onChange).toHaveBeenCalledWith(['Bash']);
   });
 
   it('a failed read shows the current list and offers nothing to pick', () => {

@@ -1,11 +1,13 @@
 /**
  * The "Allowed tools" picker for the agent form (TASK-1214). Offers only tool
  * names this deployment really has, grouped by area; ticking an area ticks
- * everything in it. A saved name we don't have is called out (and dropped on
- * save, see `toolsToSave`). Names are the host's own words; rendered as text.
+ * everything in it. A saved name the list doesn't have is called out with a
+ * Remove button; a plain save keeps it, because a successful read only proves
+ * it is missing from this boot. Names are the host's own words; rendered as text.
  */
 import { useId } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Field,
@@ -33,8 +35,8 @@ export interface AgentToolPickerProps {
 function unknownMessage(names: readonly string[]): string {
   const quoted = names.map((n) => `“${n}”`);
   return names.length === 1
-    ? `${quoted[0]} isn’t a tool we have, so it does nothing. Saving removes it — pick the tools you meant below.`
-    : `These aren’t tools we have, so they do nothing: ${quoted.join(', ')}. Saving removes them — pick the tools you meant below.`;
+    ? `${quoted[0]} isn’t available here, so listing it does nothing right now. It may be a tool this deployment doesn’t run, or one this list doesn’t control.`
+    : `These aren’t available here, so listing them does nothing right now: ${quoted.join(', ')}. They may be tools this deployment doesn’t run, or ones this list doesn’t control.`;
 }
 
 export function AgentToolPicker({
@@ -92,7 +94,17 @@ function PickerBody({
     <>
       {unknown.length > 0 && (
         <Alert>
-          <AlertDescription>{unknownMessage(unknown)}</AlertDescription>
+          <AlertDescription className="flex flex-col items-start gap-3">
+            <span>{unknownMessage(unknown)}</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onChange(setTools(selected, unknown, false))}
+            >
+              {unknown.length === 1 ? 'Remove it' : 'Remove them'}
+            </Button>
+          </AlertDescription>
         </Alert>
       )}
       {areas.map((area) => {

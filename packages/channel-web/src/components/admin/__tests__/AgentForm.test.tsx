@@ -465,10 +465,11 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
 });
 
 // TASK-1214 — "Allowed tools" is a picker of the names this deployment really
-// has (GET /admin/agents/tools), not a free-text field. A saved name we don't
-// have is dropped on save, but only once a successful read has proved it
-// unknown: while the list is loading, or after a failed read, the saved list
-// goes back exactly as it was. Nothing keeps a history of an agent's tools.
+// has (GET /admin/agents/tools), not a free-text field. A saved name the list
+// doesn't have is flagged but never dropped implicitly: a successful read only
+// proves it is missing from THIS boot (web tools load only with a key, for
+// one), so a plain Save sends it back, and only the owner's "Remove" click
+// takes it out. Nothing keeps a history of an agent's tools.
 describe('AgentForm — tool picker (TASK-1214)', () => {
   const ROUTINES = [
     'routine_list',
@@ -544,7 +545,7 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
     for (const name of ['routine_fire_now', 'Glob', 'Grep', 'Routines']) {
       expect(screen.getByRole('checkbox', { name })).not.toBeChecked();
     }
-    expect(screen.queryByText(/isn’t a tool we have|aren’t tools we have/)).toBeNull();
+    expect(screen.queryByText(/available here/)).toBeNull();
 
     save();
     await waitFor(() =>
@@ -555,10 +556,34 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
     );
   });
 
-  it('a saved name we don’t have is shown, can’t be picked, and is not saved', async () => {
+  it('a saved name the list lacks is flagged, can’t be picked, and a plain save keeps it', async () => {
     await openEdit({ ...AGENT, allowedTools: ['Bash', 'routines'] });
-    await screen.findByText(/“routines” isn’t a tool we have/);
+    await screen.findByText(/“routines” isn’t available here/);
     expect(screen.queryByRole('checkbox', { name: 'routines' })).toBeNull();
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'routines'] }),
+      ),
+    );
+    // The rest of the save (the identity write) goes through too.
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  // The case that earned this: web tools load only when this boot has a key,
+  // so a boot without one must not delete them from an identity-only save.
+  it('tools this boot doesn’t run survive a save; clicking Remove then saving drops them', async () => {
+    vi.mocked(listAgentToolOptions).mockResolvedValue({
+      ...PROD_TOOL_CATALOG,
+      tools: PROD_TOOL_CATALOG.tools.filter((n) => !n.startsWith('web_')),
+    });
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'web_search', 'web_extract'] });
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove them' }));
+    expect(screen.queryByText(/aren’t available here/)).toBeNull();
+    // The button sits inside the form; removing must not submit it.
+    expect(patchAgent).not.toHaveBeenCalled();
 
     save();
     await waitFor(() =>
@@ -567,16 +592,14 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
         expect.objectContaining({ allowedTools: ['Bash'] }),
       ),
     );
-    // Not blocked: the rest of the save (the identity write) still goes through.
     await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
   });
 
-  it('a list of only unknown names cannot become a wildcard', async () => {
+  it('removing every saved name cannot turn the agent into a wildcard', async () => {
     await openEdit({ ...AGENT, allowedTools: ['routines'] });
-    await screen.findByText(/“routines” isn’t a tool we have/);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove it' }));
 
     save();
-    // getByText, not getByRole('alert'): the unknown-name notice is an alert too.
     await waitFor(() => expect(screen.getByText(/pick at least one tool/i)).toBeTruthy());
     expect(patchAgent).not.toHaveBeenCalled();
     expect(putAgentIdentity).not.toHaveBeenCalled();

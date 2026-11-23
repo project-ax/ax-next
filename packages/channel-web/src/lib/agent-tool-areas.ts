@@ -1,5 +1,5 @@
 /**
- * Presentation-only grouping and save rules for the agent tool picker
+ * Presentation-only grouping and selection rules for the agent tool picker
  * (TASK-1214). Grouping lives here, not on the host: `ToolDescriptor` has no
  * `area` field, and adding one is a four-place descriptor change. See
  * .claude/memory/decisions/2026-11-23-TASK-1214.md.
@@ -104,18 +104,16 @@ export function groupAgentTools(catalog: AgentToolCatalog): ToolArea[] {
   return out;
 }
 
-/** Selected names found in neither list. Proves nothing unless the read succeeded. */
+/**
+ * Selected names found in neither list. Proves nothing unless the read
+ * succeeded, and even then only that the name is missing from THIS boot
+ * (`@ax/web-tools`, for one, loads only when a key is set), so these are
+ * flagged for the owner to remove, never dropped on save.
+ */
 export function unknownTools(selected: readonly string[], catalog: ToolCatalogState): string[] {
   if (catalog.status !== 'ok') return [];
   const known = new Set<string>([...catalog.tools, ...catalog.builtins, ...AUTOMATIC_TOOLS]);
   return [...new Set(selected.filter((n) => !known.has(n)))];
-}
-
-/** The list to send on save: unknown names dropped only once proved unknown. */
-export function toolsToSave(selected: readonly string[], catalog: ToolCatalogState): string[] {
-  if (catalog.status !== 'ok') return [...selected];
-  const unknown = new Set(unknownTools(selected, catalog));
-  return selected.filter((n) => !unknown.has(n));
 }
 
 export function setTools(
