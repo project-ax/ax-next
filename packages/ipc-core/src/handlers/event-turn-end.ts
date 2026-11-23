@@ -1,4 +1,10 @@
-import type { AgentContext, HookBus } from '@ax/core';
+import {
+  CHAT_TURN_END_HOLD_HOOK,
+  CHAT_TURN_SEGMENT_END_HOOK,
+  type AgentContext,
+  type ChatTurnEndHoldPayload,
+  type HookBus,
+} from '@ax/core';
 import {
   EventTurnEndSchema,
   sanitizeActivityPhrase,
@@ -33,6 +39,9 @@ import type { HandlerErr } from './types.js';
 //      observer — last_activity bump, clear-active-req-id, the buffer
 //      evictor, conversation-titles, routines. These are not gated by the
 //      persist-before-ack invariant, so a rejection is logged, never echoed.
+//      R27: first it asks `chat:turn-end-hold` whether the turn-end ends a
+//      held segment (a sandbox restart inside one request). Held, it fires
+//      `chat:turn-segment-end` instead, which only the hold's owner consumes.
 // ---------------------------------------------------------------------------
 
 export function validateEventTurnEnd(rawPayload: unknown):
@@ -120,6 +129,23 @@ export async function fireEventTurnEnd(
   bus: HookBus,
   payload: unknown,
 ): Promise<void> {
+  // R27 — is this turn-end a HELD segment's? A sandbox restart inside one
+  // request (restart_with_services) ends a runner segment without ending the
+  // turn, so its turn-ends must not reach the callers that close a turn on
+  // the first `chat:turn-end` naming their reqId. This is the only place the
+  // host emits `chat:turn-end`, so the question is asked here and nowhere
+  // else. Not held — no subscriber, none that answers, one that throws, is
+  // slow or rejects — fires `chat:turn-end` exactly as before.
+  if (await turnEndHeld(ctx, bus, payload)) {
+    const held = await bus.fire(CHAT_TURN_SEGMENT_END_HOOK, ctx, payload);
+    if (held.rejected) {
+      ctx.logger.warn('event_subscriber_rejected', {
+        hook: CHAT_TURN_SEGMENT_END_HOOK,
+        reason: held.reason,
+      });
+    }
+    return;
+  }
   const result = await bus.fire('chat:turn-end', ctx, payload);
   if (result.rejected) {
     ctx.logger.warn('event_subscriber_rejected', {
@@ -127,4 +153,29 @@ export async function fireEventTurnEnd(
       reason: result.reason,
     });
   }
+}
+
+/**
+ * R27 — how long one hold subscriber may take before it is skipped (and the
+ * turn-end broadcast as usual). The answer is an in-memory lookup; this only
+ * stops a wedged subscriber from holding every turn-end back.
+ */
+export const TURN_END_HOLD_SUBSCRIBER_TIMEOUT_MS = 2_000;
+
+/**
+ * Ask `chat:turn-end-hold` whether this turn-end ends a held segment. The
+ * session is the host-stamped one (the runner's token), never a payload field;
+ * the reqId is the runner's echo and is only ever matched against a hold the
+ * host created. A turn-end naming no reqId can't belong to a held request.
+ */
+async function turnEndHeld(ctx: AgentContext, bus: HookBus, payload: unknown): Promise<boolean> {
+  const reqId = (payload as { reqId?: unknown } | null | undefined)?.reqId;
+  if (typeof reqId !== 'string' || reqId.length === 0) return false;
+  const answer = await bus.fire<ChatTurnEndHoldPayload>(
+    CHAT_TURN_END_HOLD_HOOK,
+    ctx,
+    { sessionId: ctx.sessionId, reqId, held: false },
+    { subscriberTimeoutMs: TURN_END_HOLD_SUBSCRIBER_TIMEOUT_MS },
+  );
+  return !answer.rejected && answer.payload.held === true;
 }

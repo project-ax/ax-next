@@ -4,6 +4,7 @@ import {
   isAttendedTurn,
   isOutsiderTurn,
   toWellFormedValue,
+  makeReqId,
   PluginError,
   PROVIDER_ENDPOINTS,
   parseModelRef,
@@ -18,11 +19,13 @@ import {
   type AgentContextSource,
   type AgentMessage,
   type AgentOutcome,
+  type ChatTurnEndHoldPayload,
   type FireResult,
   type HookBus,
   type SystemPromptAugmentInput,
   type SystemPromptAugmentOutput,
   type SystemPromptLandedPayload,
+  type ToolCall,
 } from '@ax/core';
 // Shared `sandbox:open-session` contract. The orchestrator CONSTRUCTS the
 // payload (it doesn't validate — trust comes from skills:resolve / agents:resolve
@@ -79,6 +82,28 @@ import {
   type EffectiveLimits,
   type RunnerSize,
 } from './agent-limits.js';
+import {
+  SAFE_NAME_RE,
+  SERVICE_SET_UNAVAILABLE_NOTE,
+  ServiceRestartBook,
+  ServiceSandboxCounter,
+  buildServicesNote,
+  listServiceSets,
+  selectServiceSet,
+  serviceSetsPromptLine,
+  type ServiceSet,
+} from './service-sets.js';
+import {
+  RESTART_REFUSALS,
+  STOP_RESULTS,
+  alreadyOnRefusal,
+  atCapRefusal,
+  parseRestartInput,
+  restartAccepted,
+  serviceToolScope,
+  unknownSetRefusal,
+  type ServiceToolResult,
+} from './service-tools.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -299,7 +324,20 @@ export interface ChatOrchestratorConfig {
   /** System/built-in skills materialized into every session at LOWEST precedence
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
+  /**
+   * Dev services on demand (spec §3). `enabled` (default true): on-demand
+   * connectors' service sets can be started with `restart_with_services`;
+   * false folds none of them and offers no set (a preset that can't run them
+   * yet). `maxPerAgent` (default DEFAULT_MAX_SERVICE_SANDBOXES_PER_AGENT, 10):
+   * the most live sandboxes with a set, plus pending restarts, one agent may
+   * have (the chart's `chat.maxServiceSandboxesPerAgent`, §3.4). A positive
+   * integer; anything else is refused at init.
+   */
+  onDemandServices?: { enabled?: boolean; maxPerAgent?: number };
 }
+
+/** §3.4 / decision 6 — the default per-agent cap on sandboxes running a service set. */
+export const DEFAULT_MAX_SERVICE_SANDBOXES_PER_AGENT = 10;
 
 // Slice 6 — the `chat:connectors-skipped` payload (built in connector-union).
 export type { ConnectorsSkippedPayload };
@@ -399,6 +437,10 @@ interface SessionQueueWorkInput {
   //     button, TASK-688). It carries no payload.
   entry:
     | { type: 'user-message'; payload: AgentMessage; reqId: string }
+    // Dev services on demand — a restarted runner's opening note, host-written
+    // (service-sets.ts `buildServicesNote`), never the person's words. `reqId`
+    // is the request it continues, so it streams to the same caller.
+    | { type: 'host-note'; note: string; reqId: string }
     | { type: 'cancel' }
     | { type: 'interrupt' };
 }
@@ -768,7 +810,17 @@ interface ConversationsGetOutput {
      * it to tell which kept sites are news to the agent.
      */
     lastActivityAt?: string | null;
+    /** Dev services on demand — the conversation's service set, or null (off). Absent on an older store: off. */
+    serviceSet?: string | null;
   };
+}
+// Dev services on demand — @ax/conversations' owner-scoped setter (Task 3.1).
+// `userId` must be the conversation owner's real id (the same one every
+// conversations:get here passes), never a synthetic actor.
+interface ConversationsSetServiceSetInput {
+  conversationId: string;
+  userId: string;
+  serviceSet: string | null;
 }
 interface ConversationsBindSessionInput {
   conversationId: string;
@@ -1521,6 +1573,17 @@ function validReapHoldMax(value: number): number {
  * positive: a cap of 0 would end every turn at once, and `Infinity` is no cap.
  * Refused at boot.
  */
+function validPositiveInteger(name: string, value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `${name} must be a positive integer (got ${value})`,
+    });
+  }
+  return value;
+}
+
 function validPositiveLimit(name: string, value: number): number {
   if (Number.isFinite(value) && value > 0) return value;
   throw new PluginError({
@@ -1916,6 +1979,10 @@ export function createOrchestrator(
   onSystemPromptAugmentChanged(ctx: AgentContext, payload: unknown): void;
   onAgentDeleted(ctx: AgentContext, payload: unknown): Promise<void>;
   onConnectorDeleted(ctx: AgentContext, payload: unknown): void;
+  onTurnEndHold(ctx: AgentContext, payload: ChatTurnEndHoldPayload): ChatTurnEndHoldPayload | undefined;
+  onTurnSegmentEnd(ctx: AgentContext, payload: unknown): void;
+  restartWithServices(ctx: AgentContext, call: ToolCall): Promise<ServiceToolResult>;
+  stopServices(ctx: AgentContext, call: ToolCall): Promise<ServiceToolResult>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -2190,6 +2257,9 @@ export function createOrchestrator(
     // session stores refuse a second `session:create` for an id, so the mark
     // of a live session is never pruned by an old session's teardown.
     respawnSessions.delete(sessionId);
+    // Dev services on demand — a terminated sandbox gives back its cap slot,
+    // busy or idle (before the waiter check's early return, like the mark).
+    forgetSessionServices(sessionId);
     for (const endRoutedTurn of [...(routedSessionEndListeners.get(sessionId) ?? [])]) {
       endRoutedTurn();
     }
@@ -2329,6 +2399,12 @@ export function createOrchestrator(
   // Unknown-class `system-prompt:augment:<other>:*` names already logged by
   // THIS orchestrator instance, so a misnamed provider warns once, not per spawn.
   const augmentUnknownClassLogged = new Set<string>();
+  // Dev services on demand (§3.1, §3.4).
+  const onDemandServicesEnabled = config.onDemandServices?.enabled ?? true;
+  const maxServiceSandboxesPerAgent = validPositiveInteger(
+    'onDemandServices.maxPerAgent',
+    config.onDemandServices?.maxPerAgent ?? DEFAULT_MAX_SERVICE_SANDBOXES_PER_AGENT,
+  );
 
   // TASK-551 — every `chat:end` / `chat:turn-error` / `chat:permission-request`
   // (and, slice 6, `chat:connectors-skipped`; TASK-908,
@@ -3175,6 +3251,288 @@ export function createOrchestrator(
     if (killed > 0) ctx.logger.info('agent_deleted_warm_sessions_killed', { agentId, count: killed });
   }
 
+  // -------------------------------------------------------------------------
+  // Dev services on demand (spec §3). An agent turns a SERVICE SET (an
+  // on-demand connector's services) on for its conversation with
+  // `restart_with_services`, and the sandbox is swapped INSIDE the same
+  // agent:invoke: to the caller it is one turn (decision 5).
+  //
+  //   1. The tool (restartWithServices) claims the request's one restart and a
+  //      cap slot, records the set on the conversation, and answers "your turn
+  //      ends here". The runner finishes its segment.
+  //   2. That segment's turn-ends are HELD (R27): @ax/ipc-core asks
+  //      `chat:turn-end-hold` before it broadcasts `chat:turn-end`, this
+  //      plugin answers held for exactly that sandbox and request
+  //      (onTurnEndHold), and ipc-core fires `chat:turn-segment-end` instead.
+  //      No caller (web stream, Slack, routines, conversations, activity)
+  //      sees a turn end. onTurnSegmentEnd settles the segment's waiter.
+  //   3. continueAfterServiceRestart (the agent:invoke wrapper) rebinds the
+  //      conversation to a new session id FIRST, then closes the old sandbox:
+  //      its waiter is already settled and unregistered, so neither the R19
+  //      routed-end listener nor onSessionTerminate fires for this request.
+  //   4. runAgentInvokeTurn runs again in restart mode: no chat:start, no
+  //      saved user message, no routing; a fresh spawn that folds the set and
+  //      queues a host-note (built only from host constants, set ids, service
+  //      names and ports) under the same reqId, with what is left of the turn
+  //      limit. Its turn-end is the one `chat:turn-end` callers see.
+  //
+  // A restart that doesn't reach step 3 (a Stop, stop_services, a turn that
+  // failed, or a segment end that wasn't held) is called off: its slot is
+  // released and the conversation's set cleared. A restart whose new sandbox
+  // fails to open ends the turn with that failure (TASK-160's diagnosis on
+  // chat:turn-error) and clears the set too, so the next turn isn't stuck.
+  //
+  // In-memory, like the warm-session map: the host is single-replica.
+  // -------------------------------------------------------------------------
+  const serviceRestarts = new ServiceRestartBook(new ServiceSandboxCounter());
+  // The sets each sandbox this host opened was offered (its kept connectors'
+  // on-demand sets, at spawn), and the set it folded (null: none).
+  const serviceSetsBySession = new Map<string, ServiceSet[]>();
+  const foldedServiceSetBySession = new Map<string, string | null>();
+  // When each request's turn timer first started (performance.now()), so a
+  // restarted sandbox gets only what is left of the turn limit (§3.2: the
+  // limit counts the whole turn, restart included).
+  const turnClockStartByReqId = new Map<string, number>();
+
+  function turnTimeLeftMs(reqId: string, turnMs: number): number {
+    const now = performance.now();
+    const start = turnClockStartByReqId.get(reqId);
+    if (start === undefined) {
+      turnClockStartByReqId.set(reqId, now);
+      return turnMs;
+    }
+    return Math.max(1, turnMs - (now - start));
+  }
+
+  /** A sandbox is gone: its cap slot and its service bookkeeping go with it. Idempotent. */
+  function forgetSessionServices(sessionId: string): void {
+    serviceRestarts.releaseSession(sessionId);
+    serviceSetsBySession.delete(sessionId);
+    foldedServiceSetBySession.delete(sessionId);
+  }
+
+  /** Write the conversation's set (owner-scoped: `userId` is the owner's, as for conversations:get). Never throws. */
+  async function setConversationServiceSet(
+    ctx: AgentContext,
+    conversationId: string,
+    userId: string,
+    serviceSet: string | null,
+    reason: string,
+  ): Promise<boolean> {
+    if (!bus.hasService('conversations:set-service-set')) return false;
+    try {
+      await bus.call<ConversationsSetServiceSetInput, { ok: true }>(
+        'conversations:set-service-set', ctx, { conversationId, userId, serviceSet },
+      );
+      return true;
+    } catch (err) {
+      ctx.logger.warn('conversation_service_set_write_failed', { reason, ...errorLogFields(err) });
+      return false;
+    }
+  }
+
+  /**
+   * The agent:invoke a tool call in this sandbox belongs to: the oldest
+   * unsettled waiter on it (the runner serves its inbox in order; the same
+   * FIFO rule as resolveWaiterFor). A decision continuation has none.
+   */
+  function invokeRunningIn(sessionId: string): string | undefined {
+    for (const reqId of reqIdsBySession.get(sessionId) ?? []) {
+      const deferred = waitersByReqId.get(reqId);
+      if (deferred !== undefined && !deferred.settled) return reqId;
+    }
+    return undefined;
+  }
+
+  // `tool:execute:restart_with_services`. The ctx is the runner's IPC ctx:
+  // session, agent, person and conversation all come from the session record
+  // the runner's token resolves to, never from the tool input.
+  async function restartWithServices(ctx: AgentContext, call: ToolCall): Promise<ServiceToolResult> {
+    const requested = parseRestartInput(call?.input);
+    if (requested === null) return { ok: false, message: RESTART_REFUSALS.invalidInput };
+    if (!onDemandServicesEnabled) return { ok: false, message: RESTART_REFUSALS.disabled };
+    const conversationId = ctx.conversationId;
+    if (
+      conversationId === undefined ||
+      !bus.hasService('conversations:get') ||
+      !bus.hasService('conversations:set-service-set')
+    ) {
+      return { ok: false, message: RESTART_REFUSALS.noConversation };
+    }
+    const offered = serviceSetsBySession.get(ctx.sessionId) ?? [];
+    const chosen = selectServiceSet(offered, requested);
+    if (chosen === null) return { ok: false, message: unknownSetRefusal(offered.map((s) => s.set)) };
+    const reqId = invokeRunningIn(ctx.sessionId);
+    if (reqId === undefined) return { ok: false, message: RESTART_REFUSALS.noTurn };
+    // The claim checks "one restart per request" and the cap and records both
+    // in one synchronous step: two calls (two conversations at the cap, or
+    // two calls in one turn) can't both win.
+    const claim = serviceRestarts.claim({
+      reqId, sessionId: ctx.sessionId, agentId: ctx.agentId, set: chosen.set,
+      max: maxServiceSandboxesPerAgent,
+    });
+    if (claim === 'already-restarted') return { ok: false, message: RESTART_REFUSALS.alreadyRestarted };
+    if (claim === 'at-cap') {
+      ctx.logger.info('service_restart_refused', { reason: 'at-cap', max: maxServiceSandboxesPerAgent });
+      return { ok: false, message: atCapRefusal(maxServiceSandboxesPerAgent) };
+    }
+    let current: string | null;
+    try {
+      const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+        'conversations:get', ctx, { conversationId, userId: ctx.userId },
+      );
+      current = conv.conversation.serviceSet ?? null;
+    } catch (err) {
+      serviceRestarts.unclaim(reqId);
+      ctx.logger.warn('service_restart_refused', { reason: 'read-failed', ...errorLogFields(err) });
+      return { ok: false, message: RESTART_REFUSALS.unavailable };
+    }
+    if (current !== null) {
+      serviceRestarts.unclaim(reqId);
+      return { ok: false, message: alreadyOnRefusal(current, SAFE_NAME_RE.test(current)) };
+    }
+    if (!(await setConversationServiceSet(ctx, conversationId, ctx.userId, chosen.set, 'restart'))) {
+      serviceRestarts.unclaim(reqId);
+      return { ok: false, message: RESTART_REFUSALS.unavailable };
+    }
+    // A Stop (or stop_services) that landed during the write called it off:
+    // the set goes back off, and the turn ends as usual.
+    if (serviceRestarts.pendingFor(reqId) === undefined) {
+      await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-called-off');
+      return { ok: false, message: RESTART_REFUSALS.calledOff };
+    }
+    ctx.logger.info('service_restart_requested', { set: chosen.set, sessionId: ctx.sessionId });
+    return { ok: true, message: restartAccepted(chosen.set) };
+  }
+
+  // `tool:execute:stop_services`. Clears the set; restarts nothing (§3.2).
+  // The conversation's next routing retires a warm sandbox whose folded set no
+  // longer matches. A restart this request asked for and hasn't done yet is
+  // called off with it.
+  async function stopServices(ctx: AgentContext, _call: ToolCall): Promise<ServiceToolResult> {
+    const conversationId = ctx.conversationId;
+    if (conversationId === undefined || !bus.hasService('conversations:set-service-set')) {
+      return { ok: false, message: STOP_RESULTS.noConversation };
+    }
+    const reqId = invokeRunningIn(ctx.sessionId);
+    const calledOff = reqId === undefined ? undefined : serviceRestarts.cancel(reqId);
+    const foldedHere = foldedServiceSetBySession.get(ctx.sessionId) ?? null;
+    if (!(await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'stop'))) {
+      return { ok: false, message: STOP_RESULTS.unavailable };
+    }
+    ctx.logger.info('service_set_stopped', { calledOffRestart: calledOff !== undefined });
+    return {
+      ok: true,
+      message: calledOff === undefined && foldedHere === null ? STOP_RESULTS.notOn : STOP_RESULTS.stopped,
+    };
+  }
+
+  // `chat:turn-end-hold` (R27): held only for a pending restart of exactly
+  // this request in exactly this sandbox. The sessionId is ipc-core's
+  // host-stamped one; the reqId is the runner's echo, only ever matched
+  // against a hold this plugin created, so a runner can't make one. The hold
+  // lasts while the restart is pending and is consumed by the swap
+  // (`serviceRestarts.take`): it covers that one segment's turn-ends (the
+  // runner sends two, tool then assistant) and nothing after.
+  function onTurnEndHold(
+    _ctx: AgentContext,
+    payload: ChatTurnEndHoldPayload,
+  ): ChatTurnEndHoldPayload | undefined {
+    if (payload === null || typeof payload !== 'object' || payload.held === true) return undefined;
+    if (typeof payload.sessionId !== 'string' || typeof payload.reqId !== 'string') return undefined;
+    return serviceRestarts.isHeld(payload.sessionId, payload.reqId) ? { ...payload, held: true } : undefined;
+  }
+
+  // `chat:turn-segment-end` (R27): a held segment's turn-end. The CLOSING one
+  // (the assistant's; the tool turn-end comes first) settles the segment's
+  // waiter, so the request's path returns and the wrapper swaps the sandbox.
+  // Nothing else a turn-end does here applies: the sandbox is about to close.
+  function onTurnSegmentEnd(ctx: AgentContext, payload: unknown): void {
+    const p = payload as { reqId?: unknown; role?: unknown } | null | undefined;
+    if (typeof p?.reqId !== 'string' || p.role === 'tool') return;
+    if (!serviceRestarts.endSegment(ctx.sessionId, p.reqId)) return;
+    resolveWaiterFor(p.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
+  }
+
+  // Step 3 of the restart: close the old sandbox. Its waiter is settled and
+  // unregistered by now, and the conversation already names the new session,
+  // so this ends no turn and unbinds nothing. Mirrors the routing retire.
+  async function closeSandboxForServiceRestart(ctx: AgentContext, oldSessionId: string): Promise<void> {
+    clearReapTimers(oldSessionId);
+    const entry = warmSessions.get(oldSessionId);
+    respawnSessions.delete(oldSessionId);
+    augmentGenBySession.delete(oldSessionId);
+    skippedConnectorRefsBySession.delete(oldSessionId);
+    skippedConnectorsBySession.delete(oldSessionId);
+    rotationFailedSessions.delete(oldSessionId);
+    forgetSessionConnectors(oldSessionId);
+    forgetSessionServices(oldSessionId);
+    const oldCtx: AgentContext = { ...ctx, sessionId: oldSessionId };
+    if (bus.hasService('proxy:close-session')) {
+      await closeProxySession(oldCtx, oldSessionId, 'retire');
+    }
+    try {
+      await bus.call('session:terminate', oldCtx, { sessionId: oldSessionId });
+      spawnModeBySession.delete(oldSessionId);
+    } catch (err) {
+      ctx.logger.warn('service_restart_terminate_failed', { sessionId: oldSessionId, ...errorLogFields(err) });
+    }
+    // A sandbox this host opened is killed too, so nothing of it lingers
+    // until its runner notices its token is gone.
+    if (entry !== undefined) void entry.handle.kill().catch(() => undefined);
+  }
+
+  // Steps 3–4, from the agent:invoke wrapper, once the request's path has
+  // returned. No pending restart: the outcome stands.
+  async function continueAfterServiceRestart(
+    ctx: AgentContext,
+    input: AgentInvokeInput,
+    outcome: AgentOutcome,
+  ): Promise<AgentOutcome> {
+    const pending = serviceRestarts.pendingFor(ctx.reqId);
+    if (pending === undefined) return outcome;
+    const conversationId = ctx.conversationId;
+    if (!pending.segmentEnded || outcome.kind !== 'complete') {
+      // Called off: the turn failed or was stopped, or its end wasn't held
+      // (the callers already saw the turn end). Nothing started; the set goes
+      // back off so the next turn doesn't start it unasked.
+      serviceRestarts.cancel(ctx.reqId);
+      ctx.logger.warn('service_restart_abandoned', {
+        reason: pending.segmentEnded ? 'turn-ended' : 'segment-not-held',
+        set: pending.set,
+      });
+      if (conversationId !== undefined) {
+        await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-abandoned');
+      }
+      return outcome;
+    }
+    serviceRestarts.take(ctx.reqId);
+    const restartCtx: AgentContext = { ...ctx, sessionId: makeReqId() };
+    ctx.logger.info('service_restart_swap', {
+      fromSessionId: pending.sessionId, toSessionId: restartCtx.sessionId, set: pending.set,
+    });
+    // A Stop clicked during the swap waits behind the note (afterUserMessageQueued).
+    pendingMessageReqIds.add(ctx.reqId);
+    // R19 — rebind FIRST: closing the old sandbox makes @ax/conversations
+    // clear a row still bound to it, which would end the caller's stream.
+    if (conversationId !== undefined && bus.hasService('conversations:bind-session')) {
+      try {
+        await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
+          'conversations:bind-session', ctx,
+          { conversationId, sessionId: restartCtx.sessionId, reqId: ctx.reqId },
+        );
+      } catch (err) {
+        ctx.logger.warn('conversation_bind_failed_restart', { ...errorLogFields(err) });
+      }
+    }
+    await closeSandboxForServiceRestart(ctx, pending.sessionId);
+    const restarted = await runAgentInvokeTurn(restartCtx, input, { serviceSet: pending.set });
+    if (restarted.kind !== 'complete' && conversationId !== undefined) {
+      await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-failed');
+    }
+    return restarted;
+  }
+
   // The agent:invoke entrypoint. Thin wrapper whose jobs are the TASK-688
   // pending-message bookkeeping and the TASK-1127 in-flight registry: the
   // reqId is "pending" from the very first instruction (before chat:start,
@@ -3198,9 +3556,13 @@ export function createOrchestrator(
       // a message carrying one could never be sent. Done once, here, so every
       // writer and the runner see the same text. Same reference when clean.
       const message = toWellFormedValue(input.message);
-      const outcome = await runAgentInvokeTurn(
+      const turnInput = message === input.message ? input : { ...input, message };
+      // Dev services on demand — a restart the turn asked for swaps the
+      // sandbox here and the same request carries on (continueAfterServiceRestart).
+      const outcome = await continueAfterServiceRestart(
         ctx,
-        message === input.message ? input : { ...input, message },
+        turnInput,
+        await runAgentInvokeTurn(ctx, turnInput),
       );
       // TASK-1091 — a terminated outcome's raw `error` is the host's audit
       // record (it stays on chat:end); only the `reason` code is meant to
@@ -3221,6 +3583,10 @@ export function createOrchestrator(
       stopRequestedReqIds.delete(ctx.reqId);
       invokeConversationByReqId.delete(ctx.reqId);
       skillGrantDuringReqIds.delete(ctx.reqId);
+      // A cap slot no sandbox took (a refused or failed spawn, a restart
+      // called off) goes back now, however the request ended.
+      serviceRestarts.endInvoke(ctx.reqId);
+      turnClockStartByReqId.delete(ctx.reqId);
     }
   }
 
@@ -3252,19 +3618,28 @@ export function createOrchestrator(
     }
   }
 
+  // `restart` (dev services on demand): this run continues a request whose
+  // sandbox was just closed for a service restart (continueAfterServiceRestart).
+  // It is the SAME turn: no chat:start (it was admitted and counted once), no
+  // saved user message, no routing (a fresh spawn on ctx.sessionId, a new id),
+  // the set folded as asked, and a host-note queued instead of the message.
   async function runAgentInvokeTurn(
     ctx: AgentContext,
     input: AgentInvokeInput,
+    restart?: { serviceSet: string },
   ): Promise<AgentOutcome> {
     // 1. chat:start — subscribers can veto.
     //    Bounded (TASK-514): a subscriber past the bound is skipped and named,
     //    and the turn proceeds — see CHAT_START_SUBSCRIBER_TIMEOUT_MS.
-    const startResult = await bus.fire(
-      'chat:start',
-      ctx,
-      { message: input.message },
-      { subscriberTimeoutMs: chatStartSubscriberTimeoutMs },
-    );
+    const startResult =
+      restart !== undefined
+        ? { rejected: false as const }
+        : await bus.fire(
+            'chat:start',
+            ctx,
+            { message: input.message },
+            { subscriberTimeoutMs: chatStartSubscriberTimeoutMs },
+          );
     if (startResult.rejected) {
       // @ax/routines keys off the `chat:start:` prefix (a pre-assembly refusal).
       const outcome: AgentOutcome = {
@@ -3415,7 +3790,7 @@ export function createOrchestrator(
     // The reason is read by routines (`refusedBeforeAssembly`) and channel-web
     // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
     // `chat:end` subscriber could log either raw.
-    if (!(await persistUserDisplayTurn(bus, ctx, input.message))) {
+    if (restart === undefined && !(await persistUserDisplayTurn(bus, ctx, input.message))) {
       const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: 'conversation:message-not-saved',
@@ -3458,7 +3833,11 @@ export function createOrchestrator(
       bus.hasService('conversations:get') &&
       bus.hasService('conversations:bind-session') &&
       bus.hasService('session:is-alive');
-    if (ctx.conversationId !== undefined && conversationsLoaded) {
+    // Dev services on demand (§3.3) — the conversation's service set, read
+    // with the row below (a restart passes the one it just recorded). Null
+    // when the row can't be read, or on-demand sets are off on this host.
+    let conversationServiceSet: string | null = restart?.serviceSet ?? null;
+    if (restart === undefined && ctx.conversationId !== undefined && conversationsLoaded) {
       // Look up the conversation row. If it's gone or foreign, fall through
       // to the fresh-sandbox path; the channel-web layer's get-or-create
       // already runs at request entry, so a not-found here is unusual but
@@ -3473,6 +3852,7 @@ export function createOrchestrator(
         });
         const lastActivityAt = conv.conversation.lastActivityAt;
         priorActivityAt = typeof lastActivityAt === 'string' ? lastActivityAt : null;
+        conversationServiceSet = onDemandServicesEnabled ? (conv.conversation.serviceSet ?? null) : null;
         const candidate = conv.conversation.activeSessionId;
         if (candidate !== null && candidate.length > 0) {
           const aliveResult = await bus.call<
@@ -3523,6 +3903,14 @@ export function createOrchestrator(
             };
             const tooOld = lifetimeArgs !== undefined && warmSandboxTooOld(lifetimeArgs);
             const lifetimeShort = tooOld && !sessionBusy(candidate);
+            // Dev services on demand (§3.2) — an IDLE warm sandbox whose
+            // folded service set isn't the conversation's any more
+            // (stop_services, or a set turned on outside a restart) is
+            // retired; the fresh spawn folds the conversation's set. A BUSY
+            // one keeps serving: retiring it would cut the turn it runs.
+            const foldedSet = foldedServiceSetBySession.get(candidate);
+            const serviceSetChanged =
+              foldedSet !== undefined && foldedSet !== conversationServiceSet && !sessionBusy(candidate);
             if (tooOld && !lifetimeShort) {
               ctx.logger.warn('warm_sandbox_lifetime_short_busy', {
                 sessionId: candidate,
@@ -3546,6 +3934,7 @@ export function createOrchestrator(
                 modeChanged ||
                 routineRetire ||
                 lifetimeShort ||
+                serviceSetChanged ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -3557,6 +3946,7 @@ export function createOrchestrator(
                 modeChanged ||
                 routineRetire ||
                 lifetimeShort ||
+                serviceSetChanged ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -3572,6 +3962,7 @@ export function createOrchestrator(
                 modeChanged ||
                 routineRetire ||
                 lifetimeShort ||
+                serviceSetChanged ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -3587,6 +3978,7 @@ export function createOrchestrator(
               modeChanged ||
               routineRetire ||
               lifetimeShort ||
+              serviceSetChanged ||
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
@@ -3638,6 +4030,9 @@ export function createOrchestrator(
               // §6.4(5): and when it is idle and too near its lifetime ceiling
               // for this turn's limit (see lifetimeShort above).
               //
+              // Dev services on demand: and when it is idle and its folded
+              // service set isn't the conversation's (see serviceSetChanged).
+              //
               // TASK-1091: and when it is idle and was spawned for another turn
               // mode (see modeChanged above). The fresh spawn writes this
               // turn's source and audience onto its own session record.
@@ -3651,15 +4046,17 @@ export function createOrchestrator(
                       ? 'sandbox-lifetime-short'
                       : hostSessionMissing
                         ? 'host-session-lost'
-                        : skillsDirty
-                          ? 'skills-changed'
-                          : augmentStale
-                            ? 'system-prompt-augment-changed'
-                            : rotationFailed
-                              ? 'credential-rotation-failed'
-                              : connectorsChanged
-                                ? 'connectors-changed'
-                                : 'connector-signed-in',
+                        : serviceSetChanged
+                          ? 'service-set-changed'
+                          : skillsDirty
+                            ? 'skills-changed'
+                            : augmentStale
+                              ? 'system-prompt-augment-changed'
+                              : rotationFailed
+                                ? 'credential-rotation-failed'
+                                : connectorsChanged
+                                  ? 'connectors-changed'
+                                  : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -3684,6 +4081,7 @@ export function createOrchestrator(
               skippedConnectorsBySession.delete(candidate);
               rotationFailedSessions.delete(candidate);
               forgetSessionConnectors(candidate);
+              forgetSessionServices(candidate);
               // TASK-871 — revoke the retired session's credentials HERE, not
               // via terminate. A warm session's proxy close is otherwise
               // deferred to `handle.exited`; if session:terminate throws (or
@@ -3941,9 +4339,11 @@ export function createOrchestrator(
           endOnSessionGone(reason);
         })
         .catch(() => undefined);
+      // The turn limit counts the whole request: a restarted sandbox gets
+      // what is left of it (turnTimeLeftMs).
       const timeoutHandle = setTimeout(() => {
         deferred.reject(new ChatTimeoutError(limits.turnMs));
-      }, limits.turnMs);
+      }, turnTimeLeftMs(ctx.reqId, limits.turnMs));
       timeoutHandle.unref?.();
       const stopMidTurnRotation = startMidTurnRotation(ctx, sessionId);
 
@@ -4728,10 +5128,37 @@ export function createOrchestrator(
     // connectors reach `allConnectors`: `connectors:resolve` reads only the LIVE
     // owner-scoped table, so a pending/unapproved connector resolves to nothing
     // and contributes zero services.
+    // Dev services on demand (§3.1–§3.4) — which on-demand set this sandbox
+    // folds: the conversation's, when one of the kept connectors still offers
+    // it. One that doesn't any more (deleted, switched to always-on, skipped
+    // this turn) is cleared on the conversation and the sandbox opens without
+    // it (Review Focus 3). A set past the agent's cap is cleared the same way
+    // (a restart already holds its slot). `offeredServiceSets` is what the
+    // tools offer from this sandbox.
+    const offeredServiceSets = onDemandServicesEnabled ? listServiceSets(connectorSignIn.kept) : [];
+    let serviceSet = selectServiceSet(offeredServiceSets, conversationServiceSet);
+    const serviceSetDropped =
+      conversationServiceSet === null
+        ? null
+        : serviceSet === null
+          ? 'set-unavailable'
+          : !serviceRestarts.reserveForSpawn(ctx.reqId, ctx.agentId, maxServiceSandboxesPerAgent)
+            ? 'at-cap'
+            : null;
+    if (serviceSetDropped !== null) {
+      ctx.logger.warn('service_set_dropped', { reason: serviceSetDropped, restart: restart !== undefined });
+      serviceSet = null;
+      serviceRestarts.releaseRequestSlot(ctx.reqId);
+      if (ctx.conversationId !== undefined) {
+        await setConversationServiceSet(ctx, ctx.conversationId, ctx.userId, null, serviceSetDropped);
+      }
+    }
     let connectorFold: FoldConnectorResult;
     let foldedServices: ServiceDescriptorParsed[];
     try {
-      connectorFold = foldConnectorCaps(connectorSignIn.kept, baseAllowSet, baseCreds, slotOwners);
+      connectorFold = foldConnectorCaps(connectorSignIn.kept, baseAllowSet, baseCreds, slotOwners, {
+        serviceSet: serviceSet?.set ?? null,
+      });
       // TASK-734 — a server the fold refused to key (no/invalid/duplicate tool
       // namespace) is absent from the sandbox; say so instead of silently losing it.
       // This log is for operators; the PERSON sees it on the agent's connectors
@@ -4771,6 +5198,25 @@ export function createOrchestrator(
       await fireChatEvent('chat:end', ctx, { outcome });
       return outcome;
     }
+    // Dev services on demand — offer the two tools when the agent has a set
+    // (service-tools.ts `serviceToolScope`), and say which sets it has: the
+    // tool description is the same for every agent. Normal mode only, like the
+    // skipped-connectors line; an outsider's turn hears no connector names.
+    const servicesScope = serviceToolScope(agent, agentConfig.allowedTools, agentConfig.disallowedTools, {
+      offered: offeredServiceSets.length > 0,
+    });
+    agentConfig.allowedTools = servicesScope.allowedTools;
+    if (servicesScope.disallowedTools !== undefined) {
+      agentConfig.disallowedTools = servicesScope.disallowedTools;
+    }
+    const serviceSetsLine = serviceSetsPromptLine(offeredServiceSets, { outsider: isOutsiderTurn(ctx) });
+    if (serviceSetsLine.length > 0) {
+      agentConfig.systemPromptAugment =
+        agentConfig.systemPromptAugment.length > 0
+          ? `${agentConfig.systemPromptAugment}\n\n${serviceSetsLine}`
+          : serviceSetsLine;
+    }
+
     // Append connector slots AFTER the skill slots so the bare-env projection's
     // first-writer-wins keeps SKILL precedence on a shared bare name (a connector
     // and a skill both reading `LINEAR_API_KEY` → the skill wins the flat-env
@@ -5109,6 +5555,11 @@ export function createOrchestrator(
       );
       handle = opened.handle;
       augmentGenBySession.set(sessionId, augmentGenAtSpawn);
+      // Dev services on demand — what this sandbox offers and folded; a set's
+      // cap slot is the sandbox's from now until it goes (forgetSessionServices).
+      serviceSetsBySession.set(sessionId, offeredServiceSets);
+      foldedServiceSetBySession.set(sessionId, serviceSet?.set ?? null);
+      if (serviceSet !== null) serviceRestarts.transfer(ctx.reqId, sessionId);
       // TASK-811/833 — every connector resolved for this spawn, skipped ones
       // included (a skipped connector's edit or delete matters as much).
       recordSessionConnectors(sessionId, agent, allConnectors, skillConnectorIds);
@@ -5165,6 +5616,7 @@ export function createOrchestrator(
             skippedConnectorsBySession.delete(sessionId);
             rotationFailedSessions.delete(sessionId);
             forgetSessionConnectors(sessionId);
+            forgetSessionServices(sessionId);
             // And its restart mark (TASK-1127). The session:terminate
             // subscriber prunes it too, but only when that event arrives: a
             // backend whose terminate on exit fails never sends it.
@@ -5272,21 +5724,32 @@ export function createOrchestrator(
     //    running but has nothing to work on — kill it and synthesize
     //    chat:end. session:terminate is fired by sandbox-subprocess's
     //    child-close handler, so we don't double-fire it here.
+    //    A restart (dev services on demand) queues the host's note instead,
+    //    built only from host constants, set ids, service names and ports
+    //    (service-sets.ts), under the same reqId so it streams to the same
+    //    caller. The person's message is already in the transcript.
     try {
       await bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
         'session:queue-work',
         ctx,
         {
           sessionId,
-          entry: {
-            type: 'user-message',
-            payload: input.message,
-            // J9: forward the host-minted reqId so the runner can stamp
-            // every `event.stream-chunk` it emits while processing this
-            // user message. ctx.reqId is created by the kernel at
-            // agent:invoke dispatch time.
-            reqId: ctx.reqId,
-          },
+          entry:
+            restart !== undefined
+              ? {
+                  type: 'host-note',
+                  note: serviceSet !== null ? buildServicesNote(serviceSet) : SERVICE_SET_UNAVAILABLE_NOTE,
+                  reqId: ctx.reqId,
+                }
+              : {
+                  type: 'user-message',
+                  payload: input.message,
+                  // J9: forward the host-minted reqId so the runner can stamp
+                  // every `event.stream-chunk` it emits while processing this
+                  // user message. ctx.reqId is created by the kernel at
+                  // agent:invoke dispatch time.
+                  reqId: ctx.reqId,
+                },
         },
       );
     } catch (err) {
@@ -5324,9 +5787,11 @@ export function createOrchestrator(
     //         was NEVER fired — we must fire it ourselves.
     //      c. timeout. chat:end was NEVER fired — we must fire it ourselves.
     let resolvedByChatEndSubscriber = true; // set to false in the non-(a) paths
+    // The turn limit counts the whole request: a restarted sandbox gets what
+    // is left of it (turnTimeLeftMs).
     const timeoutHandle = setTimeout(() => {
       deferred.reject(new ChatTimeoutError(limits.turnMs));
-    }, limits.turnMs);
+    }, turnTimeLeftMs(ctx.reqId, limits.turnMs));
     // Don't keep the host event loop alive on a hung chat.
     timeoutHandle.unref?.();
     const stopMidTurnRotation = startMidTurnRotation(ctx, sessionId);
@@ -5447,6 +5912,7 @@ export function createOrchestrator(
         skippedConnectorsBySession.delete(ctx.sessionId);
         rotationFailedSessions.delete(ctx.sessionId);
         forgetSessionConnectors(ctx.sessionId);
+        forgetSessionServices(ctx.sessionId);
       }
     }
   }
@@ -5677,6 +6143,18 @@ export function createOrchestrator(
     if (pendingMessageReqIds.has(reqId)) {
       stopRequestedReqIds.add(reqId);
       return { interrupted: true };
+    }
+
+    // Dev services on demand — a Stop calls off a restart the turn asked for
+    // and hasn't swapped yet, in this same synchronous step: the interrupted
+    // segment's turn-end is then NOT held, so every caller sees the turn end.
+    // (During the swap itself the reqId is pending above, so the Stop waits
+    // behind the restarted runner's note instead.) The set goes back off.
+    const restartCalledOff = serviceRestarts.pendingFor(reqId);
+    if (restartCalledOff !== undefined && !restartCalledOff.segmentEnded) {
+      serviceRestarts.cancel(reqId);
+      ctx.logger.info('service_restart_abandoned', { reason: 'stopped', set: restartCalledOff.set });
+      void setConversationServiceSet(ctx, input.conversationId, input.userId, null, 'restart-stopped');
     }
 
     // The plain path: the message is queued (or this is a continuation turn
@@ -5941,6 +6419,10 @@ export function createOrchestrator(
     onSystemPromptAugmentChanged,
     onAgentDeleted,
     onConnectorDeleted,
+    onTurnEndHold,
+    onTurnSegmentEnd,
+    restartWithServices,
+    stopServices,
   };
 }
 

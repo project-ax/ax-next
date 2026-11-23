@@ -838,6 +838,43 @@ describe('foldConnectorCaps', () => {
     expect(err.message).toContain('alpha');
     expect(err.message).toContain('beta');
   });
+
+  // --- Dev services on demand (§3.1): an on-demand connector's services are a
+  // set, folded only into a sandbox whose conversation turned that set on.
+
+  it('on-demand services fold only for the matching set', () => {
+    const connectors: ResolvedConnectorForOrch[] = [
+      { id: 'e2e', capabilities: CAPS({ servicesMode: 'on-demand', services: [SVC({ name: 'mongo' })] }) },
+      { id: 'perf', capabilities: CAPS({ servicesMode: 'on-demand', services: [SVC({ name: 'kafka' })] }) },
+    ];
+    const none = foldConnectorCaps(connectors, new Set(), {}, new Map());
+    expect(none.services).toEqual([]);
+    const off = foldConnectorCaps(connectors, new Set(), {}, new Map(), { serviceSet: null });
+    expect(off.services).toEqual([]);
+    const e2e = foldConnectorCaps(connectors, new Set(), {}, new Map(), { serviceSet: 'e2e' });
+    expect(e2e.services.map((s) => s.name)).toEqual(['mongo']);
+    // A set named after no on-demand connector folds nothing.
+    const other = foldConnectorCaps(connectors, new Set(), {}, new Map(), { serviceSet: 'nope' });
+    expect(other.services).toEqual([]);
+    // The rest of an on-demand connector (its usage note entry) folds either way.
+    expect(none.installedEntries.map((e) => e.connectorId).sort()).toEqual(['e2e', 'perf']);
+  });
+
+  it('always-on services always fold', () => {
+    const connectors: ResolvedConnectorForOrch[] = [
+      { id: 'db', capabilities: CAPS({ services: [SVC({ name: 'postgres' })] }) },
+      { id: 'cache', capabilities: CAPS({ servicesMode: 'always', services: [SVC({ name: 'redis' })] }) },
+      { id: 'e2e', capabilities: CAPS({ servicesMode: 'on-demand', services: [SVC({ name: 'mongo' })] }) },
+    ];
+    for (const serviceSet of [undefined, null, 'e2e', 'nope']) {
+      const r = foldConnectorCaps(
+        connectors, new Set(), {}, new Map(),
+        serviceSet === undefined ? undefined : { serviceSet },
+      );
+      const names = r.services.map((s) => s.name).sort();
+      expect(names).toEqual(serviceSet === 'e2e' ? ['mongo', 'postgres', 'redis'] : ['postgres', 'redis']);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

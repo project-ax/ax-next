@@ -308,6 +308,39 @@ describe('dev-services-in-sandbox CI canary (TASK-155)', () => {
     expect(sidecars.find((c) => c.name === 'svc-kafka')!.image).toBe(KAFKA_SVC.image);
   });
 
+  it('dev services on demand: an on-demand set stays out of a sandbox nobody asked it for; always-on services still render', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    // Kafka always-on (today's shape), Mongo in an on-demand set. With no
+    // conversation turning the set on (this harness has no conversation
+    // store), only Kafka reaches the backend, through the real validator.
+    const mocks = buildMocks(busRef, [
+      { id: 'always', capabilities: connectorCaps([KAFKA_SVC]) },
+      { id: 'e2e', capabilities: { ...connectorCaps([MONGO_SVC]), servicesMode: 'on-demand' } },
+    ]);
+    const h = await makeHarness(busRef, mocks);
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      canaryCtx('svc-canary-on-demand'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.trace.lastServices!.map((s) => s.name)).toEqual(['kafka']);
+    const pod = buildPodSpec(
+      'ax-runner-canary',
+      {
+        sessionId: 'svc-canary-on-demand',
+        runnerBinary: '/app/runner.js',
+        authToken: 'tok',
+        runnerEndpoint: 'http://host.ax-next.svc:9090',
+        services: mocks.trace.lastServices,
+      },
+      resolveConfig({ hostIpcUrl: 'http://host.ax-next.svc:9090' }),
+    );
+    const sidecars = (pod.spec.initContainers as Array<{ name: string; restartPolicy?: string }>)
+      .filter((c) => c.restartPolicy === 'Always');
+    expect(sidecars.map((c) => c.name)).toEqual(['svc-kafka']);
+  });
+
   it('error path: two connectors with the same service name → terminated(connector-services-invalid) + turn-error', async () => {
     const busRef: { current: HookBus | null } = { current: null };
     // Two DIFFERENT connectors both declaring a `mongo` service — a
