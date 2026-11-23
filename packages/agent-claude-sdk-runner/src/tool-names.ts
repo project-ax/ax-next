@@ -153,8 +153,8 @@ export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
  * `RemoteTrigger`), spawns or messages other agents (`Task`, `SendMessage`,
  * `TeamCreate`, `TeamDelete`), reaches the network (`WebFetch`, `WebSearch`,
  * `PushNotification`), or is simply not needed by any AX flow (`Monitor`,
- * `TaskOutput`, `TaskStop` — Bash's own `run_in_background` stays, and its
- * output file is readable with `Read`), needs an
+ * `TaskOutput`, `TaskStop` — background tasks are off
+ * (`buildBackgroundTasksEnv()`); `Read` and `Bash` still read files and stop processes), needs an
  * interactive UI we do not have (`AskUserQuestion`, `EnterPlanMode`,
  * `ExitPlanMode`), moves the working tree (`EnterWorktree`, `ExitWorktree`),
  * or duplicates `Edit` without the sandbox rows describing it (`NotebookEdit`).

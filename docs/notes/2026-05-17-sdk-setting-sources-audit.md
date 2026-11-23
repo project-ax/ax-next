@@ -6,6 +6,17 @@
 
 ## TL;DR
 
+**Correction 2026-11-23 (TASK-1217):** the agent's shell runs as the same user
+as the CLI and CAN write `<USER_ROOT>`; nothing is symlinked from host code any
+more (k8s: a per-pod tmpfs; subprocess: a per-session temp dir). Three controls
+keep those writes inert: the boot freshness guard (`assertConfigDirFresh`, the
+runner refuses a config dir an earlier session could have written), the
+`ConfigChange` block (the CLI's mid-session reload of settings and skills is
+refused), and the instruction-files floor (`CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`
+keeps agent-written instruction files out of the CLI's start-of-session and
+after-compaction list). The "not writable" / "agent cannot write" wording below
+is the 2026-05 reading and is superseded by this block.
+
 The SDK option `settingSources` is forwarded verbatim to the bundled `claude` CLI as
 `--setting-sources=user,project`. The CLI parses it into the internal tier set
 `{userSettings, projectSettings}` (`xHq` function), and `policySettings` +
@@ -39,8 +50,9 @@ ancestor dir. Skills, agents, and commands are also discovered from both roots
 The agent attack surface that matters is the **`'project'` source** because that
 is the only root reachable from workspace writes the agent can author. The
 `'user'` root (`<CLAUDE_CONFIG_DIR>`) lives outside the workspace tree; it is
-populated by host code (via `runner-host-dist` symlink) and is not writable by
-the sandbox.
+private to the session and outside the agent's home. (Corrected 2026-11-23: it
+is NOT out of the agent's reach. The agent's shell runs as the same user as the
+CLI and can write it; see the correction under the TL;DR.)
 
 ## Method
 
@@ -64,7 +76,7 @@ the sandbox.
 
 | Path | Purpose | Loader | Required for skills? | Phase 0 stance |
 |---|---|---|---|---|
-| `<USER_ROOT>/settings.json` | User settings (tier `userSettings`) | `hz('userSettings')` | NO | Outside workspace — host populates via runner-host-dist symlink; agent cannot write |
+| `<USER_ROOT>/settings.json` | User settings (tier `userSettings`) | `hz('userSettings')` | NO | Outside workspace, but the agent's shell CAN write it (same user; see the 2026-11-23 correction). Kept inert by the boot guard, the `ConfigChange` block and the instruction-files floor |
 | `<USER_ROOT>/skills/*/SKILL.md` | User-level skill discovery | `lM8` | YES | Allow — symlinked into HOME by sandbox-subprocess (Task 4) |
 | `<USER_ROOT>/skills/SKILL.md` | Single-skill flat layout (same dir) | `DS7` (skill loader) | NO (alt layout) | Same as above |
 | `<USER_ROOT>/CLAUDE.md` | User memory | `BJH('User')` | NO | Outside workspace — n/a |
@@ -74,9 +86,10 @@ the sandbox.
 | `<USER_ROOT>/.credentials.json` | User auth (always loaded, not gated by settingSources) | resume code path | NO | Outside workspace — n/a |
 | `<USER_ROOT>/.claude.json` (note: under HOME, not under `.claude/`) | Legacy single-file user config (always loaded) | resume code path | NO | Outside workspace — n/a |
 
-**Veto stance for the user root:** none of these paths are writable by an agent
-authoring `FileChange[]` against the workspace bundle, so they are not part of
-the veto list. They're listed here for completeness so the design doc has the
+**Veto stance for the user root:** these paths are outside the workspace bundle,
+so they are not part of the veto list for `FileChange[]`. They ARE writable by
+the agent's shell (same user; see the 2026-11-23 correction), so the controls
+named there, not the file system, are what keep them inert. They're listed here for completeness so the design doc has the
 full surface.
 
 ## Files loaded from `'project'` source (cwd)

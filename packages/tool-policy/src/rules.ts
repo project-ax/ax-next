@@ -153,10 +153,8 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // at all. The runner's env floor (`buildBundledSkillsEnv()`) sets that var;
     // the claude-sdk runner's `cron-scheduler-real-sdk.e2e.test.ts` pins it on
     // the real binary. Other ways to have something happen later
-    // remain. Bash `run_in_background` is kept on purpose, and when a
-    // background command finishes the CLI sends a task-notification that wakes
-    // the model for an unprompted turn while the runner is still warm
-    // (minutes). A shell `(sleep 600; ...) &` and a connector's own scheduling
+    // remain. Background tasks are off, so a finished command no
+    // longer wakes the model for an unprompted turn. A shell `(sleep 600; ...) &` and a connector's own scheduling
     // API remain too. So "Cannot schedule work for later" or "Cannot set itself
     // to run again later" would be false, and a false "Cannot" understates
     // reach (design H4).

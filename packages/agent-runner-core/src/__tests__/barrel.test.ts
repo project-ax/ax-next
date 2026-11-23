@@ -31,6 +31,13 @@ describe('@ax/agent-runner-core public surface', () => {
     }
   });
 
+  // TASK-1217: the real-binary e2e proves a used config dir never reaches a
+  // new CLI by calling the same guard runRunner calls, from the package root.
+  it('exports the config-dir freshness guard', async () => {
+    const barrel = await import('../index.js');
+    expect(Object.keys(barrel)).toContain('assertConfigDirFresh');
+  });
+
   it('declares no internal git-workspace subpath', async () => {
     const pkg = JSON.parse(
       await readFile(new URL('../../package.json', import.meta.url), 'utf8'),

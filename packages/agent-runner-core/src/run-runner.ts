@@ -18,7 +18,7 @@ import { trackGeneratedFiles, publishedAttachments, type GeneratedFileFailure } 
 import { createToolPolicy } from './tool-policy.js';
 import { translateContentBlocks } from './attachment-translation.js';
 import { commitTrace } from './commit-trace.js';
-import { assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
+import { assertConfigDirFresh, assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
 import { decisionResolvedTurn } from './decision-turn.js';
 import { buildEgressAllowedNote } from './egress-note.js';
@@ -413,9 +413,12 @@ async function runRunnerInner(
   // TASK-994 (design §11): the SDK loads $CLAUDE_CONFIG_DIR as its own trusted
   // configuration, so it must not overlap the agent's home. Checked before
   // every other boot step — in particular before the installed-skills
-  // materialization below writes into $CLAUDE_CONFIG_DIR/skills.
+  // materialization below writes into $CLAUDE_CONFIG_DIR/skills. TASK-1217: it
+  // must also be fresh (nothing in it but skills/), so nothing an earlier
+  // session wrote there loads as the CLI's configuration.
   try {
     await assertConfigDirOutsideAgentHome(env);
+    await assertConfigDirFresh(env);
   } catch (err) {
     process.stderr.write(
       `runner: ${err instanceof Error ? err.message : String(err)}\n`,

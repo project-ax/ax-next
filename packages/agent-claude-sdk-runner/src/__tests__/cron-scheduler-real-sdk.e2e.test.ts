@@ -5,7 +5,9 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { buildBackgroundTasksEnv } from '../background-tasks-env.js';
 import { buildBundledSkillsEnv } from '../bundled-skills-env.js';
+import { buildInstructionFilesEnv } from '../instruction-files-env.js';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { buildTelemetryEnv } from '../telemetry-env.js';
 import { ALLOWED_SDK_BUILTINS, DENIED_SDK_BUILTINS } from '../tool-names.js';
@@ -155,8 +157,9 @@ async function waitFor(cond: () => boolean, ms: number): Promise<void> {
  * until `close()`, so stdin stays open the whole time (main.ts's
  * `userMessages()` likewise never returns until the session ends). `ready` resolves with the time
  * the CLI answered `initialize`, which it sends after starting its scheduler.
- * `likeMain` adds main.ts's env floor (`buildBundledSkillsEnv()`); without it
- * the CLI runs with its defaults.
+ * `likeMain` adds main.ts's env floor (`buildBundledSkillsEnv()` and the
+ * instruction-files and background-tasks switches after it); without it the
+ * CLI runs with its defaults.
  */
 function openIdleSession(likeMain: boolean): {
   ready: Promise<number>;
@@ -194,7 +197,9 @@ function openIdleSession(likeMain: boolean): {
         ANTHROPIC_API_KEY: 'sk-ant-fake-for-a-local-scripted-server',
         ...buildTelemetryEnv(),
         DISABLE_AUTOUPDATER: '1',
-        ...(likeMain ? buildBundledSkillsEnv() : {}),
+        ...(likeMain
+          ? { ...buildBundledSkillsEnv(), ...buildInstructionFilesEnv(), ...buildBackgroundTasksEnv() }
+          : {}),
       },
       tools: [...ALLOWED_SDK_BUILTINS],
       disallowedTools: [...DENIED_SDK_BUILTINS],

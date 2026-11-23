@@ -14,6 +14,7 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { buildToolCacheEnv, buildTtyHintEnv } from '@ax/agent-runner-core';
+import { buildBackgroundTasksEnv } from '../background-tasks-env.js';
 import { buildBundledSkillsEnv } from '../bundled-skills-env.js';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { createJsonlTranscriptSource, locateJsonl } from '../jsonl-transcript-source.js';
@@ -244,7 +245,10 @@ afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true });
 });
 
-/** The SDK subprocess env, layered in main.ts's order from the same helpers. */
+/**
+ * The SDK subprocess env, layered in main.ts's order from the same helpers,
+ * with one deliberate omission (see below).
+ */
 function productionEnv(pod: Pod): Record<string, string> {
   return {
     ...buildTtyHintEnv(),
@@ -257,6 +261,14 @@ function productionEnv(pod: Pod): Record<string, string> {
     TMPDIR: pod.tmp,
     ...buildTelemetryEnv(),
     ...buildBundledSkillsEnv(),
+    // Deliberately WITHOUT main.ts's buildInstructionFilesEnv() (TASK-1217).
+    // This canary proves `settingSources: ['user']` alone keeps the home's
+    // CLAUDE.md and rules out. That floor switches off the CLI's CLAUDE.md and
+    // rules loading for every source, the home's included, so it would mask a
+    // regression in the gate. The floor has its own e2e
+    // (config-dir-mid-session-real-sdk.e2e.test.ts). The controls below expect
+    // planted CLAUDE.md files to load, which the floor would also stop.
+    ...buildBackgroundTasksEnv(),
     HOME: files,
     CLAUDE_CONFIG_DIR: pod.cfg,
     ...buildToolCacheEnv(pod.scratch),

@@ -11,6 +11,7 @@ export { buildHomeBinEnv } from './home-bin-env.js';
 export { buildTtyHintEnv } from './tty-hint-env.js';
 export { buildToolCacheEnv } from './tool-cache-env.js';
 export { commitTrace } from './commit-trace.js';
+export { assertConfigDirFresh } from './config-dir-guard.js';
 export { readRunnerEnv, runnerHomeDir, MissingEnvError } from './env.js';
 export type { RunnerEnv } from './env.js';
 export { createLocalDispatcher } from './local-dispatcher.js';

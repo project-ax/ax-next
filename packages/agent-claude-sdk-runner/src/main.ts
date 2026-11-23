@@ -13,6 +13,7 @@ import type {
 } from '@ax/ipc-protocol';
 import { createInterruptProcesses, ToolTerminationError } from './interrupt-processes.js';
 import { createCanUseTool } from './can-use-tool.js';
+import { createConfigChangeHook } from './config-change.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
   buildActivityPhraseMap,
@@ -32,13 +33,16 @@ import {
   type RunnerDeps,
 } from '@ax/agent-runner-core';
 import { HELD_TOOL_RESULT_TEXT } from './held-calls.js';
+import { buildBackgroundTasksEnv } from './background-tasks-env.js';
 import { buildBundledSkillsEnv } from './bundled-skills-env.js';
+import { buildInstructionFilesEnv } from './instruction-files-env.js';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { loadProjectedMcpServers } from './projected-mcp-servers.js';
 import { readProjectedSkills } from './projected-skills.js';
+import { keepSlashAsText } from './slash-text.js';
 import {
   ALLOWED_SDK_BUILTINS,
   DENIED_SDK_BUILTINS,
@@ -270,7 +274,13 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // the SDK accepts content-block arrays at runtime (the SDK's outbound
             // schema permits both shapes; the type just hasn't been widened yet).
             // Phase 3 may upstream a proper type widening to the SDK pin.
-            message: { role: 'user', content: next.content } as never,
+            //
+            // TASK-1217: text that starts with `/` gets an invisible U+200B in
+            // front, so the CLI reads it as words and never runs it as one of
+            // its own commands (bundled-skill expansion outside tool.pre-call,
+            // `/clear` switching sessions). Only this copy changes; see
+            // slash-text.ts.
+            message: { role: 'user', content: keepSlashAsText(next.content) } as never,
           };
         }
       }
@@ -443,6 +453,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // otherwise run prompts planted in `<cwd>/.claude/scheduled_tasks.json`
             // with no user turn. Same floor as telemetry; see bundled-skills-env.ts.
             ...buildBundledSkillsEnv(),
+            // TASK-1217: never load CLAUDE.md, rules/*.md or auto-memory MEMORY.md
+            // from CLAUDE_CONFIG_DIR, which the agent's shell can write (the CLI
+            // re-reads them after compaction). Same floor; see instruction-files-env.ts.
+            ...buildInstructionFilesEnv(),
+            // TASK-1217: no background tasks, so a finished command never wakes
+            // the model for a turn nobody asked for, and one past its timeout is
+            // killed, not backgrounded. Same floor; see background-tasks-env.ts.
+            ...buildBackgroundTasksEnv(),
             HOME: sdkHome,
             // Redirect npx/uvx fetch caches onto the session scratch root so they
             // don't fill the agent's home, which is durable and counts toward the
@@ -612,6 +630,11 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                 ],
               },
             ],
+            // TASK-1217: the CLI reloads its skills (and settings) when they
+            // change on disk mid-session, and the agent's shell can change
+            // them. Block every reload: what the CLI loaded at start is what
+            // it keeps. See config-change.ts.
+            ConfigChange: [{ hooks: [createConfigChangeHook()] }],
           },
           mcpServers: {
             // Connector servers first, keyed by host-minted toolNamespace
@@ -634,8 +657,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // freely — `.claude/skills/evil/SKILL.md` would be discovered directly,
           // bypassing the host projection and the quarantine scan entirely.
           //
-          // The `'user'` root (CLAUDE_CONFIG_DIR) is runner-private and outside
-          // the agent's home; the runner refuses to start otherwise (TASK-994).
+          // The `'user'` root (CLAUDE_CONFIG_DIR) is private to the session and
+          // outside the agent's home, but the agent's shell (same user) can write
+          // it; the runner refuses to start otherwise (TASK-994), and TASK-1217's
+          // boot guard, ConfigChange block and instruction-files floor keep that inert.
           //
           // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
           settingSources: ['user'],

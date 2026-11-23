@@ -701,6 +701,76 @@ describe('runRunner', () => {
     }
   });
 
+  // TASK-1217: the agent's shell can write $CLAUDE_CONFIG_DIR (same user), and
+  // a new CLI started on a dir an earlier session wrote runs that session's
+  // settings.json hooks and env. The sandbox gives every session a new dir, so
+  // one that holds anything but skills/ is refused, right after the overlap
+  // check and before anything writes there. Refused, never cleaned: the
+  // planted file is still there afterwards.
+  it('refuses to start before any IPC or filesystem work when CLAUDE_CONFIG_DIR is not fresh (TASK-1217)', async () => {
+    const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-fresh-'));
+    // Outside the agent's files, so only the freshness check can refuse it.
+    const cfg = path.join(t, 'cfg');
+    await fs.mkdir(cfg);
+    await fs.writeFile(path.join(cfg, 'settings.json'), '{"hooks":{}}');
+    const { writeProxyCaFromEnv } = await import('../proxy-ca-from-env.js');
+    const { setupProxy } = await import('../proxy-startup.js');
+    const { materializeInstalledSkillsFromEnv } = await import('../installed-skills.js');
+    vi.mocked(writeProxyCaFromEnv).mockClear();
+    vi.mocked(setupProxy).mockClear();
+    vi.mocked(materializeInstalledSkillsFromEnv).mockClear();
+    const createTranscriptSource = vi.fn(() => transcriptSource);
+    const makeLoop = vi.fn();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const code = await runRunner(makeLoop, {
+        ...seams(() => ({ ...fakeEnv(), claudeConfigDir: cfg })),
+        createTranscriptSource,
+      });
+      expect(code).toBe(2);
+      const out = stderr.mock.calls.map((c) => String(c[0])).join('');
+      expect(out).toMatch(/not fresh/);
+      expect(out).toMatch(/settings\.json/);
+      expect(createTranscriptSource).not.toHaveBeenCalled();
+      expect(writeProxyCaFromEnv).not.toHaveBeenCalled();
+      expect(setupProxy).not.toHaveBeenCalled();
+      expect(materializeInstalledSkillsFromEnv).not.toHaveBeenCalled();
+      expect(createIpcClientMock).not.toHaveBeenCalled();
+      expect(makeLoop).not.toHaveBeenCalled();
+      expect(fakeClient.event).not.toHaveBeenCalled();
+      expect(await fs.readdir(cfg)).toEqual(['settings.json']);
+      expect(await fs.readFile(path.join(cfg, 'settings.json'), 'utf8')).toBe('{"hooks":{}}');
+    } finally {
+      stderr.mockRestore();
+      await fs.rm(t, { recursive: true, force: true });
+    }
+  });
+
+  // The subprocess sandbox writes the skills projection (locked 0555) before it
+  // starts the runner, so a fresh dir may hold skills/ with skills in it.
+  it('boots when CLAUDE_CONFIG_DIR holds only skills/ (TASK-1217)', async () => {
+    const t = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-run-runner-fresh-'));
+    const cfg = path.join(t, 'cfg');
+    const skill = path.join(cfg, 'skills', 'weekly-report');
+    await fs.mkdir(skill, { recursive: true });
+    await fs.writeFile(
+      path.join(skill, 'SKILL.md'),
+      '---\nname: weekly-report\ndescription: Write the weekly report.\n---\nWrite it.\n',
+    );
+    await fs.chmod(skill, 0o555);
+    await fs.chmod(path.join(cfg, 'skills'), 0o555);
+    const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
+    try {
+      expect(await runRunner(() => loop, seams(() => ({ ...fakeEnv(), claudeConfigDir: cfg })))).toBe(0);
+      expect(loop.run).toHaveBeenCalledOnce();
+      expect(await fs.readdir(cfg)).toEqual(['skills']);
+    } finally {
+      await fs.chmod(path.join(cfg, 'skills'), 0o755);
+      await fs.chmod(skill, 0o755);
+      await fs.rm(t, { recursive: true, force: true });
+    }
+  });
+
   // TASK-995: the home is the agent's cwd and the only place its work
   // persists. A sandbox that did not mount it would otherwise boot an agent
   // whose every file write fails, or (were anything to create it) silently

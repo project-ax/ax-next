@@ -29,11 +29,41 @@
 // session, so nothing planted there reaches a later one. (A conversation's
 // resume rewrites its transcript there from the host store before the SDK
 // starts.)
+//
+// TASK-1217: the config dir must also be FRESH (`assertConfigDirFresh`). It is
+// outside the agent's home, but the agent's shell runs as the same user as the
+// CLI, so it can write there too (the 0555 on skills/ is a belt, not a wall).
+// Measured on CLI 2.1.119 (docs/plans/2026-11-23-task-1217-sdk-config-dir-plan.md):
+//   - M1: a NEW CLI on a dir whose settings.json an earlier session's Bash
+//     wrote runs that file's hooks and env, and loads a CLAUDE.md planted there.
+//   - M3: a settings.json present when the CLI starts, even `{}`, switches on
+//     its mid-session reload of hooks and env.
+//   - M10: one ordinary session leaves .claude.json, backups/, projects/ and
+//     sessions/ behind, which is what this finds in a reused dir.
+// Every sandbox gives each session a new dir holding nothing but skills/ (k8s:
+// a per-pod tmpfs, and a warm pod is assigned once; subprocess: a per-session
+// temp dir), so anything else means the dir was used before, and the runner
+// refuses to start. It refuses rather than resets the dir:
+//   - a reset would delete whatever a misconfigured CLAUDE_CONFIG_DIR points
+//     at, e.g. a developer's real ~/.claude;
+//   - it would hide a sandbox that started reusing dirs;
+//   - it cannot vouch for skills/ either, so a reset dir would still not be
+//     one nobody wrote.
+// It runs right after the overlap check, before anything writes into the dir
+// (the skills materializer, the transcript link, the CLI itself), and it only
+// reads. Entry names come from whoever wrote the dir, so a refusal prints a
+// name only when it matches SHOWABLE_ENTRY_RE and counts the rest: a name with
+// a newline in it would otherwise put a line of the writer's choosing into
+// the runner's log.
 // ---------------------------------------------------------------------------
 
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { runnerHomeDir, type RunnerEnv } from './env.js';
+
+/** Shown in a refusal only when it matches; anything else is counted. */
+const SHOWABLE_ENTRY_RE = /^[A-Za-z0-9._-]{1,64}$/;
+const MAX_SHOWN = 8;
 
 /**
  * Throws when `env.claudeConfigDir` does not exist, or when its real path is
@@ -81,6 +111,66 @@ export async function assertConfigDirOutsideAgentHome(
         "Point AX_TRANSCRIPTS_ROOT at a runner-private directory outside the agent's files (k8s: /tmp/transcripts).",
     );
   }
+}
+
+/**
+ * Throws unless `env.claudeConfigDir` holds nothing but a plain `skills/`
+ * directory (or nothing at all). Reads only: never creates, changes or deletes.
+ * A dir it cannot list, or whose `skills` entry it cannot inspect, is refused
+ * too. Every message starts with `refusing to start: CLAUDE_CONFIG_DIR (`.
+ */
+export async function assertConfigDirFresh(
+  env: Pick<RunnerEnv, 'claudeConfigDir'>,
+): Promise<void> {
+  const dir = env.claudeConfigDir;
+  let leftovers: string[];
+  try {
+    leftovers = await leftoversIn(dir);
+  } catch (err) {
+    throw new Error(
+      `refusing to start: CLAUDE_CONFIG_DIR (${dir}) cannot be listed (${errnoOf(err)}), so it cannot be checked for leftovers.`,
+    );
+  }
+  if (leftovers.length === 0) return;
+  const n = leftovers.length;
+  throw new Error(
+    `refusing to start: CLAUDE_CONFIG_DIR (${dir}) is not fresh: it already holds ${n} unexpected ` +
+      `${n === 1 ? 'entry' : 'entries'} (${describeLeftovers(leftovers)}). ` +
+      'The sandbox gives every session a new one with nothing in it but skills/, so this one was used before. ' +
+      'The Claude Code CLI loads what is in it as its own configuration (settings.json hooks and env, ' +
+      'CLAUDE.md, MCP servers in .claude.json), so nothing an earlier session wrote may be there when it starts.',
+  );
+}
+
+/**
+ * Every entry of `dir` except a plain `skills/` directory. `skills` is checked
+ * with lstat, not the Dirent: some filesystems report DT_UNKNOWN, and a
+ * symlink (say, into the agent's home) is not a plain directory. An lstat
+ * error throws, so an entry that cannot be inspected is never accepted.
+ */
+async function leftoversIn(dir: string): Promise<string[]> {
+  const leftovers: string[] = [];
+  for (const name of await fs.readdir(dir)) {
+    if (name === 'skills' && (await fs.lstat(path.join(dir, name))).isDirectory()) continue;
+    leftovers.push(name);
+  }
+  return leftovers;
+}
+
+/**
+ * The showable names, sorted, at most MAX_SHOWN of them, then `and N more` for
+ * the rest. A name outside SHOWABLE_ENTRY_RE is only counted: it came from
+ * whoever wrote the dir.
+ */
+function describeLeftovers(names: readonly string[]): string {
+  const shown = names
+    .filter((name) => SHOWABLE_ENTRY_RE.test(name))
+    .sort()
+    .slice(0, MAX_SHOWN)
+    .map((name) => (name === 'skills' ? 'skills (not a plain directory)' : name));
+  const rest = names.length - shown.length;
+  if (shown.length === 0) return rest === 1 ? 'name not shown' : 'names not shown';
+  return rest === 0 ? shown.join(', ') : `${shown.join(', ')}, and ${rest} more`;
 }
 
 /**

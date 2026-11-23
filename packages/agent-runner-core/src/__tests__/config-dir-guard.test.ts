@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { assertConfigDirOutsideAgentHome } from '../config-dir-guard.js';
+import { assertConfigDirFresh, assertConfigDirOutsideAgentHome } from '../config-dir-guard.js';
 import type { RunnerEnv } from '../env.js';
 
 // ---------------------------------------------------------------------------
@@ -274,5 +274,176 @@ describe('assertConfigDirOutsideAgentHome', () => {
         assertConfigDirOutsideAgentHome({ ...envWith(cfg), transcriptsRoot: path.join(file, 'transcripts') }),
       ).rejects.toThrow(/^refusing to start: AX_TRANSCRIPTS_ROOT \(.+\) cannot be resolved: .+ gave ENOTDIR/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1217: the config dir must also be FRESH. The agent's shell runs as the
+// same user as the CLI, so it can write there too, and a new CLI started on a
+// dir an earlier session wrote runs that session's settings.json hooks and env
+// (measured on CLI 2.1.119). Every sandbox gives each session a new dir that
+// holds nothing but skills/, so anything else is refused. The guard only
+// reads: a refused dir keeps every entry it had.
+// ---------------------------------------------------------------------------
+describe('assertConfigDirFresh (TASK-1217)', () => {
+  const NOT_FRESH = /^refusing to start: CLAUDE_CONFIG_DIR \(.+\) is not fresh: it already holds /;
+
+  let cfg: string;
+
+  beforeEach(async () => {
+    // Its own temp dir, real-pathed so a refusal names it exactly as given.
+    cfg = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-cfg-fresh-')));
+  });
+
+  afterEach(async () => {
+    await fs.rm(cfg, { recursive: true, force: true });
+  });
+
+  /** A skill folder in the projection, the way both sandboxes lay it down. */
+  async function writeSkill(id: string): Promise<void> {
+    await fs.mkdir(path.join(cfg, 'skills', id), { recursive: true });
+    await fs.writeFile(
+      path.join(cfg, 'skills', id, 'SKILL.md'),
+      `---\nname: ${id}\ndescription: Write the weekly report.\n---\nWrite it.\n`,
+    );
+  }
+
+  /** The refusal's message. Fails the test if the guard accepted the dir. */
+  async function refusal(): Promise<string> {
+    const err: unknown = await assertConfigDirFresh({ claudeConfigDir: cfg }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err, 'expected the guard to refuse the dir').toBeInstanceOf(Error);
+    return (err as Error).message;
+  }
+
+  it('accepts an empty dir (the k8s shape: the materializer fills skills/ later)', async () => {
+    await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).resolves.toBeUndefined();
+  });
+
+  it('accepts a dir holding only skills/ with a skill inside (the subprocess shape)', async () => {
+    await writeSkill('weekly-report');
+    await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).resolves.toBeUndefined();
+  });
+
+  it('accepts a skills/ the sandbox locked read-only (0555)', async () => {
+    await writeSkill('weekly-report');
+    const locked = [path.join(cfg, 'skills', 'weekly-report'), path.join(cfg, 'skills')];
+    try {
+      for (const dir of locked) await fs.chmod(dir, 0o555);
+      await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).resolves.toBeUndefined();
+    } finally {
+      for (const dir of locked) await fs.chmod(dir, 0o755);
+    }
+  });
+
+  // What an earlier session leaves (M10: `.claude.json`, `projects/`, ...) and
+  // what an agent's shell could plant. Each sits next to a real skills/, which
+  // is never counted. The listing in brackets is checked exactly, because the
+  // message's fixed text names settings.json, CLAUDE.md and .claude.json too.
+  it.each<[string, string, () => Promise<unknown>]>([
+    ['settings.json', 'settings.json', () => fs.writeFile(path.join(cfg, 'settings.json'), '{"hooks":{}}')],
+    ['CLAUDE.md', 'CLAUDE.md', () => fs.writeFile(path.join(cfg, 'CLAUDE.md'), 'Planted.\n')],
+    ['.claude.json', '.claude.json', () => fs.writeFile(path.join(cfg, '.claude.json'), '{"mcpServers":{}}')],
+    ['a projects/ directory', 'projects', () => fs.mkdir(path.join(cfg, 'projects'))],
+    [
+      'a projects symlink to another directory',
+      'projects',
+      async () => fs.symlink(await mkdirp(t, 'elsewhere'), path.join(cfg, 'projects')),
+    ],
+  ])('refuses a dir that already holds %s', async (_label, name, plant) => {
+    await writeSkill('weekly-report');
+    await plant();
+    const message = await refusal();
+    expect(message).toMatch(/^refusing to start: CLAUDE_CONFIG_DIR/);
+    expect(message).toMatch(NOT_FRESH);
+    expect(message).toContain(`CLAUDE_CONFIG_DIR (${cfg})`);
+    expect(message).toContain(`1 unexpected entry (${name})`);
+  });
+
+  // lstat, not the Dirent: a symlink is not a plain directory, and a symlink
+  // into the agent's home would make every skill the agent writes there one
+  // the CLI loads.
+  it.each<[string, () => Promise<unknown>]>([
+    ['a symlink into the agent home', async () => fs.symlink(await mkdirp(home, 'skills'), path.join(cfg, 'skills'))],
+    ['a regular file', () => fs.writeFile(path.join(cfg, 'skills'), 'not a directory')],
+  ])('refuses a skills entry that is %s', async (_label, plant) => {
+    await plant();
+    const message = await refusal();
+    expect(message).toMatch(NOT_FRESH);
+    expect(message).toMatch(/skills \(not a plain directory\)/);
+    expect(message).toContain('1 unexpected entry (skills (not a plain directory))');
+  });
+
+  it('names at most 8 entries, sorted, and counts the rest', async () => {
+    // Written out of order, so the order in the message is the guard's own.
+    for (const i of [9, 3, 0, 7, 1, 8, 2, 6, 4, 5]) {
+      await fs.writeFile(path.join(cfg, `leftover-${i}`), '');
+    }
+    expect(await refusal()).toContain(
+      '10 unexpected entries (leftover-0, leftover-1, leftover-2, leftover-3, ' +
+        'leftover-4, leftover-5, leftover-6, leftover-7, and 2 more)',
+    );
+  });
+
+  // Entry names come from whoever wrote the dir. A newline in one would put a
+  // line of the writer's choosing into the runner's log, so a name outside
+  // the showable set is counted and never printed.
+  it('counts an entry whose name has a newline, and never prints it', async () => {
+    await fs.writeFile(path.join(cfg, 'evil\nrunner: ok'), '');
+    const message = await refusal();
+    expect(message).toMatch(NOT_FRESH);
+    expect(message).toContain('1 unexpected entry (name not shown)');
+    expect(message).not.toContain('\n');
+    expect(message).not.toContain('runner: ok');
+  });
+
+  it('counts an unshowable name with the rest when other names are shown', async () => {
+    await fs.writeFile(path.join(cfg, 'settings.json'), '{}');
+    await fs.writeFile(path.join(cfg, 'notes from the agent.md'), '');
+    const message = await refusal();
+    expect(message).toContain('2 unexpected entries (settings.json, and 1 more)');
+    expect(message).not.toContain('notes from the agent');
+  });
+
+  it('only reads: a refused dir keeps every entry, and a linked directory keeps its files', async () => {
+    const elsewhere = await mkdirp(t, 'elsewhere');
+    await fs.writeFile(path.join(elsewhere, 'transcript.jsonl'), '{}\n');
+    await writeSkill('weekly-report');
+    await fs.writeFile(path.join(cfg, 'settings.json'), '{"hooks":{}}');
+    await fs.writeFile(path.join(cfg, 'CLAUDE.md'), 'Planted.\n');
+    await fs.writeFile(path.join(cfg, '.claude.json'), '{}');
+    await fs.symlink(elsewhere, path.join(cfg, 'projects'));
+    const before = (await fs.readdir(cfg)).sort();
+
+    await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).rejects.toThrow(NOT_FRESH);
+
+    expect((await fs.readdir(cfg)).sort()).toEqual(before);
+    expect(await fs.readFile(path.join(cfg, 'settings.json'), 'utf8')).toBe('{"hooks":{}}');
+    expect((await fs.lstat(path.join(cfg, 'projects'))).isSymbolicLink()).toBe(true);
+    expect(await fs.readdir(elsewhere)).toEqual(['transcript.jsonl']);
+    expect(await fs.readdir(path.join(cfg, 'skills'))).toEqual(['weekly-report']);
+  });
+
+  it('refuses a dir it cannot list, naming the errno', async () => {
+    await expect(assertConfigDirFresh({ claudeConfigDir: path.join(cfg, 'nope') })).rejects.toThrow(
+      /^refusing to start: CLAUDE_CONFIG_DIR \(.+\) cannot be listed \(ENOENT\), so it cannot be checked for leftovers\.$/,
+    );
+  });
+
+  // Listable but not searchable (r--): readdir works, lstat of an entry does
+  // not. A skills/ the guard cannot inspect is not one it can accept. Root
+  // ignores the mode bits, so the case cannot be set up as root.
+  it.skipIf(process.getuid?.() === 0)('refuses when it cannot inspect the skills entry (fails closed)', async () => {
+    await writeSkill('weekly-report');
+    await fs.chmod(cfg, 0o444);
+    try {
+      await expect(assertConfigDirFresh({ claudeConfigDir: cfg })).rejects.toThrow(
+        /^refusing to start: CLAUDE_CONFIG_DIR \(.+\) cannot be listed \(EACCES\)/,
+      );
+    } finally {
+      await fs.chmod(cfg, 0o755);
+    }
   });
 });

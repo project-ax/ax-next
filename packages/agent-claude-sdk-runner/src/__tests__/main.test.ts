@@ -194,6 +194,18 @@ const CONFIG_DIR = mkdtempSync(nodePath.join(os.tmpdir(), 'ax-main-cfg-'));
 afterAll(async () => {
   await fs.rm(CONFIG_DIR, { recursive: true, force: true });
 });
+// TASK-1217: the runner also refuses a CLAUDE_CONFIG_DIR that holds anything
+// but skills/, since only an earlier session could have written the rest. The
+// sandbox gives every session a new one; here every boot shares one, and the
+// transcript directory a boot lays down (`projects/`) would make each later
+// boot look like a reused dir. So each test starts with it emptied back to
+// what a sandbox hands over. Same path throughout: tests assert
+// `${CONFIG_DIR}/projects`.
+beforeEach(async () => {
+  for (const name of await fs.readdir(CONFIG_DIR)) {
+    if (name !== 'skills') await fs.rm(nodePath.join(CONFIG_DIR, name), { recursive: true, force: true });
+  }
+});
 
 // TASK-995: the agent's home (AX_USERFILES_ROOT) and the session scratch root
 // (AX_EPHEMERAL_ROOT) are required; there is no fallback for either. Real
@@ -599,6 +611,8 @@ describe('main()', () => {
           DISABLE_ERROR_REPORTING?: string;
           CLAUDE_CODE_DISABLE_CRON?: string;
           CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL?: string;
+          CLAUDE_CODE_DISABLE_CLAUDE_MDS?: string;
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
         };
       };
     };
@@ -720,6 +734,15 @@ describe('main()', () => {
     expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
     expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
 
+    // TASK-1217: two more switches in the same floor. The CLI never loads
+    // CLAUDE.md, rules/*.md or auto-memory MEMORY.md from its config dir (the
+    // agent's shell can write them, and the CLI re-reads them after compaction
+    // as the user's own instructions), and it runs no background task (a
+    // finished one wakes the model for a turn nobody asked for). Dropping
+    // either spread reopens that path.
+    expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+    expect(queryArg.options.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
 
@@ -773,6 +796,69 @@ describe('main()', () => {
     expect((sdkUserMessages[0]!.message as { content: unknown }).content).toBe(
       `${NOW_ALLOWED}\n\nplease summarize`,
     );
+  });
+
+  // TASK-1217: the CLI treats a user message that starts with `/` as one of its
+  // own commands (it expands a bundled skill with no `Skill` call, `/clear`
+  // switches it to a new session, an unknown word gets "Unknown command" and
+  // never reaches the model). The runner puts an invisible U+200B in front of
+  // such text, so the CLI reads it as words. Only the CLI's copy changes: what
+  // the person said stays exactly what they typed.
+  it("a turn's text that starts with / reaches the SDK as words, and the person's own words are unchanged (TASK-1217)", async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('/clear', 'req-1'), userEntry('hello', 'req-2'), cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        for (let turn = 0; turn < 2; turn += 1) {
+          const next = await it.next();
+          if (next.done === true) throw new Error('prompt closed early');
+          sdkUserMessages.push(next.value);
+          yield assistantText('ok');
+          yield resultSuccess();
+        }
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    expect(sdkUserMessages.map((m) => (m.message as { content: unknown }).content)).toEqual([
+      '​/clear',
+      'hello',
+    ]);
+    const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end')?.[1] as {
+      outcome: { messages: Array<{ role: string; content: string }> };
+    };
+    expect(chatEnd.outcome.messages.filter((m) => m.role === 'user')).toEqual([
+      { role: 'user', content: '/clear' },
+      { role: 'user', content: 'hello' },
+    ]);
   });
 
   // TASK-708: a message that reaches the CLI mid-turn can be folded into the
@@ -1282,14 +1368,21 @@ describe('main()', () => {
   // seam). It is bootstrap-fatal and runs BEFORE the resume restore writes the
   // rebuilt jsonl there (#1085): a runner that cannot lay down its own
   // transcript directory must not restore into it or start a turn.
-  it('bootstrap failure: the transcript directory cannot be laid down → exit 2 before the resume restore, no query', async () => {
+  //
+  // The config dir is fresh (empty, so the TASK-1217 boot guard lets it
+  // through) but read-only, so `mkdir $CLAUDE_CONFIG_DIR/projects` fails with
+  // EACCES inside `prepareSession`, after `session.get-config`. (A planted
+  // `projects` file would now be refused by that guard first, before any IPC.)
+  // Root ignores the mode bits, so the case cannot be set up as root.
+  it.skipIf(process.getuid?.() === 0)('bootstrap failure: the transcript directory cannot be laid down → exit 2 before the resume restore, no query', async () => {
     const t = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-prep-'));
-    onTestFinished(() => fs.rm(t, { recursive: true, force: true }));
-    // `$CLAUDE_CONFIG_DIR/projects` is a regular file, so the directory the
-    // SDK writes its jsonl under cannot be created.
     const cfg = nodePath.join(t, 'cfg');
+    onTestFinished(async () => {
+      await fs.chmod(cfg, 0o755).catch(() => {});
+      await fs.rm(t, { recursive: true, force: true });
+    });
     await fs.mkdir(cfg);
-    await fs.writeFile(nodePath.join(cfg, 'projects'), 'not a directory');
+    await fs.chmod(cfg, 0o555);
     setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: cfg });
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
@@ -1328,7 +1421,9 @@ describe('main()', () => {
         .map((c) => String(c[0]))
         .join('');
       expect(stderrMessages).toContain('session preparation failed');
-      expect(stderrMessages).toContain('EEXIST');
+      expect(stderrMessages).toContain('EACCES');
+      // The session config was fetched first: the failure is prepareSession's.
+      expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
 
       expect(restoreTranscriptForResumeMock).not.toHaveBeenCalled();
       expect(queryMock).not.toHaveBeenCalled();
@@ -3837,6 +3932,69 @@ describe('main()', () => {
       expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
     });
 
+    // TASK-1217: the instruction-files and background-tasks switches are the
+    // same floor, so the same rule applies. A credential slot that happened to
+    // carry either name rides into providerEnv on its `ax-cred:<32-hex>` value
+    // and must still lose to '1'. Moving either spread above providerEnv fails
+    // this test.
+    it('the instruction-files and background-tasks switches win over a providerEnv that sets them (TASK-1217)', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        CLAUDE_CODE_DISABLE_CLAUDE_MDS: 'ax-cred:00000000000000000000000000000003',
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: 'ax-cred:00000000000000000000000000000004',
+      });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: {
+            CLAUDE_CODE_DISABLE_CLAUDE_MDS?: string;
+            CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
+          };
+        };
+      };
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+    });
+
     it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {
       // The runner process keeps its own HOME (k8s: /home/runner, the
       // pod-level setting). Mutating process.env.HOME here would hand every
@@ -4062,6 +4220,54 @@ describe('main()', () => {
           call: { id, name: 'Write', input: { file_path: filePath, content: 'x' } },
         });
       }
+    });
+
+    // TASK-1217: the CLI reloads its skills (and its settings, when a settings
+    // file existed at start) when they change on disk mid-session, and the
+    // agent's shell can change them (same user). main() wires a ConfigChange
+    // hook that blocks every such reload, without asking the host.
+    it('the wired ConfigChange hook blocks a mid-session skills reload (TASK-1217)', async () => {
+      setEnv(COMPLETE_ENV);
+      wireHomeClient();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const { options } = queryMock.mock.calls[0]![0] as {
+        options: {
+          hooks: {
+            ConfigChange?: Array<{
+              hooks: Array<(input: unknown, id: string | undefined, opts: unknown) => Promise<unknown>>;
+            }>;
+          };
+        };
+      };
+      const hook = options.hooks.ConfigChange?.[0]?.hooks[0];
+      expect(hook).toBeTypeOf('function');
+      const callsBefore = fakeClient.call.mock.calls.length;
+      const eventsBefore = fakeClient.event.mock.calls.length;
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let out: unknown;
+      try {
+        out = await hook!(
+          {
+            hook_event_name: 'ConfigChange',
+            session_id: 'sess-1',
+            transcript_path: '/tmp/t.jsonl',
+            cwd: HOME_DIR,
+            source: 'skills',
+            file_path: `${CONFIG_DIR}/skills/evil/SKILL.md`,
+          },
+          undefined,
+          { signal: new AbortController().signal },
+        );
+      } finally {
+        stderrSpy.mockRestore();
+      }
+      expect(out).toMatchObject({ decision: 'block' });
+      // The runner's own refusal: the host is not asked.
+      expect(fakeClient.call.mock.calls.length).toBe(callsBefore);
+      expect(fakeClient.event.mock.calls.length).toBe(eventsBefore);
     });
 
     // TASK-995: there is no workspace to flush before a host tool reads the
@@ -4472,6 +4678,55 @@ describe('main()', () => {
     expect(sdkUserMessages).toHaveLength(1);
     expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
       { type: 'text', text: 'what is in this image?' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png.toString('base64'),
+        },
+      },
+    ]);
+  });
+
+  // TASK-1217: with an attachment the turn is a block array, and the CLI reads
+  // its LAST text block as a possible command, so every text block that
+  // starts with `/` is guarded, not just a plain-string turn.
+  it('a turn with an attachment reaches the SDK with its slash text guarded (TASK-1217)', async () => {
+    const png = Buffer.from('fake-png-bytes');
+    await hostWithUploadedImage(png);
+
+    const userMsg: InboxLoopEntry = {
+      type: 'user-message',
+      payload: {
+        role: 'user',
+        content: '/update-config x',
+        contentBlocks: [imageBlock(png)],
+      },
+      reqId: 'req-slash-att',
+    };
+    fakeInbox = buildFakeInbox([userMsg, cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
+      { type: 'text', text: '​/update-config x' },
       {
         type: 'image',
         source: {

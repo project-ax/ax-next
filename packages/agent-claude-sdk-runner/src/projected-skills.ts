@@ -15,8 +15,10 @@
 //
 //   - `readProjectedSkills` builds that allowlist ONCE, at boot: after
 //     runRunner materialized the projection, before the model has had a turn.
-//     The projection is locked 0555 when written and nothing rewrites it
-//     mid-session, so a snapshot is exact; a folder that appears later is not
+//     The projection is locked 0555 when written. The agent's shell can
+//     rewrite it (same user), but the CLI's reload is blocked
+//     (`config-change.ts`), and this snapshot of NAMES is what the allowlist
+//     trusts, so a snapshot is exact; a folder that appears later is not
 //     on it. Folder names only, with no frontmatter parsing: the CLI lists a
 //     user skill by its folder name (measured on CLI 2.1.119), and every AX
 //     source writes folder == `name:` (the skills store keys a skill by its
@@ -97,8 +99,31 @@ const ECHOABLE_SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/;
 const SCHEDULING_SKILL_NAMES: ReadonlySet<string> = new Set(['loop', 'schedule', 'cron']);
 
 /**
+ * Every name the pinned CLI (2.1.119) answers to in the runner's configuration:
+ * the model's skill listing ∪ `system/init` `skills` ∪ `system/init`
+ * `slash_commands`, measured with no AX skill installed. An AX skill with one
+ * of these names never runs: the CLI resolves the name to its own command
+ * first. `bundled-skills-real-sdk.e2e.test.ts` (DRIFT) pins this list on every
+ * CLI bump.
+ *
+ * Aliases of the CLI's built-in local commands (`/clear`'s, for one) are in
+ * none of those lists. A `Skill` call by an alias resolves to the local
+ * command, and the CLI refuses it itself ("… is a built-in CLI command, not a
+ * skill"), so nothing runs in the skill's place; and a person can't type one
+ * as a command either, because a turn's text never reaches the CLI as a
+ * command (slash-text.ts).
+ */
+export const CLI_COMMAND_NAMES: ReadonlySet<string> = new Set([
+  'batch', 'clear', 'compact', 'context', 'debug', 'fewer-permission-prompts',
+  'heapdump', 'init', 'insights', 'keybindings-help', 'review',
+  'security-review', 'simplify', 'team-onboarding', 'update-config', 'usage',
+]);
+
+/**
  * Why a `Skill` call is refused, or `undefined` when it names a skill AX
- * installed. The name is `tool_input.skill`, trimmed, with ONE leading `/`
+ * installed and the CLI has no command of its own by that name
+ * (`CLI_COMMAND_NAMES`; the CLI's would run instead, so the refusal asks for a
+ * rename). The name is `tool_input.skill`, trimmed, with ONE leading `/`
  * removed (the CLI accepts `/name` for `name`); anything that is not a
  * non-empty string names no skill and is refused.
  */
@@ -117,6 +142,15 @@ export function skillRefusal(
     return (
       `${label} isn't available, because this agent's skills couldn't be read when the ` +
       'session started. Use the tools you were given.'
+    );
+  }
+  // TASK-1217: an installed skill the CLI shadows. The allowlist alone would
+  // let it through, and the CLI would then run its own command of that name
+  // (measured with `simplify`).
+  if (name !== '' && projected.names.has(name) && CLI_COMMAND_NAMES.has(name)) {
+    return (
+      `${label} can't be opened here, because the agent's toolkit has a built-in command ` +
+      'with the same name and that would run instead. Ask the person to give the skill a different name.'
     );
   }
   if (name !== '' && projected.names.has(name)) return undefined;
