@@ -174,12 +174,16 @@ describe('GET /admin/agents/tools', () => {
     expect((bodyOf() as { tools: unknown }).tools).toEqual(['routine_list', 'web_search']);
   });
 
-  it('no tool catalog in this deployment -> 503, never an empty list', async () => {
+  it('no tool catalog in this deployment -> 503, never an empty list, and logs it', async () => {
     const bus = signedInBus();
     const { res, statusOf, bodyOf } = mkRes();
-    await handlersFor(bus).listTools(req, res);
+    const lines = await captureStdout(() => handlersFor(bus).listTools(req, res));
     expect(statusOf()).toBe(503);
     expect(bodyOf()).toEqual({ error: 'tool-catalog-unavailable' });
+    const logged = failureLogs(lines);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.level).toBe('warn');
+    expect(logged[0]!.error).toBe('no tool:list producer');
   });
 
   it('a catalog read that throws -> 503 without echoing it, and logs it', async () => {

@@ -475,7 +475,10 @@ async function readCatalogToolNames(
   bus: HookBus,
   ctx: AgentContext,
 ): Promise<string[] | null> {
-  if (!bus.hasService('tool:list')) return null;
+  if (!bus.hasService('tool:list')) {
+    ctx.logger.warn('agents_admin_list_tools_failed', { error: 'no tool:list producer' });
+    return null;
+  }
   let reply: unknown;
   try {
     reply = await bus.call<Record<string, never>, unknown>('tool:list', ctx, {});

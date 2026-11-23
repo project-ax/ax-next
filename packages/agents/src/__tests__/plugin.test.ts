@@ -222,7 +222,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           // TASK-1214 — GET /admin/agents/tools reads the catalog's names.
           hook: 'tool:list',
           degradation:
-            "GET /admin/agents/tools answers 503, so the agent form can't offer tools to pick and leaves each agent's tool list as it is",
+            "GET /admin/agents/tools answers 503, so the agent form can't offer tools to pick and leaves each agent's tool list as it is; while it's missing, Settings can't create a new agent with tools or change an agent's tool list",
         },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
