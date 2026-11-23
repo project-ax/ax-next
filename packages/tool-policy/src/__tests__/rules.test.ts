@@ -179,7 +179,7 @@ describe('BUILTIN_RULES', () => {
       match: { tool: 'CronCreate' },
       providedBy: 'sandbox',
       verdict: 'deny',
-      capability: 'schedule work for later outside routines',
+      capability: 'set itself to run again later outside routines',
       subject: 'agent',
       provenance: 'rule',
     });
@@ -193,7 +193,7 @@ describe('BUILTIN_RULES', () => {
       'builtins.ask-user-question',
       'builtins.cron-create',
     ]);
-    expect(lintCapability('schedule work for later outside routines')).toEqual([]);
+    expect(lintCapability('set itself to run again later outside routines')).toEqual([]);
   });
 
   it('answers deny for CronCreate at the evaluator: defence in depth, not the enforcement', () => {

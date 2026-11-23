@@ -178,9 +178,10 @@ Run `security-checklist` for this task: it's a consent-surface claim, and the or
 - Produces this rule, exactly:
   ```ts
   { id: 'builtins.cron-create', match: { tool: 'CronCreate' }, providedBy: 'sandbox', verdict: 'deny',
-    capability: 'schedule work for later outside routines', subject: 'agent', provenance: 'rule' }
+    capability: 'set itself to run again later outside routines', subject: 'agent', provenance: 'rule' }
   ```
-  It renders as "Cannot schedule work for later outside routines", next to "Can create routines — asks you first".
+  It renders as "Cannot set itself to run again later outside routines", next to "Can create routines — asks you first".
+  (Narrowed in review from "schedule work for later outside routines". Bash `(sleep N; ...) &` and a connector's own API can still start work that runs later, so that "Cannot" was false. What is gone is the agent setting itself to run again.)
 
 - [ ] **Step 1: Write the failing pins** in `rules.test.ts`:
   - Rename the `:144` case to `'the builtins.* denies name exactly the five SDK built-ins the rail describes'`.
@@ -189,7 +190,7 @@ Run `security-checklist` for this task: it's a consent-surface claim, and the or
   - New case `'states the scheduling denial after the four, without moving the first deny'`:
     - The `builtins.cron-create` rule `toMatchObject` the object above.
     - The deny ids in table order equal `['builtins.web-fetch','builtins.web-search','builtins.task','builtins.ask-user-question','builtins.cron-create']`. The first deny is pinned because `@ax/decisions`' canary takes it.
-    - `lintCapability('schedule work for later outside routines')` returns `[]`.
+    - `lintCapability('set itself to run again later outside routines')` returns `[]`.
   - Add `'CronCreate'` to the `by('sandbox')` list at `:297`.
 - [ ] **Step 2: Rewrite the guard (RED first).** In `disabled-builtin-rail-drift.test.js`:
   - **Parsers.**
@@ -204,9 +205,9 @@ Run `security-checklist` for this task: it's a consent-surface claim, and the or
     - `SendMessage` → `builtins.task`: "messages helper agents only Agent or TeamCreate could start".
     - `CronDelete` → `builtins.cron-create`: "cancels a schedule only CronCreate could make".
     - `CronList` → `builtins.cron-create`: "lists schedules only CronCreate could make".
-    - `ScheduleWakeup` → `builtins.cron-create`: "a timer that resumes this session later: scheduling".
-    - `RemoteTrigger` → `builtins.cron-create`: "schedules agent runs on Anthropic's cloud: scheduling outside routines".
-    - `Monitor`: "watches a background command; Bash run_in_background plus Read still can, so a Cannot row would understate reach (H4)".
+    - `ScheduleWakeup` → `builtins.cron-create`: "a timer that wakes this session later: the agent setting itself to run again".
+    - `RemoteTrigger` → `builtins.cron-create`: "schedules agent runs on Anthropic's cloud: the agent setting itself to run again later, outside routines".
+    - `Monitor`: "watches a background command; Bash run_in_background plus Read can still watch one, so a Cannot row would understate reach (H4). Being woken by it later is the agent running again, which the builtins.cron-create row already says".
     - `TaskOutput`: "reads a background task's output; Read still can".
     - `TaskStop`: "stops a background task; Bash still can".
     - `NotebookEdit`: "edits notebook cells; Edit and Write still can".
@@ -252,7 +253,7 @@ Run `security-checklist` for this task: it's a consent-surface claim, and the or
   - `pnpm --filter @ax/tool-policy build`
 
   Expected: all green.
-- [ ] **Step 5: Commit** `[TASK-1207] Rail: say the agent cannot schedule work outside routines; every denied SDK built-in is a row or a written reason`.
+- [ ] **Step 5: Commit** `[TASK-1207] Rail: say the agent cannot set itself to run again later outside routines; every denied SDK built-in is a row or a written reason`.
 
 ### Task 3: Switch off the two bundled skills the CLI lets us switch off [tier: integration]
 
@@ -375,7 +376,7 @@ Run `security-checklist` for this task. It touches the pre-call gate and model-c
     - `'FIX: loop is unknown to the CLI'`: is_error, contains `Unknown skill: loop`.
 - [ ] **Step 2: Run on the real binary.** Run `pnpm --filter @ax/agent-claude-sdk-runner exec vitest run src/__tests__/bundled-skills-real-sdk.e2e.test.ts src/__tests__/real-sdk-env.test.ts`. Expected: 6 passed, none skipped. The scan now counts 6 files.
   - To show the FIX cases bite: temporarily drop the `buildBundledSkillsEnv()` spread and the hook from the "like main.ts" setup, then restore. The listing case and the update-config case should go RED.
-- [ ] **Step 3: Write the changeset.** Use `'@ax/agent-claude-sdk-runner': patch` and `'@ax/tool-policy': patch`. Voice per CLAUDE.md, plain and short. For example: "Agents now say plainly that they can't schedule work outside routines. Claude Code's own built-in skills (like `loop`) are switched off, so an agent asked to do something every weekday sets up a routine you can approve instead of a schedule that never runs."
+- [ ] **Step 3: Write the changeset.** Use `'@ax/agent-claude-sdk-runner': patch` and `'@ax/tool-policy': patch`. Voice per CLAUDE.md, plain and short. For example: "Agents now say plainly that they can't set themselves to run again later outside routines. Claude Code's own built-in skills (like `loop`) are switched off, so an agent asked to do something every weekday sets up a routine you can approve instead of a schedule that never runs."
 - [ ] **Step 4: Memory shards.**
   - **patterns:** the measured CLI facts as reusable lessons:
     - `skillOverrides` is a no-op in 2.1.119;

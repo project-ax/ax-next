@@ -140,13 +140,19 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // and RemoteTrigger are denied too; the drift guard's `OFF_RAIL` records
     // them as covered by this row.
     //
+    // The clause is narrow on purpose. What the runner took away is the agent
+    // setting ITSELF to run again later. It can still start work that finishes
+    // later (a Bash `(sleep 600; ...) &`, a connector's own scheduling API), so
+    // "Cannot schedule work for later" would be false, and a false "Cannot"
+    // understates reach (design H4).
+    //
     // It goes AFTER the four, never ahead of them: `@ax/decisions`' canary
     // builds on the first deny rule (rules.test.ts pins the order).
     id: 'builtins.cron-create',
     match: { tool: 'CronCreate' },
     providedBy: 'sandbox',
     verdict: 'deny',
-    capability: 'schedule work for later outside routines',
+    capability: 'set itself to run again later outside routines',
     subject: 'agent',
     provenance: 'rule',
   },

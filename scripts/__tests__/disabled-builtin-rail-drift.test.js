@@ -23,6 +23,11 @@
 // Monitor, TaskOutput and TaskStop are denied, but Bash and Read still do the
 // same jobs; NotebookEdit is denied, but Edit and Write still change a notebook.
 // A "Cannot" there understates reach, the one direction design H4 forbids.
+// The same standard sets the wording of the row a name DOES get. The scheduling
+// row says "Cannot set itself to run again later outside routines", not "Cannot
+// schedule work for later": Bash `(sleep N; ...) &` and a connector's own API
+// can still start work that runs later. What is gone is the agent setting
+// itself to run again.
 // Others are aliases or companions of a row that already says it (`Agent` is
 // `Task` on the wire; CronList lists what only CronCreate could make), a UI mode
 // with no reach (plan mode), inert in an AX session (PushNotification), or
@@ -116,16 +121,19 @@ const OFF_RAIL = Object.freeze({
   },
   ScheduleWakeup: {
     coveredBy: 'builtins.cron-create',
-    why: 'a timer that resumes this session later: scheduling',
+    why: 'a timer that wakes this session later: the agent setting itself to run again',
   },
   RemoteTrigger: {
     coveredBy: 'builtins.cron-create',
-    why: "schedules agent runs on Anthropic's cloud: scheduling outside routines",
+    why:
+      "schedules agent runs on Anthropic's cloud: the agent setting itself to run " +
+      'again later, outside routines',
   },
   Monitor: {
     why:
-      'watches a background command; Bash run_in_background plus Read still can, ' +
-      'so a Cannot row would understate reach (H4)',
+      'watches a background command; Bash run_in_background plus Read can still watch ' +
+      'one, so a Cannot row would understate reach (H4). Being woken by it later is the ' +
+      'agent running again, which the builtins.cron-create row already says',
   },
   TaskOutput: { why: "reads a background task's output; Read still can" },
   TaskStop: { why: 'stops a background task; Bash still can' },
