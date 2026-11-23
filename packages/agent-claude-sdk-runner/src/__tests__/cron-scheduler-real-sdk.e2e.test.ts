@@ -27,9 +27,18 @@ import { stripClaudeCodeEnv } from './real-sdk-env.js';
 //
 //   CONTROL  without the env floor, a planted entry reaches the model with no
 //            user message at all (measured: the past-due one-shot fires in
-//            ~1.7s, the recurring catch-up ~1s later).
+//            ~1.7s after query(), the recurring catch-up ~1s later; ~0.1s after
+//            CLI readiness). CONTROL records that readiness-to-first-fire time.
 //   FIX      configured like main.ts, the model sees nothing while the session
-//            sits idle, and the first real turn carries no planted prompt.
+//            sits idle for max(5s, 3x CONTROL's time-to-first-fire), counted
+//            from CLI readiness, with stdin held open the way main.ts holds it.
+//
+// Two details make the FIX window mean something. The clock starts when the
+// CLI answers `initialize` (`initializationResult()`), which it does after
+// starting the scheduler, so a slow spawn cannot eat the window. And the prompt
+// stream stays pending until close: if it returned, the SDK would end stdin
+// (no hooks or canUseTool here) and the CLI would stop the scheduler, so a
+// quiet session would prove nothing.
 //
 // Skips itself when the platform's native binary is not installed.
 // ---------------------------------------------------------------------------
@@ -48,10 +57,18 @@ const HAVE_BINARY = nativeBinaryInstalled();
 const PLANTED_RECURRING = 'PLANTED-RECURRING-T1207';
 const PLANTED_ONESHOT = 'PLANTED-ONESHOT-T1207';
 /**
- * How long the FIX run sits idle. The first planted turn arrived at ~1.7s on a
- * cold start (~0.5s warm), both by ~2.6s; 5s is ~3x the cold first fire.
+ * The FIX run's minimum idle window, counted from CLI readiness. The first
+ * planted turn arrived at ~1.7s after `query()` on a cold start (~0.5s warm).
+ * FIX waits the larger of this and 3x what CONTROL measured on this machine.
  */
-const IDLE_WINDOW_MS = 5_000;
+const MIN_IDLE_WINDOW_MS = 5_000;
+/**
+ * CONTROL's measured readiness-to-first-planted-call time, shared with FIX.
+ * Undefined when CONTROL did not run (e.g. `-t FIX`); FIX then waits
+ * CONTROL_WAIT_MS, the budget CONTROL itself allows the scheduler.
+ */
+let controlFirstFireMs: number | undefined;
+const CONTROL_WAIT_MS = 20_000;
 
 let server: http.Server;
 let baseUrl: string;
@@ -59,6 +76,8 @@ let tmp: string;
 let cfg: string;
 /** Every model call body the CLI sent, in order. */
 let bodies: string[];
+/** When the first model call carrying a planted prompt arrived (ms epoch). */
+let firstPlantedAt: number | undefined;
 
 beforeEach(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-t1207-cron-'));
@@ -77,6 +96,7 @@ beforeEach(async () => {
     }),
   );
   bodies = [];
+  firstPlantedAt = undefined;
 
   server = http.createServer((req, res) => {
     let body = '';
@@ -88,6 +108,9 @@ beforeEach(async () => {
         return;
       }
       bodies.push(body);
+      if (firstPlantedAt === undefined && (body.includes(PLANTED_RECURRING) || body.includes(PLANTED_ONESHOT))) {
+        firstPlantedAt = Date.now();
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
       const sse = (event: string, data: unknown): void => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -126,19 +149,28 @@ async function waitFor(cond: () => boolean, ms: number): Promise<void> {
 
 /**
  * Open a session and leave it idle: the prompt stream yields nothing until
- * `sendUserTurn()` is called. `likeMain` adds main.ts's env floor
- * (`buildBundledSkillsEnv()`); without it the CLI runs with its defaults.
+ * `sendUserTurn()` is called, and after that one message it stays pending
+ * until `close()`, so stdin stays open the whole time (as it does in main.ts,
+ * where the hooks and canUseTool keep it open). `ready` resolves with the time
+ * the CLI answered `initialize`, which it sends after starting its scheduler.
+ * `likeMain` adds main.ts's env floor (`buildBundledSkillsEnv()`); without it
+ * the CLI runs with its defaults.
  */
 function openIdleSession(likeMain: boolean): {
+  ready: Promise<number>;
   results: () => number;
   sendUserTurn: () => void;
   close: () => Promise<void>;
 } {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
+  let finish!: () => void;
+  const done = new Promise<void>((r) => (finish = r));
   async function* prompt(): AsyncGenerator<SDKUserMessage> {
     await gate;
     yield { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: 'hello' } } as SDKUserMessage;
+    // Returning here would let the SDK end stdin and the CLI stop its scheduler.
+    await done;
   }
   const processes = createInterruptProcesses();
   let exited: Promise<void> = Promise.resolve();
@@ -167,6 +199,7 @@ function openIdleSession(likeMain: boolean): {
       model: 'claude-sonnet-4-5',
     },
   });
+  const ready = q.initializationResult().then(() => Date.now());
   let resultCount = 0;
   const pump = (async () => {
     try {
@@ -176,10 +209,12 @@ function openIdleSession(likeMain: boolean): {
     }
   })();
   return {
+    ready,
     results: () => resultCount,
     sendUserTurn: () => release(),
     close: async () => {
       release();
+      finish();
       q.close();
       let timer: NodeJS.Timeout | undefined;
       await Promise.race([
@@ -194,27 +229,35 @@ function openIdleSession(likeMain: boolean): {
 describe.skipIf(!HAVE_BINARY)('the CLI cron scheduler on the real claude-sdk binary (TASK-1207)', () => {
   it('CONTROL: without the env floor, a planted scheduled_tasks.json entry reaches the model unprompted', async () => {
     const s = openIdleSession(false);
+    let readyAt: number | undefined;
     try {
-      await waitFor(sawPlanted, 20_000);
+      readyAt = await s.ready;
+      await waitFor(sawPlanted, CONTROL_WAIT_MS);
     } finally {
       await s.close();
     }
     expect(sawPlanted(), 'the CLI never fired the planted schedule; the FIX case would prove nothing').toBe(true);
+    // A fire that beat readiness counts as 0: the FIX floor still applies.
+    controlFirstFireMs = Math.max(0, (firstPlantedAt ?? Date.now()) - (readyAt ?? Date.now()));
   }, 60_000);
 
-  it('FIX: configured like main.ts, the idle session makes no model call and the first turn carries no planted prompt', async () => {
+  it('FIX: configured like main.ts, the idle session makes no model call and a later turn carries no planted prompt', async () => {
+    const idleWindowMs =
+      controlFirstFireMs === undefined ? CONTROL_WAIT_MS : Math.max(MIN_IDLE_WINDOW_MS, 3 * controlFirstFireMs);
     const s = openIdleSession(true);
     try {
-      await new Promise((r) => setTimeout(r, IDLE_WINDOW_MS));
-      expect(bodies, 'the CLI called the model with no user message').toEqual([]);
-      // The session was alive the whole time: a real turn goes through.
+      await s.ready;
+      await new Promise((r) => setTimeout(r, idleWindowMs));
+      expect(bodies, `the CLI called the model with no user message (idle ${idleWindowMs}ms)`).toEqual([]);
+      // Session-is-alive check: the CLI is still up and answering, so the quiet
+      // window above was a live session with nothing scheduled, not a dead one.
       s.sendUserTurn();
       await waitFor(() => s.results() > 0, 30_000);
-      expect(s.results()).toBeGreaterThan(0);
+      expect(s.results(), 'the session was not alive after the idle window').toBeGreaterThan(0);
     } finally {
       await s.close();
     }
     expect(bodies.length).toBeGreaterThan(0);
     expect(sawPlanted()).toBe(false);
-  }, 60_000);
+  }, 120_000);
 });
