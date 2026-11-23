@@ -30,15 +30,17 @@ import { stripClaudeCodeEnv } from './real-sdk-env.js';
 //            ~1.7s after query(), the recurring catch-up ~1s later; ~0.1s after
 //            CLI readiness). CONTROL records that readiness-to-first-fire time.
 //   FIX      configured like main.ts, the model sees nothing while the session
-//            sits idle for max(5s, 3x CONTROL's time-to-first-fire), counted
+//            sits idle for max(5s, 3x CONTROL's time-to-first-fire; capped, and
+//            CONTROL_WAIT_MS if CONTROL did not pass), counted
 //            from CLI readiness, with stdin held open the way main.ts holds it.
 //
-// Two details make the FIX window mean something. The clock starts when the
-// CLI answers `initialize` (`initializationResult()`), which it does after
-// starting the scheduler, so a slow spawn cannot eat the window. And the prompt
-// stream stays pending until close: if it returned, the SDK would end stdin
-// (no hooks or canUseTool here) and the CLI would stop the scheduler, so a
-// quiet session would prove nothing.
+// The FIX clock starts when the CLI answers `initialize`
+// (`initializationResult()`), which it does after starting the scheduler, so a
+// slow spawn cannot eat the window. The prompt stream sits on a gate through
+// the idle window, so stdin is open while we watch; after the one liveness
+// turn it stays pending until close, mirroring main.ts's `userMessages()`.
+// The window is capped at CONTROL_WAIT_MS so a slow CONTROL cannot push FIX
+// past its timeout.
 //
 // Skips itself when the platform's native binary is not installed.
 // ---------------------------------------------------------------------------
@@ -64,7 +66,7 @@ const PLANTED_ONESHOT = 'PLANTED-ONESHOT-T1207';
 const MIN_IDLE_WINDOW_MS = 5_000;
 /**
  * CONTROL's measured readiness-to-first-planted-call time, shared with FIX.
- * Undefined when CONTROL did not run (e.g. `-t FIX`); FIX then waits
+ * Undefined when CONTROL did not run (e.g. `-t FIX`) or failed; FIX then waits
  * CONTROL_WAIT_MS, the budget CONTROL itself allows the scheduler.
  */
 let controlFirstFireMs: number | undefined;
@@ -150,8 +152,8 @@ async function waitFor(cond: () => boolean, ms: number): Promise<void> {
 /**
  * Open a session and leave it idle: the prompt stream yields nothing until
  * `sendUserTurn()` is called, and after that one message it stays pending
- * until `close()`, so stdin stays open the whole time (as it does in main.ts,
- * where the hooks and canUseTool keep it open). `ready` resolves with the time
+ * until `close()`, so stdin stays open the whole time (main.ts's
+ * `userMessages()` likewise never returns until the session ends). `ready` resolves with the time
  * the CLI answered `initialize`, which it sends after starting its scheduler.
  * `likeMain` adds main.ts's env floor (`buildBundledSkillsEnv()`); without it
  * the CLI runs with its defaults.
@@ -243,7 +245,9 @@ describe.skipIf(!HAVE_BINARY)('the CLI cron scheduler on the real claude-sdk bin
 
   it('FIX: configured like main.ts, the idle session makes no model call and a later turn carries no planted prompt', async () => {
     const idleWindowMs =
-      controlFirstFireMs === undefined ? CONTROL_WAIT_MS : Math.max(MIN_IDLE_WINDOW_MS, 3 * controlFirstFireMs);
+      controlFirstFireMs === undefined
+        ? CONTROL_WAIT_MS
+        : Math.min(CONTROL_WAIT_MS, Math.max(MIN_IDLE_WINDOW_MS, 3 * controlFirstFireMs));
     const s = openIdleSession(true);
     try {
       await s.ready;
