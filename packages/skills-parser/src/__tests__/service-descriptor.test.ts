@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   ServiceDescriptorSchema,
   CapabilitiesSchema,
+  ServicesArraySchema,
   SERVICES_MAX,
+  ALWAYS_ON_SERVICES_MAX,
 } from '../index.js';
 
 // A digest-pinned image we reuse — postgres pinned to an (illustrative) sha256.
@@ -143,5 +145,86 @@ describe('CapabilitiesSchema — services round-trip', () => {
       services: [{ ...wellFormed(), image: 'redis:7' }],
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe('ServiceDescriptorSchema — on-demand fields', () => {
+  it('accepts command, entrypoint, job, publishedPorts, resources, storageMiB', () => {
+    const d = ServiceDescriptorSchema.parse({
+      ...wellFormed(),
+      command: ['mongod', '--port', '27019'],
+      entrypoint: ['docker-entrypoint.sh'],
+      job: true,
+      publishedPorts: [{ published: 47017, target: 27017 }],
+      resources: {
+        cpuMillis: { request: 250, limit: 1000 },
+        memoryMiB: { request: 512, limit: 1536 },
+      },
+      storageMiB: 2048,
+    });
+    expect(d.publishedPorts).toEqual([{ published: 47017, target: 27017 }]);
+    expect(d.command).toEqual(['mongod', '--port', '27019']);
+    expect(d.job).toBe(true);
+    expect(d.storageMiB).toBe(2048);
+  });
+
+  it('still accepts a descriptor with none of the new fields', () => {
+    expect(ServiceDescriptorSchema.safeParse(wellFormed()).success).toBe(true);
+  });
+
+  it('rejects a request above its limit', () => {
+    for (const resources of [
+      { memoryMiB: { request: 2048, limit: 1024 } },
+      { cpuMillis: { request: 2000, limit: 1000 } },
+    ]) {
+      expect(ServiceDescriptorSchema.safeParse({ ...wellFormed(), resources }).success).toBe(false);
+    }
+  });
+
+  it('rejects published ports outside 1..65535', () => {
+    for (const published of [0, 65536]) {
+      expect(
+        ServiceDescriptorSchema.safeParse({
+          ...wellFormed(),
+          publishedPorts: [{ published, target: 27017 }],
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      ServiceDescriptorSchema.safeParse({
+        ...wellFormed(),
+        publishedPorts: [{ published: 47017, target: 0 }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('caps command at 32 args of 4096 chars', () => {
+    const ok = Array(32).fill('a');
+    expect(ServiceDescriptorSchema.safeParse({ ...wellFormed(), command: ok }).success).toBe(true);
+    expect(
+      ServiceDescriptorSchema.safeParse({ ...wellFormed(), command: [...ok, 'b'] }).success,
+    ).toBe(false);
+    expect(
+      ServiceDescriptorSchema.safeParse({ ...wellFormed(), entrypoint: ['x'.repeat(4097)] }).success,
+    ).toBe(false);
+  });
+
+  it('rejects non-positive storageMiB and unknown keys inside nested objects', () => {
+    expect(ServiceDescriptorSchema.safeParse({ ...wellFormed(), storageMiB: 0 }).success).toBe(false);
+    expect(
+      ServiceDescriptorSchema.safeParse({
+        ...wellFormed(),
+        resources: { memoryMiB: { request: 1, limit: 2, extra: 1 } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('carrier cap is 16; always-on cap stays 8', () => {
+    const mk = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ ...wellFormed(), name: `s${i}` }));
+    expect(SERVICES_MAX).toBe(16);
+    expect(ALWAYS_ON_SERVICES_MAX).toBe(8);
+    expect(ServicesArraySchema.safeParse(mk(16)).success).toBe(true);
+    expect(ServicesArraySchema.safeParse(mk(17)).success).toBe(false);
   });
 });

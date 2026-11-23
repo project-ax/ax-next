@@ -13,6 +13,7 @@ export {
   ServicesArraySchema,
   HealthcheckSchema,
   SERVICES_MAX,
+  ALWAYS_ON_SERVICES_MAX,
 } from './capabilities.js';
 export { buildSkillManifestYaml } from './build.js';
 export { MANIFEST_CODES, parseSkillManifest } from './manifest.js';

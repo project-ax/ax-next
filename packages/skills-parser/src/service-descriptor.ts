@@ -43,9 +43,22 @@ const PORTS_MAX = 16;
 const WRITABLE_PATHS_MAX = 16;
 const HEALTHCHECK_CMD_MAX = 16;
 const PATH_LEN_MAX = 256;
+const ARGV_MAX = 32;
+const ARGV_LEN_MAX = 4096;
 const HEALTHCHECK_ARG_LEN_MAX = 256;
 
 const PortSchema = z.number().int().min(1).max(65535);
+
+/** argv override (command / entrypoint) — bounded so it can't be an abuse vector. */
+const ArgvSchema = z.array(z.string().max(ARGV_LEN_MAX)).max(ARGV_MAX);
+
+const positiveInt = z.number().int().positive();
+
+/** A request/limit pair; a request above its limit is meaningless. */
+const SizeRangeSchema = z
+  .object({ request: positiveInt, limit: positiveInt })
+  .strict()
+  .refine((r) => r.request <= r.limit, { message: 'request must not exceed limit' });
 
 /** Healthcheck — a TCP port probe or an in-container exec probe. Discriminated
  *  on `kind` so a backend maps it onto whatever readiness mechanism it has
@@ -91,13 +104,32 @@ export const ServiceDescriptorSchema = z
       .array(z.string().regex(/^\//, 'writablePaths entries must be absolute').max(PATH_LEN_MAX))
       .max(WRITABLE_PATHS_MAX)
       .default([]),
+    // Optional overrides of the image's argv. Array order is argv order.
+    command: ArgvSchema.optional(),
+    entrypoint: ArgvSchema.optional(),
+    // Run once to exit 0 (a one-shot init step) instead of staying up.
+    job: z.boolean().optional(),
+    // Host-visible port -> in-service port mappings.
+    publishedPorts: z
+      .array(z.object({ published: PortSchema, target: PortSchema }).strict())
+      .max(PORTS_MAX)
+      .optional(),
+    resources: z
+      .object({ cpuMillis: SizeRangeSchema.optional(), memoryMiB: SizeRangeSchema.optional() })
+      .strict()
+      .optional(),
+    // Size of each writable path, in MiB.
+    storageMiB: positiveInt.optional(),
   })
   .strict();
 
 export type ServiceDescriptor = z.infer<typeof ServiceDescriptorSchema>;
 
 /** Carrier cap — at most this many services per unit of work. */
-export const SERVICES_MAX = 8;
+export const SERVICES_MAX = 16;
+
+/** Cap on always-on (non-on-demand) services. */
+export const ALWAYS_ON_SERVICES_MAX = 8;
 
 /** The `services` array as it rides on a `Capabilities` / `OpenSessionInput`.
  *  Defaults to `[]` so an absent block round-trips as "no services". */

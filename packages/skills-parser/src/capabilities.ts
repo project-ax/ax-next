@@ -7,6 +7,7 @@ export {
   ServicesArraySchema,
   HealthcheckSchema,
   SERVICES_MAX,
+  ALWAYS_ON_SERVICES_MAX,
 } from './service-descriptor.js';
 
 export interface CapabilitySlot {
