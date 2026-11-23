@@ -279,11 +279,13 @@ describe.skipIf(!HAVE_BINARY)('bundled skills on the real claude-sdk binary (TAS
 
   it('FIX: /init is refused by the runner', async () => {
     skillCall = '/init';
-    await runOneTurn(true);
+    const { preCalls } = await runOneTurn(true);
     const r = skillResult();
     expect(r.isError).toBe(true);
     expect(r.text).toContain('"init"');
     expect(r.text).toContain("not one of this agent's skills");
+    // Refused before the host is asked (SECURITY.md says so for /init too).
+    expect(preCalls).toEqual([]);
   }, 60_000);
 
   it('FIX: the installed skill launches', async () => {
