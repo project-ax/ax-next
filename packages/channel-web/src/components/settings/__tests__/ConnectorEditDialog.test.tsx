@@ -469,26 +469,60 @@ describe('ConnectorEditDialog', () => {
     expect(screen.getAllByText(/volumes/).length).toBeGreaterThan(0);
   });
 
-  it('pasting a compose with an un-pinned image surfaces a pin-the-image flag', async () => {
+  it('an un-pinned image is pinned for you and shown as locked', async () => {
+    const pin = vi.spyOn(connectorsLib, 'pinImages').mockResolvedValue([
+      { image: 'redis:7', pinned: `redis@sha256:${'c'.repeat(64)}` },
+    ]);
     render(
-      <ConnectorEditDialog
-        target="new"
-        open
-        onOpenChange={() => {}}
-        onSaved={() => {}}
-      />,
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
     );
     await screen.findByLabelText(/service name/i);
-    const paste = screen.getByLabelText(/paste a docker-compose/i);
-    fireEvent.change(paste, {
+    fireEvent.change(screen.getByLabelText(/paste a docker-compose/i), {
       target: { value: `services:\n  cache:\n    image: redis:7\n` },
     });
     fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
     await waitFor(() =>
-      expect(screen.getByText(/pin/i)).toBeInTheDocument(),
+      expect(screen.getByText(/we locked these to exact versions/i)).toBeInTheDocument(),
     );
-    // The un-pinned service did not silently become a usable descriptor.
-    expect(screen.queryByDisplayValue('redis:7')).toBeNull();
+    expect(pin).toHaveBeenCalledWith(['redis:7']);
+    expect(screen.getByDisplayValue(`redis@sha256:${'c'.repeat(64)}`)).toBeInTheDocument();
+  });
+
+  it('a failed pin shows its error and blocks saving', async () => {
+    vi.spyOn(connectorsLib, 'pinImages').mockResolvedValue([
+      { image: 'redis:7', error: 'image not found' },
+    ]);
+    const create = vi.spyOn(connectorsLib, 'createConnector');
+    render(
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'Cache' } });
+    fireEvent.change(screen.getByLabelText(/paste a docker-compose/i), {
+      target: { value: `services:\n  cache:\n    image: redis:7\n` },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    await waitFor(() => expect(screen.getByText(/image not found/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() =>
+      expect(screen.getAllByText(/still need to look up the exact version/i).length).toBeGreaterThan(0),
+    );
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('lists app services to run in the sandbox', async () => {
+    render(
+      <ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />,
+    );
+    await screen.findByLabelText(/service name/i);
+    fireEvent.change(screen.getByLabelText(/paste a docker-compose/i), {
+      target: {
+        value: `services:\n  app:\n    image: ${PINNED}\n    volumes:\n      - ./src:/app\n`,
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/run these in the sandbox: app/i)).toBeInTheDocument(),
+    );
   });
 
   it('a malformed compose paste shows an error, not a crash', async () => {
@@ -534,7 +568,7 @@ describe('ConnectorEditDialog', () => {
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.capabilities.services).toEqual([
-      { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+      expect.objectContaining({ name: 'db', image: PINNED, ports: [5432], env: {} }),
     ]);
   });
 

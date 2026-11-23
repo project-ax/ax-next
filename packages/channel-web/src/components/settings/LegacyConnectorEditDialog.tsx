@@ -52,6 +52,7 @@ import {
   type ConnectorSummary,
   type ConnectorKeyMode,
   type ConnectorWriteBase,
+  pinImages,
   type ServiceDescriptor,
 } from '@/lib/connectors';
 import { HTTP_FAILED, isConfirmedRefusal, userFacingMessage } from '@/lib/http';
@@ -64,6 +65,8 @@ import {
   endpointChangedServers,
   pointsSomewhereNew,
   applyComposeToForm,
+  applyPinResults,
+  servicesProblem,
   summaryToForm,
   connectorIdFromName,
   splitList,
@@ -88,6 +91,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Card,
@@ -189,6 +193,8 @@ const textToPaths = (s: string): string[] =>
 const isDigestPinned = (image: string): boolean =>
   /.+@sha256:[0-9a-f]{64}$/.test(image.trim());
 
+const NO_PROFILE = '__none__';
+
 /**
  * The Services ("service bundle") section — declare dev services a connector
  * brings alongside the sandbox (a database, a cache, …). Paste a
@@ -198,32 +204,59 @@ const isDigestPinned = (image: string): boolean =>
  * `Button` / `Input` / `Label` / `Textarea` + semantic tokens (invariant #6).
  */
 function ServicesSection({
-  services,
-  onChange,
+  form,
+  setForm,
 }: {
-  services: ServiceDescriptor[];
-  onChange: (next: ServiceDescriptor[]) => void;
+  form: ConnectorFormState;
+  setForm: (next: ConnectorFormState) => void;
 }) {
+  const services = form.services;
+  const onChange = (next: ServiceDescriptor[]) => setForm({ ...form, services: next });
   const [compose, setCompose] = useState('');
   const [drops, setDrops] = useState<ComposeDrop[]>([]);
   const [invalid, setInvalid] = useState<ComposeInvalid[]>([]);
+  const [profiles, setProfiles] = useState<string[]>([]);
   const [composeError, setComposeError] = useState<string | null>(null);
+  const [pinErrors, setPinErrors] = useState<Record<string, string>>({});
+  const [pinning, setPinning] = useState(false);
 
-  const translate = () => {
+  // Look up the exact version of every image still written as a tag.
+  const pinDrafts = async (from: ConnectorFormState) => {
+    if (from.drafts.length === 0) return;
+    setPinning(true);
+    try {
+      const results = await pinImages([...new Set(from.drafts.map((d) => d.image))]);
+      const out = applyPinResults(from, results);
+      setForm(out.form);
+      setPinErrors(out.errors);
+    } catch {
+      setPinErrors(
+        Object.fromEntries(
+          from.drafts.map((d) => [d.name, 'We couldn’t reach the image registry. Try again.']),
+        ),
+      );
+    } finally {
+      setPinning(false);
+    }
+  };
+
+  const translate = (profile: string | null) => {
     setComposeError(null);
-    // applyComposeToForm REPLACES `services` with the translated set, so the
-    // form we hand it only needs to be a valid shell — the current `services`
-    // would be overwritten anyway. We lift the result's services up via onChange.
-    const result = applyComposeToForm(emptyConnectorForm(), compose);
+    setPinErrors({});
+    // Translating REPLACES the imported services; the mode and other fields stay.
+    const result = applyComposeToForm(form, compose, profile);
     if (!result.ok) {
       setComposeError(result.error);
       setDrops([]);
       setInvalid([]);
       return;
     }
-    onChange(result.form.services);
+    setForm(result.form);
     setDrops(result.drops);
-    setInvalid(result.invalid);
+    // Tag-only images are handled by pinning; what's left here is a real problem.
+    setInvalid(result.invalid.filter((iv) => iv.draft === undefined));
+    setProfiles(result.profiles);
+    void pinDrafts(result.form);
   };
 
   const updateService = (i: number, patch: Partial<ServiceDescriptor>) =>
@@ -264,7 +297,7 @@ function ServicesSection({
               type="button"
               variant="outline"
               size="sm"
-              onClick={translate}
+              onClick={() => translate(form.composeProfile)}
               disabled={compose.trim().length === 0}
             >
               Translate compose
@@ -276,6 +309,112 @@ function ServicesSection({
           <Alert variant="destructive">
             <AlertDescription>
               We couldn’t read that as a Compose file: {composeError}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {profiles.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="connector-compose-profile" className="text-xs">
+              Which group of services?
+            </Label>
+            <Select
+              value={form.composeProfile ?? NO_PROFILE}
+              onValueChange={(v) => translate(v === NO_PROFILE ? null : v)}
+            >
+              <SelectTrigger id="connector-compose-profile">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PROFILE}>The ones that always start</SelectItem>
+                {profiles.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Your file sorts its services into named groups (Compose calls them
+              profiles). Pick the group to bring in.
+            </p>
+          </div>
+        )}
+
+        <div className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+          <div className="flex flex-col gap-0.5">
+            <Label htmlFor="connector-services-on-demand" className="text-sm">
+              On demand
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Start these services only when the work needs them, instead of
+              keeping them all running. Needed for more than 8 services (up to 16).
+            </p>
+          </div>
+          <Switch
+            id="connector-services-on-demand"
+            checked={form.servicesMode === 'on-demand'}
+            onCheckedChange={(on) =>
+              setForm({ ...form, servicesMode: on ? 'on-demand' : 'always' })
+            }
+          />
+        </div>
+
+        {pinning && (
+          <p className="text-xs text-muted-foreground">Looking up exact versions…</p>
+        )}
+
+        {Object.keys(form.pinned).length > 0 && (
+          <Alert>
+            <AlertTitle>We locked these to exact versions</AlertTitle>
+            <AlertDescription>
+              <p className="mb-1">
+                A name like <span className="font-mono">redis:7</span> can change
+                over time, so we saved the exact version instead:
+              </p>
+              <ul className="list-disc pl-5">
+                {Object.entries(form.pinned).map(([tag, ref]) => (
+                  <li key={tag}>
+                    <span className="font-mono">{tag}</span> →{' '}
+                    <span className="font-mono break-all">{ref}</span>
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {form.drafts.length > 0 && !pinning && (
+          <Alert variant="destructive">
+            <AlertTitle>We couldn’t lock a few images to an exact version</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc pl-5">
+                {form.drafts.map((d) => (
+                  <li key={d.name}>
+                    <span className="font-mono">{d.name}</span> ({d.image}):{' '}
+                    {pinErrors[d.name] ?? 'not looked up yet'}
+                  </li>
+                ))}
+              </ul>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => void pinDrafts(form)}
+              >
+                Try again
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {form.appServices.length > 0 && (
+          <Alert>
+            <AlertTitle>Some of these are your own app</AlertTitle>
+            <AlertDescription>
+              Run these in the sandbox: {form.appServices.map((a) => a.service).join(', ')}.
+              They use your own code, so we left them out of the saved services.
             </AlertDescription>
           </Alert>
         )}
@@ -620,6 +759,11 @@ export function LegacyConnectorEditDialog({
     if (busy || discoveringHosts) return;
     if (!form.name.trim()) {
       setError('Give this connector a service name first.');
+      return;
+    }
+    const servicesIssue = servicesProblem(form);
+    if (servicesIssue) {
+      setError(servicesIssue);
       return;
     }
     const connectorId = form.connectorId || connectorIdFromName(form.name);
@@ -1273,10 +1417,7 @@ export function LegacyConnectorEditDialog({
           )}
 
           {/* Services (service bundle) — independent of the mechanism choice. */}
-          <ServicesSection
-            services={form.services}
-            onChange={(services) => setForm((f) => ({ ...f, services }))}
-          />
+          <ServicesSection form={form} setForm={setForm} />
 
           {error && (
             <Alert variant="destructive">

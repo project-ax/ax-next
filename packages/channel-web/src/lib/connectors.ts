@@ -117,6 +117,8 @@ export interface ConnectorCapabilities {
    * secret is a `credentials` SLOT name, resolved by the proxy inside the sandbox).
    */
   services?: ServiceDescriptor[];
+  /** 'always' (default) keeps services up all session; 'on-demand' starts them when needed. */
+  servicesMode?: 'always' | 'on-demand';
 }
 
 export type ConnectorKeyMode = 'personal' | 'workspace';
@@ -159,6 +161,24 @@ export interface ConnectorUpsertInput {
 export type ConnectorCreateInput = ConnectorUpsertInput & {
   fromDirectory?: { directoryId: string; version: string };
 };
+
+/** Admin-only: resolve image tags to digest-pinned refs. A bad image comes back
+ *  as a per-image `error`, never a failed request. */
+export async function pinImages(
+  images: string[],
+): Promise<Array<{ image: string; pinned?: string; error?: string }>> {
+  const res = await fetch('/admin/connectors/pin-images', {
+    method: 'POST',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify({ images }),
+  });
+  if (!res.ok) throw new Error(`pin images: ${res.status}`);
+  const body = (await res.json()) as {
+    results?: Array<{ image: string; pinned?: string; error?: string }>;
+  };
+  return body.results ?? [];
+}
 
 export async function listConnectors(
   base: ConnectorRouteBase,
