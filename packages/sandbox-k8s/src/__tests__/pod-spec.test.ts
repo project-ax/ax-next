@@ -1114,6 +1114,14 @@ describe('buildPodSpec', () => {
       ]);
     });
 
+    it('throws host-side on a map the runner would reject (>64, or a target equal to a published port)', () => {
+      const build = (services: Svc[]) => () => buildPodSpec('pod-bad', { ...baseInput, services }, baseResolved());
+      const many = Array.from({ length: 5 }, (_, i) =>
+        svc({ name: `s${i}`, publishedPorts: Array.from({ length: 13 }, (_, j) => ({ published: 10000 + i * 13 + j, target: 5432 })) }));
+      expect(build(many)).toThrow(/not forwardable/);
+      expect(build([svc({ name: 'a', publishedPorts: [{ published: 9000, target: 9000 }] })])).toThrow(/not forwardable/);
+    });
+
     it('no publishedPorts → no AX_SERVICE_FORWARDS', () => {
       const spec = podOf([svc({ name: 'a' })]) as unknown as { containers: Array<{ env: Array<{ name: string }> }> };
       expect(spec.containers[0]!.env.some((x) => x.name === 'AX_SERVICE_FORWARDS')).toBe(false);

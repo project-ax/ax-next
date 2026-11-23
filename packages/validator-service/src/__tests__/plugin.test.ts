@@ -136,6 +136,29 @@ describe('validateServices (pure)', () => {
     }
   });
 
+  it('a published target that is not one of the service\'s own ports is invalid', () => {
+    const r = validateServices([{ ...wellFormed(), publishedPorts: [{ published: 6000, target: 9999 }] }]);
+    expect(r.verdict).toBe('invalid');
+    if (r.verdict === 'invalid') expect(r.reason).toMatch(/target 9999.*not one of the service's own ports/);
+  });
+
+  it('more than 64 published ports across services is invalid; 64 is fine', () => {
+    const many = (n: number) => {
+      const out: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < n; i += 16) {
+        out.push({
+          ...wellFormed(), name: `s${i / 16}`,
+          publishedPorts: Array.from({ length: Math.min(16, n - i) }, (_, j) => ({ published: 10000 + i + j, target: 5432 })),
+        });
+      }
+      return out;
+    };
+    expect(validateServices(many(64)).verdict).toBe('clean');
+    const r = validateServices(many(65));
+    expect(r.verdict).toBe('invalid');
+    if (r.verdict === 'invalid') expect(r.reason).toMatch(/at most 64 published ports/);
+  });
+
   it('two services publishing the same port is invalid, naming both', () => {
     const r = validateServices([
       { ...wellFormed(), name: 'a', publishedPorts: [{ published: 6000, target: 5432 }] },

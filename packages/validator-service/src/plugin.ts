@@ -40,6 +40,9 @@ const PLUGIN_NAME = '@ax/validator-service';
  *  mode, which this validator never sees, so it lives in the connectors schema. */
 const SERVICES_MAX = 16;
 
+/** The runner forwards at most this many published ports (its env parser refuses more). */
+const PUBLISHED_PORTS_MAX = 64;
+
 /** Input: the (untrusted) service descriptor list to validate. */
 export interface ServicesValidateInput {
   services: unknown[];
@@ -57,6 +60,17 @@ export type ServicesValidateOutput =
  * Returns a reason naming the services involved, or null.
  */
 export function checkPortClashes(services: ServiceDescriptor[]): string | null {
+  const totalPublished = services.reduce((n, s) => n + (s.publishedPorts?.length ?? 0), 0);
+  if (totalPublished > PUBLISHED_PORTS_MAX) {
+    return `at most ${PUBLISHED_PORTS_MAX} published ports are allowed across all services, got ${totalPublished}`;
+  }
+  for (const svc of services) {
+    for (const { target } of svc.publishedPorts ?? []) {
+      if (!svc.ports.includes(target)) {
+        return `published port target ${target} of "${svc.name}" is not one of the service's own ports`;
+      }
+    }
+  }
   const publishedBy = new Map<number, string>();
   for (const svc of services) {
     for (const { published } of svc.publishedPorts ?? []) {

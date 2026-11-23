@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BootstrapAssignmentSchema, POD_SCRATCH_ROOT, allowedBootstrapEnv } from '../bootstrap.js';
+import { BootstrapAssignmentSchema, POD_SCRATCH_ROOT, allowedBootstrapEnv, parseServiceForwards } from '../bootstrap.js';
 const assignment = (extra: Record<string, string> = {}) => ({ version: 1, assignmentId: randomUUID(),
   instanceId: randomUUID(), expiresAt: Date.now() + 1000, env: { AX_SESSION_ID: 's', AX_AUTH_TOKEN: 'token',
     AX_RUNNER_ENDPOINT: 'http://host:80', AX_PROXY_ENDPOINT: 'http://proxy:8888',
@@ -28,26 +28,36 @@ describe('bootstrap process capabilities', () => {
     'rejects %s=%j (digits only)', (name, value) => {
       expect(allowedBootstrapEnv(name, value)).toBe(false);
     });
-  it('AX_SERVICE_FORWARDS is allowed', () => {
+  it('AX_SERVICE_FORWARDS is not on the bootstrap allowlist (pods with services skip the warm pool)', () => {
     const v = JSON.stringify([{ published: 47017, target: 27017 }]);
-    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', v)).toBe(true);
-    expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_SERVICE_FORWARDS: v })).success).toBe(true);
-    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', '[]')).toBe(true);
+    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', v)).toBe(false);
+    expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_SERVICE_FORWARDS: v })).success).toBe(false);
   });
-  it.each([
-    ['not json', 'nope'],
-    ['an object', '{"published":1,"target":2}'],
-    ['a string port', '[{"published":"1","target":2}]'],
-    ['a float', '[{"published":1.5,"target":2}]'],
-    ['port 0', '[{"published":0,"target":2}]'],
-    ['port 65536', '[{"published":1,"target":65536}]'],
-    ['an extra key', '[{"published":1,"target":2,"host":"evil"}]'],
-    ['a missing key', '[{"published":1}]'],
-    ['a bare number', '[1]'],
-    ['65 pairs', JSON.stringify(Array.from({ length: 65 }, (_, i) => ({ published: i + 1, target: 9 })))],
-    ['too long', '[' + ' '.repeat(5000) + ']'],
-  ])('AX_SERVICE_FORWARDS rejects %s', (_label, value) => {
-    expect(allowedBootstrapEnv('AX_SERVICE_FORWARDS', value)).toBe(false);
+  describe('parseServiceForwards', () => {
+    it('accepts a valid map and the empty array', () => {
+      expect(parseServiceForwards('[{"published":47017,"target":27017}]')).toEqual([{ published: 47017, target: 27017 }]);
+      expect(parseServiceForwards('[]')).toEqual([]);
+      const sixtyFour = Array.from({ length: 64 }, (_, i) => ({ published: 10000 + i, target: 5432 }));
+      expect(parseServiceForwards(JSON.stringify(sixtyFour))).toHaveLength(64);
+    });
+    it.each([
+      ['not json', 'nope'],
+      ['an object', '{"published":1,"target":2}'],
+      ['a string port', '[{"published":"1","target":2}]'],
+      ['a float', '[{"published":1.5,"target":2}]'],
+      ['port 0', '[{"published":0,"target":2}]'],
+      ['port 65536', '[{"published":1,"target":65536}]'],
+      ['an extra key', '[{"published":1,"target":2,"host":"evil"}]'],
+      ['a missing key', '[{"published":1}]'],
+      ['a bare number', '[1]'],
+      ['65 pairs', JSON.stringify(Array.from({ length: 65 }, (_, i) => ({ published: 10000 + i, target: 9 })))],
+      ['too long', '[' + ' '.repeat(5000) + ']'],
+      ['a self-forward', '[{"published":9000,"target":9000}]'],
+      ['a cycle', '[{"published":9000,"target":9001},{"published":9001,"target":9000}]'],
+      ['a chain (target is another published port)', '[{"published":9000,"target":9001},{"published":9001,"target":9002}]'],
+    ])('rejects %s', (_l, v) => {
+      expect(parseServiceForwards(v)).toBeNull();
+    });
   });
   it('rejects an assignment without AX_PROXY_TOKEN (TASK-784)', () => {
     const a = assignment();

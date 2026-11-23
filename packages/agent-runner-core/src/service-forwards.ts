@@ -23,6 +23,13 @@ export async function startServiceForwards(
   deps: { net?: typeof realNet } = {},
 ): Promise<ServiceForwards> {
   const net = deps.net ?? realNet;
+  // Defense in depth (the env parser already refuses this): a target that is
+  // itself a published port would chain loopback connections without end.
+  const publishedSet = new Set(map.map((f) => f.published));
+  if (map.some((f) => publishedSet.has(f.target))) {
+    process.stderr.write('runner: service forwards refused: a target equals a published port\n');
+    return { close: async () => {} };
+  }
   const servers: realNet.Server[] = [];
   const live = new Set<realNet.Socket>();
 
@@ -59,7 +66,9 @@ export async function startServiceForwards(
           server.listen({ host: LOOPBACK, port: published }, () => {
             // After a successful bind, a later server error must not crash.
             server.removeAllListeners('error');
-            server.on('error', () => {});
+            server.on('error', (err: NodeJS.ErrnoException) => {
+              process.stderr.write(`runner: service forward ${LOOPBACK}:${published} error: ${err.code ?? err.message}\n`);
+            });
             servers.push(server);
             resolve();
           });

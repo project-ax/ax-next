@@ -34,7 +34,9 @@ describe('readRunnerEnv', () => {
     const ok = readRunnerEnv({ ...PROXY_TCP, AX_SERVICE_FORWARDS: '[{"published":47017,"target":27017}]' });
     expect(ok.serviceForwards).toEqual([{ published: 47017, target: 27017 }]);
     expect(readRunnerEnv(PROXY_TCP).serviceForwards).toBeUndefined();
-    for (const bad of ['nope', '{}', '[{"published":0,"target":1}]', '[{"published":1,"target":2,"x":3}]', '[{"published":"1","target":2}]']) {
+    const sixtyFour = JSON.stringify(Array.from({ length: 64 }, (_, i) => ({ published: 10000 + i, target: 9 })));
+    expect(readRunnerEnv({ ...PROXY_TCP, AX_SERVICE_FORWARDS: sixtyFour }).serviceForwards).toHaveLength(64);
+    for (const bad of ['nope', '{}', '[{"published":0,"target":1}]', '[{"published":1,"target":2,"x":3}]', '[{"published":"1","target":2}]', '[{"published":9000,"target":9000}]', '[{"published":9000,"target":9001},{"published":9001,"target":9000}]', JSON.stringify(Array.from({ length: 65 }, (_, i) => ({ published: 10000 + i, target: 9 }))), '[' + ' '.repeat(5000) + ']']) {
       expect(() => readRunnerEnv({ ...PROXY_TCP, AX_SERVICE_FORWARDS: bad })).toThrow(InvalidEnvError);
     }
   });

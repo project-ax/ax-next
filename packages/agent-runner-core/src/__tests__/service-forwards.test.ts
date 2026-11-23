@@ -88,6 +88,30 @@ describe('startServiceForwards', () => {
     expect(await roundTrip(ok, 'x')).toBe('echo:x');
   });
 
+  it.each([
+    ['a self-forward', [{ published: 9000, target: 9000 }]],
+    ['a cycle', [{ published: 9000, target: 9001 }, { published: 9001, target: 9000 }]],
+  ])('refuses %s without binding anything', async (_l, map) => {
+    const createServer = vi.fn();
+    const write = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    const fwd = await startServiceForwards(map, { net: { createServer } as unknown as typeof net });
+    expect(createServer).not.toHaveBeenCalled();
+    expect(write.mock.calls.some(([m]) => String(m).includes('refused'))).toBe(true);
+    await fwd.close();
+  });
+
+  it('a server error after bind is logged, not swallowed', async () => {
+    const srv = new EventEmitter() as EventEmitter & { listen: unknown; close: unknown };
+    srv.listen = (_o: unknown, cb: () => void) => cb();
+    srv.close = (cb: () => void) => cb();
+    const write = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    await startServiceForwards([{ published: 47017, target: 27017 }], {
+      net: { createServer: () => srv } as unknown as typeof net,
+    });
+    srv.emit('error', Object.assign(new Error('x'), { code: 'EMFILE' }));
+    expect(write.mock.calls.some(([m]) => String(m).includes('service forward 127.0.0.1:47017 error: EMFILE'))).toBe(true);
+  });
+
   it('close releases the ports', async () => {
     const { port: target, server } = await echoServer();
     cleanups.push(() => new Promise<void>((r) => server.close(() => r())));

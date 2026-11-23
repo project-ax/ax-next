@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import {
   buildGitCredentialEnv,
+  parseServiceForwards,
   POD_SCRATCH_ROOT,
   type RunnerSizeParsed,
   type ServiceDescriptorParsed,
@@ -946,7 +947,15 @@ export function buildPodSpec(
   // pod with none renders exactly as before. Pushed after extraEnv so nothing
   // can shadow it (the kubelet keeps the last entry for a name).
   const forwards = services.flatMap((s) => (s.publishedPorts ?? []).map((p) => ({ published: p.published, target: p.target })));
-  if (forwards.length > 0) env.push({ name: 'AX_SERVICE_FORWARDS', value: JSON.stringify(forwards) });
+  if (forwards.length > 0) {
+    const value = JSON.stringify(forwards);
+    // Same parser the runner applies: never render an env it would reject
+    // (a runner that refuses to boot is a worse failure than a clear host error).
+    if (parseServiceForwards(value) === null) {
+      throw new Error('published service ports are not forwardable (more than 64, or a target equal to a published port)');
+    }
+    env.push({ name: 'AX_SERVICE_FORWARDS', value });
+  }
   const sidecarRender = renderServiceSidecars(services, config);
 
   // filestore-user-files (design §4) — realize the durable per-agent mounts the
