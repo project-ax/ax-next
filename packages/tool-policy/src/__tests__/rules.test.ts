@@ -193,8 +193,8 @@ describe('BUILTIN_RULES', () => {
       'builtins.ask-user-question',
       'builtins.cron-create',
     ]);
-    // Lint the shipped row, not a copy of its text: a reword that trips the
-    // lint must fail here even if someone forgets to update the literal above.
+    // Lint the shipped row itself rather than a separate literal of its text,
+    // so what the lint checks is exactly the sentence the rail renders.
     const row = BUILTIN_RULES.find((r) => r.id === 'builtins.cron-create');
     expect(lintCapability(row!.capability)).toEqual([]);
   });
