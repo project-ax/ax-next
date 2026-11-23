@@ -141,24 +141,69 @@ describe('BUILTIN_RULES', () => {
     }
   });
 
-  it('the disabled-builtin denies name exactly the four SDK builtins we disable', () => {
-    // This pins the four names in place so a change to the rail's deny rows is
-    // never a silent one-line diff. It is NOT a drift guard against the runners:
-    // it compares the table against a literal in this same file, so it cannot
-    // notice a runner's list moving underneath it. That guard is a separate test
-    // that reads both runners' sources —
-    // `scripts/__tests__/disabled-builtin-rail-drift.test.js` (TASK-245), which
-    // CI runs unconditionally via `pnpm test:scripts`. If it fails, the rail has
-    // fallen behind a runner and BOTH lists move together.
+  it('the builtins.* denies name exactly the five SDK built-ins the rail describes', () => {
+    // A PIN, so a change to the rail's deny rows is never a silent one-line
+    // diff. It is NOT the drift guard: it compares the table with a literal in
+    // this same file, so it cannot see a runner's list move. The guard is
+    // `scripts/__tests__/disabled-builtin-rail-drift.test.js` (TASK-245,
+    // widened in TASK-1207). It reads both runners' sources and fails unless
+    // every built-in both of them keep from the agent is one of these rows or
+    // has a written reason for having none. CI runs it via `pnpm test:scripts`.
+    // If it fails, the rail and this pin move together.
     const denied = BUILTIN_RULES.filter((r) => r.id.startsWith('builtins.')).map(
       (r) => r.match.tool,
     );
-    expect([...denied].sort()).toEqual(
-      ['AskUserQuestion', 'Task', 'WebFetch', 'WebSearch'].sort(),
-    );
+    expect([...denied].sort()).toEqual([
+      'AskUserQuestion',
+      'CronCreate',
+      'Task',
+      'WebFetch',
+      'WebSearch',
+    ]);
     for (const rule of BUILTIN_RULES) {
       if (rule.id.startsWith('builtins.')) expect(rule.verdict).toBe('deny');
     }
+  });
+
+  it('states the scheduling denial after the four, without moving the first deny', () => {
+    // TASK-1207, from the TASK-1192 walk: an agent scheduled a job with the
+    // SDK's own CronCreate, which skipped the routine hold and never ran. The
+    // runner keeps CronCreate out (TASK-1200). This row is the rail saying so,
+    // next to "Can create routines — asks you first".
+    //
+    // `toEqual`, not `toMatchObject`: a `when` would turn the row into "Cannot
+    // … in some cases", and an `effect` would put a badge on a call that never
+    // runs. Neither belongs on this row.
+    expect(BUILTIN_RULES.find((r) => r.id === 'builtins.cron-create')).toEqual({
+      id: 'builtins.cron-create',
+      match: { tool: 'CronCreate' },
+      providedBy: 'sandbox',
+      verdict: 'deny',
+      capability: 'schedule work for later outside routines',
+      subject: 'agent',
+      provenance: 'rule',
+    });
+    // Table order is the deny group's order on the rail. The FIRST deny is
+    // pinned too: `@ax/decisions`' canary builds on whichever deny rule comes
+    // first, so a new row goes after the four, never ahead of them.
+    expect(BUILTIN_RULES.filter((r) => r.verdict === 'deny').map((r) => r.id)).toEqual([
+      'builtins.web-fetch',
+      'builtins.web-search',
+      'builtins.task',
+      'builtins.ask-user-question',
+      'builtins.cron-create',
+    ]);
+    expect(lintCapability('schedule work for later outside routines')).toEqual([]);
+  });
+
+  it('answers deny for CronCreate at the evaluator: defence in depth, not the enforcement', () => {
+    // The claude-sdk runner refuses CronCreate before `tool:pre-call` fires,
+    // so in a healthy session this never runs. If a call ever did reach the
+    // evaluator, it used to match no rule and fall through to allow.
+    expect(evaluate(BUILTIN_RULES, { name: 'CronCreate', input: {} })).toMatchObject({
+      verdict: 'deny',
+      ruleId: 'builtins.cron-create',
+    });
   });
 
   it('TASK-329: the two spending rules reach the rail rows as effect: spends', () => {
@@ -298,6 +343,7 @@ describe('BUILTIN_RULES', () => {
       [
         'AskUserQuestion',
         'Bash',
+        'CronCreate',
         'Edit',
         'Glob',
         'Grep',

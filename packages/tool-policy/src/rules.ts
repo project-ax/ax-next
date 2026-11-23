@@ -49,35 +49,47 @@ import type { PolicyRule } from './types.js';
 // file is the source of truth; read the doc for the reasoning, not the rows.
 export const BUILTIN_RULES: readonly PolicyRule[] = [
   // -------------------------------------------------------------------------
-  // Denies — rail rows for what `DISABLED_BUILTINS` already enforces (AW-1 E7).
+  // Denies — rail rows for SDK built-ins the runners already keep from the
+  // agent (AW-1 E7; TASK-1207 added the scheduling row).
   //
-  // THESE FOUR WILL NEVER FIRE IN THE EVALUATOR, AND THAT IS EXPECTED. They are
-  // rail rows, not enforcement. `classifySdkToolName` returns a `disabled`
-  // class carrying NO `axName`, and the claude-sdk runner's `pre-tool-use.ts`
-  // denies on it before `policy.preToolUse` runs — so a disabled builtin never
-  // reaches `tool:pre-call` to be matched. On the aisdk runner the four are not
-  // registered at all. Do not "verify" them with an evaluator test asserting a
-  // deny from a live call; `DISABLED_BUILTINS` stays the enforcement.
+  // THESE ROWS WILL NEVER FIRE IN THE EVALUATOR, AND THAT IS EXPECTED. They are
+  // rail rows, not enforcement. The claude-sdk runner loads only its
+  // `ALLOWED_SDK_BUILTINS` (the SDK `tools` option, TASK-1200) and names every
+  // other known built-in in `disallowedTools`, so the model never sees one. If
+  // a call for one arrived anyway, `classifySdkToolName` returns a `disabled`
+  // class carrying NO `axName`, and the runner's `pre-tool-use.ts` denies on it
+  // before `policy.preToolUse` runs, so it never reaches `tool:pre-call` to be
+  // matched. On the aisdk runner these tools are not registered at all. Do not
+  // "verify" these rows with an evaluator test asserting a deny from a live
+  // call; the runner's allowlist stays the enforcement.
   //
-  // AW-1 suggested DERIVING these four from `DISABLED_BUILTINS` for one source
-  // of truth. TASK-245 settled that it should not be: this rail is
-  // runner-agnostic, and `DISABLED_BUILTINS` is ONE runner's list. What belongs
-  // here is the intersection — the names BOTH runners keep from the agent, for
-  // the same reason the sandbox floor below is the six both runners have. (The
-  // import is also not available: the constant lives in
-  // `@ax/agent-claude-sdk-runner`, whose package entrypoint IS the runner binary
-  // and which does not re-export it — a cross-plugin runtime import, invariant 2.)
+  // NOT EVERY DENIED BUILT-IN GETS A ROW. The claude-sdk runner denies every
+  // built-in outside `ALLOWED_SDK_BUILTINS`, about twenty more than these rows
+  // name. A deny row renders as "Cannot X", so a row exists only where that
+  // sentence is true and worth a person's attention. For some denied names it
+  // would be false: Bash and Read still do what Monitor, TaskOutput and
+  // TaskStop do, and Edit and Write still change a notebook, so "Cannot" would
+  // understate reach (design H4). Others are aliases or companions of a row
+  // here (`Agent` is `Task` on the wire; CronList lists what only CronCreate
+  // could make), or plumbing no person would look for. Every denied name
+  // without a row has its reason written down in the drift guard's `OFF_RAIL`
+  // (named below).
   //
-  // So the names stay hand-written, and the drift is guarded instead of hoped
+  // AW-1 suggested DERIVING the first four rows from `DISABLED_BUILTINS` for
+  // one source of truth. TASK-245 settled that it should not be: this rail is
+  // runner-agnostic, and the runner's lists are ONE runner's lists. What
+  // belongs here is the intersection — the names BOTH runners keep from the
+  // agent, for the same reason the sandbox floor below is the six both runners
+  // have. (The import is also not available: the constants live in
+  // `@ax/agent-claude-sdk-runner`, whose package entrypoint IS the runner
+  // binary and which does not re-export them — a cross-plugin runtime import,
+  // invariant 2.)
+  //
+  // So the rows stay hand-written, and the drift is guarded instead of hoped
   // away: `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads both
-  // runners' sources as text and fails if this list stops equalling that
-  // intersection. Add or remove a row here only in step with that test.
-  //
-  // KNOWN GAP (TASK-1200): since then the claude-sdk runner keeps every SDK
-  // built-in outside its `ALLOWED_SDK_BUILTINS` from the agent (CronCreate,
-  // ScheduleWakeup, SendMessage, …), not just these four. The guard still
-  // reads only `DISABLED_BUILTINS`, so this rail describes four of ~20 names
-  // both runners keep out; widening it (hand-written rows) is a follow-up.
+  // runners' sources as text and fails unless every built-in both of them keep
+  // from the agent is either a row here or an `OFF_RAIL` entry there, never
+  // both. Add or remove a row here only in step with that test.
   {
     id: 'builtins.web-fetch',
     match: { tool: 'WebFetch' },
@@ -116,6 +128,25 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // input, which is the argument for having it — reworded rather than
     // exempted.
     capability: 'put a multiple-choice question on your screen',
+    subject: 'agent',
+    provenance: 'rule',
+  },
+  {
+    // TASK-1207, from the TASK-1192 walk: an agent loaded the SDK's own
+    // CronCreate, made a schedule that skipped the routine hold and could
+    // never run, and said it was done. The runner keeps every scheduling
+    // built-in out (TASK-1200). This row is the rail saying so, beside "Can
+    // create routines — asks you first". CronDelete, CronList, ScheduleWakeup
+    // and RemoteTrigger are denied too; the drift guard's `OFF_RAIL` records
+    // them as covered by this row.
+    //
+    // It goes AFTER the four, never ahead of them: `@ax/decisions`' canary
+    // builds on the first deny rule (rules.test.ts pins the order).
+    id: 'builtins.cron-create',
+    match: { tool: 'CronCreate' },
+    providedBy: 'sandbox',
+    verdict: 'deny',
+    capability: 'schedule work for later outside routines',
     subject: 'agent',
     provenance: 'rule',
   },
@@ -360,8 +391,9 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   //
   // Why these six and not the claude-sdk runner's fuller list: these are the
   // ones BOTH runners have (@ax/agent-aisdk-runner's `tools/builtins.ts`
-  // registers exactly Bash, Read, Write, Edit, Glob, Grep; the claude-sdk
-  // runner passes through the SDK's own set, which is a superset).
+  // registers exactly Bash, Read, Write, Edit, Glob, Grep; since TASK-1200 the
+  // claude-sdk runner loads exactly its `ALLOWED_SDK_BUILTINS`, which is these
+  // six plus TodoWrite, Skill and ToolSearch).
   //
   // ALL SIX ARE `providedBy: 'sandbox'`, and that is load-bearing rather than
   // bookkeeping. They are registered by the RUNNER, so they never appear in the
