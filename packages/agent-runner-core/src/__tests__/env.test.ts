@@ -30,6 +30,19 @@ const PROXY_UNIX = {
 };
 
 describe('readRunnerEnv', () => {
+  it('readRunnerEnv parses AX_INBOX_IDLE_MS and AX_TURN_LIMIT_MS', () => {
+    const env = readRunnerEnv({ ...PROXY_TCP, AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' });
+    expect(env.inboxIdleMs).toBe(2_100_000);
+    expect(env.turnLimitMs).toBe(7_200_000);
+    const none = readRunnerEnv(PROXY_TCP);
+    expect(none.inboxIdleMs).toBeUndefined();
+    expect(none.turnLimitMs).toBeUndefined();
+  });
+  it.each(['soon', '0', '-3', '1.5', '1e6', ' '])('a non-numeric value is ignored (%j)', (v) => {
+    const env = readRunnerEnv({ ...PROXY_TCP, AX_INBOX_IDLE_MS: v, AX_TURN_LIMIT_MS: v });
+    expect(env.inboxIdleMs).toBeUndefined();
+    expect(env.turnLimitMs).toBeUndefined();
+  });
   it('reads proxyEndpoint when only AX_PROXY_ENDPOINT is set', () => {
     expect(readRunnerEnv(PROXY_TCP)).toEqual({
       runnerEndpoint: 'unix:///tmp/ax.sock',

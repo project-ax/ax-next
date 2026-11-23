@@ -314,6 +314,8 @@ export interface K8sPresetConfig {
     serviceStorageDefaultMiB?: number;
     /** sandbox.runnerMax.memoryMiB and sandbox.nodeAllocatableMiB, for the boot-time fit check. */
     runnerMaxMemoryMiB?: number;
+    /** sandbox.runnerMax.cpuMillis: the ceiling for an agent's runner CPU. */
+    runnerMaxCpuMillis?: number;
     nodeAllocatableMiB?: number;
     readinessPollMs?: number;
     readinessTimeoutMs?: number;
@@ -960,6 +962,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       : {}),
     ...(config.sandbox?.activeDeadlineSeconds !== undefined
       ? { activeDeadlineSeconds: config.sandbox.activeDeadlineSeconds }
+      : {}),
+    ...(config.sandbox?.runnerMaxCpuMillis !== undefined
+      ? { runnerCpuLimitMaxMillis: config.sandbox.runnerMaxCpuMillis }
+      : {}),
+    ...(config.sandbox?.runnerMaxMemoryMiB !== undefined
+      ? { runnerMemoryLimitMaxMiB: config.sandbox.runnerMaxMemoryMiB }
       : {}),
     ...(config.sandbox?.serviceCpuLimitMaxMillis !== undefined
       ? { serviceCpuLimitMaxMillis: config.sandbox.serviceCpuLimitMaxMillis }
@@ -1832,6 +1840,8 @@ export function loadK8sConfigFromEnv(
   if (serviceStorage !== undefined) sandbox.serviceStorageDefaultMiB = serviceStorage;
   const runnerMaxMem = positiveInt('K8S_RUNNER_MAX_MEMORY_MIB', env.K8S_RUNNER_MAX_MEMORY_MIB);
   if (runnerMaxMem !== undefined) sandbox.runnerMaxMemoryMiB = runnerMaxMem;
+  const runnerMaxCpu = positiveInt('K8S_RUNNER_MAX_CPU_MILLIS', env.K8S_RUNNER_MAX_CPU_MILLIS);
+  if (runnerMaxCpu !== undefined) sandbox.runnerMaxCpuMillis = runnerMaxCpu;
   const nodeAlloc = positiveInt('K8S_NODE_ALLOCATABLE_MIB', env.K8S_NODE_ALLOCATABLE_MIB);
   if (nodeAlloc !== undefined) sandbox.nodeAllocatableMiB = nodeAlloc;
   if (env.K8S_NAMESPACE !== undefined && env.K8S_NAMESPACE !== '') {

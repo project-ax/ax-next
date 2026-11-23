@@ -103,6 +103,15 @@ export interface RunnerEnv {
    */
   proxyToken?: string;
   memoryRoot?: string;
+  /**
+   * `AX_INBOX_IDLE_MS`: how long the inbox loop waits for the next message
+   * before it gives up (the host-crash fallback reaper). Absent means the
+   * inbox loop's own default (15 min). Positive whole milliseconds only; any
+   * other value is ignored, not an error, so a bad value never stops a boot.
+   */
+  inboxIdleMs?: number;
+  /** `AX_TURN_LIMIT_MS`: the longest one turn may run. Same parsing; absent means the runner's own default. */
+  turnLimitMs?: number;
 }
 
 /**
@@ -238,5 +247,14 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   }
   const memoryRoot = opt('AX_MEMORY_ROOT');
   if (memoryRoot !== undefined) result.memoryRoot = memoryRoot;
+  const positiveMs = (k: string): number | undefined => {
+    const v = opt(k);
+    if (v === undefined || !/^[1-9][0-9]{0,14}$/.test(v)) return undefined;
+    return Number(v);
+  };
+  const inboxIdleMs = positiveMs('AX_INBOX_IDLE_MS');
+  if (inboxIdleMs !== undefined) result.inboxIdleMs = inboxIdleMs;
+  const turnLimitMs = positiveMs('AX_TURN_LIMIT_MS');
+  if (turnLimitMs !== undefined) result.turnLimitMs = turnLimitMs;
   return result;
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { OpenSessionInputSchema } from '../open-session.js';
 import { TEST_PROXY_CONFIG } from './proxy-config.js';
+import { resolveConfig } from '../config.js';
+import { buildPodSpec } from '../pod-spec.js';
 
 // ---------------------------------------------------------------------------
 // Schema rejection tests for OpenSessionInputSchema (Phase B follow-up).
@@ -166,5 +168,35 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
       }),
       'installedSkills.0.mcpServers.0.command',
     );
+  });
+});
+
+// Review Focus 4: a stored or requested size above the chart's maximum was valid
+// when it was saved; lowering the cap later must not break the agent. So the
+// wire accepts it and the renderer clamps it.
+describe('OpenSessionInputSchema (k8s) — runnerSize above the cap', () => {
+  it('stored limits above the cap run clamped', () => {
+    const parsed = OpenSessionInputSchema.safeParse({
+      ...(validBaseInput() as Record<string, unknown>),
+      runnerSize: {
+        cpuMillis: { request: 64_000, limit: 128_000 },
+        memoryMiB: { request: 200_000, limit: 400_000 },
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const cfg = resolveConfig({
+      hostIpcUrl: 'http://host:80',
+      runnerCpuLimitMaxMillis: 8000,
+      runnerMemoryLimitMaxMiB: 16_384,
+    });
+    const spec = buildPodSpec('p', {
+      sessionId: 's', runnerBinary: '/opt/runner.js', authToken: 't', runnerEndpoint: 'http://host:80',
+      runnerSize: parsed.data.runnerSize,
+    }, cfg).spec as { containers: Array<{ resources: unknown }> };
+    expect(spec.containers[0]!.resources).toEqual({
+      limits: { cpu: '8000m', memory: '16384Mi' },
+      requests: { cpu: '8000m', memory: '16384Mi' },
+    });
   });
 });

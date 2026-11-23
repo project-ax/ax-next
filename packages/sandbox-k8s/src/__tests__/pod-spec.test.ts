@@ -1747,3 +1747,79 @@ describe('buildPodSpec', () => {
     });
   });
 });
+
+describe('buildPodSpec runnerSize (TASK 2.3)', () => {
+  type Res = { limits: Record<string, string>; requests: Record<string, string> };
+  const runnerRes = (spec: unknown): Res =>
+    (spec as { containers: Array<{ name: string; resources: Res }> }).containers.find((c) => c.name === 'runner')!.resources;
+  const size = {
+    cpuMillis: { request: 2000, limit: 4000 },
+    memoryMiB: { request: 6144, limit: 8192 },
+  };
+
+  it('runnerSize renders on the runner container in both renderers', () => {
+    // One buildPodSpec feeds both the plain pod and the agent-sandbox podTemplate.
+    for (const backend of ['pod', 'agent-sandbox'] as const) {
+      const cfg = resolveConfig({
+        hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80',
+        backend,
+        ...(backend === 'agent-sandbox' ? { proxyEndpoint: 'http://proxy:8888' } : {}),
+      });
+      const spec = buildPodSpec('pod-sized', { ...baseInput, runnerSize: size }, cfg).spec;
+      expect(runnerRes(spec)).toEqual({
+        limits: { cpu: '4000m', memory: '8192Mi' },
+        requests: { cpu: '2000m', memory: '6144Mi' },
+      });
+    }
+  });
+
+  it('unset runnerSize or unset halves keep today defaults', () => {
+    expect(runnerRes(buildPodSpec('p', baseInput, baseResolved()).spec)).toEqual({
+      limits: { cpu: '1', memory: '1Gi' },
+      requests: { cpu: '100m', memory: '256Mi' },
+    });
+    expect(
+      runnerRes(buildPodSpec('p', { ...baseInput, runnerSize: { memoryMiB: size.memoryMiB } }, baseResolved()).spec),
+    ).toEqual({
+      limits: { cpu: '1', memory: '8192Mi' },
+      requests: { cpu: '100m', memory: '6144Mi' },
+    });
+  });
+
+  it('runnerSize clamps to the configured max', () => {
+    const cfg = resolveConfig({
+      hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80',
+      runnerCpuLimitMaxMillis: 3000,
+      runnerMemoryLimitMaxMiB: 4096,
+    });
+    const spec = buildPodSpec(
+      'p',
+      { ...baseInput, runnerSize: { cpuMillis: { request: 3500, limit: 99_000 }, memoryMiB: { request: 2048, limit: 99_999 } } },
+      cfg,
+    ).spec;
+    // request is clamped too, so request <= limit holds after clamping.
+    expect(runnerRes(spec)).toEqual({
+      limits: { cpu: '3000m', memory: '4096Mi' },
+      requests: { cpu: '3000m', memory: '2048Mi' },
+    });
+  });
+
+  it('the scaffold init container keeps the chart defaults', () => {
+    const spec = buildPodSpec('p', { ...baseInput, runnerSize: size }, baseResolved()).spec as {
+      initContainers: Array<{ name: string; resources: Res }>;
+    };
+    expect(spec.initContainers.find((c) => c.name === 'sdk-scaffold')!.resources.limits).toEqual({ cpu: '1', memory: '1Gi' });
+  });
+
+  it('extraEnv carries AX_INBOX_IDLE_MS and AX_TURN_LIMIT_MS onto the runner', () => {
+    const spec = buildPodSpec(
+      'p',
+      { ...baseInput, extraEnv: { AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' } },
+      baseResolved(),
+    ).spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+    expect(spec.containers[0]!.env).toEqual(expect.arrayContaining([
+      { name: 'AX_INBOX_IDLE_MS', value: '2100000' },
+      { name: 'AX_TURN_LIMIT_MS', value: '7200000' },
+    ]));
+  });
+});

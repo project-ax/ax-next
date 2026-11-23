@@ -725,6 +725,34 @@ describe('OpenSessionInputSchema', () => {
     expect(result.error.issues.map((i) => i.path.join('.'))).toEqual(['proxyConfig']);
   });
 
+  it('accepts runnerSize and the two idle/turn env names, and refuses other env', () => {
+    const base = {
+      sessionId: 'sess-1', workspaceRoot: '/tmp/ws', runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+    };
+    const sized = OpenSessionInputSchema.safeParse({
+      ...base,
+      runnerSize: { cpuMillis: { request: 2000, limit: 4000 }, memoryMiB: { request: 6144, limit: 8192 } },
+      env: { AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' },
+    });
+    expect(sized.success).toBe(true);
+    // Above any chart max is NOT a schema error: the backend clamps, never refuses.
+    expect(OpenSessionInputSchema.safeParse({
+      ...base, runnerSize: { memoryMiB: { request: 1, limit: 999_999_999 } },
+    }).success).toBe(true);
+    for (const bad of [
+      { runnerSize: { cpuMillis: { request: 4000, limit: 2000 } } },
+      { runnerSize: { cpuMillis: { request: 0, limit: 2000 } } },
+      { runnerSize: { memoryMiB: { request: 1.5, limit: 2 } } },
+      { runnerSize: { memory: '8Gi' } },
+      { env: { LD_PRELOAD: '/x' } },
+      { env: { AX_INBOX_IDLE_MS: 'soon' } },
+      { env: { AX_TURN_LIMIT_MS: '-5' } },
+    ]) {
+      expect(OpenSessionInputSchema.safeParse({ ...base, ...bad }).success).toBe(false);
+    }
+  });
+
   it('still accepts an input with no services (back-compat)', () => {
     const result = OpenSessionInputSchema.safeParse({
       sessionId: 'sess-1',

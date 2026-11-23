@@ -770,7 +770,10 @@ async function runRunnerInner(
     );
   }
 
-  const inbox = createInboxLoop({ client });
+  const inbox = createInboxLoop({
+    client,
+    ...(env.inboxIdleMs !== undefined ? { idleTimeoutMs: env.inboxIdleMs } : {}),
+  });
 
   // Phase 2: whether the loop's provider accepts `document` content blocks.
   // A per-loop capability (each SDK pin answers differently), so the loop

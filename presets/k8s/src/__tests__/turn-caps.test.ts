@@ -24,3 +24,27 @@ describe('checkNodeFit', () => {
     expect(checkNodeFit({ runnerMaxMiB: 16384, largestServiceSetMiB: 3072 })).toBeNull();
   });
 });
+
+describe('runner max env', () => {
+  it('K8S_RUNNER_MAX_CPU_MILLIS and K8S_RUNNER_MAX_MEMORY_MIB load as numbers', async () => {
+    const { loadK8sConfigFromEnv } = await import('../index.js');
+    const base = {
+      DATABASE_URL: 'postgres://x',
+      AX_K8S_HOST_IPC_URL: 'http://host:80',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: '0'.repeat(64),
+      AX_CONTENT_ORIGIN: 'http://127.0.0.1:9091',
+      AX_CONTENT_PORT: '0',
+      AX_CONTENT_FRAME_ANCESTORS: 'http://localhost:9090',
+      AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
+      AX_FILESTORE_SERVER: '10.9.8.7',
+      AX_FILESTORE_EXPORT_PATH: '/vol1',
+      AX_BLOB_FS_ROOT: '/var/lib/ax-next/blobs',
+    };
+    const cfg = loadK8sConfigFromEnv({ ...base, K8S_RUNNER_MAX_CPU_MILLIS: '8000', K8S_RUNNER_MAX_MEMORY_MIB: '16384' });
+    expect(cfg.sandbox?.runnerMaxCpuMillis).toBe(8000);
+    expect(cfg.sandbox?.runnerMaxMemoryMiB).toBe(16384);
+    expect(() => loadK8sConfigFromEnv({ ...base, K8S_RUNNER_MAX_CPU_MILLIS: '8k' })).toThrow(/K8S_RUNNER_MAX_CPU_MILLIS/);
+  });
+});

@@ -123,6 +123,18 @@ describe('shared Agent Sandbox pool', () => {
       .toEqual(['sandboxtemplates', 'sandboxwarmpools']);
     expect(f.storage.assign).not.toHaveBeenCalled();
   });
+  it('a sized session never takes a pool pod', async () => {
+    const f = fixture(); const api = await createSharedPoolSessionApi(f.pods, f.custom, f.direct, f.storage, config);
+    const body = sessionPod('agent-a', true);
+    const sizedBody = structuredClone(body);
+    (sizedBody.spec.containers as { name: string; resources: unknown }[])[0]!.resources = {
+      limits: { cpu: '4000m', memory: '8192Mi' }, requests: { cpu: '2000m', memory: '6144Mi' } };
+    await api.createNamespacedPod({ namespace: config.namespace, body: sizedBody });
+    expect(f.direct.creates).toEqual([{ namespace: config.namespace, body: sizedBody }]);
+    expect(f.storage.assign).not.toHaveBeenCalled();
+    expect(vi.mocked(f.custom.createNamespacedCustomObject).mock.calls.map(([c]) => c.plural))
+      .toEqual(['sandboxtemplates', 'sandboxwarmpools']);
+  });
   // TASK-994 — the standby template replaces the runner env, so a pooled runner
   // learns its transcripts root only from the bootstrap; the standby must still
   // carry the disk /tmp that root lives on.

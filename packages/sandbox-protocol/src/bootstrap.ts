@@ -26,7 +26,10 @@ const controlNames = new Set([
   'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_TERMINAL_PROMPT',
   'GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL',
   'GIT_CONFIG_COUNT',
+  'AX_INBOX_IDLE_MS', 'AX_TURN_LIMIT_MS',
 ]);
+/** Whole milliseconds only: these two feed timers, so no signs, decimals or exponents. */
+const timingNames = new Set(['AX_INBOX_IDLE_MS', 'AX_TURN_LIMIT_MS']);
 const fixedPaths: Record<string, string> = {
   AX_EPHEMERAL_ROOT: POD_SCRATCH_ROOT,
   AX_USERFILES_ROOT: '/files', AX_MEMORY_ROOT: '/memory', AX_TRANSCRIPTS_ROOT: `${POD_SCRATCH_ROOT}/transcripts`,
@@ -42,6 +45,7 @@ const fixedPaths: Record<string, string> = {
 export function allowedBootstrapEnv(name: string, value: string): boolean {
   if (value.includes('\0') || value.length > 256 * 1024) return false;
   if (fixedPaths[name] !== undefined && value !== fixedPaths[name]) return false;
+  if (timingNames.has(name)) return /^[1-9][0-9]{0,14}$/.test(value);
   if (controlNames.has(name)) return true;
   if (/^GIT_CONFIG_(?:KEY|VALUE)_(?:[0-9]|[1-5][0-9]|6[0-3])$/.test(name)) return true;
   // Only proxy placeholders can add provider-specific names. No loader/control vars.

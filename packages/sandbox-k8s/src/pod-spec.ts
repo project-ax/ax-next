@@ -19,6 +19,7 @@ import { posix } from 'node:path';
 import {
   buildGitCredentialEnv,
   POD_SCRATCH_ROOT,
+  type RunnerSizeParsed,
   type ServiceDescriptorParsed,
 } from '@ax/sandbox-protocol';
 import type { MountSpec } from '@ax/sandbox-mount-protocol';
@@ -196,6 +197,12 @@ export interface BuildPodSpecInput {
    */
   services?: ServiceDescriptorParsed[];
   /**
+   * §3.5 — the agent's runner size, numbers only (millicores, MiB). Clamped to
+   * the config maximums and rendered onto the runner container alone; unset
+   * halves keep the config defaults.
+   */
+  runnerSize?: RunnerSizeParsed;
+  /**
    * filestore-user-files (design §4/§6) — durable per-agent mounts resolved by
    * the optional `sandbox:resolve-mounts` hook (open-session.ts calls it when a
    * resolver plugin is loaded). The k8s provider realizes the `nfs` kind as an
@@ -364,6 +371,30 @@ function renderServiceResources(
         mem === undefined
           ? config.serviceMemoryRequest
           : `${clamp(mem.request, config.serviceMemoryLimitMaxMiB)}Mi`,
+    },
+  };
+}
+
+/**
+ * The runner container's resources. Same numeric-until-render rule as the
+ * services: clamp request and limit to the config maximums (request ≤ limit
+ * still holds, both only ever shrink toward the same ceiling), write the
+ * quantity strings here, and fall back to the config defaults per half.
+ */
+function renderRunnerResources(
+  size: RunnerSizeParsed | undefined,
+  config: ResolvedSandboxK8sConfig,
+): { limits: Record<string, string>; requests: Record<string, string> } {
+  const cpu = size?.cpuMillis;
+  const mem = size?.memoryMiB;
+  return {
+    limits: {
+      cpu: cpu === undefined ? config.cpuLimit : `${Math.min(cpu.limit, config.runnerCpuLimitMaxMillis)}m`,
+      memory: mem === undefined ? config.memoryLimit : `${Math.min(mem.limit, config.runnerMemoryLimitMaxMiB)}Mi`,
+    },
+    requests: {
+      cpu: cpu === undefined ? config.cpuRequest : `${Math.min(cpu.request, config.runnerCpuLimitMaxMillis)}m`,
+      memory: mem === undefined ? config.memoryRequest : `${Math.min(mem.request, config.runnerMemoryLimitMaxMiB)}Mi`,
     },
   };
 }
@@ -985,16 +1016,7 @@ export function buildPodSpec(
         // execs its argv (e.g. `tini --`) so `args` reaches node verbatim.
         args: ['node', input.runnerBinary],
         env,
-        resources: {
-          limits: {
-            cpu: config.cpuLimit,
-            memory: config.memoryLimit,
-          },
-          requests: {
-            cpu: config.cpuRequest,
-            memory: config.memoryRequest,
-          },
-        },
+        resources: renderRunnerResources(input.runnerSize, config),
         securityContext: containerSecurity,
         volumeMounts: [
           // The session's scratch root (AX_EPHEMERAL_ROOT): uploads, SDK

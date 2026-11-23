@@ -21,6 +21,13 @@ describe('bootstrap process capabilities', () => {
   it('accepts the baseline assignment (so the rejections below are about the token)', () => {
     expect(BootstrapAssignmentSchema.safeParse(assignment()).success).toBe(true);
   });
+  it('bootstrap allows AX_INBOX_IDLE_MS and AX_TURN_LIMIT_MS', () => {
+    expect(BootstrapAssignmentSchema.safeParse(assignment({ AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' })).success).toBe(true);
+  });
+  it.each([['AX_INBOX_IDLE_MS', ''], ['AX_INBOX_IDLE_MS', 'soon'], ['AX_TURN_LIMIT_MS', '-1'], ['AX_TURN_LIMIT_MS', '0'], ['AX_TURN_LIMIT_MS', '1e9'], ['AX_INBOX_IDLE_MS', '9'.repeat(16)]])(
+    'rejects %s=%j (digits only)', (name, value) => {
+      expect(allowedBootstrapEnv(name, value)).toBe(false);
+    });
   it('rejects an assignment without AX_PROXY_TOKEN (TASK-784)', () => {
     const a = assignment();
     delete (a.env as Record<string, string>).AX_PROXY_TOKEN;
