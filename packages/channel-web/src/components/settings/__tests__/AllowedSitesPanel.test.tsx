@@ -96,4 +96,79 @@ describe('AllowedSitesPanel', () => {
     await screen.findByText('No allowed sites yet — add one above.');
     expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
   });
+
+  describe('team agents are not managed here', () => {
+    const WITH_TEAM = [
+      ...AGENTS,
+      { agentId: 't1', displayName: 'Team Bot', visibility: 'team' as const },
+    ];
+
+    it("lists personal agents' sites only; a team agent's rows and badge never show", async () => {
+      vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue(WITH_TEAM);
+      vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([
+        { host: 'all.example.com', agentId: 'a1', grantedAt: 't' },
+        { host: 'all.example.com', agentId: 'a2', grantedAt: 't' },
+        { host: 'all.example.com', agentId: 't1', grantedAt: 't' },
+        { host: 'teamonly.example.com', agentId: 't1', grantedAt: 't' },
+      ]);
+      render(<AllowedSitesPanel />);
+      const allRow = await screen.findByTestId('allowed-site-all.example.com');
+      // Still "All agents": every PERSONAL agent has it; the team agent is not counted.
+      expect(within(allRow).getByText('All agents')).toBeInTheDocument();
+      expect(screen.queryByText('Team Bot')).toBeNull();
+      expect(screen.queryByTestId('allowed-site-teamonly.example.com')).toBeNull();
+      expect(
+        screen.getByText(/A team agent’s sites are in that agent’s settings, under Connectors\./),
+      ).toBeInTheDocument();
+    });
+
+    it('removing a host only touches the personal agents that hold it', async () => {
+      vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue(WITH_TEAM);
+      vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([
+        { host: 'all.example.com', agentId: 'a1', grantedAt: 't' },
+        { host: 'all.example.com', agentId: 't1', grantedAt: 't' },
+      ]);
+      render(<AllowedSitesPanel />);
+      const row = await screen.findByTestId('allowed-site-all.example.com');
+      fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+      await waitFor(() =>
+        expect(connLib.setSiteAgents).toHaveBeenCalledWith('all.example.com', [], ['a1']),
+      );
+    });
+
+    it('Add a site offers personal agents only, and "All agents" means all of them', async () => {
+      vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue(WITH_TEAM);
+      render(<AllowedSitesPanel />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Add a site' }));
+      fireEvent.change(await screen.findByLabelText('Site'), {
+        target: { value: 'new.example.com' },
+      });
+      expect(screen.queryByRole('checkbox', { name: 'Team Bot' })).toBeNull();
+      expect(screen.getByRole('checkbox', { name: 'Research' })).toBeTruthy();
+      expect(
+        screen.getByText(/Choose which of your personal agents may reach this site\./),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+      await waitFor(() =>
+        expect(connLib.setSiteAgents).toHaveBeenCalledWith('new.example.com', ['a1', 'a2'], []),
+      );
+    });
+
+    it('Add is disabled when the only agents are team agents', async () => {
+      vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([WITH_TEAM[2]!]);
+      vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([]);
+      render(<AllowedSitesPanel />);
+      await screen.findByText('No allowed sites yet — add one above.');
+      expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
+    });
+
+    it('when the agent list fails, the panel says so instead of showing an empty list', async () => {
+      vi.spyOn(agentsLib, 'listChatAgents').mockRejectedValue(new Error('nope'));
+      render(<AllowedSitesPanel />);
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(screen.queryByTestId('allowed-site-all.example.com')).toBeNull();
+      expect(screen.queryByText('No allowed sites yet — add one above.')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
+    });
+  });
 });
