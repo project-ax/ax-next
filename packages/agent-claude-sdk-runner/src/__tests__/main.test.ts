@@ -611,6 +611,8 @@ describe('main()', () => {
           DISABLE_ERROR_REPORTING?: string;
           CLAUDE_CODE_DISABLE_CRON?: string;
           CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL?: string;
+          CLAUDE_CODE_DISABLE_CLAUDE_MDS?: string;
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
         };
       };
     };
@@ -731,6 +733,15 @@ describe('main()', () => {
     // puts `loop` back in front of the model and reopens that self-scheduling path.
     expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
     expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
+
+    // TASK-1217: two more switches in the same floor. The CLI never loads
+    // CLAUDE.md, rules/*.md or auto-memory MEMORY.md from its config dir (the
+    // agent's shell can write them, and the CLI re-reads them after compaction
+    // as the user's own instructions), and it runs no background task (a
+    // finished one wakes the model for a turn nobody asked for). Dropping
+    // either spread reopens that path.
+    expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+    expect(queryArg.options.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
@@ -3856,6 +3867,69 @@ describe('main()', () => {
       };
       expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CRON).toBe('1');
       expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL).toBe('1');
+    });
+
+    // TASK-1217: the instruction-files and background-tasks switches are the
+    // same floor, so the same rule applies. A credential slot that happened to
+    // carry either name rides into providerEnv on its `ax-cred:<32-hex>` value
+    // and must still lose to '1'. Moving either spread above providerEnv fails
+    // this test.
+    it('the instruction-files and background-tasks switches win over a providerEnv that sets them (TASK-1217)', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        CLAUDE_CODE_DISABLE_CLAUDE_MDS: 'ax-cred:00000000000000000000000000000003',
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: 'ax-cred:00000000000000000000000000000004',
+      });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'proxy.drain-allowed-hosts') return { hosts: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: {
+            CLAUDE_CODE_DISABLE_CLAUDE_MDS?: string;
+            CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
+          };
+        };
+      };
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS).toBe('1');
+      expect(queryArg.options.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
     });
 
     it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {

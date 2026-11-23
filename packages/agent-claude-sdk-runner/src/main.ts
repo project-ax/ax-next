@@ -32,7 +32,9 @@ import {
   type RunnerDeps,
 } from '@ax/agent-runner-core';
 import { HELD_TOOL_RESULT_TEXT } from './held-calls.js';
+import { buildBackgroundTasksEnv } from './background-tasks-env.js';
 import { buildBundledSkillsEnv } from './bundled-skills-env.js';
+import { buildInstructionFilesEnv } from './instruction-files-env.js';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
@@ -443,6 +445,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // otherwise run prompts planted in `<cwd>/.claude/scheduled_tasks.json`
             // with no user turn. Same floor as telemetry; see bundled-skills-env.ts.
             ...buildBundledSkillsEnv(),
+            // TASK-1217: never load CLAUDE.md, rules/*.md or auto-memory MEMORY.md
+            // from CLAUDE_CONFIG_DIR, which the agent's shell can write (the CLI
+            // re-reads them after compaction). Same floor; see instruction-files-env.ts.
+            ...buildInstructionFilesEnv(),
+            // TASK-1217: no background tasks, so a finished command never wakes
+            // the model for a turn nobody asked for, and one past its timeout is
+            // killed, not backgrounded. Same floor; see background-tasks-env.ts.
+            ...buildBackgroundTasksEnv(),
             HOME: sdkHome,
             // Redirect npx/uvx fetch caches onto the session scratch root so they
             // don't fill the agent's home, which is durable and counts toward the

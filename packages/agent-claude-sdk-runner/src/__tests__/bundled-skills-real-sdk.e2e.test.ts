@@ -6,7 +6,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { IpcClient } from '@ax/ipc-protocol';
+import { buildBackgroundTasksEnv } from '../background-tasks-env.js';
 import { buildBundledSkillsEnv } from '../bundled-skills-env.js';
+import { buildInstructionFilesEnv } from '../instruction-files-env.js';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { createPreToolUseHook } from '../pre-tool-use.js';
 import { readProjectedSkills } from '../projected-skills.js';
@@ -154,9 +156,10 @@ function stubClient(): { client: IpcClient; calls: Array<{ action: string; paylo
 
 /**
  * One turn through the real CLI. `likeMain` applies main.ts's bundled-skill
- * configuration: the `buildBundledSkillsEnv()` floor and the PreToolUse hook
- * that refuses any `Skill` call outside AX's projection. Without it the CLI
- * runs with its defaults (the control).
+ * configuration: the `buildBundledSkillsEnv()` floor (plus the rest of
+ * main.ts's CLI env floor, so the CLI's listing is the one production sees)
+ * and the PreToolUse hook that refuses any `Skill` call outside AX's
+ * projection. Without it the CLI runs with its defaults (the control).
  */
 async function runOneTurn(likeMain: boolean): Promise<{
   seen: SDKMessage[];
@@ -186,7 +189,9 @@ async function runOneTurn(likeMain: boolean): Promise<{
         ANTHROPIC_API_KEY: 'sk-ant-fake-for-a-local-scripted-server',
         ...buildTelemetryEnv(),
         DISABLE_AUTOUPDATER: '1',
-        ...(likeMain ? buildBundledSkillsEnv() : {}),
+        ...(likeMain
+          ? { ...buildBundledSkillsEnv(), ...buildInstructionFilesEnv(), ...buildBackgroundTasksEnv() }
+          : {}),
       },
       tools: [...ALLOWED_SDK_BUILTINS],
       disallowedTools: [...DENIED_SDK_BUILTINS],
