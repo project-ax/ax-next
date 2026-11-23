@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -23,9 +24,16 @@ vi.mock('@/lib/admin', () => ({
   listAgentToolOptions: vi.fn(),
 }));
 // The attachment sections only render in the form view; stub them so the
-// list-view delete test stays isolated.
+// list-view delete test stays isolated. The skill stub keeps its last
+// `onSaved` so a test can play a skill-attachment save.
+const skillSection = vi.hoisted(() => ({
+  onSaved: undefined as undefined | ((next: never[]) => void),
+}));
 vi.mock('../SkillAttachmentsSection', () => ({
-  SkillAttachmentsSection: () => null,
+  SkillAttachmentsSection: (props: { onSaved?: (next: never[]) => void }) => {
+    skillSection.onSaved = props.onSaved;
+    return null;
+  },
 }));
 vi.mock('../AuthoredSkillsSection', () => ({
   AuthoredSkillsSection: () => null,
@@ -643,6 +651,23 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
     expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeTruthy();
     expect(screen.queryByText(/couldn’t load the list of tools/)).toBeNull();
     expect(listAgentToolOptions).toHaveBeenCalledTimes(2);
+  });
+
+  // A skill-attachment save swaps in a new `editing` object. Re-reading the
+  // tool list then would blank the picker to "Loading…" mid-edit, so the read
+  // is keyed on the form being open, not on `editing`.
+  it('a skill-attachment save does not read the tool list again', async () => {
+    await openEdit(AGENT);
+    expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(1);
+
+    act(() => skillSection.onSaved!([]));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(screen.queryByText('Loading the list of tools…')).toBeNull();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(1);
   });
 
   it('saving while the tool list is still loading keeps the saved list', async () => {
