@@ -242,7 +242,8 @@
  *   and TASK-1136's run before it, in their old order, so `saved_to_memory` is
  *   still its own narration.
  *
- * One class the observer drops, the one-off cleanup keeps. TASK-612 reads the
+ * Two classes the observer drops, the one-off cleanup keeps: `memory-miss`
+ * (TASK-1210, see {@link MEMORY_MISS_PATTERNS}), and this one. TASK-612 reads the
  * subjects `agent` and `the_agent` as the agent too, so the observer still
  * drops their context self-reports on the way in. But `agent` is an everyday
  * word ("the agent received no instructions from the seller" is about
@@ -414,11 +415,11 @@ const NONE_SAVED_IN_MEMORY =
  */
 const MEMORY_MISS_PATTERNS: readonly RegExp[] = [
   // "it has no record of his favorite color", after "assistant"
-  /\b(?:i|assistant(?: [^.;]{0,80}? it)?) (?:has|had|have) no records? (?:of|for|about) (?:your|his|her|their|the user's|[a-z0-9_]+'s) /,
+  /\b(?:i|assistant(?: (?:(?!\b(?:if|when|unless)\b)[^.;]){0,80}? it)?) (?:has|had|have) no records? (?:of|for|about) (?:your|his|her|their|the user's|[a-z0-9_]+'s) /,
   // "No record of vinay's favorite color exists in prior conversations"
   new RegExp(String.raw`\bno records? (?:of|for) [^.;]{0,200}?\b(?:in|from) (?:our |the |any )?${MEMORY}`),
   // "I don't have your team standup time on file"
-  /\b(?:i|assistant(?: [^.;]{0,80}? it)?) (?:don't|do not|doesn't|does not|didn't|did not) have\b[^.;]{0,80}?\bon (?:file|record)\b/,
+  /\b(?:i|assistant(?: (?:(?!\b(?:if|when|unless)\b)[^.;]){0,80}? it)?) (?:don't|do not|doesn't|does not|didn't|did not) have\b[^.;]{0,80}?\bon (?:file|record)\b/,
   NONE_SAVED_IN_MEMORY,
 ];
 
@@ -730,7 +731,6 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
   const words = normalized.split('_').filter((word) => word !== '');
   // Who it is, first: `saved_standing_preference` starts with an action verb.
   if (words.some((word) => IDENTITY_WORDS.has(word)) || CREATED_BY.test(normalized)) return 'identity';
-  if (isMemoryMiss(normalized, object)) return 'memory-miss';
   // A holder (`has_limitation`) is the assistant. Anything else, a reporting
   // verb or none, needs it marked: `its`/`own` in the predicate, or a
   // self-limit at the object's start.
@@ -768,16 +768,17 @@ function classifyOwnStatement(normalized: string, object: string): AgentFactClas
 /**
  * What a fact about the agent is, or `null` when its subject isn't the agent
  * (see the header). The observer drops `context`, `agent-context`,
- * `own-narration`, `action-narration` and `capability`, and keeps `identity`
- * and `other` ({@link isAgentContextSelfReport}). `agent` and `the_agent`
+ * `own-narration`, `action-narration`, `capability` and `memory-miss`, and
+ * keeps `identity` and `other` ({@link isAgentContextSelfReport}). `agent` and `the_agent`
  * only ever get `agent-context` or `null`: TASK-1136's and TASK-1151's checks
  * take the assistant alone.
  *
  * The one-off cleanup, `packages/memory/scripts/clean-assistant-narration.mjs`,
  * deletes saved rows with this very function: it pipes this file, as text,
  * ahead of its own into `node --input-type=module-typescript`. It deletes
- * every class the observer drops except `agent-context`: `agent` is an
- * everyday noun, and that delete is for good. So this file
+ * every class the observer drops except `agent-context` (`agent` is an
+ * everyday noun) and `memory-miss` (read from free text): that delete is
+ * for good. So this file
  * stays import-free and uses only erasable TypeScript (annotations, `as`,
  * `readonly`; no `enum`, `namespace` or parameter properties), and its
  * top-level names share that program's scope.
@@ -801,11 +802,14 @@ export function classifyAgentFact(fact: {
   const normalized = normalizePredicate(fact.predicate);
   // Before the action verbs: `saved_to_memory` starts with one.
   if (isOwnNarration(normalized, fact.object, text)) return 'own-narration';
-  return classifyOwnStatement(normalized, fact.object);
+  const kind = classifyOwnStatement(normalized, fact.object);
+  // Last, and only over `other`: a row the older checks already drop keeps
+  // its class, so the cleanup's delete set is what it was before TASK-1210.
+  return kind === 'other' && isMemoryMiss(normalized, fact.object) ? 'memory-miss' : kind;
 }
 
 /**
- * Whether the observer drops the fact: its class is one of the five dropped
+ * Whether the observer drops the fact: its class is one of the six dropped
  * ones. The name predates TASK-1136 and TASK-1151; `toStatements` calls it by
  * that name.
  */

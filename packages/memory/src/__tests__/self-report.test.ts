@@ -711,11 +711,25 @@ describe("more of the turn's narration (TASK-1210)", () => {
     ['assistant', 'stated', 'If no payment method is on file for your account, Netflix pauses it'],
     ['assistant', 'stated', 'If no W-4 is on file for an employee, the employer withholds at the single rate'],
     ['assistant', 'offered_to_sarah', 'a 15% discount on the renewal'],
+    // Review round 3: "it" across a conditional isn't the assistant.
+    ['assistant', 'advised', 'The assistant advised that if the IRS says it has no record of your payment, you should call'],
     ['assistant', 'offered_to_acme', 'three months free on the annual plan'],
     // Accepted residual: the agent by its own name, not "it" (1 of 5 replay trials).
     ['assistant', 'stated', "Fern had no record of vinay's favorite color and asked vinay to share it"],
   ])('keeps %s | %s | %s', (subject, predicate, object) => {
     expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
+  });
+
+  it('drops, as an accepted residual, an answer that opens like a miss (observer only: the cleanup keeps it)', () => {
+    const fact = { subject: 'assistant', predicate: 'stated', object: 'No Category 5 hurricane is on record for California' };
+    expect(classifyAgentFact(fact)).toBe('memory-miss');
+  });
+
+  it.each([
+    ['assistant', 'lacks_record', 'no team standup time is on record for vinay', 'capability'],
+    ['assistant', 'sent_reminder', 'No standup time is on file for vinay, so none was sent', 'action-narration'],
+  ])('a row an older check drops keeps its class: %s | %s', (subject, predicate, object, kind) => {
+    expect(classifyAgentFact({ subject, predicate, object })).toBe(kind);
   });
 
   it.each([
