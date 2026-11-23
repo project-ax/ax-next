@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { effectiveLimits, runnerEnv, warmSandboxTooOld } from '../agent-limits.js';
+import { effectiveLimits, runnerEnv, sandboxTimeLeftMs, warmSandboxTooOld } from '../agent-limits.js';
 
 const MIN = 60_000;
 const caps = { maxTurnMinutes: 120, maxIdleMinutes: 60, defaults: { turnMs: 10 * MIN, idleMs: 5 * MIN } };
@@ -30,10 +30,11 @@ describe('effectiveLimits', () => {
     }
   });
 
-  it('an explicit default hold applies only to an agent without a turn limit', () => {
-    const withHold = { ...caps, defaults: { ...caps.defaults, reapHoldMs: 2_500 } };
+  it('an explicit hold (a test override) applies to every agent', () => {
+    const withHold = { ...caps, reapHoldOverrideMs: 2_500 };
     expect(effectiveLimits({}, withHold).reapHoldMs).toBe(2_500);
-    expect(effectiveLimits({ turnLimitMinutes: 90 }, withHold).reapHoldMs).toBe(90 * MIN);
+    expect(effectiveLimits({ turnLimitMinutes: 90 }, withHold).reapHoldMs).toBe(2_500);
+    expect(effectiveLimits({ turnLimitMinutes: 90 }, caps).reapHoldMs).toBe(90 * MIN);
   });
 
   it('copies only the runner size parts that are set', () => {
@@ -49,6 +50,13 @@ describe('runnerEnv', () => {
       AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000',
     });
     expect(runnerEnv(effectiveLimits({ turnLimitMinutes: 0.0001 }, caps)).AX_TURN_LIMIT_MS).toBe('6');
+  });
+});
+
+describe('sandboxTimeLeftMs', () => {
+  it('is what is left of the lifetime, or undefined without one', () => {
+    expect(sandboxTimeLeftMs({ openedAt: 1_000, now: 61_000, lifetimeMs: 180 * MIN })).toBe(179 * MIN);
+    expect(sandboxTimeLeftMs({ openedAt: 0, now: 1, lifetimeMs: undefined })).toBeUndefined();
   });
 });
 

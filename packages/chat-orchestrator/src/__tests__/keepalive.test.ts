@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   HookBus, makeAgentContext, createLogger,
   type AgentOutcome, type ServiceHandler,
@@ -1960,6 +1960,8 @@ describe('TASK-860: a replaced api-key reaches the warm session on its next turn
 // the chart's caps, drive the orchestrator's clocks and the sandbox it opens.
 describe('per-agent turn limit, idle time and runner size', () => {
   const MIN = 60_000;
+  // trackIntervals' spies, should a test fail before restoring them.
+  afterEach(() => { vi.restoreAllMocks(); });
   const OAUTH = {
     allowedHosts: ['api.example.com'],
     requiredCredentials: { TOKEN: { ref: 'oauth:foo', kind: 'oauth' } },
@@ -2026,9 +2028,21 @@ describe('per-agent turn limit, idle time and runner size', () => {
         ...o.config,
       })],
     });
+    const logs: Array<Record<string, unknown>> = [];
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_c, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
     const invoke = (sessionId: string, reqId: string) =>
       h.bus.call<unknown, AgentOutcome>('agent:invoke',
-        ctxWith({ sessionId, conversationId: 'conv-1', reqId }),
+        makeAgentContext({
+          sessionId, agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-1', reqId,
+          logger: createLogger({
+            reqId,
+            writer: (line: string) => logs.push(JSON.parse(line) as Record<string, unknown>),
+          }),
+        }),
         { message: { role: 'user', content: 'hi' } });
     // A whole turn under fake timers: `servedBy` is the session whose runner
     // answers (the routed one, or the fresh spawn).
@@ -2038,11 +2052,38 @@ describe('per-agent turn limit, idle time and runner size', () => {
       await vi.advanceTimersByTimeAsync(0);
       return p;
     };
-    return { h, row, opens, rotates, terminated, queued, handles, invoke, turn };
+    return { h, row, opens, rotates, terminated, queued, handles, logs, turnErrors, invoke, turn };
   }
 
   const cancels = (t: { queued: Array<{ sessionId: string; type: string }> }) =>
     t.queued.filter((q) => q.type === 'cancel').map((q) => q.sessionId);
+
+  // Intervals created and not yet cleared (call after vi.useFakeTimers). The
+  // orchestrator's only interval is the mid-turn rotation. This sees a leaked
+  // one even when it has nothing left to rotate (its session is gone), which
+  // a rotate count cannot.
+  function trackIntervals() {
+    const live = new Set<unknown>();
+    const realSet = globalThis.setInterval;
+    const realClear = globalThis.clearInterval;
+    const setSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(
+      ((fn: () => void, ms?: number) => {
+        const id = realSet(fn, ms);
+        live.add(id);
+        return id;
+      }) as unknown as typeof setInterval,
+    );
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(
+      ((id: Parameters<typeof clearInterval>[0]) => {
+        live.delete(id);
+        realClear(id);
+      }) as typeof clearInterval,
+    );
+    return { live, restore: () => { setSpy.mockRestore(); clearSpy.mockRestore(); } };
+  }
+  // Keeps a finished turn's session warm past the 120-minute check below, so
+  // the idle reaper can't hide a leaked rotation by ending the session.
+  const LONG_IDLE = { agent: { idleMinutes: 180 }, config: { maxIdleMinutes: 180 } };
 
   it('idleMinutes 30 arms the reaper at 30 min', async () => {
     vi.useFakeTimers();
@@ -2063,10 +2104,14 @@ describe('per-agent turn limit, idle time and runner size', () => {
   it('rotation fires every 30 min during a turn and stops at turn end', async () => {
     vi.useFakeTimers();
     try {
-      const t = await limitsSetup({ agent: { ...OAUTH, turnLimitMinutes: 120 } });
+      const intervals = trackIntervals();
+      const t = await limitsSetup({
+        agent: { ...OAUTH, ...LONG_IDLE.agent, turnLimitMinutes: 120 }, config: LONG_IDLE.config,
+      });
       const p = t.invoke('s-1', 'req-1');
       await vi.advanceTimersByTimeAsync(0);
       expect(t.rotates).toEqual([]);
+      expect(intervals.live.size).toBe(1);
       await vi.advanceTimersByTimeAsync(30 * MIN);
       expect(t.rotates).toEqual(['s-1']);
       await vi.advanceTimersByTimeAsync(30 * MIN);
@@ -2076,8 +2121,10 @@ describe('per-agent turn limit, idle time and runner size', () => {
       expect(await p).toEqual({ kind: 'complete', messages: [] });
       // The turn end's own rotation (I10), then nothing: the interval is gone.
       expect(t.rotates).toHaveLength(3);
-      await vi.advanceTimersByTimeAsync(120 * MIN);
+      expect(intervals.live.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(120 * MIN); // still warm: idle is 180 min
       expect(t.rotates).toHaveLength(3);
+      intervals.restore();
       for (const hk of t.handles) hk.forceExit();
     } finally {
       vi.useRealTimers();
@@ -2089,10 +2136,12 @@ describe('per-agent turn limit, idle time and runner size', () => {
     it(`mid-turn rotation stops when the turn ends by ${how}`, async () => {
       vi.useFakeTimers();
       try {
+        const intervals = trackIntervals();
         const t = await limitsSetup({ agent: { ...OAUTH, turnLimitMinutes: 45 } });
         const p = t.invoke('s-1', 'req-1');
         await vi.advanceTimersByTimeAsync(30 * MIN);
         expect(t.rotates).toEqual(['s-1']);
+        expect(intervals.live.size).toBe(1);
         if (how === 'timeout') {
           await vi.advanceTimersByTimeAsync(15 * MIN);
         } else if (how === 'runner-exit') {
@@ -2105,8 +2154,10 @@ describe('per-agent turn limit, idle time and runner size', () => {
         }
         await vi.advanceTimersByTimeAsync(0);
         expect((await p).kind).toBe('terminated');
+        expect(intervals.live.size).toBe(0);
         await vi.advanceTimersByTimeAsync(120 * MIN);
         expect(t.rotates).toEqual(['s-1']);
+        intervals.restore();
         for (const hk of t.handles) hk.forceExit();
       } finally {
         vi.useRealTimers();
@@ -2138,6 +2189,136 @@ describe('per-agent turn limit, idle time and runner size', () => {
       vi.useRealTimers();
     }
   });
+
+  // R18 — a BUSY warm sandbox too old for this turn is not retired: that would
+  // cut the turn it is running (and give the conversation two sandboxes). The
+  // message queues into it, and the host says so, with the time left.
+  it('a busy warm sandbox that is too old gets the message queued, not retired, and a warning', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = await limitsSetup({
+        agent: { turnLimitMinutes: 120, idleMinutes: 60 },
+        config: { sandboxMaxLifetimeMs: 180 * MIN },
+      });
+      await t.turn('s-1', 'req-1'); // opened at 0
+      await vi.advanceTimersByTimeAsync(50 * MIN); // 130 min left: routed, and left running
+      const running = t.invoke('s-x', 'req-2');
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1_000); // 129:59 left, and s-1 is busy
+      const queuedBehind = t.invoke('s-y', 'req-3');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.opens).toHaveLength(1);
+      expect(t.terminated).toEqual([]);
+      expect(t.queued.filter((q) => q.type === 'user-message').map((q) => q.sessionId))
+        .toEqual(['s-1', 's-1', 's-1']);
+      const warn = t.logs.find((l) => l.msg === 'warm_sandbox_lifetime_short_busy');
+      expect(warn).toMatchObject({ level: 'warn', sessionId: 's-1', remainingMs: 130 * MIN - 1_000 });
+      expect(t.logs.some((l) => l.msg === 'stale_session_respawn')).toBe(false);
+      fireTurnEnd(t.h.bus, 's-1', 'req-2');
+      fireTurnEnd(t.h.bus, 's-1', 'req-3');
+      await vi.advanceTimersByTimeAsync(0);
+      expect((await running).kind).toBe('complete');
+      expect((await queuedBehind).kind).toBe('complete');
+      for (const hk of t.handles) hk.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // R21 — in keepalive every turn after the first is ROUTED into the warm
+  // sandbox; that path has its own turn timer and its own `finally`.
+  it('routed: rotation fires every 30 min during the turn and stops at its end', async () => {
+    vi.useFakeTimers();
+    try {
+      const intervals = trackIntervals();
+      const t = await limitsSetup({
+        agent: { ...OAUTH, ...LONG_IDLE.agent, turnLimitMinutes: 120 }, config: LONG_IDLE.config,
+      });
+      await t.turn('s-1', 'req-1');
+      const p = t.invoke('s-x', 'req-2'); // routed into s-1
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.opens).toHaveLength(1);
+      expect(intervals.live.size).toBe(1);
+      const atStart = t.rotates.length; // turn 1's end + the routing re-resolve (TASK-860)
+      await vi.advanceTimersByTimeAsync(30 * MIN);
+      expect(t.rotates).toHaveLength(atStart + 1);
+      fireTurnEnd(t.h.bus, 's-1', 'req-2');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await p).toEqual({ kind: 'complete', messages: [] });
+      expect(t.rotates).toHaveLength(atStart + 2); // the turn end's own
+      expect(intervals.live.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(120 * MIN); // still warm: idle is 180 min
+      expect(t.rotates).toHaveLength(atStart + 2);
+      expect(new Set(t.rotates)).toEqual(new Set(['s-1']));
+      intervals.restore();
+      for (const hk of t.handles) hk.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('routed: the turn runs to the agent turn limit, not the 10-minute default', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = await limitsSetup({ agent: { turnLimitMinutes: 120 } });
+      await t.turn('s-1', 'req-1');
+      const settled: { out?: AgentOutcome } = {};
+      void t.invoke('s-x', 'req-2').then((out) => { settled.out = out; }); // routed into s-1
+      await vi.advanceTimersByTimeAsync(0);
+      expect(t.opens).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(120 * MIN - 1);
+      expect(settled.out).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled.out).toMatchObject({ kind: 'terminated', reason: 'chat-run-timeout' });
+      for (const hk of t.handles) hk.forceExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // R19 — a routed turn whose sandbox dies (the pod ceiling, an eviction, a
+  // retire) ends at once, not at a turn limit that may be two hours off. Both
+  // signals: the session store's session:terminate, and the warm handle's exit.
+  for (const how of ['session-terminate', 'handle-exit'] as const) {
+    it(`routed: a turn whose session dies (${how}) ends within seconds, and its rotation stops`, async () => {
+      vi.useFakeTimers();
+      try {
+        const intervals = trackIntervals();
+        const t = await limitsSetup({ agent: { ...OAUTH, turnLimitMinutes: 120 } });
+        await t.turn('s-1', 'req-1');
+        const settled: { out?: AgentOutcome } = {};
+        void t.invoke('s-x', 'req-2').then((out) => { settled.out = out; }); // routed into s-1
+        await vi.advanceTimersByTimeAsync(30 * MIN);
+        expect(intervals.live.size).toBe(1);
+        const rotatesAtDeath = t.rotates.length;
+        const chatEnds: unknown[] = [];
+        t.h.bus.subscribe('chat:end', 'obs', async (_c, p: unknown) => { chatEnds.push(p); return undefined; });
+        if (how === 'session-terminate') {
+          void t.h.bus.fire('session:terminate',
+            makeAgentContext({ sessionId: 's-1', agentId: 'a', userId: 'u', reqId: 'store',
+              logger: createLogger({ reqId: 'store', writer: () => undefined }) }),
+            { sessionId: 's-1' });
+        } else {
+          t.handles[0]!.forceExit();
+        }
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(settled.out).toMatchObject({
+          kind: 'terminated',
+          reason: how === 'session-terminate' ? 'sandbox-terminated' : 'sandbox-exit-before-chat-end',
+        });
+        // One turn error for the turn, and the one chat:end the audit needs.
+        expect(t.turnErrors.filter((e) => e.reqId === 'req-2')).toHaveLength(1);
+        expect(chatEnds).toHaveLength(1);
+        expect(intervals.live.size).toBe(0);
+        await vi.advanceTimersByTimeAsync(120 * MIN);
+        expect(t.rotates).toHaveLength(rotatesAtDeath);
+        intervals.restore();
+        for (const hk of t.handles) hk.forceExit();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  }
 
   it('the open-session call carries runnerSize, AX_INBOX_IDLE_MS and AX_TURN_LIMIT_MS', async () => {
     vi.useFakeTimers();

@@ -71,6 +71,7 @@ import {
   effectiveLimits,
   runnerEnv,
   warmSandboxTooOld,
+  sandboxTimeLeftMs,
   DEFAULT_MAX_IDLE_MINUTES,
   DEFAULT_MAX_TURN_MINUTES,
   MID_TURN_ROTATION_MS,
@@ -289,10 +290,10 @@ export interface ChatOrchestratorConfig {
    * person approved). Past it the session is reaped anyway
    * (`keepalive_reap_hold_expired`): the host can't tell a running decision
    * continuation from a stale binding (a refused turn, a wake-up that never
-   * ran, a failed compare-clear). §6.5: the hold is max(30 min, the agent's
-   * turn limit), since a continuation may run as long as a turn. Set, this
-   * replaces it for an agent with no turn limit of its own. A finite number
-   * ≥ 0 (0 never holds); anything else is refused at init.
+   * ran, a failed compare-clear). §6.5: unset (production), the hold is
+   * max(30 min, the agent's turn limit), since a continuation may run as long
+   * as a turn. Set, it is a test override: the hold for every agent. A finite
+   * number ≥ 0 (0 never holds); anything else is refused at init.
    */
   reapHoldMaxMs?: number;
   /** System/built-in skills materialized into every session at LOWEST precedence
@@ -1934,6 +1935,24 @@ export function createOrchestrator(
   //     path always has exactly one waiter per sessionId.
   const waitersByReqId = new Map<string, Deferred<AgentOutcome>>();
   const reqIdsBySession = new Map<string, Set<string>>();
+  // R19 — routed turns waiting on a session, told when session:terminate
+  // reports it gone (onSessionTerminate). Each entry ends one routed turn's
+  // wait; the routed path removes it in the `finally` that clears its timer.
+  const routedSessionEndListeners = new Map<string, Set<() => void>>();
+  function onRoutedSessionEnd(sessionId: string, listener: () => void): () => void {
+    let set = routedSessionEndListeners.get(sessionId);
+    if (set === undefined) {
+      set = new Set();
+      routedSessionEndListeners.set(sessionId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = routedSessionEndListeners.get(sessionId);
+      if (current === undefined) return;
+      current.delete(listener);
+      if (current.size === 0) routedSessionEndListeners.delete(sessionId);
+    };
+  }
   // TASK-688 — Stop during a COLD SPAWN. `active_req_id` is bound at POST time,
   // so a Stop can arrive for a reqId whose user message is not in any inbox yet
   // (a fresh pod takes 10+ s to spawn; there is no session to interrupt).
@@ -2148,11 +2167,14 @@ export function createOrchestrator(
   // 10-min chatTimeoutMs. So surface the error promptly for any in-flight
   // (unsettled) turn on this session.
   //
-  // We do NOT resolve/reject the deferred here: the existing bounded-timeout
-  // path still produces the single chat:end (audit invariant). The SSE
-  // closes on the first error frame, so the later duplicate turn-error from
-  // that timeout path is a harmless no-op. Completed turns whose waiter is
-  // already settled (or unregistered) are skipped — no spurious error.
+  // We do NOT resolve/reject a FRESH turn's deferred here: that path watches
+  // handle.exited itself and produces the single chat:end (audit invariant).
+  // A ROUTED turn is ended first (R19, routedSessionEndListeners): with turn
+  // limits up to 120 min, waiting out the turn timer would hold its
+  // agent:invoke (a routine check-in's included) for hours. Its own path then
+  // fires the one turn-error and chat:end, so the loop below skips it.
+  // Completed turns whose waiter is already settled (or unregistered) are
+  // skipped — no spurious error.
   async function onSessionTerminate(
     ctx: AgentContext,
     payload: { sessionId?: string },
@@ -2168,6 +2190,9 @@ export function createOrchestrator(
     // session stores refuse a second `session:create` for an id, so the mark
     // of a live session is never pruned by an old session's teardown.
     respawnSessions.delete(sessionId);
+    for (const endRoutedTurn of [...(routedSessionEndListeners.get(sessionId) ?? [])]) {
+      endRoutedTurn();
+    }
     const reqIds = reqIdsBySession.get(sessionId);
     if (reqIds === undefined) return;
     // Snapshot — fireTurnError must not be confused by concurrent mutation
@@ -2334,19 +2359,17 @@ export function createOrchestrator(
   const keepAlive = config.keepAlive ?? false;
   const idleWindowMs = config.idleWindowMs ?? 5 * 60 * 1000;
   const idleGraceMs = config.idleGraceMs ?? 10 * 1000;
-  // §6.2 — the per-agent clocks. `chatTimeoutMs`, `idleWindowMs` and an
-  // explicit `reapHoldMaxMs` are what an agent without its own settings gets;
-  // otherwise the hold is max(30 min, the turn limit) (effectiveLimits).
+  // §6.2 — the per-agent clocks. `chatTimeoutMs` and `idleWindowMs` are what
+  // an agent without its own turn limit or idle time gets. The reap hold is
+  // max(30 min, the turn limit), unless `reapHoldMaxMs` is set (a test
+  // override, for every agent) (effectiveLimits).
   const limitCaps = {
     maxTurnMinutes: validPositiveLimit('maxTurnMinutes', config.maxTurnMinutes ?? DEFAULT_MAX_TURN_MINUTES),
     maxIdleMinutes: validPositiveLimit('maxIdleMinutes', config.maxIdleMinutes ?? DEFAULT_MAX_IDLE_MINUTES),
-    defaults: {
-      turnMs: chatTimeoutMs,
-      idleMs: idleWindowMs,
-      ...(config.reapHoldMaxMs !== undefined
-        ? { reapHoldMs: validReapHoldMax(config.reapHoldMaxMs) }
-        : {}),
-    },
+    defaults: { turnMs: chatTimeoutMs, idleMs: idleWindowMs },
+    ...(config.reapHoldMaxMs !== undefined
+      ? { reapHoldOverrideMs: validReapHoldMax(config.reapHoldMaxMs) }
+      : {}),
   };
   const sandboxMaxLifetimeMs =
     config.sandboxMaxLifetimeMs === undefined
@@ -3488,16 +3511,25 @@ export function createOrchestrator(
             // plus 10 minutes left before its lifetime ceiling would cut the
             // turn short: retire it and spawn fresh. A BUSY one is left alone
             // (retiring it would cut the turn it is running); this turn queues.
+            // R18 — a deliberate departure from the spec: a second sandbox
+            // for the conversation would be worse. Said in the log, so a turn
+            // the ceiling cuts can be traced.
             const warmEntry = warmSessions.get(candidate);
-            const lifetimeShort =
-              warmEntry !== undefined &&
-              !sessionBusy(candidate) &&
-              warmSandboxTooOld({
-                openedAt: warmEntry.openedAt,
-                now: Date.now(),
-                lifetimeMs: sandboxMaxLifetimeMs,
+            const lifetimeArgs = warmEntry === undefined ? undefined : {
+              openedAt: warmEntry.openedAt,
+              now: Date.now(),
+              lifetimeMs: sandboxMaxLifetimeMs,
+              turnMs: limits.turnMs,
+            };
+            const tooOld = lifetimeArgs !== undefined && warmSandboxTooOld(lifetimeArgs);
+            const lifetimeShort = tooOld && !sessionBusy(candidate);
+            if (tooOld && !lifetimeShort) {
+              ctx.logger.warn('warm_sandbox_lifetime_short_busy', {
+                sessionId: candidate,
+                remainingMs: sandboxTimeLeftMs(lifetimeArgs),
                 turnMs: limits.turnMs,
               });
+            }
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
@@ -3882,12 +3914,33 @@ export function createOrchestrator(
       // was being queued goes in right behind it.
       await afterUserMessageQueued(ctx, sessionId);
 
-      // (4) Wait for the runner. We do NOT watch `exited` here: the sandbox
-      //     handle isn't ours. If the sandbox dies mid-turn, session:terminate
-      //     fires, the conversations subscriber clears active_session_id, and
-      //     the next agent:invoke on this conversation routes to fresh. The
-      //     in-flight chat will time out via the bounded turn-limit path.
+      // (4) Wait for the runner. If the sandbox dies mid-turn (the pod
+      //     ceiling, an eviction, a retire), the turn ends at once (R19), not
+      //     at a turn limit that may be two hours off: on session:terminate
+      //     (reason `sandbox-terminated`, as the UI has always been told), or
+      //     on the warm handle's exit when this host opened the session (the
+      //     fresh path's reason, classifyRunnerExit). Either way the
+      //     terminated outcome goes out below as one turn-error and the one
+      //     chat:end, and the `finally` clears the timer and the rotation.
+      //     Also, session:terminate makes the conversations subscriber clear
+      //     active_session_id, so the next agent:invoke routes to fresh.
       let resolvedByChatEndSubscriber = true;
+      const endOnSessionGone = (reason: string): void => {
+        if (deferred.settled) return;
+        resolvedByChatEndSubscriber = false;
+        deferred.resolve({ kind: 'terminated', reason });
+      };
+      const stopWatchingSessionEnd = onRoutedSessionEnd(sessionId, () =>
+        endOnSessionGone('sandbox-terminated'),
+      );
+      warmSessions.get(sessionId)?.handle.exited
+        .then((info) => {
+          if (deferred.settled) return;
+          const reason = classifyRunnerExit(info);
+          ctx.logger.warn('runner_exit_before_chat_end', { reason, ...runnerExitLogFields(info) });
+          endOnSessionGone(reason);
+        })
+        .catch(() => undefined);
       const timeoutHandle = setTimeout(() => {
         deferred.reject(new ChatTimeoutError(limits.turnMs));
       }, limits.turnMs);
@@ -3907,6 +3960,7 @@ export function createOrchestrator(
       } finally {
         clearTimeout(timeoutHandle);
         stopMidTurnRotation();
+        stopWatchingSessionEnd();
         unregisterWaiter(sessionId, ctx.reqId);
       }
 

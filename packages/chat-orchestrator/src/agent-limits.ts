@@ -55,12 +55,13 @@ export interface EffectiveLimits {
 export interface LimitCaps {
   maxTurnMinutes: number;
   maxIdleMinutes: number;
+  /** What an agent without its own turn limit or idle time gets. */
+  defaults: { turnMs: number; idleMs: number };
   /**
-   * What an agent without its own value gets. `reapHoldMs`, when given, is the
-   * hold for an agent with no turn limit of its own (a host's explicit
-   * `reapHoldMaxMs`); absent, that agent's hold is max(30 min, turnMs) too.
+   * A host's explicit `reapHoldMaxMs` (a test override): the hold for EVERY
+   * agent. Absent (production), the hold is max(30 min, turnMs).
    */
-  defaults: { turnMs: number; idleMs: number; reapHoldMs?: number };
+  reapHoldOverrideMs?: number;
 }
 
 function minutesOrUndefined(value: number | null | undefined): number | undefined {
@@ -74,10 +75,7 @@ export function effectiveLimits(agent: AgentLimitSettings, caps: LimitCaps): Eff
     turnMinutes === undefined ? caps.defaults.turnMs : Math.min(turnMinutes, caps.maxTurnMinutes) * MIN;
   const idleMs =
     idleMinutes === undefined ? caps.defaults.idleMs : Math.min(idleMinutes, caps.maxIdleMinutes) * MIN;
-  const reapHoldMs =
-    turnMinutes === undefined && caps.defaults.reapHoldMs !== undefined
-      ? caps.defaults.reapHoldMs
-      : Math.max(REAP_HOLD_FLOOR_MS, turnMs);
+  const reapHoldMs = caps.reapHoldOverrideMs ?? Math.max(REAP_HOLD_FLOOR_MS, turnMs);
   const limits: EffectiveLimits = {
     turnMs,
     idleMs,
@@ -104,6 +102,15 @@ export function runnerEnv(limits: EffectiveLimits): { AX_INBOX_IDLE_MS: string; 
   return { AX_INBOX_IDLE_MS: msDigits(limits.inboxIdleMs), AX_TURN_LIMIT_MS: msDigits(limits.turnMs) };
 }
 
+/** What is left of a sandbox's lifetime, in ms; undefined without a known lifetime. */
+export function sandboxTimeLeftMs(o: {
+  openedAt: number;
+  now: number;
+  lifetimeMs: number | undefined;
+}): number | undefined {
+  return o.lifetimeMs === undefined ? undefined : o.openedAt + o.lifetimeMs - o.now;
+}
+
 /**
  * True when a warm sandbox opened at `openedAt` has less than the turn limit
  * plus 10 minutes left before its lifetime ceiling, so a turn routed into it
@@ -115,6 +122,6 @@ export function warmSandboxTooOld(o: {
   lifetimeMs: number | undefined;
   turnMs: number;
 }): boolean {
-  if (o.lifetimeMs === undefined) return false;
-  return o.openedAt + o.lifetimeMs - o.now < o.turnMs + WARM_LIFETIME_MARGIN_MS;
+  const left = sandboxTimeLeftMs(o);
+  return left !== undefined && left < o.turnMs + WARM_LIFETIME_MARGIN_MS;
 }
