@@ -457,15 +457,19 @@ async function listTeamIdsForUser(
 /**
  * The host catalog's tool names for GET /admin/agents/tools, or null when the
  * catalog can't be read whole: no `tool:list` producer, a throw, or a reply
- * without a `tools` array. Null is never an empty list — the agent form drops
- * saved names the catalog lacks, so an empty list from a failed read would
- * delete every host tool an agent has. A failure is logged for the operator
- * and never echoed to the client.
+ * without a `tools` array. Null is never an empty list — the agent form flags
+ * every saved name the catalog lacks as unavailable, so an empty list from a
+ * failed read would flag every host tool an agent has. A failure is logged for
+ * the operator and never echoed to the client.
  *
  * `ctx` is the handlers' shared ctx. Its sessionId (`agents-admin`) is not a
  * session, so the dispatcher's documented `unknown-session` pass-through
  * returns the whole catalog rather than one agent's scope — the same way the
- * workspace rail reads it.
+ * workspace rail reads it. The SPA's unknown-name flagging (and the Remove it
+ * offers) RELIES on this reply being UNFILTERED: a per-agent scope here would
+ * flag that agent's real tools as unavailable. @ax/mcp-client's dispatcher
+ * passes `unknown-session` through, pinned by its `list-with-agent-scope.test.ts`
+ * ("passes everything through on unknown-session reject (pre-9.5 / system ctx)").
  *
  * Kept, in catalog order, first one wins: string names the write path's
  * TOOL_NAME_RE accepts (so the picker never offers a name a save would
