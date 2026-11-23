@@ -6,6 +6,7 @@ import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { stripClaudeCodeEnv } from './real-sdk-env.js';
 
 // ---------------------------------------------------------------------------
 // TASK-708 — the claim the fold fix stands on, checked against the REAL
@@ -140,7 +141,7 @@ function openQuery(replay: boolean) {
       ...(replay ? { extraArgs: { 'replay-user-messages': null } } : {}),
       cwd: tmp,
       env: {
-        ...process.env,
+        ...stripClaudeCodeEnv(),
         HOME: tmp,
         CLAUDE_CONFIG_DIR: path.join(tmp, 'cfg'),
         ANTHROPIC_BASE_URL: baseUrl,

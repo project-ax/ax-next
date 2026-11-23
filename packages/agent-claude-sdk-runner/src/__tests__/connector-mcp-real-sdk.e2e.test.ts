@@ -10,6 +10,7 @@ import { loadProjectedMcpServers } from '../projected-mcp-servers.js';
 import { classifySdkToolName } from '../tool-names.js';
 import { EventConnectorAuthFailureSchema } from '@ax/ipc-protocol';
 import { createConnectorAuthReporter, type ConnectorAuthFailureReport } from '../connector-auth-report.js';
+import { stripClaudeCodeEnv } from './real-sdk-env.js';
 
 // ---------------------------------------------------------------------------
 // TASK-760 — does a connector's MCP tool actually reach the MODEL on the
@@ -227,7 +228,7 @@ async function runOneTurn(
       settingSources: ['user'],
       cwd: tmp,
       env: {
-        ...process.env,
+        ...stripClaudeCodeEnv(),
         // macOS only: after a 401 the CLI looks for a stored MCP sign-in in
         // the login keychain, and `security` can block on a keychain prompt
         // (measured: no system/init within 200 s). A sandbox has no
