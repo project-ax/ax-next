@@ -214,7 +214,7 @@ export function createHostAnswer(d: { bus: HookBus }): SubjectAnswer {
     // It may have let the host through: closed, not "try again". Nothing is kept.
     if (typeof added !== 'boolean') return failed('add-host', 'bad-response');
 
-    // 2. Kept on the agent's allowed sites for the asker: the gate's ctx, never the click or the proxy's agentId.
+    // 2. Kept on the agent's allowed sites, added by the asker: the gate's ctx, never the click or the proxy's agentId.
     const notKept: Answer = { line: added ? COPY.hostAllowedForNow : COPY.hostEnded, settle: true };
     if (!d.bus.hasService(REMEMBER_HOST)) return notKept;
     let kept: unknown;

@@ -58,16 +58,17 @@ export function grantPackagesVisible(request: PermissionRequest): boolean {
 }
 
 /**
- * The reassurance line on every grant card (`GrantRow`: skill and site grants;
- * the in-chat connector card was removed in slice 2c).
+ * The reassurance line on a skill grant card (`GrantRow`). The host card
+ * returns before it is reached and says its own piece
+ * (`HOST_WALL_EXPLANATION`); the in-chat connector card was removed in
+ * slice 2c.
  *
  * `workspace/ApprovalCard.tsx` has said something like this for a while and it
  * is the reason that surface reads as trustworthy: it tells you what the button
  * does, that nothing has happened yet, and that the decision is reversible. The
  * grant card — the one that actually widens what an agent may do — said none of
  * it. Every clause here is true: the grant is durable, nothing is applied until
- * the click, and both halves are revocable in Settings (skills detach from the
- * Skills tab, hosts from the agent's settings > Connectors on a team agent, owners and team admins; Settings > Sites on a personal one).
+ * the click, and the skill can be detached later from the Skills tab.
  */
 export const GRANT_REASSURANCE =
   'Connecting lets this agent do this from now on. Nothing happens until you ' +

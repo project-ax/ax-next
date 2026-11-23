@@ -1860,6 +1860,48 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     ]);
   });
 
+  it("a member's own revocable grant for a host is not hidden behind the team's site row", async () => {
+    // One row per host still holds, but the row kept is the one the reader can
+    // act on. A teammate allowed api.linear.app as a site (the plain member u1
+    // can't remove that); u1 also approved it for the Linear connection, which
+    // is u1's own to take back. Keeping the site row would leave u1 with no way
+    // to revoke a grant u1 made.
+    registerGrants();
+    registerManage();
+    agents.set(
+      't1',
+      agent({
+        id: 't1',
+        ownerId: 'team-1',
+        visibility: 'team',
+        teamMembers: ['u1', 'u2'],
+        connectorAttachments: ['linear'],
+      }),
+    );
+    siteGrants.set('t1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+    wallGrants.set('u1/t1//linear', [{ kind: 'host', value: 'api.linear.app' }]);
+    manageAnswers.set('u1', { allowed: false });
+    manageAnswers.set('u2', { allowed: true });
+
+    const member = (await railFor('t1')).body as AgentRailData;
+    expect(member.grants.rows).toHaveLength(1);
+    expect(member.grants.rows[0]).toMatchObject({
+      label: 'api.linear.app',
+      revocable: true,
+      ref: { grant: 'approved-capability', capKind: 'host', connectorId: 'linear' },
+    });
+
+    // Both revocable: the first (the site) wins, as before.
+    caller = { id: 'u2', isAdmin: false };
+    wallGrants.set('u2/t1//linear', [{ kind: 'host', value: 'api.linear.app' }]);
+    const admin = (await railFor('t1')).body as AgentRailData;
+    expect(admin.grants.rows).toHaveLength(1);
+    expect(admin.grants.rows[0]).toMatchObject({
+      revocable: true,
+      ref: { grant: 'site', host: 'api.linear.app' },
+    });
+  });
+
   it("a personal agent's owner can revoke, and the manage check is never asked", async () => {
     registerGrants();
     registerManage();

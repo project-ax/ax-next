@@ -30,6 +30,8 @@ import { SiteAgentsDialog } from './SiteAgentsDialog';
  */
 export function AllowedSitesPanel() {
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
+  // Some agents, none of them personal: nothing here is theirs to manage.
+  const [onlyTeamAgents, setOnlyTeamAgents] = useState(false);
   const [grants, setGrants] = useState<Array<{ host: string; agentId: string }> | null>(null);
   // False until the agent list loads; stays false when it can't be read.
   const [agentsLoaded, setAgentsLoaded] = useState(false);
@@ -51,7 +53,9 @@ export function AllowedSitesPanel() {
     listChatAgents()
       .then((a) => {
         if (cancelled) return;
-        setAgents(a.filter((x) => x.visibility === 'personal'));
+        const personal = a.filter((x) => x.visibility === 'personal');
+        setAgents(personal);
+        setOnlyTeamAgents(a.length > 0 && personal.length === 0);
         setAgentsLoaded(true);
       })
       .catch(() => {
@@ -128,7 +132,10 @@ export function AllowedSitesPanel() {
         )}
         {grants !== null && agentsLoaded && hosts.length === 0 && (
           <div className="px-4 py-3 text-sm text-muted-foreground">
-            No allowed sites yet — add one above.
+            {/* With Add disabled, "add one above" would point at nothing. */}
+            {onlyTeamAgents
+              ? 'Your agents are all team agents. Their sites are in each agent’s settings, under Connectors.'
+              : 'No allowed sites yet — add one above.'}
           </div>
         )}
         {hosts.map((host) => {

@@ -5247,12 +5247,13 @@ describe('chat-orchestrator', () => {
   }
 
   // silentCtx, in a conversation.
-  function conversationCtx(sessionId: string) {
+  function conversationCtx(sessionId: string, source?: 'external') {
     return makeAgentContext({
       sessionId,
       agentId: 'test-agent',
       userId: 'test-user',
       conversationId: 'conv-late-allow',
+      ...(source !== undefined ? { source } : {}),
       logger: createLogger({ reqId: 'orch-test', writer: () => undefined }),
     });
   }
@@ -5375,6 +5376,7 @@ describe('chat-orchestrator', () => {
       sessionId: string;
       conversation?: Parameters<typeof conversationHooks>[0];
       grants: ServiceHandler;
+      source?: 'external';
     }): Promise<{
       outcome: AgentOutcome;
       openIn: OpenIn | undefined;
@@ -5435,7 +5437,9 @@ describe('chat-orchestrator', () => {
       busRef.current = h.bus;
       const outcome = await h.bus.call<unknown, AgentOutcome>(
         'agent:invoke',
-        opts.conversation !== undefined ? conversationCtx(opts.sessionId) : silentCtx(opts.sessionId),
+        opts.conversation !== undefined
+          ? conversationCtx(opts.sessionId, opts.source)
+          : silentCtx(opts.sessionId),
         { message: { role: 'user', content: 'hi' } },
       );
       return {
@@ -5466,6 +5470,32 @@ describe('chat-orchestrator', () => {
       expect(openIn?.allowlist).toEqual(
         expect.arrayContaining(['new.example.com', 'old.example.com', 'same.example.com']),
       );
+    });
+
+    // TASK-1091's rule: on an outsider's turn (`isOutsiderTurn`) nothing
+    // owner-side is named to the agent, and the kept sites are the agent's
+    // owners' choices. The sites stay reachable (the allowlist is the agent's,
+    // whoever asks); only the line naming them is withheld.
+    it("an outsider's turn is told nothing; a member's turn on the same grants is", async () => {
+      const grants: ServiceHandler = async () => ({
+        hosts: [{ host: 'new.example.com', grantedAt: HOUR_AFTER }],
+      });
+      const outsider = await runTurn({
+        sessionId: 'late-allow-outsider-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        grants,
+        source: 'external',
+      });
+      expect(outsider.openIn?.allowlist).toContain('new.example.com');
+      expect(outsider.openIn).toBeDefined();
+      expect(outsider.openIn).not.toHaveProperty('newlyAllowedHosts');
+
+      const member = await runTurn({
+        sessionId: 'late-allow-member-session',
+        conversation: { lastActivityAt: LAST_SPOKE },
+        grants,
+      });
+      expect(member.openIn?.newlyAllowedHosts).toEqual(['new.example.com']);
     });
 
     it('a site another source already allows is not reported', async () => {

@@ -57,13 +57,13 @@ the owner chose to put there.
    said privately is never recalled in a channel.
 10. **A website Allow lasts (decided 2026-11-22, Vinay; TASK-1208).** Allow on a
     blocked website's prompt keeps the site on the agent's own allowed sites
-    (`@ax/host-grants`, the list its people see and remove in Settings >
-    Allowed sites and on the agent's "Granted by you"), so the agent's later
-    sessions can reach it, not just the one that asked. On a personal agent
-    the list is that agent's owner's. On a team agent one Allow covers every
-    member's later sessions of that agent, outsider turns and routine runs
-    included, and its owners and team admins remove sites in the agent's
-    settings (decided 2026-11-23, Vinay; TASK-1212). Who may answer is unchanged (§5's click gate), and
+    (`@ax/host-grants`), so the agent's later sessions can reach it, not just
+    the one that asked. On a personal agent the list is that agent's owner's,
+    who sees and removes it in Settings › Sites. On a team agent one Allow
+    covers every member's later sessions of that agent, outsider turns and
+    routine runs included; every member sees the list in the agent's settings
+    under Connectors, and only its owners and team admins remove sites there
+    (decided 2026-11-23, Vinay; TASK-1212). Who may answer is unchanged (§5's click gate), and
     the live session still gets TASK-1199's "now allowed" line.
 
 ## 2. Who is talking, and what they can do
@@ -1336,9 +1336,10 @@ Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory ke
        `host-grants:grant` with the prompt's user, agent and host (the web
        app's "Always for this agent"). The host is kept even when the session
        has already ended, so the line reads "Allowed from now on". If it
-       can't be kept (no `host-grants:grant`, the list is full, an answer that
-       can't be read), the line says "Allowed for now" while the session
-       lives, or "I'd already finished working on that" once it has ended.
+       can't be kept (no `host-grants:grant`, an answer that can't be read, or
+       a refusal: `invalid-host`, `missing-field`, `invalid-return`), the line
+       says "Allowed for now" while the session lives, or "I'd already
+       finished working on that" once it has ended.
        A full list (256 distinct sites per agent) says so instead of "Allowed
        from now on".
        **Deny** calls nothing; the host stays refused and

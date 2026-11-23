@@ -10781,19 +10781,28 @@ function isoOrNull(raw: unknown): string | null {
  *
  * A host can legitimately appear twice — once as a site grant, once as a
  * skill's approved `host` capability — and two identical-looking rows with two
- * different Revoke buttons is a surface that cannot be acted on. First wins,
- * and site grants are collected first because the site grant is the record
- * people manage as an allowed site: in Settings › Sites for a personal agent,
- * and here, by its owners and team admins, for a team agent (TASK-1212).
+ * different Revoke buttons is a surface that cannot be acted on. On a
+ * collision the row the reader can revoke wins: on a team agent a plain
+ * member can't remove the team's site, but a host they approved for their own
+ * skill or connection is theirs to take back, and hiding it behind the site
+ * row would leave them no way to (TASK-1212). Otherwise first wins, and site
+ * grants are collected first because the site grant is the record people
+ * manage as an allowed site: in Settings › Sites for a personal agent, and
+ * here, by its owners and team admins, for a team agent.
  */
 function dedupeGrants(rows: readonly GrantRow[]): GrantRow[] {
-  const seen = new Set<string>();
+  const at = new Map<string, number>();
   const out: GrantRow[] = [];
   for (const row of rows) {
     const key = `${row.action}\u0000${row.label}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(row);
+    const i = at.get(key);
+    if (i === undefined) {
+      at.set(key, out.length);
+      out.push(row);
+    } else if (row.revocable && !out[i]!.revocable) {
+      // Same place in the list, the row the reader can act on.
+      out[i] = row;
+    }
   }
   return out;
 }

@@ -154,11 +154,19 @@ describe('AllowedSitesPanel', () => {
       );
     });
 
-    it('Add is disabled when the only agents are team agents', async () => {
+    it('when the only agents are team agents, says where their sites are; Add is disabled', async () => {
       vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([WITH_TEAM[2]!]);
-      vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([]);
+      // The team agent has a site. It is still not this panel's to show.
+      vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([
+        { host: 'teamonly.example.com', agentId: 't1', grantedAt: 't' },
+      ]);
       render(<AllowedSitesPanel />);
-      await screen.findByText('No allowed sites yet — add one above.');
+      // Not "add one above": there is nothing here to add one to.
+      await screen.findByText(
+        'Your agents are all team agents. Their sites are in each agent’s settings, under Connectors.',
+      );
+      expect(screen.queryByText('No allowed sites yet — add one above.')).toBeNull();
+      expect(screen.queryByTestId('allowed-site-teamonly.example.com')).toBeNull();
       expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
     });
 

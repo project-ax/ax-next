@@ -4594,7 +4594,9 @@ export function createOrchestrator(
     // into a live session never gets here, and that session's own record
     // (proxy:add-host) covers it. With no conversation, no lastActivityAt, a
     // timestamp that won't parse (NaN compares false) or a failed read, nothing
-    // is reported.
+    // is reported. Nor on an outsider's turn (`isOutsiderTurn`, TASK-1091):
+    // the kept sites are the agent's owners' choices, not the outsider's to
+    // hear about. They stay reachable; only the line naming them is withheld.
     const newlyAllowedHosts: string[] = [];
     if (bus.hasService('host-grants:list')) {
       try {
@@ -4687,7 +4689,7 @@ export function createOrchestrator(
           agentId: agent.id,
           allowlist: unionedAllowlist,
           credentials: unionedCreds,
-          ...(newlyAllowedHosts.length > 0 ? { newlyAllowedHosts } : {}),
+          ...(newlyAllowedHosts.length > 0 && !isOutsiderTurn(ctx) ? { newlyAllowedHosts } : {}),
         },
       );
       // Mark opened BEFORE endpointToProxyConfig — that helper throws on
