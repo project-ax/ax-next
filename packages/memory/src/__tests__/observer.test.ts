@@ -1009,6 +1009,8 @@ describe('a routine run is not a conversation the person had (TASK-616)', () => 
     ['`user` keeps it', 'user', 'conv-1'],
     ['`external` keeps it', 'external', 'conv-1'],
     ['`routine` drops it', 'routine', undefined],
+    // TASK-1213: a stored session source this build doesn't recognize.
+    ['`unrecognized` drops it', 'unrecognized', undefined],
     ['an unknown source drops it', 'satellite', undefined],
   ] as const)('conversationOf: %s', (_label, source, expected) => {
     expect(

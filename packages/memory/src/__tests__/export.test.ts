@@ -314,15 +314,19 @@ describe('sandbox:memory-mounts resolver', () => {
   // without access to the agent reads its replies, so a private stamp, or
   // none, fails closed; no live producer sends one). On any agent it is a
   // session from a source this build doesn't know, which fails closed on a
-  // team agent too (TASK-1209's security review).
+  // team agent too (TASK-1209's security review): one outside the type, and
+  // a stored one read back as `'unrecognized'` (TASK-1213).
   it.each([
     ['team', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
     ['team', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
     ['team', 'an unknown-source unstamped', { source: 'satellite' }],
+    ['team', 'an unrecognized-source shared', { audience: 'shared', source: 'unrecognized' }],
+    ['team', 'an unrecognized-source unstamped', { source: 'unrecognized' }],
     ['personal', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
     ['personal', "an outsider's unstamped", { source: 'external' }],
     ['personal', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
     ['personal', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
+    ['personal', 'an unrecognized-source private-stamped', { audience: 'private', source: 'unrecognized' }],
   ] as const)('a %s agent: %s session gets no mount and nothing is flushed', async (visibility, _label, session) => {
     const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility } });
     await engineRecord(h.bus, h.ctx(), [

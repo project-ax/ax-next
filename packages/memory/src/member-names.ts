@@ -26,10 +26,10 @@
  * from recall. A personal agent has no teammates and asks nobody. A team
  * agent's turn from a source this build doesn't know reads shared rows only
  * (it fails closed), and it is told no names either: its members read "a
- * teammate", with no lookup. ("Doesn't know" means a context a host built
- * with a source outside the type. A stored session's unknown source never
- * reaches memory raw: it reads as 'external' and is named like an outsider's
- * turn. See `recallAudienceScope` step 2.)
+ * teammate", with no lookup. ("Doesn't know" means `'unrecognized'`, a stored
+ * session source the session store and IPC couldn't place (TASK-1213), or a
+ * context a host built with a source outside the type. See
+ * `recallAudienceScope` step 2.)
  *
  * ## Whose names
  *

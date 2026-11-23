@@ -499,14 +499,16 @@ describe('member names (TASK-1209)', () => {
 
     // Names follow the recall rule: a team agent's turn from a source this
     // build doesn't know reads shared rows only (it fails closed), so it is
-    // told no names either. Its members still never read as a raw id.
-    it("asks nobody in a turn from a source this build doesn't know, on a team agent", async () => {
+    // told no names either. Its members still never read as a raw id. That
+    // is one outside the type, and a stored one the session store and IPC
+    // read back as `'unrecognized'` (TASK-1213).
+    it.each(['satellite', 'unrecognized'])("asks nobody in a turn from a source this build doesn't know (%j), on a team agent", async (source) => {
       const logs: LoggedEvent[] = [];
       const { bus, asked, memberAsked } = authBus(named);
       for (const audience of ['shared', 'private', undefined] as const) {
         const labels = await memberLabels(
           bus,
-          ctxOf(logs, { source: 'satellite' as AgentContextSource, ...(audience !== undefined ? { audience } : {}) }),
+          ctxOf(logs, { source: source as AgentContextSource, ...(audience !== undefined ? { audience } : {}) }),
           TEAM,
           ['user:u-bob'],
           undefined,

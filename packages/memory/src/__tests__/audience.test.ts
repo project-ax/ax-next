@@ -322,10 +322,19 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
   // TASK-1209's security review: on a team agent only a source this build
   // knows reads unscoped. One it doesn't know fails closed, as
   // `isOutsiderTurn` does: whatever its stamp, it reads what the room could
-  // see, backstop and all.
-  it.each(['shared', 'private', undefined] as const)(
-    "a turn from a source this build doesn't know recalls shared statements only on a team agent (audience %j), backstop and all",
-    async (audience) => {
+  // see, backstop and all. That is one outside the type (`'satellite'`), and
+  // a stored one the session store and IPC read back as `'unrecognized'`
+  // (TASK-1213).
+  it.each([
+    ['satellite', 'shared'],
+    ['satellite', 'private'],
+    ['satellite', undefined],
+    ['unrecognized', 'shared'],
+    ['unrecognized', 'private'],
+    ['unrecognized', undefined],
+  ] as const)(
+    "a turn from a source this build doesn't know (%j) recalls shared statements only on a team agent (audience %j), backstop and all",
+    async (source, audience) => {
       const h = await makeHarness({ agent: { visibility: 'team' } });
       const mine = h.ctx({ conversationId: PRIVATE_CONV });
       await h.remember({ about: 'launch_plan', relation: 'codename', value: SECRET }, mine);
@@ -342,7 +351,7 @@ describe('@ax/memory — a shared turn recalls shared statements only (TASK-1091
       ]);
       const unknown = h.ctx({
         conversationId: CHANNEL,
-        source: 'satellite' as AgentContextSource,
+        source: source as AgentContextSource,
         ...(audience !== undefined ? { audience } : {}),
       });
 
@@ -786,7 +795,11 @@ describe('recallFacts — the one door every engine read goes through', () => {
     }
   });
 
-  /** An outsider's turn, by its audience stamp and its source. A source this build doesn't know reads as an outsider's. */
+  /**
+   * An outsider's turn, by its audience stamp and its source. A source this
+   * build doesn't know reads as an outsider's: one outside the type, and a
+   * stored one read back as `'unrecognized'` (TASK-1213).
+   */
   const OUTSIDER_TURNS = [
     ['shared', 'external'],
     ['public', 'external'],
@@ -794,6 +807,8 @@ describe('recallFacts — the one door every engine read goes through', () => {
     ['private', 'external'],
     [undefined, 'external'],
     ['private', 'satellite'],
+    ['shared', 'unrecognized'],
+    ['private', 'unrecognized'],
   ] as const;
   const outsiderTurn = (audience: string | undefined, source: string): AgentContext =>
     makeAgentContext({
@@ -878,6 +893,13 @@ describe('recallFacts — the one door every engine read goes through', () => {
     ['public', 'satellite', 'team', { audience: 'shared' }],
     ['private', 'satellite', 'team', { audience: 'shared' }],
     [undefined, 'satellite', 'team', { audience: 'shared' }],
+    // A stored session source this build doesn't recognize (TASK-1213): the
+    // session store and IPC read it back as 'unrecognized', and it fails
+    // closed on a team agent too, whatever its stamp.
+    ['shared', 'unrecognized', 'team', { audience: 'shared' }],
+    ['public', 'unrecognized', 'team', { audience: 'shared' }],
+    ['private', 'unrecognized', 'team', { audience: 'shared' }],
+    [undefined, 'unrecognized', 'team', { audience: 'shared' }],
     // On a personal agent an outsider's turn, whatever its stamp, reads what
     // the room could see (review F3: fail closed, no live producer), and an
     // unknown source reads as an outsider's.
@@ -885,6 +907,8 @@ describe('recallFacts — the one door every engine read goes through', () => {
     [undefined, 'external', 'personal', { audience: 'shared' }],
     ['private', 'satellite', 'personal', { audience: 'shared' }],
     [undefined, 'satellite', 'personal', { audience: 'shared' }],
+    ['private', 'unrecognized', 'personal', { audience: 'shared' }],
+    [undefined, 'unrecognized', 'personal', { audience: 'shared' }],
     ['shared', 'user', 'personal', { audience: 'shared' }],
     ['shared', 'external', 'personal', { audience: 'shared' }],
     ['private', 'user', 'personal', {}],
@@ -1511,10 +1535,13 @@ describe('a team agent keeps what a member says about themself, under their own 
   // Neither combination has a live producer (channel-slack stamps an
   // outsider's turn shared), so both must fail closed: an outsider's turn is
   // `withheld` whatever its audience, and a source this build doesn't know
-  // reads as an outsider's (`isOutsiderTurn`).
+  // reads as an outsider's (`isOutsiderTurn`). A session whose stored source
+  // this build doesn't recognize (TASK-1213) still captures, under the same
+  // rule.
   it.each([
     ['an outsider turn stamped private', 'external', 'private'],
     ['a turn from a source this build does not know', 'satellite', 'shared'],
+    ['a turn from a session whose stored source this build does not recognize', 'unrecognized', 'shared'],
   ] as const)("%s keeps the speaker rule on the observer and the note: nothing under the runner's key", async (_label, source, audience) => {
     const h = await makeHarness({ agent: { visibility: 'team' }, llm: () => extractionReply(OUTSIDER_FACTS) });
     const ctx = h.ctx({ userId: BOB, conversationId: 'conv-ext', source: source as AgentContextSource, audience });
@@ -2540,6 +2567,11 @@ describe('one rule for every write: whose memory, and who is talking (TASK-1204)
     ['shared', 'routine', 'team', 'team'],
     ['shared', 'external', 'team', 'withheld'],
     ['shared', 'bogus', 'team', 'withheld'], // an unknown source fails closed
+    // A stored source this build doesn't recognize (TASK-1213) is an
+    // outsider's turn for the speaker rule, whatever the audience or agent.
+    ['private', 'unrecognized', 'team', 'withheld'],
+    ['shared', 'unrecognized', 'team', 'withheld'],
+    ['private', 'unrecognized', 'personal', 'withheld'],
     ['public', 'user', 'team', 'team'], // an unknown audience reads as shared
     ['shared', 'user', 'personal', 'withheld'],
     ['shared', 'user', 'bogus', 'withheld'], // an unknown visibility fails closed

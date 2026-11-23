@@ -69,6 +69,27 @@ describe('session-postgres return schemas', () => {
     ).toBe(true);
   });
 
+  // TASK-1213 — the store reads a stored source it can't place back as
+  // 'unrecognized', so the reply must admit it, or every IPC call of that
+  // session would fail at this schema. Deliberately wider than
+  // @ax/session-inmemory's: that store validates at create and keeps no raw
+  // value, so it never answers 'unrecognized'. Nothing else gets through.
+  it("SessionResolveTokenOutputSchema admits source 'unrecognized' and nothing else unknown (TASK-1213)", () => {
+    const full: SessionResolveTokenOutput = {
+      sessionId: 's1',
+      workspaceRoot: '/w',
+      userId: 'u1',
+      agentId: 'a1',
+      conversationId: 'c1',
+      source: 'unrecognized',
+      audience: 'shared',
+    };
+    expect(SessionResolveTokenOutputSchema.parse(full)).toEqual(full);
+    for (const source of ['satellite', 'External', '']) {
+      expect(SessionResolveTokenOutputSchema.safeParse({ ...full, source }).success, source).toBe(false);
+    }
+  });
+
   it('SessionGetConfigOutputSchema round-trips a populated value', () => {
     const full: SessionGetConfigOutput = {
       userId: 'u1',

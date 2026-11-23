@@ -154,12 +154,28 @@ describe('authenticate', () => {
 
   // Both session stores refuse or remap an unknown stored value today, but
   // this is the last hop before the value becomes `ctx.source` on every
-  // runner call, so it fails closed on its own: an unknown source reads as
-  // 'external' (least privilege), an unknown audience as 'shared' (least
-  // recall).
+  // runner call, so it fails closed on its own: a source this build doesn't
+  // recognize reads as 'unrecognized' (TASK-1213: an outsider for every gate,
+  // and shared-only recall on any agent), never as a value it knows, and an
+  // unknown audience as 'shared' (least recall).
   it.each([
-    { label: 'an unknown source', resolved: { source: 'bogus' }, want: { source: 'external', audience: null } },
-    { label: 'an empty source', resolved: { source: '' }, want: { source: 'external', audience: null } },
+    { label: 'an unknown source', resolved: { source: 'bogus' }, want: { source: 'unrecognized', audience: null } },
+    { label: 'an empty source', resolved: { source: '' }, want: { source: 'unrecognized', audience: null } },
+    {
+      label: 'a source differing only in case',
+      resolved: { source: 'External' },
+      want: { source: 'unrecognized', audience: null },
+    },
+    {
+      label: 'a source differing only in spacing',
+      resolved: { source: ' external' },
+      want: { source: 'unrecognized', audience: null },
+    },
+    {
+      label: "a resolver's own 'unrecognized'",
+      resolved: { source: 'unrecognized' },
+      want: { source: 'unrecognized', audience: null },
+    },
     { label: 'an unknown audience', resolved: { audience: 'public' }, want: { source: null, audience: 'shared' } },
     {
       label: 'known values',
