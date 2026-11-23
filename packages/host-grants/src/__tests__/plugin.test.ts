@@ -112,24 +112,75 @@ describe('@ax/host-grants plugin', () => {
     const l = await h.bus.call<HostGrantsListInput, HostGrantsListOutput>(
       'host-grants:list',
       h.ctx(),
-      { ownerUserId: 'u1', agentId: 'a1' },
+      { agentId: 'a1' },
     );
     expect(l.hosts.map((x) => x.host)).toEqual(['x.example.com']);
 
     const r = await h.bus.call<HostGrantsRevokeInput, HostGrantsRevokeOutput>(
       'host-grants:revoke',
       h.ctx(),
-      { ownerUserId: 'u1', agentId: 'a1', host: 'x.example.com' },
+      { agentId: 'a1', host: 'x.example.com' },
     );
     expect(r).toEqual({ revoked: true });
     expect(
       (
         await h.bus.call<HostGrantsListInput, HostGrantsListOutput>('host-grants:list', h.ctx(), {
-          ownerUserId: 'u1',
           agentId: 'a1',
         })
       ).hosts,
     ).toEqual([]);
+  });
+
+  // TASK-1212 — the reader carries no user: a member's session, an outsider's
+  // turn and a routine run all read the same list for the agent.
+  it("each person's grant is in the agent's list, read with agentId alone", async () => {
+    const h = await makeHarness();
+    for (const [ownerUserId, agentId, host] of [
+      ['u1', 'a1', 'a.example.com'],
+      ['u2', 'a1', 'b.example.com'],
+      ['u1', 'a2', 'c.example.com'],
+    ] as const) {
+      await h.bus.call<HostGrantsGrantInput, HostGrantsGrantOutput>('host-grants:grant', h.ctx(), {
+        ownerUserId,
+        agentId,
+        host,
+      });
+    }
+
+    const out = await h.bus.call<HostGrantsListInput, HostGrantsListOutput>(
+      'host-grants:list',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    expect(out.hosts.map((x) => x.host)).toEqual(['a.example.com', 'b.example.com']);
+  });
+
+  it('list and revoke without agentId are missing-field', async () => {
+    const h = await makeHarness();
+    await h.bus.call<HostGrantsGrantInput, HostGrantsGrantOutput>('host-grants:grant', h.ctx(), {
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      host: 'x.example.com',
+    });
+    const missingAgentId = { code: 'missing-field', message: expect.stringMatching(/agentId/) };
+
+    for (const input of [{}, { agentId: '' }]) {
+      await expect(h.bus.call('host-grants:list', h.ctx(), input)).rejects.toMatchObject(
+        missingAgentId,
+      );
+    }
+    for (const input of [{ host: 'x.example.com' }, { agentId: '', host: 'x.example.com' }]) {
+      await expect(h.bus.call('host-grants:revoke', h.ctx(), input)).rejects.toMatchObject(
+        missingAgentId,
+      );
+    }
+    // A refused revoke removed nothing.
+    const out = await h.bus.call<HostGrantsListInput, HostGrantsListOutput>(
+      'host-grants:list',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    expect(out.hosts.map((x) => x.host)).toEqual(['x.example.com']);
   });
 
   it('host-grants:grant rejects an invalid host', async () => {
@@ -166,7 +217,9 @@ describe('@ax/host-grants agents:deleted subscriber (TASK-718)', () => {
     for (const [ownerUserId, agentId, host] of [
       ['u1', 'agt_del', 'a.example.com'],
       ['u1', 'agt_del', 'b.example.com'],
-      ['u2', 'agt_del', 'a.example.com'],
+      // A host of its own: since TASK-1212 a host already on the agent is a
+      // no-op for anyone, so u2 adding a.example.com would file no row.
+      ['u2', 'agt_del', 'd.example.com'],
       ['u3', 'agt_del', 'c.example.com'],
       ['u1', 'agt_keep', 'a.example.com'],
       ['u2', 'agt_keep', 'z.example.com'],
