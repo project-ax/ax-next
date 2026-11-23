@@ -193,7 +193,10 @@ describe('BUILTIN_RULES', () => {
       'builtins.ask-user-question',
       'builtins.cron-create',
     ]);
-    expect(lintCapability('schedule things with its built-in timer instead of a routine')).toEqual([]);
+    // Lint the shipped row, not a copy of its text: a reword that trips the
+    // lint must fail here even if someone forgets to update the literal above.
+    const row = BUILTIN_RULES.find((r) => r.id === 'builtins.cron-create');
+    expect(lintCapability(row!.capability)).toEqual([]);
   });
 
   it('answers deny for CronCreate at the evaluator: defence in depth, not the enforcement', () => {
