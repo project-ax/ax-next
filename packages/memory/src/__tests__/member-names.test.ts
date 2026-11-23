@@ -255,6 +255,7 @@ describe('member names (TASK-1209)', () => {
 
     const named = (userId: string): unknown =>
       ({
+        'u-alice': { id: 'u-alice', displayName: 'Alice Jones', email: 'alice@x.test', isAdmin: false },
         'u-bob': { id: 'u-bob', displayName: 'Bob Smith', email: 'bob@x.test', isAdmin: false },
         'u-eve': { id: 'u-eve', displayName: 'Eve Example', email: 'eve@x.test', isAdmin: false },
       })[userId] ?? null;
@@ -269,7 +270,8 @@ describe('member names (TASK-1209)', () => {
     });
 
     // TASK-1213: the caller is asked too, once, but only to count their name
-    // in the collision check. Their key never holds a label: it reads `you`.
+    // in the collision check. Their key never holds a label, even with a name
+    // nobody else holds: it reads `you` wherever it is shown.
     it('asks once per member on the page, and the caller to count; names only other member keys', async () => {
       const logs: LoggedEvent[] = [];
       const { bus, asked, memberAsked } = authBus(named);
