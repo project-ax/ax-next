@@ -185,6 +185,9 @@ describe('memory facts export — real engine + real volume', () => {
       const text = await readText(path, aliceCtx);
       expect(text, path).not.toContain('user:user-alice');
       expect(text, path).not.toContain('user:user-bob');
+      // Display names only: auth answers an email too, and the export is a
+      // model-readable file outsiders' sessions mount.
+      expect(text, path).not.toContain('@x.test');
     }
   });
 
