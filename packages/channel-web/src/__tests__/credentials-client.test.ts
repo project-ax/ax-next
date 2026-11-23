@@ -16,6 +16,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   adminCredentials,
+  grantHost,
   setDestinationCredential,
 } from '../lib/credentials';
 import { HttpError, HTTP_FAILED, HTTP_NO_ACCESS } from '../lib/http';
@@ -230,6 +231,62 @@ describe('credentials wire client', () => {
       vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('request failed with sk-test'));
       await expect(setDestinationCredential(input)).rejects.toBeInstanceOf(HttpError);
       await expect(setDestinationCredential(input)).rejects.toThrow(HTTP_FAILED);
+    });
+  });
+
+  // The reactive wall's Allow (TASK-37, TASK-44, TASK-1212). The route answers
+  // `{ added }` for "Just this once", and `{ added, kept, full? }` for "Always".
+  describe('grantHost', () => {
+    const once = { sessionId: 'sess-9', host: 'example.org', persist: false };
+    const always = { sessionId: 'sess-9', host: 'example.org', persist: true, agentId: 'agt_1' };
+
+    it('POSTs the choice to allow-host past the CSRF guard, with the session cookie', async () => {
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(jsonResponse({ added: true, kept: true }));
+      await grantHost(always);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(url).toBe('/api/chat/allow-host');
+      expect(init).toMatchObject({
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'x-requested-with': 'ax-admin' },
+      });
+      expect(JSON.parse(init!.body as string)).toStrictEqual(always);
+    });
+
+    it.each([
+      ['Just this once, live', once, { added: true }, { added: true }],
+      ['Just this once, ended', once, { added: false }, { added: false }],
+      ['Always, kept', always, { added: true, kept: true }, { added: true, kept: true }],
+      ['Always, kept after the session ended', always, { added: false, kept: true }, { added: false, kept: true }],
+      ['Always, the list is full', always, { added: true, kept: false, full: true }, { added: true, kept: false, full: true }],
+      ['Always, not kept', always, { added: false, kept: false }, { added: false, kept: false }],
+    ])('reads { added, kept, full }: %s', async (_label, input, answer, outcome) => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(answer));
+      await expect(grantHost(input)).resolves.toStrictEqual(outcome);
+    });
+
+    it.each([
+      ['not JSON', () => new Response('nope', { status: 200 })],
+      ['no added', () => jsonResponse({})],
+      ['an added that is not a boolean', () => jsonResponse({ added: 'yes' })],
+      ['null', () => jsonResponse(null)],
+    ])('returns null when the 200 cannot be read: %s', async (_label, response) => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(response());
+      await expect(grantHost(once)).resolves.toBeNull();
+    });
+
+    it('returns null when an "Always" answer does not say whether the site was kept', async () => {
+      // Without `kept` we cannot tell the person whether "Always" stuck, so the
+      // caller says nothing rather than guess either way.
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ added: true }));
+      await expect(grantHost(always)).resolves.toBeNull();
+    });
+
+    it('throws on a non-ok answer, so the row stays answerable', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 403 }));
+      await expect(grantHost(always)).rejects.toMatchObject({ name: 'HttpError', status: 403 });
     });
   });
 });

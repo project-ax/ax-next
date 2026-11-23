@@ -192,7 +192,7 @@ export interface WorkspaceContext {
   readonly rootPath: string;
 }
 
-export type AgentContextSource = 'routine' | 'user' | 'external';
+export type AgentContextSource = 'routine' | 'user' | 'external' | 'unrecognized';
 export type AgentContextAudience = 'private' | 'shared';
 
 /** True only when a present owner is driving the turn. Fails closed. */
@@ -204,6 +204,7 @@ export function isAttendedTurn(ctx: Pick<AgentContext, 'source'>): boolean {
       return true;
     case 'routine':
     case 'external':
+    case 'unrecognized':
       return false;
     default: {
       const _exhaustive: never = source;
@@ -215,10 +216,11 @@ export function isAttendedTurn(ctx: Pick<AgentContext, 'source'>): boolean {
 
 /**
  * True when someone with no access to the agent may be present: `'external'`,
- * or a source this build doesn't know. Fails closed, so a gate that keeps an
- * outsider from acting for the owner (proposal tools, attended approvals)
- * refuses a value it can't place. Not the inverse of `isAttendedTurn`: a
- * routine is unattended but has no outsider in it.
+ * `'unrecognized'` (a stored session source this build doesn't recognize), or
+ * a source outside the type. Fails closed, so a gate that keeps an outsider
+ * from acting for the owner (proposal tools, attended approvals) refuses a
+ * value it can't place. Not the inverse of `isAttendedTurn`: a routine is
+ * unattended but has no outsider in it.
  */
 export function isOutsiderTurn(ctx: Pick<AgentContext, 'source'>): boolean {
   const source: AgentContextSource | undefined = ctx.source;
@@ -228,6 +230,7 @@ export function isOutsiderTurn(ctx: Pick<AgentContext, 'source'>): boolean {
     case 'routine':
       return false;
     case 'external':
+    case 'unrecognized':
       return true;
     default: {
       const _exhaustive: never = source;
@@ -282,6 +285,15 @@ export interface AgentContext {
    * writes are refused, and its files are read-only (TASK-1122). The gates
    * that refuse it ask `isOutsiderTurn`, which refuses an unknown source too.
    *
+   * `'unrecognized'` (TASK-1213): a stored session source this build doesn't
+   * recognize (hand-edited, or written by a newer build that knows more
+   * values). It is produced only on read-back, by a session store and the
+   * IPC auth hop; `session:create` and `sandbox:open-session` refuse it, so
+   * no session is ever opened with it. It is least privileged everywhere: an
+   * outsider for every gate (`isOutsiderTurn`), unattended
+   * (`isAttendedTurn`), and shared-only memory recall on any agent. To spot
+   * an outsider, ask `isOutsiderTurn`, never `=== 'external'`.
+   *
    * Origin label only — no transport/storage vocabulary, so it stays
    * transport-agnostic per Invariant 1.
    */
@@ -295,12 +307,12 @@ export interface AgentContext {
    * agent's memory is shared with anyone who talks to it (design §4c,
    * TASK-1209): a member's, a routine's or an outsider's turn on it
    * recalls everything whatever this field says, and a member's turn files
-   * their facts under them. A turn whose `source` is outside
-   * `AgentContextSource` recalls only shared statements, on any agent (a
-   * stored session source this build doesn't know never gets that far: the
-   * session store and IPC read it as `'external'`). An outsider's turn, on any
-   * agent and whatever this field says, stores no person fact. Host-stamped
-   * only: never taken from an IPC payload.
+   * their facts under them. A turn from a source this build doesn't know
+   * recalls only shared statements, on any agent and whatever this field
+   * says: `'unrecognized'` (a stored session source the session store and
+   * IPC couldn't place, TASK-1213), or a value outside `AgentContextSource`.
+   * An outsider's turn, on any agent and whatever this field says, stores no
+   * person fact. Host-stamped only: never taken from an IPC payload.
    * It decides memory, not approvals; instructions and files are not
    * governed by it (an outsider's `source` is what makes files read-only). Must stay constant for a conversation, because memory
    * extracts a conversation in batches under the latest turn's audience.

@@ -13,9 +13,12 @@
  *   PATCH /admin/agents/:id  body: Partial<AdminAgentInput>     → { agent }
  *   DELETE /admin/agents/:id                                    → 204
  *
- * SECURITY NOTE — every endpoint these helpers hit is guarded server-side
- * by the admin role check. Hiding admin entries from non-admins in the
- * UI is a convenience; access control sits on the server.
+ * SECURITY NOTE — access control sits on the server, never in this file.
+ * The `/admin/agents` routes need a signed-in user, not an admin: every
+ * person manages their OWN agents in Settings, and the agents hooks check
+ * ownership. A few routes are admin-only (the model-impact count, an
+ * agent's authored-skill drafts). Hiding an entry in the UI is a
+ * convenience, not a control.
  *
  * CSRF — state-changing methods (POST/PATCH/DELETE) carry
  * `X-Requested-With: ax-admin` so they pass the http-server's CSRF guard
@@ -144,6 +147,25 @@ export async function listAgentModelOptions(): Promise<AgentModelList> {
 
 export async function listAgentModels(): Promise<AgentModelOption[]> {
   return (await listAgentModelOptions()).models;
+}
+
+/** GET the tool names this deployment really has, plus the runner built-ins. */
+export interface AgentToolCatalog {
+  tools: string[];
+  builtins: string[];
+}
+
+export async function listAgentToolOptions(): Promise<AgentToolCatalog> {
+  const res = await fetch('/admin/agents/tools', { credentials: 'include' });
+  if (!res.ok) throw new Error(`list agent tools: ${res.status}`);
+  const body = (await res.json()) as { tools?: unknown; builtins?: unknown };
+  // A missing list is a failed read, never an empty catalog, because the form
+  // drops saved names an empty catalog lacks.
+  if (!Array.isArray(body.tools) || !Array.isArray(body.builtins)) {
+    throw new Error('list agent tools: malformed reply');
+  }
+  const strings = (xs: unknown[]): string[] => xs.filter((x): x is string => typeof x === 'string');
+  return { tools: strings(body.tools), builtins: strings(body.builtins) };
 }
 
 

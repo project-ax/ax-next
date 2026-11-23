@@ -88,9 +88,11 @@ export async function attachConnectionSkill(
   return (await res.json()) as { created: boolean };
 }
 
-// TASK-54 — Allowed sites (the durable per-(user, agent) "always allow" grants,
+// TASK-54 — Allowed sites (the durable per-agent "always allow" grants,
 // design P3/P6; backed by @ax/host-grants from TASK-44). The Settings mirror of
-// the reactive wall's "Always for this agent" choice.
+// the reactive wall's "Always for this agent" choice. These routes serve
+// PERSONAL agents only (TASK-1212): a team agent's sites reach every member and
+// are managed in that agent's settings; the server answers 403 `team-agent`.
 
 export interface AllowedSite {
   host: string;
@@ -109,7 +111,7 @@ export async function getAllowedSites(agentId: string): Promise<AllowedSitesResp
   return (await res.json()) as AllowedSitesResponse;
 }
 
-// TASK-131 — proactive "Add a site". POSTs a host to the agent's durable
+// TASK-131 — proactive "Add a site". POSTs a host to a personal agent's durable
 // "always allow" egress allowlist (host-grants:grant). The browser-supplied
 // host is UNTRUSTED — the server (@ax/host-grants store) is the authoritative
 // validator; this wrapper just relays the host and surfaces the server's
@@ -169,9 +171,12 @@ export async function revokeAllowedSite(agentId: string, host: string): Promise<
 
 // --- Allowed sites: the flat, all-agents view ------------------------------
 // One grant per (agent, host). The Settings panel lists each host once and shows
-// which agents it applies to; "all agents" is just "every agent you have right
-// now" (a grant per agent), so the per-agent egress least-privilege boundary is
-// unchanged — this is a management view over the same per-(user, agent) rows.
+// which agents it applies to; "all agents" is just "every personal agent you
+// have right now" (a grant per agent), so the per-agent egress least-privilege
+// boundary is unchanged — this is a management view over the same per-agent
+// rows. The server list still returns every agent the person added a site to,
+// team agents included; the panel filters those out (they are managed in the
+// team agent's settings, TASK-1212).
 
 /** One grant in the flat view — carries the `agentId` it applies to. */
 export interface AllAllowedSite {
@@ -180,7 +185,7 @@ export interface AllAllowedSite {
   grantedAt: string;
 }
 
-/** Every allowed-site grant the user owns across all their agents. */
+/** Every allowed-site grant the user added, across all their agents. */
 export async function listAllAllowedSites(): Promise<AllAllowedSite[]> {
   const res = await httpFetch('/api/chat/allowed-sites', { credentials: 'include' });
   if (!res.ok) throw new HttpError('/api/chat/allowed-sites', res.status);

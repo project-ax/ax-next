@@ -226,3 +226,136 @@ describe('proxy:drain-session-allowed-hosts (TASK-1199)', () => {
     expect(await drain('s1')).toEqual({ hosts: ['new.example.com'] });
   });
 });
+
+/**
+ * TASK-1212 — a site kept while the agent wasn't running (a late Allow: a
+ * day-old Slack prompt, a web "Always" after the session ended) reaches the
+ * agent's next session. The orchestrator names those sites in
+ * `proxy:open-session`'s `newlyAllowedHosts`, and the proxy seeds the same
+ * TASK-1199 record a live `proxy:add-host` writes, so the runner's first drain
+ * opens the turn with the "now allowed" line.
+ *
+ * The field GRANTS NOTHING: only `allowlist` decides what the session reaches.
+ * The proxy reports a host only when it is a string, a real hostname
+ * (HOST_RE) and on this session's own allowlist, so the line never names a
+ * host the session can't reach, and never carries arbitrary text into the
+ * model's context.
+ */
+describe('proxy:open-session newlyAllowedHosts (TASK-1212)', () => {
+  let caDir: string;
+  let bus: HookBus;
+  let kernel: KernelHandle | undefined;
+
+  beforeAll(() => {
+    caDir = mkdtempSync(join(tmpdir(), 'newly-allowed-hosts-'));
+  });
+
+  afterAll(() => {
+    rmSync(caDir, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    bus = new HookBus();
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 }, caDir }),
+      ],
+      config: {},
+    });
+  });
+
+  afterEach(async () => {
+    if (kernel) await kernel.shutdown();
+    kernel = undefined;
+  });
+
+  // The orchestrator opens the session on the turn's own context.
+  function openCtx(): AgentContext {
+    return makeAgentContext({ sessionId: 'orchestrator-turn', agentId: 'a1', userId: 'u1' });
+  }
+
+  // Typed loosely on purpose: the malformed cases below hand the proxy what a
+  // broken caller could, not what the type allows.
+  function open(sessionId: string, fields: { allowlist: unknown[]; newlyAllowedHosts?: unknown }) {
+    return bus.call('proxy:open-session', openCtx(), {
+      sessionId,
+      userId: 'u1',
+      agentId: 'a1',
+      credentials: {},
+      ...fields,
+    });
+  }
+
+  function drain(sessionId: string): Promise<{ hosts: string[] }> {
+    return bus.call<Record<string, never>, { hosts: string[] }>(
+      'proxy:drain-session-allowed-hosts',
+      makeAgentContext({ sessionId, agentId: 'a1', userId: 'u1' }),
+      {},
+    );
+  }
+
+  it('open-session: newly allowed hosts on the allowlist are reported once, at the first drain', async () => {
+    await open('s1', {
+      allowlist: ['a.example.com', 'b.example.com'],
+      newlyAllowedHosts: ['b.example.com'],
+    });
+    expect(await drain('s1')).toEqual({ hosts: ['b.example.com'] });
+    // Surface-once, like a live Allow's record.
+    expect(await drain('s1')).toEqual({ hosts: [] });
+  });
+
+  it('a newly allowed host that is not on the allowlist, or is not a host, is never reported', async () => {
+    await open('s1', {
+      // The proxy does not vet its caller's allowlist, so a malformed entry can
+      // sit on it. Each bad entry below is ON the allowlist except the first,
+      // so every one of the three checks has to hold on its own.
+      allowlist: ['a.example.com', 'NOT A HOST', 42],
+      newlyAllowedHosts: [
+        'c.example.com', // a real hostname this session can't reach
+        'NOT A HOST', // on the allowlist, but not a hostname
+        42, // on the allowlist, and '42' would pass the hostname check
+        'a.example.com', // the one true statement
+      ],
+    });
+    expect(await drain('s1')).toEqual({ hosts: ['a.example.com'] });
+  });
+
+  it('a newlyAllowedHosts that is not a list is ignored: the session still opens, nothing is reported', async () => {
+    await open('s1', {
+      allowlist: ['a.example.com'],
+      newlyAllowedHosts: { 0: 'a.example.com', length: 1 },
+    });
+    expect(await drain('s1')).toEqual({ hosts: [] });
+    // The session is open: a live Allow on it still answers added.
+    expect(
+      await bus.call<{ sessionId: string; host: string }, { added: boolean }>(
+        'proxy:add-host',
+        openCtx(),
+        { sessionId: 's1', host: 'b.example.com' },
+      ),
+    ).toEqual({ added: true, agentId: 'a1' });
+  });
+
+  it('at most 32 are reported, the first ones given', async () => {
+    const hosts = Array.from({ length: 40 }, (_, i) => `h${i}.example.com`);
+    await open('s1', { allowlist: hosts, newlyAllowedHosts: hosts });
+    expect((await drain('s1')).hosts).toEqual(hosts.slice(0, 32));
+  });
+
+  it('close-session forgets them (only for the session it closes)', async () => {
+    await open('s1', { allowlist: ['a.example.com'], newlyAllowedHosts: ['a.example.com'] });
+    await open('s2', { allowlist: ['a.example.com'], newlyAllowedHosts: ['a.example.com'] });
+    await bus.call('proxy:close-session', openCtx(), { sessionId: 's1' });
+    // Opened again under the same id, without the field: nothing carried over.
+    await open('s1', { allowlist: ['b.example.com'] });
+    expect(await drain('s1')).toEqual({ hosts: [] });
+    expect(await drain('s2')).toEqual({ hosts: ['a.example.com'] });
+  });
+
+  it('no newlyAllowedHosts: nothing reported (unchanged)', async () => {
+    await open('s1', { allowlist: ['a.example.com', 'b.example.com'] });
+    expect(await drain('s1')).toEqual({ hosts: [] });
+  });
+});

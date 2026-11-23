@@ -23,11 +23,10 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * reads it unscoped, whatever its audience stamp: a member's, a member's
  * routine, an outsider's. A turn from a source this build doesn't know reads
  * shared statements only on every agent: it fails closed. That covers a
- * context a host plugin built, and a source added to `AgentContextSource`
- * later. It does NOT cover a stored session source a newer build wrote:
- * session-postgres and ipc-core read that as `'external'` before memory sees
- * it, so on a team agent it reads everything, as an outsider does (see
- * {@link recallAudienceScope}, step 2). An outsider's turn
+ * stored session source a newer build wrote (session-postgres and ipc-core
+ * read it back as `'unrecognized'`, TASK-1213), a context a host plugin built
+ * with a value outside the type, and a source added to `AgentContextSource`
+ * later (see {@link recallAudienceScope}, step 2). An outsider's turn
  * still never shows the requester's own memory as the person talking
  * (`augment.ts`, `memory:recall`'s `aboutText`).
  *
@@ -78,28 +77,27 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  * 2. A team agent, in a turn from a source this build doesn't know:
  *    `{ audience: 'shared' }`, whatever its stamp, backstop and all. It fails
  *    closed, as `isOutsiderTurn` does (TASK-1209's security review): a
- *    source added later may bring a reader nobody has decided on. The
- *    `switch` is exhaustive, so a source added to `AgentContextSource`
- *    doesn't compile until it is placed here.
+ *    source added later may bring a reader nobody has decided on. That is:
+ *    - `'unrecognized'` (TASK-1213): a STORED session source this build
+ *      doesn't recognize, such as one a newer build wrote while two builds
+ *      share one database. session-postgres (`normalizeSource`) and ipc-core
+ *      (`sessionSource`) read it back as `'unrecognized'`, never as a value
+ *      this build knows, so it lands here and never at step 1;
+ *    - at run time, a context a host plugin built with a value outside the
+ *      type.
  *
- *    That is all this step covers: compile-time exhaustiveness, and at run
- *    time a context a host plugin built with a value outside the type. A
- *    STORED session source this build doesn't know (one a newer build wrote)
- *    never reaches memory raw: session-postgres (`normalizeSource`) and
- *    ipc-core (`sessionSource`) read it as `'external'`, so on a team agent
- *    it reads everything at step 1, as an outsider does. Accepted (TASK-1209):
- *    under Vinay's decision that is exactly an outsider's read, and it only
- *    happens while two builds share one database. Carrying an "unrecognized
- *    source" mark through the session record and IPC is a follow-up.
+ *    The `switch` is exhaustive, so a source added to `AgentContextSource`
+ *    doesn't compile until it is placed here.
  * 3. An outsider's turn on any other agent (`isOutsiderTurn`, which fails
- *    closed for a source this build doesn't know): `{ audience: 'shared' }`,
- *    whatever the turn's audience stamp. Someone without access to the agent
- *    reads its reply, so it recalls only what was learned where they could
- *    see it, backstop and all. A private stamp or none fails closed here
- *    (TASK-1204 review F3): channel-slack stamps an outsider's turn shared,
- *    but a stored session source this build doesn't know reads as external
- *    whatever its audience stamp (`ipc-core` auth). On a personal agent this
- *    step is what keeps that session to shared rows.
+ *    closed for `'unrecognized'` and for a source outside the type):
+ *    `{ audience: 'shared' }`, whatever the turn's audience stamp. Someone
+ *    without access to the agent reads its reply, so it recalls only what was
+ *    learned where they could see it, backstop and all. A private stamp or
+ *    none fails closed here (TASK-1204 review F3): channel-slack stamps an
+ *    outsider's turn shared, but a stored session source this build doesn't
+ *    recognize reads as `'unrecognized'` whatever its audience stamp
+ *    (session-postgres, `ipc-core` auth). On a personal agent this step is
+ *    what keeps that session to shared rows.
  * 4. Anything else: `{ audience: 'shared' }` for a shared turn, and for an
  *    audience this build does not know (`audienceOf` reads that as shared,
  *    the least recall). Nothing at all for a private turn, whose reads are
@@ -121,6 +119,10 @@ export function recallAudienceScope(
       case 'routine':
       case 'external':
         return {};
+      case 'unrecognized':
+        // A stored session source this build doesn't recognize (TASK-1213):
+        // fail closed, like a value outside the type below.
+        return { audience: 'shared' };
       default: {
         // A source this build doesn't know: fail closed.
         const _exhaustive: never = source;

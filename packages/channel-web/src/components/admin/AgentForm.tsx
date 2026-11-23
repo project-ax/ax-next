@@ -17,7 +17,12 @@ import { movedNotice } from '@/lib/models-copy';
  *     or PATCHes (edit) and re-fetches the list on success.
  *
  * Visibility radio toggles the team picker. The teams list comes from
- * `/admin/teams`. `allowedTools` stays a dumb comma-separated text field.
+ * `/admin/teams`. `allowedTools` is picked from the tools this deployment
+ * really has (GET /admin/agents/tools, `AgentToolPicker`); a saved name that
+ * list lacks is flagged with a Remove button, but a plain save sends it back
+ * unchanged: a successful read only proves the name is missing from THIS boot
+ * (some tools load only when configured), so only the owner removes it
+ * (TASK-1214).
  * Connectors are NOT assigned here (TASK-799) — people add them from the
  * workspace rail.
  */
@@ -25,6 +30,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   listAdminAgents,
   listAgentModelOptions,
+  listAgentToolOptions,
   getAdminAgent,
   createAgent,
   patchAgent,
@@ -37,8 +43,10 @@ import {
   type AgentModelOption,
   type Team,
 } from '../../lib/admin';
+import type { ToolCatalogState } from '@/lib/agent-tool-areas';
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
+import { AgentToolPicker } from './AgentToolPicker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -66,7 +74,8 @@ type FormState = {
   identity: string;
   soul: string;
   model: string;
-  allowedTools: string;
+  /** Tool names, in the order they were saved or ticked; never duplicated. */
+  allowedTools: string[];
 };
 
 const emptyForm = (): FormState => ({
@@ -78,7 +87,7 @@ const emptyForm = (): FormState => ({
   // Empty until GET /admin/agents/models resolves — this deployment's
   // allow-list decides what a valid model is, not a constant in the SPA.
   model: '',
-  allowedTools: '',
+  allowedTools: [],
 });
 
 const formFromAgent = (a: AdminAgent): FormState => ({
@@ -90,14 +99,10 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   identity: '',
   soul: '',
   model: a.model,
-  allowedTools: (a.allowedTools ?? []).join(', '),
+  // A saved `Bash, Bash` goes back as one `Bash`: the picker ticks a name or
+  // doesn't, and unticking removes every copy.
+  allowedTools: [...new Set(a.allowedTools ?? [])],
 });
-
-const splitChips = (s: string): string[] =>
-  s
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean);
 
 /**
  * The model a freshly-opened picker is EFFECTIVELY showing: the user's explicit
@@ -176,6 +181,9 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [models, setModels] = useState<AgentModelOption[] | null>(null);
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  // The tool names the picker offers (GET /admin/agents/tools, TASK-1214).
+  // Save never drops a saved name on its own; only the picker's Remove does.
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalogState>({ status: 'loading' });
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
@@ -230,6 +238,31 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         setModelsError(err instanceof Error ? err.message : String(err));
       });
   }, [editing]);
+
+  // TASK-1214 — read the tool list each time the form OPENS, so "close and
+  // reopen this form" really retries a failed read. Keyed on the form being
+  // open, not on `editing`: a skill-attachment save swaps in a new `editing`
+  // object, and re-reading then would blank the picker to "Loading…" under the
+  // person's hands. A reply that lands after the form closed is dropped, and
+  // closing resets to `loading`, so the next open never shows an old read.
+  const formOpen = editing !== null;
+  useEffect(() => {
+    if (!formOpen) return;
+    let cancelled = false;
+    void listAgentToolOptions()
+      .then((catalog) => {
+        if (!cancelled) setToolCatalog({ status: 'ok', ...catalog });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setToolCatalog({ status: 'failed' });
+        console.warn('could not read the tool list', err);
+      });
+    return () => {
+      cancelled = true;
+      setToolCatalog({ status: 'loading' });
+    };
+  }, [formOpen]);
 
   // TASK-142 — load the agent's identity and soul when editing an existing
   // agent. A new agent has none yet (its first save writes them), so we skip
@@ -327,7 +360,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     }
     setBusy(true);
     setError(null);
-    const allowedTools = splitChips(form.allowedTools);
+    // TASK-1214 — sent as picked, names the tool list lacks included: that
+    // list only describes this boot, so dropping them here would silently
+    // delete tools that exist when, say, a key is set. The picker's Remove
+    // button is the only way they leave. (Deduped on load and by `setTools`.)
+    const allowedTools = form.allowedTools;
     // `mcpConfigIds` carries MCP configs only; connectors are added from the
     // workspace rail, not this form (TASK-799). The wildcard sentinel
     // (`allowedTools=[] && mcpConfigIds=[]`) is reserved for the dev-mode bypass
@@ -351,7 +388,15 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     const bareStaysBare = wasBare && allowedTools.length === 0;
     if (allowedTools.length === 0 && !bareStaysBare) {
       setBusy(false);
-      setError('Pick at least one tool this agent may use — e.g. Bash, Read, Write.');
+      // Without a loaded list there is nothing to pick, so "pick one" would be
+      // an instruction nobody can follow — say what is actually in the way.
+      setError(
+        toolCatalog.status === 'loading'
+          ? 'We’re still loading the list of tools. Give it a second and try again.'
+          : toolCatalog.status === 'failed'
+            ? 'We couldn’t load the list of tools, so there’s nothing to pick yet. Close and reopen this form to try again.'
+            : 'Pick at least one tool for this agent — “Files and commands” is a safe start.',
+      );
       return;
     }
     // The server rejects an empty/unknown model, so say why HERE rather than
@@ -715,18 +760,20 @@ if (base.model !== editing.model) patch.model = base.model;
             </p>
           </div>
 
-          {/* Allowed tools */}
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="agent-tools">Allowed tools</Label>
-            <Input
-              id="agent-tools"
-              placeholder="e.g. Bash, Read, Write, Edit, artifact_publish"
-              value={form.allowedTools}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, allowedTools: e.target.value }))
-              }
-            />
-          </div>
+          {/* Allowed tools (TASK-1214) — ticked from the names this
+              deployment really has. `unrestricted`: an existing agent saved
+              with no tools at all (the wildcard) and still nothing picked. */}
+          <AgentToolPicker
+            catalog={toolCatalog}
+            selected={form.allowedTools}
+            onChange={(next) => setForm((f) => ({ ...f, allowedTools: next }))}
+            unrestricted={
+              editing !== 'new' &&
+              editing.allowedTools.length === 0 &&
+              editing.mcpConfigIds.length === 0 &&
+              form.allowedTools.length === 0
+            }
+          />
 
           {error && (
             <Alert variant="destructive">

@@ -566,7 +566,8 @@ describe('@ax/session-postgres plugin', () => {
   // TASK-1091 — `'external'` and `audience` ride the v2 row exactly as
   // `source` does (TASK-181). Both are host-stamped at create time and read
   // back through a fail-closed normalizer: a stored value this build doesn't
-  // know reads as the LEAST privileged one ('external' / 'shared').
+  // know reads as the LEAST privileged one ('unrecognized' since TASK-1213,
+  // and 'shared'). 'unrecognized' is read back only: session:create refuses it.
   // -------------------------------------------------------------------------
   async function rawQuery(text: string, values: unknown[]): Promise<Array<Record<string, unknown>>> {
     const pgMod = await import('pg');
@@ -637,40 +638,48 @@ describe('@ax/session-postgres plugin', () => {
     expect(resolved).toMatchObject({ source: null, audience: null });
   });
 
-  it('a stored source and audience this build does not know resolve as "external" and "shared" (fail closed, TASK-1091)', async () => {
-    const h = await makeHarness();
-    const ctx = h.ctx();
-    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
-      'session:create',
-      ctx,
-      { sessionId: 's-weird-pg', workspaceRoot: '/tmp/ws', owner: OWNER },
-    );
-    // A hand-edited row, or one written by a newer build that knows more
-    // values. The column has no CHECK, so the read side is the guard.
-    await rawQuery(
-      "UPDATE session_postgres_v2_session_agent SET source = 'weird', audience = 'weird' WHERE session_id = $1",
-      ['s-weird-pg'],
-    );
-    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
-      'session:resolve-token',
-      ctx,
-      { token },
-    );
-    expect(resolved).toEqual({
-      sessionId: 's-weird-pg',
-      workspaceRoot: '/tmp/ws',
-      userId: 'u-1',
-      agentId: 'a-1',
-      conversationId: null,
-      // Least privilege: unattended, and least recall.
-      source: 'external',
-      audience: 'shared',
-    });
-  });
+  it.each(['weird', 'External', ' external', '', 'unrecognized'])(
+    "a stored source this build does not recognize (%j) resolves as 'unrecognized'; an unknown audience as 'shared' (fail closed, TASK-1213)",
+    async (stored) => {
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        ctx,
+        { sessionId: 's-weird-pg', workspaceRoot: '/tmp/ws', owner: OWNER },
+      );
+      // A hand-edited row, or one written by a newer build that knows more
+      // values. The column has no CHECK, so the read side is the guard. A
+      // value that differs from a known one only in case or spacing is not
+      // that value.
+      await rawQuery(
+        "UPDATE session_postgres_v2_session_agent SET source = $2, audience = 'weird' WHERE session_id = $1",
+        ['s-weird-pg', stored],
+      );
+      const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+        'session:resolve-token',
+        ctx,
+        { token },
+      );
+      expect(resolved).toEqual({
+        sessionId: 's-weird-pg',
+        workspaceRoot: '/tmp/ws',
+        userId: 'u-1',
+        agentId: 'a-1',
+        conversationId: null,
+        // Least privilege: an outsider for every gate and shared-only recall
+        // on any agent, never a value this build knows; and least recall.
+        source: 'unrecognized',
+        audience: 'shared',
+      });
+    },
+  );
 
   it.each([
     ['source', 'admin'],
     ['source', ''],
+    // TASK-1213: read back only, never written.
+    ['source', 'unrecognized'],
     ['audience', 'public'],
     ['audience', ''],
     ['audience', 1],

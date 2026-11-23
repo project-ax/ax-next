@@ -1129,15 +1129,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createSkillBrokerPlugin());
 
   // ----- 8a''. host grants ----------------------------------------------
-  // @ax/host-grants — the persistent per-(user, agent) "always-allow" egress
+  // @ax/host-grants — the persistent per-agent "always-allow" egress
   // host store (JIT design §6B / §P7.3 / decision #12, TASK-44). The durable
   // twin of the LIVE proxy:add-host grant (TASK-37): the chat-orchestrator
   // loads these hosts into the egress allowlist at session open (hasService-
   // gated), and the channel-web allow-host route writes one when the user
   // clicks "Always for this agent". Writers: channel-web's allow-host route
   // ("Always for this agent") and its Settings "Add a site", plus channel-slack's
-  // host prompt Allow (TASK-1208). A grant is revoked from Settings › Allowed
-  // sites and from the agent's "Granted by you". Reuses the shared postgres
+  // host prompt Allow (TASK-1208). The list belongs to the agent (TASK-1212):
+  // on a team agent one Allow covers every member's later sessions. A site is
+  // removed in the agent's settings › Connectors (owners and team admins), or
+  // in Settings › Sites for a personal agent. Reuses the shared postgres
   // pool via database:get-instance.
   plugins.push(createHostGrantsPlugin());
 

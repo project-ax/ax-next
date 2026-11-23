@@ -39,47 +39,147 @@ afterAll(async () => {
 });
 
 async function freshStore() {
-  const db = makeKysely();
-  await runHostGrantsMigration(db);
-  return createHostGrantsStore(db);
+  return (await freshDb()).s;
 }
 
-describe('host-grants store', () => {
-  it('grant inserts; re-grant of the same host is idempotent (created:false)', async () => {
-    const s = await freshStore();
-    expect(await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'x.example.com' })).toEqual({
-      created: true,
-    });
-    expect(await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'x.example.com' })).toEqual({
-      created: false,
-    });
-    const hosts = await s.list('u1', 'a1');
-    expect(hosts.map((h) => h.host)).toEqual(['x.example.com']);
-    expect(typeof hosts[0]?.grantedAt).toBe('string'); // ISO timestamp for the settings mirror (TASK-42)
-  });
+/** The store plus its db, for tests that plant rows `grant` no longer writes:
+ *  one host under two adders, as rows from before TASK-1212 (or two people
+ *  adding it at once) can leave. */
+async function freshDb() {
+  const db = makeKysely();
+  await runHostGrantsMigration(db);
+  return { db, s: createHostGrantsStore(db) };
+}
 
-  it('list is scoped to (user, agent) and ordered by host', async () => {
+// TASK-1212 — an agent's allowed sites belong to the agent. `owner_user_id`
+// records who added a row; list, revoke, the duplicate check and the cap are
+// keyed by agent. On a team agent that is every member's adds; on a personal
+// agent only its owner ever adds, so its list is the owner's.
+describe('host-grants store', () => {
+  it("list is the agent's: every adder's hosts, once each, ordered by host", async () => {
     const s = await freshStore();
-    await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'b.example.com' });
-    await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'a.example.com' });
-    await s.grant({ ownerUserId: 'u1', agentId: 'a2', host: 'other.example.com' });
-    await s.grant({ ownerUserId: 'u2', agentId: 'a1', host: 'leak.example.com' });
-    expect((await s.list('u1', 'a1')).map((h) => h.host)).toEqual([
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_team', host: 'b.example.com' });
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_team', host: 'a.example.com' });
+    await s.grant({ ownerUserId: 'ada', agentId: 'agt_team', host: 'c.example.com' });
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_other', host: 'z.example.com' });
+
+    expect((await s.list('agt_team')).map((h) => h.host)).toEqual([
       'a.example.com',
       'b.example.com',
+      'c.example.com',
+    ]);
+    expect((await s.list('agt_other')).map((h) => h.host)).toEqual(['z.example.com']);
+  });
+
+  it('a host already on the agent is a no-op for anyone', async () => {
+    const s = await freshStore();
+    expect(await s.grant({ ownerUserId: 'mel', agentId: 'agt_team', host: 'x.example.com' })).toEqual({
+      created: true,
+    });
+    // The person who added it, then a teammate: neither files a second row.
+    expect(await s.grant({ ownerUserId: 'mel', agentId: 'agt_team', host: 'x.example.com' })).toEqual({
+      created: false,
+    });
+    expect(await s.grant({ ownerUserId: 'ada', agentId: 'agt_team', host: 'x.example.com' })).toEqual({
+      created: false,
+    });
+    expect(await s.listForUser('ada')).toEqual([]);
+  });
+
+  it('rows from before (one host under two adders) read as one site with the earliest grantedAt', async () => {
+    const { db, s } = await freshDb();
+    // ada's LATER row goes in first, and 'ada' sorts before 'mel', so neither
+    // insertion order nor adder order lands on the earliest time by luck.
+    await db
+      .insertInto('host_grants_v1_grants')
+      .values([
+        {
+          owner_user_id: 'ada',
+          agent_id: 'agt_team',
+          host: 'x.example.com',
+          created_at: new Date('2026-11-02T10:00:00.000Z'),
+        },
+        {
+          owner_user_id: 'mel',
+          agent_id: 'agt_team',
+          host: 'x.example.com',
+          created_at: new Date('2026-11-01T10:00:00.000Z'),
+        },
+      ])
+      .execute();
+
+    expect(await s.list('agt_team')).toEqual([
+      { host: 'x.example.com', grantedAt: '2026-11-01T10:00:00.000Z' },
     ]);
   });
 
-  it('revoke deletes only the matching (user, agent, host) row', async () => {
+  it('revoke takes the host off the agent for everyone, and only on that agent', async () => {
+    const { db, s } = await freshDb();
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_team', host: 'x.example.com' });
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_team', host: 'y.example.com' });
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_other', host: 'x.example.com' });
+    // ada's own row for the same host, as one from before TASK-1212 would be.
+    await db
+      .insertInto('host_grants_v1_grants')
+      .values({ owner_user_id: 'ada', agent_id: 'agt_team', host: 'x.example.com', created_at: new Date() })
+      .execute();
+
+    expect(await s.revoke({ agentId: 'agt_team', host: 'x.example.com' })).toEqual({ revoked: true });
+
+    // Both adders' rows are gone; the agent's other site and the other agent stay.
+    expect((await s.list('agt_team')).map((h) => h.host)).toEqual(['y.example.com']);
+    expect((await s.list('agt_other')).map((h) => h.host)).toEqual(['x.example.com']);
+    expect(await s.revoke({ agentId: 'agt_team', host: 'x.example.com' })).toEqual({ revoked: false });
+  });
+
+  it('the 256 cap is per agent, counted once per host whoever added it', async () => {
+    const { db, s } = await freshDb();
+    const row = (ownerUserId: string, host: string) => ({
+      owner_user_id: ownerUserId,
+      agent_id: 'agt_team',
+      host,
+      created_at: new Date(),
+    });
+    // 255 distinct hosts across two adders, plus ada's own row for one of
+    // mel's (as from before TASK-1212): 256 rows, but 255 sites.
+    await db
+      .insertInto('host_grants_v1_grants')
+      .values([
+        ...Array.from({ length: 128 }, (_, i) => row('mel', `m${i}.example.com`)),
+        ...Array.from({ length: 127 }, (_, i) => row('ada', `a${i}.example.com`)),
+        row('ada', 'm0.example.com'),
+      ])
+      .execute();
+
+    // The duplicate counts once, so a 256th site still fits...
+    expect(await s.grant({ ownerUserId: 'ada', agentId: 'agt_team', host: 'last.example.com' })).toEqual({
+      created: true,
+    });
+    // ...and then the agent is full, whoever asks — including someone who has
+    // added nothing to it.
+    for (const ownerUserId of ['mel', 'ada', 'kit']) {
+      await expect(
+        s.grant({ ownerUserId, agentId: 'agt_team', host: 'overflow.example.com' }),
+      ).rejects.toMatchObject({ code: 'grant-limit' });
+    }
+    // A site the full agent already has is still a no-op, never an error.
+    expect(await s.grant({ ownerUserId: 'kit', agentId: 'agt_team', host: 'm5.example.com' })).toEqual({
+      created: false,
+    });
+    // Another agent has its own cap.
+    expect(await s.grant({ ownerUserId: 'mel', agentId: 'agt_other', host: 'overflow.example.com' })).toEqual({
+      created: true,
+    });
+  }, 30_000);
+
+  it("a personal agent's list is exactly what its owner kept (unchanged)", async () => {
     const s = await freshStore();
-    await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'x.example.com' });
-    expect(await s.revoke({ ownerUserId: 'u1', agentId: 'a1', host: 'x.example.com' })).toEqual({
-      revoked: true,
-    });
-    expect(await s.revoke({ ownerUserId: 'u1', agentId: 'a1', host: 'x.example.com' })).toEqual({
-      revoked: false,
-    });
-    expect(await s.list('u1', 'a1')).toEqual([]);
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_mine', host: 'b.example.com' });
+    await s.grant({ ownerUserId: 'mel', agentId: 'agt_mine', host: 'a.example.com' });
+    expect((await s.list('agt_mine')).map((h) => h.host)).toEqual(['a.example.com', 'b.example.com']);
+
+    expect(await s.revoke({ agentId: 'agt_mine', host: 'a.example.com' })).toEqual({ revoked: true });
+    expect((await s.list('agt_mine')).map((h) => h.host)).toEqual(['b.example.com']);
   });
 
   it('listForUser returns every grant across the user’s agents (each row carries agentId), owner-scoped', async () => {
@@ -116,22 +216,6 @@ describe('host-grants store', () => {
       );
     }
   });
-
-  it('enforces the 256-host cap per (user, agent)', async () => {
-    const s = await freshStore();
-    for (let i = 0; i < 256; i++)
-      await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: `h${i}.example.com` });
-    await expect(
-      s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'overflow.example.com' }),
-    ).rejects.toThrow(/grant-limit|at most 256/i);
-    // Re-granting an existing host at the cap is still a no-op, never an error.
-    expect(await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'h0.example.com' })).toEqual({
-      created: false,
-    });
-    // 257 sequential awaited postgres inserts blow the default 5s timeout under
-    // the wide-affected-set CI load (testcontainer pool contention). Give it
-    // headroom — this is a throughput test, not a latency one.
-  }, 30_000);
 });
 
 // TASK-718 — deleting an agent must take its rows with it. The store method
@@ -143,7 +227,9 @@ describe('host-grants store — deleteAllForAgent (TASK-718)', () => {
     for (const [ownerUserId, agentId, host] of [
       ['u1', 'gone', 'a.example.com'],
       ['u1', 'gone', 'b.example.com'],
-      ['u2', 'gone', 'a.example.com'],
+      // A host of its own: since TASK-1212 a host already on the agent is a
+      // no-op for anyone, so u2 adding a.example.com would file no row.
+      ['u2', 'gone', 'd.example.com'],
       ['u3', 'gone', 'c.example.com'],
       ['u1', 'kept', 'a.example.com'],
       ['u2', 'kept', 'z.example.com'],
@@ -156,8 +242,7 @@ describe('host-grants store — deleteAllForAgent (TASK-718)', () => {
     for (const u of ['u1', 'u2', 'u3']) {
       expect((await s.listForUser(u)).filter((g) => g.agentId === 'gone')).toEqual([]);
     }
-    expect((await s.list('u1', 'kept')).map((h) => h.host)).toEqual(['a.example.com']);
-    expect((await s.list('u2', 'kept')).map((h) => h.host)).toEqual(['z.example.com']);
+    expect((await s.list('kept')).map((h) => h.host)).toEqual(['a.example.com', 'z.example.com']);
   });
 
   it('is a no-op the second time (nothing left to delete, nothing thrown)', async () => {
@@ -173,6 +258,6 @@ describe('host-grants store — deleteAllForAgent (TASK-718)', () => {
     for (const bad of ['', undefined as unknown as string, null as unknown as string]) {
       await expect(s.deleteAllForAgent(bad)).rejects.toThrow(/agentId is required/);
     }
-    expect((await s.list('u1', 'kept')).map((h) => h.host)).toEqual(['a.example.com']);
+    expect((await s.list('kept')).map((h) => h.host)).toEqual(['a.example.com']);
   });
 });

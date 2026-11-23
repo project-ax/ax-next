@@ -39,6 +39,7 @@ const PROVENANCES = new Set(['extracted', 'agent', 'human']);
 const USER_SUBJECT = /^user:.+/;
 const SLOT_SET = new Set<string>(SLOTS);
 const UNBOUNDED = Number.POSITIVE_INFINITY;
+const NO_LABELS: ReadonlyMap<string, string> = new Map();
 
 function invalidReturn(message: string): PluginError {
   return new PluginError({
@@ -82,9 +83,31 @@ function validateRow(row: ExportFact, index: number): void {
   if (row.neverTrue !== undefined && typeof row.neverTrue !== 'boolean') throw bad('neverTrue');
 }
 
-function statementLine(row: ExportFact, includeAbout: boolean): string {
+/**
+ * Refuses, by code (`invalid-return`), a scan holding a row the export can't
+ * read, so no partial export is built. {@link buildFactsExport} runs it, and so
+ * does the exporter, before it reads any row's subject for a label.
+ */
+export function validateExportRows(scanned: readonly ExportFact[]): void {
+  scanned.forEach(validateRow);
+}
+
+/**
+ * How a subject reads in the export: its label when it has one (a member's
+ * name, or "a teammate", TASK-1213), else the subject as written. Escaped like
+ * any statement text either way: a label is account-holder text.
+ */
+function subjectText(about: string, labels: ReadonlyMap<string, string>): string {
+  return escapeStatementText(labels.get(about) ?? about, UNBOUNDED);
+}
+
+function statementLine(
+  row: ExportFact,
+  includeAbout: boolean,
+  labels: ReadonlyMap<string, string> = NO_LABELS,
+): string {
   const parts = [formatDay(row.when)!];
-  if (includeAbout) parts.push(escapeStatementText(row.about, UNBOUNDED));
+  if (includeAbout) parts.push(subjectText(row.about, labels));
   parts.push(
     escapeStatementText(row.relation, UNBOUNDED),
     escapeStatementText(row.value, UNBOUNDED),
@@ -110,6 +133,7 @@ function buildProfile(
   rows: readonly ExportFact[],
   retracted: readonly ExportFact[],
   access: MemoryAccess,
+  labels: ReadonlyMap<string, string>,
 ): string {
   const active = rows.filter(
     (r) => r.until === undefined && r.slot !== undefined && SLOT_SET.has(r.slot),
@@ -139,14 +163,14 @@ function buildProfile(
     for (const subject of subjects) {
       const lines = dedup(renderGroup(active.filter((r) => r.about === subject)));
       if (lines.length === 0) continue;
-      sections.push(`## ${escapeStatementText(subject, UNBOUNDED)}\n\n${lines.join('\n')}`);
+      sections.push(`## ${subjectText(subject, labels)}\n\n${lines.join('\n')}`);
     }
     out += sections.join('\n\n');
   }
   return out.endsWith('\n') ? out : `${out}\n`;
 }
 
-function buildRecent(rows: readonly ExportFact[]): string {
+function buildRecent(rows: readonly ExportFact[], labels: ReadonlyMap<string, string>): string {
   let out = '# Recent\n\n';
   const groups = new Map<string, ExportFact[]>();
   for (const row of rows) {
@@ -175,7 +199,7 @@ function buildRecent(rows: readonly ExportFact[]): string {
           b.recordedAt.localeCompare(a.recordedAt) || b.id.localeCompare(a.id),
       )
       .slice(0, 3);
-    const lines = dedup(top.map((row) => statementLine(row, true)));
+    const lines = dedup(top.map((row) => statementLine(row, true, labels)));
     sections.push(
       `## ${formatDay(group.newest.recordedAt)!}\n\n${lines.join('\n')}`,
     );
@@ -184,11 +208,22 @@ function buildRecent(rows: readonly ExportFact[]): string {
   return out.endsWith('\n') ? out : `${out}\n`;
 }
 
+/**
+ * The export's files, from a whole-store scan.
+ *
+ * `labels` says how a member's key reads (TASK-1213): `memberLabels`' answer
+ * for this pass, a name or "a teammate". It is printed wherever the export
+ * would print the key: team Profile headings, user-journal headings and
+ * Recent lines. A key with no label prints as written, so a personal agent's
+ * export (no labels) is unchanged. Sort orders and file paths stay keyed by
+ * the subject itself, so a rename never moves a section.
+ */
 export function buildFactsExport(
   scanned: readonly ExportFact[],
   access: MemoryAccess,
+  labels: ReadonlyMap<string, string> = NO_LABELS,
 ): Map<FactsPath, string> {
-  scanned.forEach(validateRow);
+  validateExportRows(scanned);
   // A row a person said was NEVER right is not a past truth, so no export
   // file — profile, recent, journals, subject pages — may offer it for a
   // "what did I say in March" read (TASK-624). Dropped once, here, before
@@ -215,10 +250,13 @@ export function buildFactsExport(
   const hiddenFromRecent = new Set([...rementionedSlotRows(rows, retracted), ...hiddenFromRecord]);
 
   const out = new Map<FactsPath, string>();
-  out.set(factsPath({ kind: 'profile' }), buildProfile(rows, retracted, access));
+  out.set(factsPath({ kind: 'profile' }), buildProfile(rows, retracted, access, labels));
   out.set(
     factsPath({ kind: 'recent' }),
-    buildRecent(rows.filter((row) => !hiddenFromRecent.has(row))),
+    buildRecent(
+      rows.filter((row) => !hiddenFromRecent.has(row)),
+      labels,
+    ),
   );
 
   const userJournals = new Map<string, ExportFact[]>();
@@ -245,7 +283,7 @@ export function buildFactsExport(
       const lines = dedup(
         bySubject.get(subject)!.sort(byWhenThenId).map((row) => statementLine(row, false)),
       );
-      sections.push(`## ${escapeStatementText(subject, UNBOUNDED)}\n\n${lines.join('\n')}`);
+      sections.push(`## ${subjectText(subject, labels)}\n\n${lines.join('\n')}`);
     }
     text += sections.join('\n\n');
     out.set(factsPath({ kind: 'journal', speaker: 'user', month }), `${text}\n`);

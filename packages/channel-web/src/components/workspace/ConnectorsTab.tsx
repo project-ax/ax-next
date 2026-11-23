@@ -214,7 +214,7 @@ export function ConnectorsTab({
                 aria-hidden="true"
                 className="transition-transform group-data-[state=open]:rotate-90"
               />
-              Granted by you
+              {rail?.grants.shared === true ? 'Granted by you and your team' : 'Granted by you'}
               {grantCount !== null && (
                 <span className="tabular-nums">{grantCount}</span>
               )}
@@ -224,6 +224,7 @@ export function ConnectorsTab({
         <CollapsibleContent className="pt-2">
           <Grants
             rail={rail}
+            name={name}
             filter={ownGrants}
             loading={loading}
             revoking={revoking}
@@ -489,6 +490,7 @@ function Permissions({
 */
 function Grants({
   rail,
+  name,
   filter,
   loading,
   revoking,
@@ -496,6 +498,7 @@ function Grants({
   onRevoke,
 }: {
   rail: AgentRailData | null;
+  name: string;
   /** Drops the rows that live in a connector's details view instead. */
   filter: (rows: GrantRow[]) => GrantRow[];
   loading: boolean;
@@ -525,12 +528,20 @@ function Grants({
   }
   const rows = filter(rail.grants.rows);
   const moved = rail.grants.rows.length - rows.length;
+  // A team agent's sites are the whole team's (TASK-1212): one Allow covers
+  // every member, so the group says so, and a person who may not take a site
+  // back is told who can instead of just seeing no button.
+  const shared = rail.grants.shared;
+  const siteYouCannotRemove = rows.some(
+    (r) => r.ref.grant === 'site' && !r.revocable,
+  );
   return (
     <div className="flex flex-col">
       {rows.length === 0 && moved === 0 && (
         <Note>
-          Nothing yet — you haven&apos;t granted anything beyond the rules
-          above.
+          {shared
+            ? 'Nothing yet — nobody has granted anything beyond the rules above.'
+            : "Nothing yet — you haven't granted anything beyond the rules above."}
         </Note>
       )}
       {rows.map((row, i) => (
@@ -541,6 +552,12 @@ function Grants({
           onRevoke={onRevoke}
         />
       ))}
+      {shared && siteYouCannotRemove && (
+        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+          Sites allowed here reach everyone who uses {name}. A team admin can
+          remove them.
+        </p>
+      )}
       {moved > 0 && (
         <p className="text-[12px] leading-relaxed text-muted-foreground">
           Access you approved for a connector is in that connector&apos;s

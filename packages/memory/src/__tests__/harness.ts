@@ -132,6 +132,8 @@ export interface MemoryHarnessOptions {
     visibility?: 'personal' | 'team';
     ownerUserId?: string;
     members?: Set<string>;
+    /** The agent's display name, as `agents:resolve` answers it. Omitted, the answer carries none. */
+    displayName?: string;
   };
   /**
    * Registers `auth:get-user` (TASK-1209), answering with whatever this returns
@@ -181,6 +183,7 @@ export async function makeMemoryHarness(
     visibility: options.agent?.visibility,
     ownerUserId: options.agent?.ownerUserId,
     members: teamMembers,
+    displayName: options.agent?.displayName,
   });
 
   const memberCalls: string[] = [];
@@ -294,14 +297,17 @@ export function registerMemoryAgents(
     visibility?: 'personal' | 'team';
     ownerUserId?: string;
     members?: Set<string>;
+    /** Answered only when set: the stub's answer carries no `displayName` otherwise. */
+    displayName?: string | undefined;
   } = {},
 ): void {
   const visibility = options.visibility ?? 'personal';
   const ownerUserId = options.ownerUserId ?? ALICE;
   const members = options.members ?? new Set<string>([ALICE, BOB]);
+  const displayName = options.displayName;
   bus.registerService<
     { agentId: string; userId: string },
-    { agent: { id: string; ownerId: string; ownerType: string; visibility: string } }
+    { agent: { id: string; ownerId: string; ownerType: string; visibility: string; displayName?: string } }
   >(AGENTS_RESOLVE_HOOK, '@ax/test-agents', async (_ctx, input) => {
     const allowed =
       visibility === 'personal' ? input.userId === ownerUserId : members.has(input.userId);
@@ -319,6 +325,7 @@ export function registerMemoryAgents(
         ownerId: visibility === 'team' ? TEAM_ID : ownerUserId,
         ownerType: visibility === 'team' ? 'team' : 'user',
         visibility,
+        ...(displayName !== undefined ? { displayName } : {}),
       },
     };
   });

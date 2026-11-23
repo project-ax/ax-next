@@ -1472,9 +1472,22 @@ describe('system-prompt:augment:optional:memory — shared team agents', () => {
   });
 
   // TASK-1209: a teammate's key reads as their display name, else "a
-  // teammate". Never the raw id on a team agent, and never "you".
+  // teammate". Never the raw id on a team agent, and never "you". Auth
+  // answers each account by its own name: the caller is asked too, to count
+  // theirs (TASK-1213).
   it.each([
-    ['with', { authUser: (userId: string) => ({ id: userId, displayName: 'Bob Smith', email: 'bob@x.test', isAdmin: false }) }, 'Bob Smith'],
+    [
+      'with',
+      {
+        authUser: (userId: string) => ({
+          id: userId,
+          displayName: userId === BOB ? 'Bob Smith' : 'Alice Jones',
+          email: `${userId}@x.test`,
+          isAdmin: false,
+        }),
+      },
+      'Bob Smith',
+    ],
     ['without', {}, 'a teammate'],
   ] as const)(
     "a teammate's key reads as their name, or 'a teammate', never the raw id (%s auth:get-user)",
@@ -1650,8 +1663,23 @@ describe('system-prompt:augment:optional:memory — teammates by name (TASK-1209
     expect(body).toContain('Bob Smith (3, ');
     expect(body).not.toContain('carol-fact');
     expect(body).not.toContain('Carol Chen');
-    expect([...h.memberCalls].sort()).toEqual([BOB, DAVE].sort());
-    expect([...h.authCalls].sort()).toEqual([BOB, DAVE].sort());
+    // Alice, the caller, is asked too: only to count her name (TASK-1213).
+    expect([...h.memberCalls].sort()).toEqual([ALICE, BOB, DAVE].sort());
+    expect([...h.authCalls].sort()).toEqual([ALICE, BOB, DAVE].sort());
+  });
+
+  // TASK-1213: the caller's own name is a holder. In Alice's turn a Bob
+  // renamed "Alice Jones" would pass for her beside her own rows, which the
+  // block shows as `you`.
+  it('in Alice\'s turn a Bob renamed "Alice Jones" reads "a teammate" in Recent, and Alice still reads you', async () => {
+    const h = await makeHarness({ agent: TEAM, authUser: authWith({ [BOB]: 'alice jones' }) });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [said(BOB, 'a thing Bob said')]);
+    await engineRecord(h.bus, h.ctx(), [said(ALICE, 'a thing Alice said')]);
+    const body = await augment(h, h.ctx());
+    const recent = body.slice(body.indexOf('### Recent'), body.indexOf('### Digest'));
+    expect(recent).toContain('a teammate mentioned: a thing Bob said');
+    expect(recent).toContain('you mentioned: a thing Alice said');
+    expect(body).not.toMatch(/alice jones/i);
   });
 
   it("in an outsider's turn the requester reads by their name: no Profile, nobody is you", async () => {
@@ -1668,8 +1696,9 @@ describe('system-prompt:augment:optional:memory — teammates by name (TASK-1209
       },
     ]);
 
-    // In Alice's own turn the row is hers: her Profile, and "you". Her own
-    // key is never looked up.
+    // In Alice's own turn the row is hers: her Profile, and "you". Nothing
+    // else is on the page, so nothing could collide with her name, and
+    // nobody is asked (TASK-1213).
     const own = await augment(h, h.ctx());
     expect(own).toContain('### Profile');
     expect(own).toContain('— you lives_in: Lisbon');

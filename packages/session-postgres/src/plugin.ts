@@ -204,7 +204,8 @@ export type SessionResolveTokenOutput =
        * the per-request AgentContext so the happy-path runner-completed
        * `chat:end` carries `source: 'routine'` for scheduled fires. Null ≡
        * user / canary / pre-TASK-181. A stored value this build doesn't know
-       * reads as `'external'` (TASK-1091, fail closed).
+       * reads as `'unrecognized'` (TASK-1213; TASK-1091 fail closed): read
+       * back only, since `session:create` still refuses it.
        */
       source: AgentContextSource | null;
       /**
@@ -298,8 +299,10 @@ export const SessionResolveTokenOutputSchema = z
     conversationId: z.string().nullable(),
     // TASK-181 — host-derived session origin echoed onto the resolve result.
     // TASK-1091 widened it: a stored 'external' must pass, or every IPC call
-    // of that session would fail at this schema.
-    source: z.enum(['routine', 'user', 'external']).nullable(),
+    // of that session would fail at this schema. TASK-1213 widened it again
+    // for the same reason: the store reads a stored source it can't place as
+    // 'unrecognized'. Read back only; session:create still refuses it.
+    source: z.enum(['routine', 'user', 'external', 'unrecognized']).nullable(),
     // TASK-1091 — required + nullable: a z.object strips an undeclared key,
     // which would make a shared session's IPC ctx look private.
     audience: z.enum(['private', 'shared']).nullable(),
@@ -567,9 +570,10 @@ function validateOwner(
   }
   // source — TASK-181, widened by TASK-1091 — optional, accepts 'routine' |
   // 'user' | 'external' | null | undefined. Reject anything else so a wiring
-  // bug (or a smuggled value) fails loud. The runner never reaches this hook;
-  // the only writers are the orchestrator (forwarding ctx.source) and test
-  // harnesses. Mirrors the inmemory backend.
+  // bug (or a smuggled value) fails loud. That includes 'unrecognized'
+  // (TASK-1213): it is only ever read back, never written. The runner never
+  // reaches this hook; the only writers are the orchestrator (forwarding
+  // ctx.source) and test harnesses. Mirrors the inmemory backend.
   let source: AgentContextSource | null;
   if (sourceRaw === undefined || sourceRaw === null) {
     source = null;

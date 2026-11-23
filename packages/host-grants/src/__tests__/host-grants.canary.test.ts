@@ -39,7 +39,7 @@ afterAll(async () => {
 });
 
 describe('host-grants canary', () => {
-  it('grant → list → revoke is durable and (user, agent)-scoped', async () => {
+  it('grant → list → revoke is durable and agent-scoped', async () => {
     const h = await boot();
     await h.bus.call('host-grants:grant', h.ctx(), {
       ownerUserId: 'u1',
@@ -51,14 +51,14 @@ describe('host-grants canary', () => {
       agentId: 'a1',
       host: 'api.linear.app',
     });
-    // Another agent / another user never see u1/a1's grants.
+    // Another agent never sees a1's grants (TASK-1212: the list is the agent's).
     await h.bus.call('host-grants:grant', h.ctx(), {
       ownerUserId: 'u1',
       agentId: 'a2',
       host: 'other.example.com',
     });
 
-    const listed = await h.bus.call('host-grants:list', h.ctx(), { ownerUserId: 'u1', agentId: 'a1' });
+    const listed = await h.bus.call('host-grants:list', h.ctx(), { agentId: 'a1' });
     expect((listed as { hosts: { host: string }[] }).hosts.map((x) => x.host)).toEqual([
       'api.linear.app',
       'status.example.com',
@@ -66,14 +66,13 @@ describe('host-grants canary', () => {
 
     expect(
       await h.bus.call('host-grants:revoke', h.ctx(), {
-        ownerUserId: 'u1',
         agentId: 'a1',
         host: 'api.linear.app',
       }),
     ).toEqual({ revoked: true });
     expect(
       (
-        (await h.bus.call('host-grants:list', h.ctx(), { ownerUserId: 'u1', agentId: 'a1' })) as {
+        (await h.bus.call('host-grants:list', h.ctx(), { agentId: 'a1' })) as {
           hosts: { host: string }[];
         }
       ).hosts.map((x) => x.host),

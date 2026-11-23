@@ -719,7 +719,7 @@ describe('AgentRail — the side panel shell', () => {
 describe('AgentSettings — "Granted by you"', () => {
   it('is a separate group, sourced from the grant record, with revoke', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     renderConnectorsSettings();
     await openGrants();
@@ -730,7 +730,7 @@ describe('AgentSettings — "Granted by you"', () => {
 
   it('the Revoke button revokes — and re-reads rather than removing the row itself', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     revokeMock.mockResolvedValue({ revoked: true });
     renderConnectorsSettings();
@@ -760,7 +760,7 @@ describe('AgentSettings — "Granted by you"', () => {
 
   it('reports "already gone" as a refusal, not as a success', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     revokeMock.mockResolvedValue({ revoked: false });
     renderConnectorsSettings();
@@ -772,7 +772,7 @@ describe('AgentSettings — "Granted by you"', () => {
 
   it('says nothing changed when the revoke itself failed', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     revokeMock.mockRejectedValue(new Error('boom'));
     renderConnectorsSettings();
@@ -789,6 +789,7 @@ describe('AgentSettings — "Granted by you"', () => {
           status: 'ok',
           rows: [siteGrant({ revocable: false })],
           incomplete: false,
+          shared: false,
         },
       }),
     );
@@ -797,6 +798,95 @@ describe('AgentSettings — "Granted by you"', () => {
 
     await screen.findByText('api.linear.app');
     expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
+  });
+
+  it("a team agent: the group is yours and your team's, and a site you can't remove says who can", async () => {
+    railMock.mockResolvedValue(
+      rail({
+        grants: {
+          status: 'ok',
+          rows: [siteGrant({ revocable: false })],
+          incomplete: false,
+          shared: true,
+        },
+      }),
+    );
+    renderConnectorsSettings();
+
+    expect(
+      await screen.findByRole('button', { name: /Granted by you and your team/ }),
+    ).toBeTruthy();
+    await openGrants();
+    await screen.findByText('api.linear.app');
+    expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
+    expect(
+      screen.getByText(
+        'Sites allowed here reach everyone who uses Quill. A team admin can remove them.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('a team agent: a site you can remove shows Revoke and no "ask an admin" line', async () => {
+    railMock.mockResolvedValue(
+      rail({
+        grants: {
+          status: 'ok',
+          rows: [siteGrant({ revocable: true })],
+          incomplete: false,
+          shared: true,
+        },
+      }),
+    );
+    renderConnectorsSettings();
+    await openGrants();
+
+    expect(await screen.findByRole('button', { name: 'Revoke' })).toBeTruthy();
+    expect(screen.queryByText(/A team admin can remove them/)).toBeNull();
+  });
+
+  it('a team agent with nothing granted says nobody has granted anything', async () => {
+    railMock.mockResolvedValue(
+      rail({ grants: { status: 'ok', rows: [], incomplete: false, shared: true } }),
+    );
+    renderConnectorsSettings();
+    await openGrants();
+
+    expect(
+      await screen.findByText(
+        'Nothing yet — nobody has granted anything beyond the rules above.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('a personal agent: the heading and notes are unchanged', async () => {
+    railMock.mockResolvedValue(
+      rail({
+        grants: {
+          status: 'ok',
+          rows: [siteGrant({ revocable: false })],
+          incomplete: false,
+          shared: false,
+        },
+      }),
+    );
+    renderConnectorsSettings();
+
+    const trigger = await screen.findByRole('button', { name: /Granted by you/ });
+    expect(trigger.textContent).not.toMatch(/your team/);
+    await openGrants();
+    await screen.findByText('api.linear.app');
+    expect(screen.queryByText(/reach everyone who uses/)).toBeNull();
+    expect(screen.queryByText(/A team admin can remove/)).toBeNull();
+  });
+
+  it('a personal agent with nothing granted keeps its own empty note', async () => {
+    renderConnectorsSettings();
+    await openGrants();
+    expect(
+      await screen.findByText(
+        /Nothing yet — you haven.t granted anything beyond the rules above\./,
+      ),
+    ).toBeTruthy();
   });
 });
 

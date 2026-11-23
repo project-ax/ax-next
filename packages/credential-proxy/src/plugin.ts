@@ -277,6 +277,19 @@ interface OpenSessionInput {
   canaryToken?: string;
   /** IPs exempt from the private-range block — test-only escape hatch. */
   allowedIPs?: string[];
+  /**
+   * TASK-1212 — hosts the agent should be told are allowed now: sites a person
+   * kept for this agent while it wasn't running (a late Allow). Each entry that
+   * is a string, passes HOST_RE and is on `allowlist` above is recorded for this
+   * session, so the first `proxy:drain-session-allowed-hosts` returns it and the
+   * runner's TASK-1199 line names it once (capped like a live Allow's record).
+   * Anything else is ignored.
+   *
+   * GRANTS NOTHING: only `allowlist` decides what the session may reach. This is
+   * a note for the agent, checked against that list so it can never name a host
+   * the session can't reach.
+   */
+  newlyAllowedHosts?: string[];
 }
 
 interface OpenSessionOutput {
@@ -348,15 +361,18 @@ interface DrainEgressBlocksOutput {
  * put on the CALLER'S live session allowlist (`proxy:add-host`) since the last
  * drain (TASK-1199). The runner drains this at the start of each person's turn
  * and opens the turn with a "now allowed" line, so the agent learns it can
- * retry a request that was blocked.
+ * retry a request that was blocked. TASK-1212: a site a person kept for the
+ * agent while it wasn't running comes back the same way, at the next open
+ * (`proxy:open-session`'s `newlyAllowedHosts`), so that session's first drain
+ * names it.
  *
  * SECURITY: the same posture as `proxy:drain-session-egress-blocks`. The
  * session is taken from `ctx.sessionId`, NOT from a request field. Over the IPC
  * wire ctx.sessionId is bearer-token-bound, so an agent can only drain its OWN
- * session. A drained host is one a person allowed for this session, which the
- * agent could learn anyway by retrying. Draining never widens egress: only
- * `proxy:add-host` does, and it stays host-internal. The request body is
- * therefore EMPTY by design.
+ * session. A drained host is one a person allowed for this session or kept for
+ * its agent, and it is on this session's allowlist, so the agent could learn it
+ * anyway by retrying. Draining never widens egress: only `proxy:add-host` does,
+ * and it stays host-internal. The request body is therefore EMPTY by design.
  */
 type DrainAllowedHostsInput = Record<string, never>;
 
@@ -561,10 +577,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
   const egressBlocks = new SessionEgressBlockBuffer();
 
   // TASK-1199: per-session record of hosts `proxy:add-host` newly put on a live
-  // allowlist (a person's own Allow click). proxy:drain-session-allowed-hosts
-  // drains it at the start of the person's next turn; close-session forgets
-  // the session. A second instance of the same class: the same per-session,
-  // capped, surface-once host set, with a different writer.
+  // allowlist (a person's own Allow click). TASK-1212: open-session also seeds
+  // it with the sites kept for the agent while it wasn't running
+  // (`newlyAllowedHosts`). proxy:drain-session-allowed-hosts drains it at the
+  // start of the person's next turn; close-session forgets the session. A
+  // second instance of the same class: the same per-session, capped,
+  // surface-once host set, with different writers.
   const allowedSinceDrain = new SessionEgressBlockBuffer();
 
   const caDir = config.caDir ?? join(homedir(), '.ax', 'proxy-ca');
@@ -828,6 +846,24 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           }
           sessions.set(input.sessionId, sessionConfig);
 
+          // TASK-1212: a site kept while the agent wasn't running comes back
+          // here, at the next open. It goes in the same record a live Allow
+          // writes (4d), so the runner's first drain says it is allowed now.
+          // Only a real hostname this session can reach is recorded: the line
+          // lands in the model's context, so it must be a true statement and
+          // never arbitrary text. Nothing here touches the allowlist.
+          if (Array.isArray(input.newlyAllowedHosts)) {
+            for (const host of input.newlyAllowedHosts as unknown[]) {
+              if (
+                typeof host === 'string' &&
+                HOST_RE.test(host) &&
+                sessionConfig.allowlist.has(host)
+              ) {
+                allowedSinceDrain.record(input.sessionId, host);
+              }
+            }
+          }
+
           // Remember the credential refs so proxy:rotate-session can
           // re-resolve. Shallow-clone to insulate against caller mutation.
           const refsCopy: SessionCredentialRefs = {};
@@ -925,7 +961,9 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           // TASK-1199: the session's allow record dies with it, like its
           // blocks. A session opened later starts from its own allowlist, which
           // may not have the host, so a "now allowed" line from this record
-          // could be false.
+          // could be false. TASK-1212: a site that was kept for the agent comes
+          // back at that next open, through `newlyAllowedHosts`, checked
+          // against the new session's own allowlist.
           allowedSinceDrain.forget(sessionId);
           // TASK-715: end the session's meter, so a tunnel that outlives the
           // session stops being admitted.
@@ -1033,17 +1071,18 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
       );
 
       // 4f. proxy:drain-session-allowed-hosts — return + clear the hosts a
-      //     person newly allowed on the CALLER'S live session (TASK-1199). The
+      //     person newly allowed on the CALLER'S live session (TASK-1199), or
+      //     kept for its agent before this session opened (TASK-1212). The
       //     runner drains this at the start of each person's turn and opens
       //     the turn with a "now allowed" line.
       //
       //     Unlike proxy:add-host (which IS host-internal-only because it WIDENS
       //     egress), this is safe to expose to the untrusted runner over IPC: it
       //     mutates nothing but its own per-session buffer and returns hostnames
-      //     a person already allowed for this session, which the agent could
-      //     learn by retrying — zero egress change, zero info gain, no other
-      //     session reachable (the session is ctx.sessionId, bearer-bound by the
-      //     IPC server; the wire request body is empty).
+      //     on this session's allowlist that a person allowed, which the agent
+      //     could learn by retrying — zero egress change, zero info gain, no
+      //     other session reachable (the session is ctx.sessionId, bearer-bound
+      //     by the IPC server; the wire request body is empty).
       bus.registerService<DrainAllowedHostsInput, DrainAllowedHostsOutput>(
         'proxy:drain-session-allowed-hosts',
         PLUGIN_NAME,

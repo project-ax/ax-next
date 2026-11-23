@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -20,11 +21,19 @@ vi.mock('@/lib/admin', () => ({
   deleteAgent: vi.fn(),
   listTeams: vi.fn(),
   listAgentModelOptions: vi.fn(),
+  listAgentToolOptions: vi.fn(),
 }));
 // The attachment sections only render in the form view; stub them so the
-// list-view delete test stays isolated.
+// list-view delete test stays isolated. The skill stub keeps its last
+// `onSaved` so a test can play a skill-attachment save.
+const skillSection = vi.hoisted(() => ({
+  onSaved: undefined as undefined | ((next: never[]) => void),
+}));
 vi.mock('../SkillAttachmentsSection', () => ({
-  SkillAttachmentsSection: () => null,
+  SkillAttachmentsSection: (props: { onSaved?: (next: never[]) => void }) => {
+    skillSection.onSaved = props.onSaved;
+    return null;
+  },
 }));
 vi.mock('../AuthoredSkillsSection', () => ({
   AuthoredSkillsSection: () => null,
@@ -37,10 +46,12 @@ import {
   deleteAgent,
   listTeams,
   listAgentModelOptions,
+  listAgentToolOptions,
   patchAgent,
   getAgentIdentity,
   putAgentIdentity,
 } from '@/lib/admin';
+import { PROD_TOOL_CATALOG } from '@/lib/__tests__/agent-tool-catalog.fixture';
 
 function openAgentDetails(index = 0) {
   const row = screen.getAllByRole('button', { name: /^Details for / })[index]!;
@@ -90,6 +101,9 @@ beforeEach(() => {
     if (!agent) throw new Error('agent unavailable');
     return agent;
   });
+  // GET /admin/agents/tools — the picker's names (TASK-1214). Re-set before
+  // every test so one test's rejected or never-settling read can't leak.
+  vi.mocked(listAgentToolOptions).mockResolvedValue(PROD_TOOL_CATALOG);
 });
 
 describe('AgentForm — styled delete confirm', () => {
@@ -365,6 +379,9 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
         'old soul',
       ),
     );
+    // TASK-1214 — a wildcard agent's picker shows nothing ticked, which would
+    // understate its reach without this line.
+    expect(screen.getByText(/can use every tool, because none are picked/)).toBeTruthy();
 
     // Change ONLY the identity files; leave Allowed tools empty (the agent is
     // bare and the user has no intention of enumerating tools).
@@ -404,7 +421,9 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     fireEvent.change(screen.getByLabelText('Name'), {
       target: { value: 'Toolless' },
     });
-    // Leave Allowed tools empty.
+    // Leave Allowed tools empty — once the list has loaded. Before it lands the
+    // gate says "still loading" instead (pinned in the TASK-1214 block).
+    await screen.findByRole('checkbox', { name: 'Bash' });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
@@ -414,12 +433,17 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     expect(putAgentIdentity).not.toHaveBeenCalled();
 
     // TASK-341 / audit D2 — the message reads as an instruction rather than a
-    // schema complaint ("agent must list at least one tool"), it names an
-    // example so the field is answerable, and it renders through the `Alert`
+    // schema complaint ("agent must list at least one tool"), it names a place
+    // to start so the field is answerable (TASK-1214: the picker's "Files and
+    // commands" group, not raw tool names), and it renders through the `Alert`
     // primitive rather than one of the two hand-rolled destructive divs this
     // file used to carry (which had drifted to different padding from each
     // other — the whole argument for the primitive).
-    expect(screen.getByText(/e\.g\. Bash, Read, Write/i)).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Pick at least one tool for this agent — “Files and commands” is a safe start.',
+      ),
+    ).toBeTruthy();
     const alert = screen.getByRole('alert');
     expect(alert.className).toContain('border-destructive/50');
     expect(alert.className).not.toContain('bg-destructive/10');
@@ -433,16 +457,11 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     openAgentDetails();
 
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
-    await waitFor(() =>
-      expect(
-        (screen.getByLabelText('Allowed tools') as HTMLInputElement).value,
-      ).toBe('Bash'),
-    );
+    const bash = await screen.findByRole('checkbox', { name: 'Bash' });
+    expect(bash).toBeChecked();
 
     // Clear the previously-populated tool list.
-    fireEvent.change(screen.getByLabelText('Allowed tools'), {
-      target: { value: '' },
-    });
+    fireEvent.click(bash);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
@@ -450,6 +469,279 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
     );
     expect(patchAgent).not.toHaveBeenCalled();
     expect(putAgentIdentity).not.toHaveBeenCalled();
+  });
+});
+
+// TASK-1214 — "Allowed tools" is a picker of the names this deployment really
+// has (GET /admin/agents/tools), not a free-text field. A saved name the list
+// doesn't have is flagged but never dropped implicitly: a successful read only
+// proves it is missing from THIS boot (web tools load only with a key, for
+// one), so a plain Save sends it back, and only the owner's "Remove" click
+// takes it out. Nothing keeps a history of an agent's tools.
+describe('AgentForm — tool picker (TASK-1214)', () => {
+  const ROUTINES = [
+    'routine_list',
+    'routine_get',
+    'routine_create',
+    'routine_update',
+    'routine_delete',
+    'routine_fire_now',
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listAgentModelOptions).mockResolvedValue({ models: MODEL_OPTIONS, defaultModel: 'anthropic/claude-sonnet-4-6' });
+    vi.mocked(listTeams).mockResolvedValue([]);
+    vi.mocked(patchAgent).mockResolvedValue(undefined);
+    vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
+    vi.mocked(createAgent).mockResolvedValue(AGENT);
+    vi.mocked(getAgentIdentity).mockResolvedValue({ identity: 'I am Research Bot.', soul: 'old soul' });
+  });
+
+  /** Open the edit form for `agent`, the only agent in the list. */
+  async function openEdit(agent: AdminAgent) {
+    mockList.mockResolvedValue([agent]);
+    render(<AgentForm isAdmin />);
+    await screen.findByText(agent.displayName);
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await screen.findByRole('heading', { name: `Edit ${agent.displayName}` });
+  }
+
+  /** Open the new-agent form and name the agent. */
+  async function openNew(name: string) {
+    mockList.mockResolvedValue([]);
+    render(<AgentForm isAdmin />);
+    await screen.findByText(/No agents yet/i);
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: name } });
+  }
+
+  const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  it('the Routines group adds its six tools to a new agent', async () => {
+    await openNew('Fern');
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Routines' }));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Model') as HTMLSelectElement).value).not.toBe(''),
+    );
+    save();
+    await waitFor(() =>
+      expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ allowedTools: ROUTINES })),
+    );
+  });
+
+  it('an existing explicit list loads ticked and saves back unchanged', async () => {
+    const FERN: AdminAgent = {
+      ...AGENT,
+      allowedTools: [
+        'Bash',
+        'Read',
+        'Write',
+        'Edit',
+        'routine_create',
+        'routine_list',
+        'routine_get',
+        'routine_update',
+        'routine_delete',
+      ],
+    };
+    await openEdit(FERN);
+    for (const name of FERN.allowedTools) {
+      expect(await screen.findByRole('checkbox', { name })).toBeChecked();
+    }
+    for (const name of ['routine_fire_now', 'Glob', 'Grep', 'Routines']) {
+      expect(screen.getByRole('checkbox', { name })).not.toBeChecked();
+    }
+    expect(screen.queryByText(/available here/)).toBeNull();
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: FERN.allowedTools }),
+      ),
+    );
+  });
+
+  it('a saved name the list lacks is flagged, can’t be picked, and a plain save keeps it', async () => {
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'routines'] });
+    await screen.findByText(/“routines” isn’t available here/);
+    expect(screen.queryByRole('checkbox', { name: 'routines' })).toBeNull();
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'routines'] }),
+      ),
+    );
+    // The rest of the save (the identity write) goes through too.
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  // The case that earned this: web tools load only when this boot has a key,
+  // so a boot without one must not delete them from an identity-only save.
+  it('tools this boot doesn’t run survive a plain save', async () => {
+    vi.mocked(listAgentToolOptions).mockResolvedValue({
+      ...PROD_TOOL_CATALOG,
+      tools: PROD_TOOL_CATALOG.tools.filter((n) => !n.startsWith('web_')),
+    });
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'web_search', 'web_extract'] });
+    await screen.findByText(/aren’t available here/);
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'web_search', 'web_extract'] }),
+      ),
+    );
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  // Blocking Save here would re-create the TASK-147 over-gating: an owner
+  // could not edit this agent's identity until they cleaned up its tools.
+  it('an agent whose saved list holds only unknown names still saves as it is', async () => {
+    await openEdit({ ...AGENT, allowedTools: ['routines'] });
+    await screen.findByText(/“routines” isn’t available here/);
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['routines'] }),
+      ),
+    );
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  it('clicking Remove on tools this boot doesn’t run, then saving, drops them', async () => {
+    vi.mocked(listAgentToolOptions).mockResolvedValue({
+      ...PROD_TOOL_CATALOG,
+      tools: PROD_TOOL_CATALOG.tools.filter((n) => !n.startsWith('web_')),
+    });
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'web_search', 'web_extract'] });
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove them' }));
+    expect(screen.queryByText(/aren’t available here/)).toBeNull();
+    // The button sits inside the form; removing must not submit it.
+    expect(patchAgent).not.toHaveBeenCalled();
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash'] }),
+      ),
+    );
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  it('removing every saved name cannot turn the agent into a wildcard', async () => {
+    await openEdit({ ...AGENT, allowedTools: ['routines'] });
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove it' }));
+
+    save();
+    await waitFor(() => expect(screen.getByText(/pick at least one tool/i)).toBeTruthy());
+    expect(patchAgent).not.toHaveBeenCalled();
+    expect(putAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  it('when the tool list cannot load, the saved list is kept exactly', async () => {
+    vi.mocked(listAgentToolOptions).mockRejectedValue(new Error('list agent tools: 503'));
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'routines'] });
+    await screen.findByText(/this agent keeps the ones it has: Bash, routines/);
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'routines'] }),
+      ),
+    );
+  });
+
+  it('a new agent cannot be saved when the tool list cannot load', async () => {
+    vi.mocked(listAgentToolOptions).mockRejectedValue(new Error('list agent tools: 503'));
+    await openNew('Fern');
+    await screen.findByText(/We couldn’t load the list of tools\. Close and reopen/);
+
+    save();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/couldn’t load the list of tools, so there’s nothing to pick yet/),
+      ).toBeTruthy(),
+    );
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  it('closing and reopening the form reads the tool list again, as the failure line promises', async () => {
+    vi.mocked(listAgentToolOptions).mockRejectedValueOnce(new Error('list agent tools: 503'));
+    await openNew('Fern');
+    await screen.findByText(/We couldn’t load the list of tools\. Close and reopen/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(await screen.findByRole('button', { name: /new agent/i }));
+    expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(screen.queryByText(/couldn’t load the list of tools/)).toBeNull();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(2);
+  });
+
+  // A skill-attachment save swaps in a new `editing` object. Re-reading the
+  // tool list then would blank the picker to "Loading…" mid-edit, so the read
+  // is keyed on the form being open, not on `editing`.
+  it('a skill-attachment save does not read the tool list again', async () => {
+    await openEdit(AGENT);
+    expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(1);
+
+    act(() => skillSection.onSaved!([]));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(screen.queryByText('Loading the list of tools…')).toBeNull();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(1);
+  });
+
+  it('saving while the tool list is still loading keeps the saved list', async () => {
+    vi.mocked(listAgentToolOptions).mockReturnValue(new Promise(() => {}));
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'routines'] });
+    expect(screen.getByText('Loading the list of tools…')).toBeTruthy();
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'routines'] }),
+      ),
+    );
+  });
+
+  it('a new agent saved before the list loads is told to wait, not to pick', async () => {
+    vi.mocked(listAgentToolOptions).mockReturnValue(new Promise(() => {}));
+    await openNew('Fern');
+
+    save();
+    await waitFor(() =>
+      expect(
+        screen.getByText('We’re still loading the list of tools. Give it a second and try again.'),
+      ).toBeTruthy(),
+    );
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  it('duplicate saved names collapse to one', async () => {
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'Bash', 'routine_get'] });
+    await screen.findByRole('checkbox', { name: 'routine_get' });
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'routine_get'] }),
+      ),
+    );
   });
 });
 
@@ -639,7 +931,9 @@ describe('AgentForm — no per-agent connector assignment (TASK-799)', () => {
     const form = screen.getByLabelText('Name').closest('form')!;
     expect(within(form).queryByText(/^Connectors$/)).toBeNull();
     expect(within(form).queryByText(/No connectors yet/i)).toBeNull();
-    expect(within(form).queryAllByRole('checkbox')).toHaveLength(0);
+    // The tool picker's boxes are the only checkboxes the form may hold.
+    const tools = within(form).getByRole('group', { name: 'Allowed tools' });
+    expect(within(form).queryAllByRole('checkbox').filter((c) => !tools.contains(c))).toHaveLength(0);
     expect(within(form).queryByTestId('connector-access-notice')).toBeNull();
     expect(within(form).queryByRole('button', { name: /connect|sign in/i })).toBeNull();
   }

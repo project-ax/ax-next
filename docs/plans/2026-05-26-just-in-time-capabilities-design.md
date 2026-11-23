@@ -102,7 +102,7 @@ Agent: (fetch status.example.com → proxy 403)
 ```
 
 - Granting widens the **live** session allowlist (`proxy:add-host`, §11.4) — **no re-spawn**. Nothing resumes the turn: when the person next writes in that session, the runner opens the turn with a "now allowed" system line (TASK-1199), and the agent retries then.
-- "Always" persists to a per-`(user, agent)` grant list, revocable in settings. Slack's host prompt has one Allow, and it is this choice (TASK-1208): it widens the live session and keeps the grant.
+- "Always" persists to a per-`(user, agent)` grant list, revocable in settings. Slack's host prompt has one Allow, and it is this choice (TASK-1208): it widens the live session and keeps the grant. (TASK-1212, 2026-11-23: on a team agent the list is the agent's. Every member's sessions, outsider turns and routine runs load it, and its owners and team admins remove sites in the agent's settings.)
 
 ### C. Open mode (agent authors a skill)
 
@@ -250,7 +250,7 @@ These were the deferred set; they are now designed in **Part II** of this doc:
 
 ## P1. Scope of a user's capabilities
 
-- **Skills (which are active) and host-grants are per-`(user, agent)`** — a research agent and a coding agent do different jobs.
+- **Skills (which are active) and host-grants are per-`(user, agent)`** — a research agent and a coding agent do different jobs. (TASK-1212, 2026-11-23: on a team agent the list is the agent's. Every member's sessions, outsider turns and routine runs load it, and its owners and team admins remove sites in the agent's settings.)
 - **Credentials are user-scoped and shared** — entered once, reused across all the user's agents and every skill that needs the same service.
 
 So a user's world is two-level: a per-agent *"what this agent can do"* plus a shared *"my keys"* vault.
@@ -288,7 +288,7 @@ Promote user settings from the `UserMenu` modals to a **real user-facing Setting
 └─────────────────────────────────────────────────────────┘
 ```
 
-- **Per-agent** ("what this agent can do"): active skills (defaults marked + locked; user-added removable) and the always-allow **host grants**, with an agent switcher. Per-`(user, agent)`.
+- **Per-agent** ("what this agent can do"): active skills (defaults marked + locked; user-added removable) and the always-allow **host grants**, with an agent switcher. Per-`(user, agent)`. (TASK-1212, 2026-11-23: on a team agent the list is the agent's. Every member's sessions, outsider turns and routine runs load it, and its owners and team admins remove sites in the agent's settings.)
 - **Shared "My Keys"** vault: service-keyed credentials with a "used by" hint — the out-of-band twin of the card's key field.
 
 ## P4. Smart defaults — how they surface
@@ -316,7 +316,7 @@ Every card action has exactly one settings home; revoke works from either side (
 
 1. **User Settings surface** in `channel-web` — reuse the `AdminShell` chrome; new `Connections` + `Keys` tabs, with admin-only tabs gated as today.
 2. **Manifest `account` tag** + a **service-keyed credential vault** (`account:<service>` destination alongside `skill:<id>:<slot>`) + the card's "use existing key" lookup.
-3. **Per-`(user, agent)` host-grant store** (the persistent "always-allow" list) loaded into the allowlist at session open + a revoke path — complements the live `proxy:add-host` (§11.4).
+3. **Per-`(user, agent)` host-grant store** (the persistent "always-allow" list) loaded into the allowlist at session open + a revoke path — complements the live `proxy:add-host` (§11.4). (TASK-1212, 2026-11-23: on a team agent the list is the agent's. Every member's sessions, outsider turns and routine runs load it, and its owners and team admins remove sites in the agent's settings.)
 4. **Catalog tab** (extend the Skills tab) + the **Admit queue** (the `catalog:submit`/`list-requests`/`admit` hooks named in §11) with a bundle file/diff view.
 5. **Org-default editing** layered on `default_attached`.
 
@@ -343,7 +343,7 @@ Every card action has exactly one settings home; revoke works from either side (
 ### Part II (derived)
 
 11. Settings is the **mirror** of the cards — one source of truth, one design language (invariants #4/#6).
-12. Scope: **skills + host-grants per-`(user, agent)`; credentials user-scoped + shared**.
+12. Scope: **skills + host-grants per-`(user, agent)`; credentials user-scoped + shared**. (TASK-1212, 2026-11-23: on a team agent the list is the agent's. Every member's sessions, outsider turns and routine runs load it, and its owners and team admins remove sites in the agent's settings.)
 13. Credential vault is **service-keyed** via an optional manifest **`account`** tag; backward-compatible (no tag = today's per-skill behavior).
 14. Smart defaults = a **first-party baseline** (broker, web, memory, model) + admin org-defaults, surfaced **marked + locked** in each agent.
 15. User settings **promoted to a real surface** (reusing `AdminShell` chrome), not modals.

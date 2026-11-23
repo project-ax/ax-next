@@ -3,7 +3,7 @@ import {
   stopPostgresContainer,
   startTestContainer,
 } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { runHostGrantsMigration, type HostGrantsDatabase } from '../migrations.js';
@@ -77,5 +77,22 @@ describe('host_grants_v1_grants migration', () => {
     const db = makeKysely();
     await runHostGrantsMigration(db);
     await expect(runHostGrantsMigration(db)).resolves.toBeUndefined();
+  });
+
+  // TASK-1212 — list, revoke, the duplicate check and the cap are keyed by
+  // agent, and the PK leads with owner_user_id, so it can't serve them.
+  it('adds the (agent_id, host) index, idempotently', async () => {
+    const db = makeKysely();
+    await runHostGrantsMigration(db);
+    await runHostGrantsMigration(db);
+
+    const { rows } = await sql<{ indexdef: string }>`
+      SELECT indexdef FROM pg_indexes
+      WHERE tablename = 'host_grants_v1_grants'
+        AND indexname = 'host_grants_v1_grants_agent_host'
+    `.execute(db);
+    expect(rows).toHaveLength(1);
+    // agent_id leads: every per-agent read filters on it.
+    expect(rows[0]!.indexdef).toMatch(/\(agent_id, host\)$/);
   });
 });

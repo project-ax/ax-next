@@ -551,9 +551,11 @@ export interface GrantRow {
   /** What the grant was made FOR, when it has a subject. Fenced. */
   grantedFor: { kind: 'skill' | 'connection'; id: string } | null;
   /**
-   * False when this deployment has no writer for that grant kind. The control
-   * is then absent rather than present-and-inert: a Revoke button that revokes
-   * nothing is worse than no button.
+   * False when this deployment has no writer for that grant kind, or the
+   * reader may not take it back: a team agent's site is for its owners and
+   * team admins to remove (TASK-1212). The control is then absent rather than
+   * present-and-inert: a Revoke button that revokes nothing is worse than no
+   * button.
    */
   revocable: boolean;
 }
@@ -629,7 +631,18 @@ export interface AgentRailData {
      */
     unrestrictedTools: boolean;
   };
-  grants: { status: WorkspaceReadStatus; rows: GrantRow[]; incomplete: boolean };
+  grants: {
+    status: WorkspaceReadStatus;
+    rows: GrantRow[];
+    incomplete: boolean;
+    /**
+     * True on a team agent (TASK-1212). Its allowed sites are the agent's,
+     * whoever on the team added them, and every member's runs reach each one,
+     * so the group is the team's as well as the reader's. The
+     * approved-capability rows beside them are still the reader's own.
+     */
+    shared: boolean;
+  };
   counters: {
     status: WorkspaceReadStatus;
     rows: CounterRow[];

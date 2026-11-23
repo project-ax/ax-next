@@ -17,9 +17,11 @@ import type { ChatAgentSummary } from '@/lib/agents';
 /**
  * Add or edit which agents an allowed-site host applies to. One dialog for both
  * flows: `add` enters a new host + picks agents; `edit` adjusts the agent set of
- * an existing host. "All agents" means EVERY agent you have right now (a grant
- * per agent) — the per-(user, agent) egress boundary is unchanged; this is just a
- * management view over those rows.
+ * an existing host. "All agents" means EVERY personal agent you have right now
+ * (a grant per agent) — the per-agent egress boundary is unchanged; this is just
+ * a management view over those rows. The caller passes personal agents only: a
+ * team agent's sites reach the whole team and are managed in that agent's
+ * settings (TASK-1212).
  *
  * The typed host is UNTRUSTED — the server (@ax/host-grants) is the authoritative
  * validator + cap; this field only relays it and surfaces the rejection inline.
@@ -101,8 +103,8 @@ export function SiteAgentsDialog({
             {mode === 'add' ? 'Add a site' : `Edit agents for ${initialHost ?? ''}`}
           </DialogTitle>
           <DialogDescription>
-            Choose which of your agents may reach this site. “All agents” covers
-            every agent you have now.
+            Choose which of your personal agents may reach this site. “All
+            agents” covers every personal agent you have now.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">

@@ -220,14 +220,20 @@ function mintToken(): string {
 //
 // TASK-1091 — a stored value this build doesn't know (hand-edited, or written
 // by a newer build that knows more values) FAILS CLOSED to the least
-// privileged one: an unknown source reads as 'external' (unattended, no
-// identity or skill edits) and an unknown audience as 'shared' (least
-// recall). Before TASK-1091 an unknown source read as null, i.e. a user turn —
-// the most privileged reading. The session record is the only place the IPC
-// listeners learn these from, so a misread here widens what a runner can do.
+// privileged one. An unknown source reads as 'unrecognized' (TASK-1213; it
+// read as 'external' before): an outsider for every gate (unattended, no
+// identity or skill edits) and shared-only memory recall on any agent, a
+// team agent's included. An unknown audience reads as 'shared' (least
+// recall). A value that differs from a known one only in case or spacing is
+// not that value. Before TASK-1091 an unknown source read as null, i.e. a
+// user turn — the most privileged reading. The session record is the only
+// place the IPC listeners learn these from, so a misread here widens what a
+// runner can do. 'unrecognized' is read back only: session:create still
+// refuses it (`validateOwner` in plugin.ts), so no row is written with it on
+// purpose, and a stored 'unrecognized' reads as itself.
 function normalizeSource(raw: string | null | undefined): AgentContextSource | null {
   if (raw === null || raw === undefined) return null;
-  return raw === 'routine' || raw === 'user' || raw === 'external' ? raw : 'external';
+  return raw === 'routine' || raw === 'user' || raw === 'external' ? raw : 'unrecognized';
 }
 
 function normalizeAudience(raw: string | null | undefined): AgentContextAudience | null {

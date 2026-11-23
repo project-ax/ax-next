@@ -593,6 +593,17 @@ interface SkillsListUserAttachmentsOutput {
   attachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
 }
 
+// host-grants:list — duplicated structurally per I2 (no @ax/host-grants
+// import). TASK-1212: an agent's allowed sites belong to the agent, so the read
+// is keyed by the agent alone. The answer has one entry per host, with the
+// earliest `grantedAt` (ISO-8601) of whoever added it.
+interface HostGrantsListInput {
+  agentId: string;
+}
+interface HostGrantsListOutput {
+  hosts: Array<{ host: string; grantedAt: string }>;
+}
+
 // proxy:* shapes — duplicated structurally per I2. The orchestrator does
 // NOT import from @ax/credential-proxy; calls flow through bus.call.
 interface ProxyOpenSessionInput {
@@ -615,6 +626,14 @@ interface ProxyOpenSessionInput {
    * set for the session — never from the (user-widenable) allowlist.
    */
   credentials: Record<string, ProxyCredentialEntry>;
+  /**
+   * TASK-1212 — hosts the agent should be told are allowed now: kept sites
+   * granted since the agent last spoke in this conversation that no other
+   * source already allows. The proxy keeps each one that is on `allowlist` for
+   * the session's first drain (the runner's "now allowed" line). It grants
+   * nothing; omitted when there is nothing to tell.
+   */
+  newlyAllowedHosts?: string[];
 }
 
 /**
@@ -705,6 +724,12 @@ interface ConversationsGetOutput {
     agentId: string;
     activeSessionId: string | null;
     activeReqId: string | null;
+    /**
+     * ISO-8601. Bumped only when a turn ends with content, so it is when the
+     * agent last spoke here. Null before the first such turn. TASK-1212 reads
+     * it to tell which kept sites are news to the agent.
+     */
+    lastActivityAt?: string | null;
   };
 }
 interface ConversationsBindSessionInput {
@@ -1525,6 +1550,7 @@ function resolveRunnerBinary(
 // split lifts out of skills). The host `connectors:install-authored` hook
 // (persists a PENDING draft for the admins' queue, zero reach) is the real
 // boundary; tool visibility isn't a grant. Mirror of the skill_propose addition.
+// Mirrored in packages/channel-web/src/lib/agent-tool-areas.ts AUTOMATIC_TOOLS (hidden from the agent form's picker because the orchestrator adds them).
 const ALWAYS_ON_BROKER_TOOLS = [
   'search_catalog',
   'request_capability',
@@ -1593,6 +1619,7 @@ const OUTSIDER_REFUSED_TOOLS: readonly string[] = [
 // That's why this isn't in ALWAYS_ON_BROKER_TOOLS: there it would sit in every
 // chat's catalog and always refuse. Same I2 posture as above: a local mirror of
 // @ax/routines-contract's tool name, not an import.
+// Mirrored in packages/channel-web/src/lib/agent-tool-areas.ts AUTOMATIC_TOOLS (hidden from the agent form's picker because the orchestrator adds them).
 const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
 
 /**
@@ -1658,6 +1685,7 @@ export function withBrokerDefaults(
 // tool names (I2), like ALWAYS_ON_BROKER_TOOLS. `update_identity` lets the
 // agent rewrite its own identity or soul (never the people's Instructions);
 // `complete_bootstrap` ends its first-run setup.
+// Mirrored in packages/channel-web/src/lib/agent-tool-areas.ts AUTOMATIC_TOOLS (hidden from the agent form's picker because the orchestrator adds them).
 const UPDATE_IDENTITY_TOOL = 'update_identity';
 const COMPLETE_BOOTSTRAP_TOOL = 'complete_bootstrap';
 
@@ -3261,6 +3289,11 @@ export function createOrchestrator(
     // busy; the turn is refused right after this block (outside the lookup's
     // catch, so a fault in the refusal can never fall through to a spawn).
     let busyInOtherMode = false;
+    // TASK-1212 — when the agent last spoke in this conversation, read from the
+    // same row the routing reads. A fresh spawn tells the agent about the kept
+    // sites granted after it (see the host-grants load). Null with no
+    // conversation, no conversation hooks, a failed read or no turn yet.
+    let priorActivityAt: string | null = null;
     // Gate on the peer hooks being actually registered. CLI canary and
     // mcp-client e2e drive the orchestrator without @ax/conversations
     // loaded; in those presets we skip routing entirely. See
@@ -3282,6 +3315,8 @@ export function createOrchestrator(
           conversationId: ctx.conversationId,
           userId: ctx.userId,
         });
+        const lastActivityAt = conv.conversation.lastActivityAt;
+        priorActivityAt = typeof lastActivityAt === 'string' ? lastActivityAt : null;
         const candidate = conv.conversation.activeSessionId;
         if (candidate !== null && candidate.length > 0) {
           const aliveResult = await bus.call<
@@ -4539,22 +4574,47 @@ export function createOrchestrator(
       baseAllowSet.add('pypi.org');
       baseAllowSet.add('files.pythonhosted.org');
     }
-    // TASK-44 — persistent per-(user, agent) host grants ("always allow", design
-    // §6B / §P7.3 / decision #12). The durable twin of the LIVE proxy:add-host
-    // grant (TASK-37): hosts the user previously chose "Always for this agent"
-    // for are loaded into THIS session's egress allowlist at open. Gated by
+    // TASK-44 — the agent's allowed sites ("Always for this agent", design §6B /
+    // §P7.3 / decision #12). The durable twin of the LIVE proxy:add-host grant
+    // (TASK-37): hosts a person chose to keep for this agent are loaded into THIS
+    // session's egress allowlist at open. TASK-1212: the read is keyed by the
+    // agent alone, with no user in it. On a team agent, every member's session,
+    // an outsider's turn (run as the bot's requester) and a routine run load the
+    // same list. On a personal agent only its owner ever adds to it. Gated by
     // hasService (conditionally called, NOT declared in the manifest — same
     // convention as skills:list-user-attachments above): stripped presets without
-    // @ax/host-grants no-op. CREDENTIAL-FREE (hosts only), so a throw FAILS OPEN
-    // (log + empty) — an empty result yields FEWER hosts (user re-hits the wall),
-    // never more, so it can't widen egress.
+    // @ax/host-grants no-op. CREDENTIAL-FREE (hosts only), so a throw still FAILS
+    // OPEN (log + empty) — an empty result yields FEWER hosts (the person re-hits
+    // the wall), never more, so it can't widen egress.
+    //
+    // TASK-1212 — and the late Allow's "now allowed" line. A site kept while the
+    // agent wasn't running (a day-old Slack prompt, a web "Always" after the
+    // session ended) is reachable from this open, but the agent last saw it
+    // blocked and nothing else tells it. So the kept sites granted strictly
+    // after the agent last spoke in this conversation, that no source above
+    // already allows, go to proxy:open-session as `newlyAllowedHosts`. That is
+    // a note for the agent and grants nothing. Fresh spawns only: a turn routed
+    // into a live session never gets here, and that session's own record
+    // (proxy:add-host) covers it. With no conversation, no lastActivityAt, a
+    // timestamp that won't parse (NaN compares false) or a failed read, nothing
+    // is reported. Nor on an outsider's turn (`isOutsiderTurn`, TASK-1091):
+    // the kept sites are the agent's owners' choices, not the outsider's to
+    // hear about. They stay reachable; only the line naming them is withheld.
+    const newlyAllowedHosts: string[] = [];
     if (bus.hasService('host-grants:list')) {
       try {
-        const r = await bus.call<
-          { ownerUserId: string; agentId: string },
-          { hosts: Array<{ host: string; grantedAt: string }> }
-        >('host-grants:list', ctx, { ownerUserId: ctx.userId, agentId: agent.id });
-        for (const g of r.hosts) baseAllowSet.add(g.host);
+        const r = await bus.call<HostGrantsListInput, HostGrantsListOutput>(
+          'host-grants:list',
+          ctx,
+          { agentId: agent.id },
+        );
+        const lastSpokeMs = priorActivityAt === null ? Number.NaN : Date.parse(priorActivityAt);
+        for (const g of r.hosts) {
+          if (!baseAllowSet.has(g.host) && Date.parse(g.grantedAt) > lastSpokeMs) {
+            newlyAllowedHosts.push(g.host);
+          }
+          baseAllowSet.add(g.host);
+        }
       } catch (err) {
         ctx.logger.warn('host_grants_list_failed', {
           error: err instanceof Error ? err.message : String(err),
@@ -4632,6 +4692,7 @@ export function createOrchestrator(
           agentId: agent.id,
           allowlist: unionedAllowlist,
           credentials: unionedCreds,
+          ...(newlyAllowedHosts.length > 0 && !isOutsiderTurn(ctx) ? { newlyAllowedHosts } : {}),
         },
       );
       // Mark opened BEFORE endpointToProxyConfig — that helper throws on

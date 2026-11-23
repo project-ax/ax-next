@@ -3129,6 +3129,9 @@ importers:
         specifier: workspace:*
         version: link:../k8s
     devDependencies:
+      '@ax/ipc-http':
+        specifier: workspace:*
+        version: link:../../packages/ipc-http
       '@ax/sandbox-k8s':
         specifier: workspace:*
         version: link:../../packages/sandbox-k8s
