@@ -1525,6 +1525,7 @@ function resolveRunnerBinary(
 // split lifts out of skills). The host `connectors:install-authored` hook
 // (persists a PENDING draft for the admins' queue, zero reach) is the real
 // boundary; tool visibility isn't a grant. Mirror of the skill_propose addition.
+// Mirrored in packages/channel-web/src/lib/agent-tool-areas.ts AUTOMATIC_TOOLS (hidden from the agent form's picker because the orchestrator adds them).
 const ALWAYS_ON_BROKER_TOOLS = [
   'search_catalog',
   'request_capability',
@@ -1593,6 +1594,7 @@ const OUTSIDER_REFUSED_TOOLS: readonly string[] = [
 // That's why this isn't in ALWAYS_ON_BROKER_TOOLS: there it would sit in every
 // chat's catalog and always refuse. Same I2 posture as above: a local mirror of
 // @ax/routines-contract's tool name, not an import.
+// Mirrored in packages/channel-web/src/lib/agent-tool-areas.ts AUTOMATIC_TOOLS (hidden from the agent form's picker because the orchestrator adds them).
 const ROUTINE_RUN_TOOLS = ['routine_report', 'routine_read_update'] as const;
 
 /**
@@ -1658,6 +1660,7 @@ export function withBrokerDefaults(
 // tool names (I2), like ALWAYS_ON_BROKER_TOOLS. `update_identity` lets the
 // agent rewrite its own identity or soul (never the people's Instructions);
 // `complete_bootstrap` ends its first-run setup.
+// Mirrored in packages/channel-web/src/lib/agent-tool-areas.ts AUTOMATIC_TOOLS (hidden from the agent form's picker because the orchestrator adds them).
 const UPDATE_IDENTITY_TOOL = 'update_identity';
 const COMPLETE_BOOTSTRAP_TOOL = 'complete_bootstrap';
 
