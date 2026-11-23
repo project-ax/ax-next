@@ -224,6 +224,82 @@ describe('createPreToolUseHook', () => {
     expect(hso.permissionDecisionReason).toContain('create a routine');
   });
 
+  // TASK-1207: the CLI ships skills of its own (update-config, simplify, init,
+  // …) and nothing switches most of them off, so the hook refuses any `Skill`
+  // whose name is not a folder in AX's projection. That refusal is the runner's
+  // own, like a disabled built-in: the host is never asked.
+  it('refuses a Skill call for a skill AX did not install, without touching IPC', async () => {
+    const { client, calls } = mkClient(async () => {
+      throw new Error('IPC should not be reached for a skill AX did not install');
+    });
+    const hook = createPreToolUseHook({
+      client,
+      idGen: () => 'id-skill-1',
+      projectedSkills: new Set(['weekly-report']),
+    });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'update-config' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([]);
+    const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
+    expect(hso.hookEventName).toBe('PreToolUse');
+    expect(hso.permissionDecision).toBe('deny');
+    expect(hso.permissionDecisionReason).toContain("not one of this agent's skills");
+    // A refusal, not a hold: the model is told and the turn carries on.
+    expect(out).not.toHaveProperty('continue');
+  });
+
+  it('forwards a Skill call for an installed skill to tool.pre-call', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({
+      client,
+      idGen: () => 'id-skill-2',
+      projectedSkills: new Set(['weekly-report']),
+    });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'weekly-report' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([
+      {
+        action: 'tool.pre-call',
+        payload: { call: { id: 'tu_abc', name: 'Skill', input: { skill: 'weekly-report' } } },
+      },
+    ]);
+    expect(out).toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+    });
+  });
+
+  it('refuses every Skill call when no projection was passed (fails closed)', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({ client, idGen: () => 'id-skill-3' });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'Skill', tool_input: { skill: 'weekly-report' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toEqual([]);
+    const hso = (out as { hookSpecificOutput: Record<string, string> }).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('deny');
+    expect(hso.permissionDecisionReason).toContain('"weekly-report" is not one of this agent\'s skills');
+  });
+
+  it('leaves non-Skill tools to the host even when no projection was passed', async () => {
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
+    const hook = createPreToolUseHook({ client, idGen: () => 'id-skill-4' });
+    await hook(
+      preToolUseInput({ tool_name: 'Read', tool_input: { file_path: 'notes.md', skill: 'update-config' } }),
+      'tu_abc',
+      HOOK_OPTS,
+    );
+    expect(calls).toHaveLength(1);
+    expect((calls[0]!.payload as { call: { name: string } }).call.name).toBe('Read');
+  });
+
   // TASK-238. `disallowedTools` keeps all four out of the model's context, so
   // this branch is defence in depth and does not run in a healthy session (see
   // pre-tool-use.ts). What is pinned here is that when it DOES run, the four

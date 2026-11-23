@@ -14,6 +14,7 @@ import {
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { buildToolCacheEnv, buildTtyHintEnv } from '@ax/agent-runner-core';
+import { buildBundledSkillsEnv } from '../bundled-skills-env.js';
 import { createInterruptProcesses } from '../interrupt-processes.js';
 import { createJsonlTranscriptSource, locateJsonl } from '../jsonl-transcript-source.js';
 import { buildTelemetryEnv } from '../telemetry-env.js';
@@ -255,6 +256,7 @@ function productionEnv(pod: Pod): Record<string, string> {
     // production). Keeps the CLI's temp files inside this case's directory.
     TMPDIR: pod.tmp,
     ...buildTelemetryEnv(),
+    ...buildBundledSkillsEnv(),
     HOME: files,
     CLAUDE_CONFIG_DIR: pod.cfg,
     ...buildToolCacheEnv(pod.scratch),
