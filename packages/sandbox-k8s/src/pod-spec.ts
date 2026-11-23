@@ -251,7 +251,7 @@ interface ServiceSidecarRender {
   /** The `initContainers[]` entries — one native sidecar per service. */
   initContainers: Record<string, unknown>[];
   /** The matching `emptyDir` volumes — one per service writable path. */
-  volumes: Array<{ name: string; emptyDir: Record<string, never> }>;
+  volumes: Array<{ name: string; emptyDir: { sizeLimit: string } }>;
 }
 
 // k8s container + volume names are DNS-1123 LABELS — capped at 63 bytes (and
@@ -321,12 +321,59 @@ function serviceNameBase(serviceName: string): string {
  *  - per-service resourcing from config (NOT a descriptor field — keeps the
  *    descriptor backend-agnostic, I1).
  */
+/** `command` → args when no `entrypoint`; else `entrypoint` → command, `command` → args. */
+function renderServiceCommand(service: ServiceDescriptorParsed): Record<string, string[]> {
+  if (service.entrypoint !== undefined) {
+    return {
+      command: service.entrypoint,
+      ...(service.command !== undefined ? { args: service.command } : {}),
+    };
+  }
+  return service.command !== undefined ? { args: service.command } : {};
+}
+
+/**
+ * Sizes stay numeric (millicores, MiB) until here; the descriptor's request and
+ * limit are clamped to the config maximums, and only this function writes the
+ * `'<n>m'` / `'<n>Mi'` quantity strings. Unset → today's config defaults.
+ */
+function renderServiceResources(
+  service: ServiceDescriptorParsed,
+  config: ResolvedSandboxK8sConfig,
+): { limits: Record<string, string>; requests: Record<string, string> } {
+  const cpu = service.resources?.cpuMillis;
+  const mem = service.resources?.memoryMiB;
+  const clamp = (n: number, max: number): number => Math.min(n, max);
+  return {
+    limits: {
+      cpu:
+        cpu === undefined
+          ? config.serviceCpuLimit
+          : `${clamp(cpu.limit, config.serviceCpuLimitMaxMillis)}m`,
+      memory:
+        mem === undefined
+          ? config.serviceMemoryLimit
+          : `${clamp(mem.limit, config.serviceMemoryLimitMaxMiB)}Mi`,
+    },
+    requests: {
+      cpu:
+        cpu === undefined
+          ? config.serviceCpuRequest
+          : `${clamp(cpu.request, config.serviceCpuLimitMaxMillis)}m`,
+      memory:
+        mem === undefined
+          ? config.serviceMemoryRequest
+          : `${clamp(mem.request, config.serviceMemoryLimitMaxMiB)}Mi`,
+    },
+  };
+}
+
 function renderServiceSidecars(
   services: ServiceDescriptorParsed[],
   config: ResolvedSandboxK8sConfig,
 ): ServiceSidecarRender {
   const initContainers: Record<string, unknown>[] = [];
-  const volumes: Array<{ name: string; emptyDir: Record<string, never> }> = [];
+  const volumes: Array<{ name: string; emptyDir: { sizeLimit: string } }> = [];
 
   for (const service of services) {
     // The descriptor `name` is constrained to ID_RE (lowercase alnum + dashes)
@@ -341,7 +388,10 @@ function renderServiceSidecars(
     service.writablePaths.forEach((mountPath, i) => {
       const volName = `${nameBase}-${i}`;
       volumeMounts.push({ name: volName, mountPath });
-      volumes.push({ name: volName, emptyDir: {} });
+      volumes.push({
+        name: volName,
+        emptyDir: { sizeLimit: `${service.storageMiB ?? config.serviceStorageDefaultMiB}Mi` },
+      });
     });
 
     const sidecar: Record<string, unknown> = {
@@ -350,15 +400,15 @@ function renderServiceSidecars(
       // Native-sidecar marker: a `restartPolicy: Always` init container is
       // treated by the kubelet as a sidecar — it starts before the main
       // container, stays running alongside it, and does NOT gate pod
-      // completion. This is the whole point (I1).
-      restartPolicy: 'Always',
+      // completion. This is the whole point (I1). A `job` is the opposite: a
+      // plain init container, which the kubelet runs to exit 0 before it
+      // starts the next entry.
+      ...(service.job === true ? {} : { restartPolicy: 'Always' }),
       securityContext: CONTAINER_SECURITY,
       env: Object.entries(service.env).map(([name, value]) => ({ name, value })),
       ports: service.ports.map((containerPort) => ({ containerPort })),
-      resources: {
-        limits: { cpu: config.serviceCpuLimit, memory: config.serviceMemoryLimit },
-        requests: { cpu: config.serviceCpuRequest, memory: config.serviceMemoryRequest },
-      },
+      ...renderServiceCommand(service),
+      resources: renderServiceResources(service, config),
       // TASK-160 — when this sidecar crashes on startup (commonly EROFS for a
       // dir not in writablePaths), `FallbackToLogsOnError` makes the kubelet
       // copy the (bounded) tail of the container's log into
@@ -370,7 +420,7 @@ function renderServiceSidecars(
       volumeMounts,
     };
 
-    if (service.healthcheck !== undefined) {
+    if (service.healthcheck !== undefined && service.job !== true) {
       // A startupProbe (not a readinessProbe) — under native-sidecar semantics
       // the kubelet holds the main container until the sidecars' startup probes
       // pass. Generous failureThreshold × periodSeconds so the kubelet's own
@@ -897,6 +947,11 @@ export function buildPodSpec(
     // runner pod keeps its existing (fsGroup-free) shape so this change is a
     // strict superset and nothing about the no-services path moves.
     ...(services.length > 0 ? { securityContext: { fsGroup: 1000 } } : {}),
+    // Services share the pod's network namespace; their names resolve to the
+    // loopback so `kafka-e2e:9092` works unchanged. Only when services exist.
+    ...(services.length > 0
+      ? { hostAliases: [{ ip: '127.0.0.1', hostnames: services.map((s) => s.name) }] }
+      : {}),
     restartPolicy: 'Never',
     // The runner doesn't talk to the k8s API. Mounting a service-account
     // token would let a compromised runner enumerate the namespace, query

@@ -860,6 +860,14 @@ describe('buildPodSpec', () => {
       healthcheck?:
         | { kind: 'tcp'; port: number }
         | { kind: 'exec'; command: string[] };
+      command?: string[];
+      entrypoint?: string[];
+      job?: boolean;
+      resources?: {
+        cpuMillis?: { request: number; limit: number };
+        memoryMiB?: { request: number; limit: number };
+      };
+      storageMiB?: number;
     };
     const svc = (over: Partial<Svc> = {}): Svc => ({
       name: 'postgres',
@@ -956,7 +964,7 @@ describe('buildPodSpec', () => {
       expect(volNames).toContain('svc-mongo-0');
       expect(volNames).toContain('svc-mongo-1');
       for (const n of ['svc-mongo-0', 'svc-mongo-1']) {
-        expect(spec.volumes.find((v) => v.name === n)!.emptyDir).toEqual({});
+        expect(spec.volumes.find((v) => v.name === n)!.emptyDir).toEqual({ sizeLimit: '2048Mi' });
       }
     });
 
@@ -1004,6 +1012,91 @@ describe('buildPodSpec', () => {
         exec: { command: ['mongosh', '--eval', 'db.runCommand("ping")'] },
       });
       expect((sidecar.startupProbe as { tcpSocket?: unknown }).tcpSocket).toBeUndefined();
+    });
+
+    it('a job renders as a plain init container in order', () => {
+      const spec = podOf([
+        svc({ name: 'db' }),
+        svc({ name: 'db-init', job: true, healthcheck: undefined }),
+        svc({ name: 'api', healthcheck: undefined }),
+      ]);
+      const own = spec.initContainers.filter((c) => c.name.startsWith('svc-'));
+      expect(own.map((c) => [c.name, c.restartPolicy ?? null])).toEqual([
+        ['svc-db', 'Always'],
+        ['svc-db-init', null],
+        ['svc-api', 'Always'],
+      ]);
+      expect(own[1]!.startupProbe).toBeUndefined();
+    });
+
+    it('a job with a healthcheck still renders no startup probe', () => {
+      const spec = podOf([svc({ name: 'j', job: true })]);
+      expect(spec.initContainers.find((c) => c.name === 'svc-j')!.startupProbe).toBeUndefined();
+    });
+
+    it('command and entrypoint map to command/args', () => {
+      const spec = podOf([
+        svc({ name: 'a', command: ['--x'] }),
+        svc({ name: 'b', entrypoint: ['/e'], command: ['--y'] }),
+        svc({ name: 'c', entrypoint: ['/e2'] }),
+        svc({ name: 'd' }),
+      ]);
+      const get = (n: string) =>
+        spec.initContainers.find((c) => c.name === n) as unknown as Record<string, unknown>;
+      expect(get('svc-a').args).toEqual(['--x']);
+      expect(get('svc-a').command).toBeUndefined();
+      expect(get('svc-b').command).toEqual(['/e']);
+      expect(get('svc-b').args).toEqual(['--y']);
+      expect(get('svc-c').command).toEqual(['/e2']);
+      expect(get('svc-c').args).toBeUndefined();
+      expect(get('svc-d').command).toBeUndefined();
+      expect(get('svc-d').args).toBeUndefined();
+    });
+
+    it('writable paths get sizeLimit from storageMiB or the default', () => {
+      const spec = podOf([
+        svc({ name: 'a', storageMiB: 512 }),
+        svc({ name: 'b' }),
+      ]);
+      const vol = (n: string) => spec.volumes.find((v) => v.name.startsWith(n))!;
+      expect(vol('svc-a').emptyDir).toEqual({ sizeLimit: '512Mi' });
+      expect(vol('svc-b').emptyDir).toEqual({ sizeLimit: '2048Mi' });
+    });
+
+    it('service resources render from numbers and clamp to the configured maximum', () => {
+      const spec = podOf([
+        svc({
+          name: 'big',
+          resources: {
+            cpuMillis: { request: 500, limit: 99_000 },
+            memoryMiB: { request: 99_999, limit: 99_999 },
+          },
+        }),
+        svc({ name: 'small', resources: { memoryMiB: { request: 1024, limit: 2048 } } }),
+      ]);
+      const res = (n: string) =>
+        (spec.initContainers.find((c) => c.name === n) as unknown as { resources: unknown })
+          .resources;
+      expect(res('svc-big')).toEqual({
+        limits: { cpu: '4000m', memory: '8192Mi' },
+        requests: { cpu: '500m', memory: '8192Mi' },
+      });
+      expect(res('svc-small')).toEqual({
+        limits: { cpu: '1', memory: '2048Mi' },
+        requests: { cpu: '100m', memory: '1024Mi' },
+      });
+    });
+
+    it('hostAliases lists every service name on 127.0.0.1', () => {
+      const spec = podOf([svc({ name: 'a' }), svc({ name: 'b' })]) as unknown as {
+        hostAliases?: unknown;
+      };
+      expect(spec.hostAliases).toEqual([{ ip: '127.0.0.1', hostnames: ['a', 'b'] }]);
+    });
+
+    it('no services → no hostAliases', () => {
+      const spec = buildPodSpec('pod-none', baseInput, baseResolved()).spec as Record<string, unknown>;
+      expect('hostAliases' in spec).toBe(false);
     });
 
     it('omits startupProbe when the descriptor declares no healthcheck', () => {

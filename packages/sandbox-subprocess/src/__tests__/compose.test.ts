@@ -3,6 +3,7 @@ import * as net from 'node:net';
 import type { ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import {
   composeProjectName,
+  dockerSpawnEnv,
   descriptorsToComposeProject,
   tcpHealthPorts,
   composeAvailable,
@@ -370,5 +371,76 @@ describe('diagnoseComposeFailure (TASK-160)', () => {
       path: '/opt/data',
       reason: 'read-only filesystem',
     });
+  });
+});
+
+describe('descriptorsToComposeProject — task 1.7 fields', () => {
+  it('renders command', () => {
+    const p = descriptorsToComposeProject([
+      svc({ command: ['--x', 'y'], entrypoint: ['/e'] }),
+    ]);
+    expect(p.services.db!.command).toEqual(['--x', 'y']);
+    expect(p.services.db!.entrypoint).toEqual(['/e']);
+  });
+
+  it('renders resources', () => {
+    const p = descriptorsToComposeProject([
+      svc({
+        resources: { cpuMillis: { request: 250, limit: 1500 }, memoryMiB: { request: 512, limit: 2048 } },
+      }),
+    ]);
+    expect(p.services.db!.deploy).toEqual({
+      resources: {
+        limits: { cpus: '1.5', memory: '2048M' },
+        reservations: { cpus: '0.25', memory: '512M' },
+      },
+    });
+  });
+
+  it('refuses a job locally', () => {
+    expect(() => descriptorsToComposeProject([svc({ job: true })])).toThrow(
+      'not supported by the local sandbox',
+    );
+  });
+
+  it('refuses publishedPorts locally', () => {
+    expect(() =>
+      descriptorsToComposeProject([svc({ publishedPorts: [{ published: 80, target: 8080 }] })]),
+    ).toThrow('not supported by the local sandbox');
+  });
+
+  it('${HOME} reaches the container literally', () => {
+    const p = descriptorsToComposeProject([
+      svc({
+        env: { A: '${HOME}/x', B: 'cost $5' },
+        command: ['sh', '-c', 'echo ${HOME}'],
+        entrypoint: ['$X'],
+        healthcheck: { kind: 'exec', command: ['test', '${HOME}'] },
+      }),
+    ]);
+    const yaml = JSON.stringify(p);
+    expect(p.services.db!.environment).toEqual({ A: '$${HOME}/x', B: 'cost $$5' });
+    expect(p.services.db!.command).toEqual(['sh', '-c', 'echo $${HOME}']);
+    expect(p.services.db!.entrypoint).toEqual(['$$X']);
+    expect(p.services.db!.healthcheck!.test).toEqual(['CMD', 'test', '$${HOME}']);
+    expect(yaml).not.toMatch(/(^|[^$])\$\{HOME\}/);
+  });
+
+  it('docker is spawned without the host env', async () => {
+    const prev = process.env.AX_TEST_SECRET;
+    process.env.AX_TEST_SECRET = 'sentinel';
+    try {
+      const env = dockerSpawnEnv();
+      expect(env.AX_TEST_SECRET).toBeUndefined();
+      expect(Object.keys(env).every((k) => k === 'PATH' || k === 'HOME' || k.startsWith('DOCKER_'))).toBe(true);
+      expect(dockerSpawnEnv({ PATH: '/p', HOME: '/h', DOCKER_HOST: 'tcp://x:2375', FOO: 'b' })).toEqual({
+        PATH: '/p',
+        HOME: '/h',
+        DOCKER_HOST: 'tcp://x:2375',
+      });
+    } finally {
+      if (prev === undefined) delete process.env.AX_TEST_SECRET;
+      else process.env.AX_TEST_SECRET = prev;
+    }
   });
 });
