@@ -90,6 +90,13 @@ export async function readProjectedSkills(
 const ECHOABLE_SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/;
 
 /**
+ * Names that mean "do this on a schedule": the CLI's `loop` (switched off at
+ * the source, so this is defence in depth) and the obvious guesses. Only these
+ * refusals point at routines; after `/init` the pointer would be noise.
+ */
+const SCHEDULING_SKILL_NAMES: ReadonlySet<string> = new Set(['loop', 'schedule', 'cron']);
+
+/**
  * Why a `Skill` call is refused, or `undefined` when it names a skill AX
  * installed. The name is `tool_input.skill`, trimmed, with ONE leading `/`
  * removed (the CLI accepts `/name` for `name`); anything that is not a
@@ -113,8 +120,11 @@ export function skillRefusal(
     );
   }
   if (name !== '' && projected.names.has(name)) return undefined;
+  const routineHint = SCHEDULING_SKILL_NAMES.has(name.toLowerCase())
+    ? ' To do something on a schedule, create a routine.'
+    : '';
   return (
     `${label} is not one of this agent's skills, so it isn't available here. ` +
-    'Use the skills and tools you were given. To do something on a schedule, create a routine.'
+    `Use the skills and tools you were given.${routineHint}`
   );
 }

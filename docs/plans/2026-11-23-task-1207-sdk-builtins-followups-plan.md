@@ -310,7 +310,7 @@ Run `security-checklist` for this task. It touches the pre-call gate and model-c
 - Produces `export function skillRefusal(toolInput: unknown, projected: ReadonlySet<string>): string | undefined`:
   - `name` = `toolInput.skill` if it's a string, then `.trim()`, then strip ONE leading `/` (the CLI's own rule). Otherwise `''`.
   - It returns `undefined` iff `name !== ''` and `projected.has(name)`.
-  - Otherwise it returns this exact copy: `` `${label} is not one of this agent's skills, so it isn't available here. Use the skills and tools you were given. To do something on a schedule, create a routine.` ``
+  - Otherwise it returns this exact copy: `` `${label} is not one of this agent's skills, so it isn't available here. Use the skills and tools you were given. To do something on a schedule, create a routine.` `` (Review narrowed the last sentence to scheduling names, `loop`/`schedule`/`cron`, and added a separate refusal for a projection that could not be read.)
     - `label` is `"${name}"` (in double quotes) when `name` matches `^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$`.
     - Otherwise it's `That skill`.
 - `CreatePreToolUseHookOptions` gains `projectedSkills?: ReadonlySet<string>`. Absent means an empty set, so it fails closed; say so in its doc. `main.ts` always passes it.
@@ -324,7 +324,7 @@ Run `security-checklist` for this task. It touches the pre-call gate and model-c
     - an unreadable dir gives an empty set and one log line, with no throw.
   - `projected-skills.test.ts`, refusal:
     - `{skill:'weekly-report'}` and `{skill:' /weekly-report '}` give `undefined`;
-    - `{skill:'update-config'}` contains `'"update-config" is not one of this agent\'s skills'` and `'create a routine'`;
+    - `{skill:'update-config'}` contains `'"update-config" is not one of this agent\'s skills'` (after review, with no routine pointer);
     - `{skill:'/init'}` contains `'"init"'`;
     - `{}`, `{skill:42}` and `{skill:''}` start with `'That skill'`;
     - `{skill:'x'.repeat(200)}` and `{skill:'evil\n# heading'}` give a string that does NOT contain the input, starting with `'That skill'`.

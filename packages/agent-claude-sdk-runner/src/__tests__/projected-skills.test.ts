@@ -119,11 +119,24 @@ describe('skillRefusal', () => {
     expect(skillRefusal({ skill: 'cx-linear-1a2b3c4d', args: 'x' }, projected)).toBeUndefined();
   });
 
-  it('refuses a bundled skill by name and points at routines', () => {
+  it('refuses a bundled skill by name', () => {
     expect(skillRefusal({ skill: 'update-config' }, projected)).toBe(
       '"update-config" is not one of this agent\'s skills, so it isn\'t available here. ' +
-        'Use the skills and tools you were given. To do something on a schedule, create a routine.',
+        'Use the skills and tools you were given.',
     );
+  });
+
+  // Only a scheduling skill gets the routine pointer: "To do something on a
+  // schedule, create a routine." after a refused `/init` is noise.
+  it('points at routines only when the refused skill is a scheduling one', () => {
+    for (const skill of ['loop', '/loop', 'schedule', 'cron', 'Loop']) {
+      expect(skillRefusal({ skill }, projected), skill).toMatch(
+        /Use the skills and tools you were given\. To do something on a schedule, create a routine\.$/,
+      );
+    }
+    for (const skill of ['update-config', 'init', 'simplify', 'feedback-loop', 'x'.repeat(200)]) {
+      expect(skillRefusal({ skill }, projected), skill).not.toContain('routine');
+    }
   });
 
   it('names a slash-command skill without its slash', () => {
