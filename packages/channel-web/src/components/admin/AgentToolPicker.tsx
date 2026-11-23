@@ -18,6 +18,7 @@ import {
   FieldSet,
 } from '@/components/ui/field';
 import {
+  AUTOMATIC_TOOLS,
   groupAgentTools,
   setTools,
   unknownTools,
@@ -46,6 +47,9 @@ export function AgentToolPicker({
   unrestricted,
 }: AgentToolPickerProps) {
   const baseId = useId();
+  // Display only: the tools AX adds itself are plumbing, so the failed-read
+  // line leaves them out. The saved list still carries them unchanged.
+  const kept = selected.filter((n) => !AUTOMATIC_TOOLS.has(n));
 
   return (
     <FieldSet>
@@ -61,8 +65,8 @@ export function AgentToolPicker({
         <FieldDescription>Loading the list of tools…</FieldDescription>
       ) : catalog.status === 'failed' ? (
         <FieldDescription>
-          {selected.length > 0
-            ? `We couldn’t load the list of tools, so this agent keeps the ones it has: ${selected.join(', ')}. Close and reopen this form to try again.`
+          {kept.length > 0
+            ? `We couldn’t load the list of tools, so this agent keeps the ones it has: ${kept.join(', ')}. Close and reopen this form to try again.`
             : 'We couldn’t load the list of tools. Close and reopen this form to try again.'}
         </FieldDescription>
       ) : (

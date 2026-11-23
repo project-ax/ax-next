@@ -114,6 +114,21 @@ describe('AgentToolPicker', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('a failed read leaves out the tools AX adds itself when listing what the agent keeps', () => {
+    setup({ catalog: { status: 'failed' }, selected: ['Bash', 'search_catalog', 'routine_report', 'routines'] });
+    expect(screen.getByText(/this agent keeps the ones it has: Bash, routines\./)).toBeTruthy();
+    expect(screen.queryByText(/search_catalog|routine_report/)).toBeNull();
+  });
+
+  it('a failed read with only tools AX adds itself saved shows no empty list', () => {
+    setup({ catalog: { status: 'failed' }, selected: ['search_catalog'] });
+    expect(
+      screen.getByText(
+        'We couldn’t load the list of tools. Close and reopen this form to try again.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('a failed read with nothing saved says so plainly', () => {
     setup({ catalog: { status: 'failed' } });
     expect(
