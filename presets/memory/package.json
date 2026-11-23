@@ -28,6 +28,7 @@
     "@ax/preset-k8s": "workspace:*"
   },
   "devDependencies": {
+    "@ax/ipc-http": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
