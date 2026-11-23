@@ -582,7 +582,41 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
 
   // The case that earned this: web tools load only when this boot has a key,
   // so a boot without one must not delete them from an identity-only save.
-  it('tools this boot doesn’t run survive a save; clicking Remove then saving drops them', async () => {
+  it('tools this boot doesn’t run survive a plain save', async () => {
+    vi.mocked(listAgentToolOptions).mockResolvedValue({
+      ...PROD_TOOL_CATALOG,
+      tools: PROD_TOOL_CATALOG.tools.filter((n) => !n.startsWith('web_')),
+    });
+    await openEdit({ ...AGENT, allowedTools: ['Bash', 'web_search', 'web_extract'] });
+    await screen.findByText(/aren’t available here/);
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['Bash', 'web_search', 'web_extract'] }),
+      ),
+    );
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  // Blocking Save here would re-create the TASK-147 over-gating: an owner
+  // could not edit this agent's identity until they cleaned up its tools.
+  it('an agent whose saved list holds only unknown names still saves as it is', async () => {
+    await openEdit({ ...AGENT, allowedTools: ['routines'] });
+    await screen.findByText(/“routines” isn’t available here/);
+
+    save();
+    await waitFor(() =>
+      expect(patchAgent).toHaveBeenCalledWith(
+        'agent-1',
+        expect.objectContaining({ allowedTools: ['routines'] }),
+      ),
+    );
+    await waitFor(() => expect(putAgentIdentity).toHaveBeenCalled());
+  });
+
+  it('clicking Remove on tools this boot doesn’t run, then saving, drops them', async () => {
     vi.mocked(listAgentToolOptions).mockResolvedValue({
       ...PROD_TOOL_CATALOG,
       tools: PROD_TOOL_CATALOG.tools.filter((n) => !n.startsWith('web_')),
