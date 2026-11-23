@@ -70,6 +70,16 @@ function thisMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
 
+/** `auth:get-user` as auth answers it: the account by its display name, or null for no such account. */
+function authNames(names: Record<string, string>): (userId: string) => unknown {
+  return (userId) => {
+    const displayName = names[userId];
+    return displayName === undefined
+      ? null
+      : { id: userId, displayName, email: `${userId}@x.test`, isAdmin: false };
+  };
+}
+
 describe('memory facts export — real engine + real volume', () => {
   it('publishes profile/recent/journal files into the volume', async () => {
     const { h, flush, listPaths, readText } = await makeExportHarness();
@@ -136,9 +146,13 @@ describe('memory facts export — real engine + real volume', () => {
     expect(text).not.toContain('bob-secret');
   });
 
-  it('a team agent exports every member’s rows regardless of who triggers the flush', async () => {
+  // TASK-1213: the export names members the way recall and the block do
+  // (`memberLabels`), by the pass's own turn and never as "you": the file is
+  // one per agent, read by every session that mounts it.
+  it('a team agent’s export names its members, the same whoever triggers the flush', async () => {
     const { h, flush, listPaths, readText } = await makeExportHarness({
       agent: { visibility: 'team' },
+      authUser: authNames({ [ALICE]: 'Alice Jones', [BOB]: 'Bob Smith' }),
     });
     await h.remember(
       { about: 'user', relation: 'lives in', value: 'Seattle' },
@@ -161,12 +175,105 @@ describe('memory facts export — real engine + real volume', () => {
     expect(byBob).toBe(byAlice);
     expect(byBob).toContain('Seattle');
     expect(byBob).toContain('Bob Co');
-    expect(byBob).toContain('## user:user-alice');
-    expect(byBob).toContain('## user:user-bob');
+    expect(byBob).toContain('## Alice Jones');
+    expect(byBob).toContain('## Bob Smith');
 
     const profile = await readText(`${ROOT}/profile.md`, aliceCtx);
-    expect(profile).toContain('## user:user-alice');
-    expect(profile).toContain('## user:user-bob');
+    expect(profile).toContain('## Alice Jones');
+    expect(profile).toContain('## Bob Smith');
+    for (const path of await listPaths(aliceCtx)) {
+      const text = await readText(path, aliceCtx);
+      expect(text, path).not.toContain('user:user-alice');
+      expect(text, path).not.toContain('user:user-bob');
+      // Display names only: auth answers an email too, and the export is a
+      // model-readable file outsiders' sessions mount.
+      expect(text, path).not.toContain('@x.test');
+    }
+  });
+
+  it('a key for an account outside the team reads "a teammate" in the export, and auth is never asked about it', async () => {
+    const EVE = 'user-eve';
+    const { h, flush, listPaths, readText } = await makeExportHarness({
+      agent: { visibility: 'team' },
+      authUser: authNames({ [ALICE]: 'Alice Jones', [BOB]: 'Bob Smith', [EVE]: 'Eve Example' }),
+    });
+    // A member's private turn keeps a model-written `user:<id>` as written.
+    await engineRecord(h.bus, h.ctx(), [
+      { about: `user:${EVE}`, relation: 'lives_in', value: 'Paris', when: '2026-09-01T00:00:00.000Z', ownerUserId: ALICE },
+      { about: `user:${BOB}`, relation: 'lives_in', value: 'Boston', when: '2026-09-01T00:00:00.000Z', ownerUserId: BOB },
+    ]);
+    await flush();
+    const journal = await readText(`${ROOT}/user/${thisMonth()}.md`);
+    expect(journal).toContain('## a teammate\n\n- 2026-09-01 · lives_in · Paris');
+    expect(journal).toContain('## Bob Smith\n\n- 2026-09-01 · lives_in · Boston');
+    for (const path of await listPaths()) {
+      const text = await readText(path);
+      expect(text, path).not.toContain('Eve Example');
+      expect(text, path).not.toContain(`user:${EVE}`);
+    }
+    expect(h.memberCalls).toContain(EVE);
+    expect(h.authCalls).not.toContain(EVE);
+  });
+
+  it("a personal agent's export names nobody and asks nobody", async () => {
+    const { h, flush, readText } = await makeExportHarness({
+      authUser: authNames({ [ALICE]: 'Alice Jones', [BOB]: 'Bob Smith' }),
+    });
+    await engineRecord(h.bus, h.ctx(), [
+      { about: `user:${ALICE}`, relation: 'lives_in', value: 'Seattle', when: '2026-09-01T00:00:00.000Z', ownerUserId: ALICE },
+      { about: `user:${BOB}`, relation: 'likes', value: 'tea', when: '2026-09-01T00:00:00.000Z', ownerUserId: ALICE },
+    ]);
+    await flush();
+    const journal = await readText(`${ROOT}/user/${thisMonth()}.md`);
+    expect(journal).toContain('## user:user-alice');
+    expect(journal).toContain('## user:user-bob');
+    expect(journal).not.toContain('Alice Jones');
+    expect(journal).not.toContain('Bob Smith');
+    expect(h.memberCalls).toEqual([]);
+    expect(h.authCalls).toEqual([]);
+  });
+
+  it('two members whose names read the same both read "a teammate" in the export', async () => {
+    const { h, flush, listPaths, readText } = await makeExportHarness({
+      agent: { visibility: 'team' },
+      authUser: authNames({ [ALICE]: 'Alice Jones', [BOB]: 'alice  jones.' }),
+    });
+    await engineRecord(h.bus, h.ctx(), [
+      { about: `user:${ALICE}`, relation: 'lives_in', value: 'Seattle', when: '2026-09-01T00:00:00.000Z', ownerUserId: ALICE },
+      { about: `user:${BOB}`, relation: 'lives_in', value: 'Boston', when: '2026-09-01T00:00:00.000Z', ownerUserId: BOB },
+    ]);
+    await flush();
+    const journal = await readText(`${ROOT}/user/${thisMonth()}.md`);
+    expect(journal).toContain('## a teammate\n\n- 2026-09-01 · lives_in · Seattle');
+    expect(journal).toContain('## a teammate\n\n- 2026-09-01 · lives_in · Boston');
+    for (const path of await listPaths()) expect(await readText(path), path).not.toMatch(/alice\s+jones/i);
+  });
+
+  // The pass's own turn decides, as it does for recall: a turn whose recall
+  // reads shared rows only is told no names, so a pass it schedules writes
+  // "a teammate" for everyone, until a pass from a member's turn.
+  it('an export pass from a turn whose recall is scoped names nobody; the next pass from a member names them again', async () => {
+    const { h, flush, readText } = await makeExportHarness({
+      agent: { visibility: 'team' },
+      authUser: authNames({ [ALICE]: 'Alice Jones', [BOB]: 'Bob Smith' }),
+    });
+    await engineRecord(h.bus, h.ctx(), [
+      { about: `user:${ALICE}`, relation: 'lives_in', value: 'Seattle', when: '2026-09-01T00:00:00.000Z', ownerUserId: ALICE },
+      { about: `user:${BOB}`, relation: 'lives_in', value: 'Boston', when: '2026-09-01T00:00:00.000Z', ownerUserId: BOB },
+    ]);
+    const journalPath = `${ROOT}/user/${thisMonth()}.md`;
+
+    await flush(h.ctx({ source: 'unrecognized' }));
+    const scoped = await readText(journalPath);
+    expect(scoped).toContain('## a teammate\n\n- 2026-09-01 · lives_in · Seattle');
+    expect(scoped).toContain('## a teammate\n\n- 2026-09-01 · lives_in · Boston');
+    for (const hidden of ['Alice Jones', 'Bob Smith', 'user:user-']) expect(scoped).not.toContain(hidden);
+    expect(h.authCalls).toEqual([]);
+
+    await flush(h.ctx());
+    const named = await readText(journalPath);
+    expect(named).toContain('## Alice Jones');
+    expect(named).toContain('## Bob Smith');
   });
 
   it('two agents never share a projection', async () => {
@@ -314,15 +421,19 @@ describe('sandbox:memory-mounts resolver', () => {
   // without access to the agent reads its replies, so a private stamp, or
   // none, fails closed; no live producer sends one). On any agent it is a
   // session from a source this build doesn't know, which fails closed on a
-  // team agent too (TASK-1209's security review).
+  // team agent too (TASK-1209's security review): one outside the type, and
+  // a stored one read back as `'unrecognized'` (TASK-1213).
   it.each([
     ['team', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
     ['team', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
     ['team', 'an unknown-source unstamped', { source: 'satellite' }],
+    ['team', 'an unrecognized-source shared', { audience: 'shared', source: 'unrecognized' }],
+    ['team', 'an unrecognized-source unstamped', { source: 'unrecognized' }],
     ['personal', "an outsider's private-stamped", { audience: 'private', source: 'external' }],
     ['personal', "an outsider's unstamped", { source: 'external' }],
     ['personal', 'an unknown-source shared', { audience: 'shared', source: 'satellite' }],
     ['personal', 'an unknown-source private-stamped', { audience: 'private', source: 'satellite' }],
+    ['personal', 'an unrecognized-source private-stamped', { audience: 'private', source: 'unrecognized' }],
   ] as const)('a %s agent: %s session gets no mount and nothing is flushed', async (visibility, _label, session) => {
     const { h, hostRoot, resolveMounts } = await makeVolumeHarness({ agent: { visibility } });
     await engineRecord(h.bus, h.ctx(), [

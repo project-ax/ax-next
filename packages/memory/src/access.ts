@@ -14,6 +14,13 @@ export interface MemoryAccess {
    * (TASK-1209, `member-names.ts`).
    */
   teamId?: string;
+  /**
+   * A team agent's own display name (`agents:resolve`'s `displayName`), and
+   * only there. A member's name that reads as it is refused, so a teammate
+   * can't pass for the agent (TASK-1213, `member-names.ts`). Absent when the
+   * answer carries none.
+   */
+  agentName?: string;
 }
 
 export async function resolveMemoryAccess(
@@ -34,7 +41,9 @@ export async function resolveMemoryAccess(
   }
   const out = await bus.call<
     { agentId: string; userId: string },
-    { agent?: { id?: unknown; ownerId?: unknown; ownerType?: unknown; visibility?: unknown } } | null
+    {
+      agent?: { id?: unknown; ownerId?: unknown; ownerType?: unknown; visibility?: unknown; displayName?: unknown };
+    } | null
   >(AGENTS_RESOLVE_HOOK, ctx, { agentId: ctx.agentId, userId });
   const agent = out?.agent;
   if (
@@ -61,9 +70,13 @@ export async function resolveMemoryAccess(
       message: 'This personal memory belongs to another person',
     });
   }
-  return agent.visibility === 'team'
-    ? { userId, visibility: 'team', teamId: agent.ownerId }
-    : { userId, visibility: 'personal' };
+  if (agent.visibility !== 'team') return { userId, visibility: 'personal' };
+  return {
+    userId,
+    visibility: 'team',
+    teamId: agent.ownerId,
+    ...(typeof agent.displayName === 'string' ? { agentName: agent.displayName } : {}),
+  };
 }
 
 export function memoryReadScope(access: MemoryAccess): { ownerUserId?: string } {

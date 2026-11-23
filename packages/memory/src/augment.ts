@@ -749,7 +749,9 @@ export async function buildMemoryBlock(
   // On a team agent, the members these show, by name (TASK-1209): asked once,
   // only about the subjects Recent's groups and the ranked Digest hold (at
   // most 9 + 20 keys by default, never every scanned row), and never failing
-  // the block. Empty on a personal agent, which asks nobody.
+  // the block. The caller (`self`) is asked too when another member key is
+  // there, only so a teammate who takes their name reads "a teammate"
+  // (TASK-1213). Empty on a personal agent, which asks nobody.
   const labels = await memberLabels(
     bus,
     ctx,

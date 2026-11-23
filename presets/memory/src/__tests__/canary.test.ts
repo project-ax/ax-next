@@ -18,6 +18,7 @@ import {
   type AgentContext,
   type Plugin,
 } from '@ax/core';
+import { createHttpListener } from '@ax/ipc-http';
 import { createSandboxK8sPlugin, type K8sCoreApi } from '@ax/sandbox-k8s';
 import {
   startFakeOidcIssuer,
@@ -1796,6 +1797,85 @@ describe('@ax/preset-memory canary', () => {
       input: { about: 'user', relation: 'prefers', value: 'late standup' },
     });
     expect(bobNote.error).toBe('forbidden');
+  });
+
+  it("TASK-1213: a session whose stored source this build doesn't recognize recalls only a team agent's shared rows, end to end over IPC", async () => {
+    // ALICE, not BOB: the test above removes Bob from the team.
+    const note = (ctx: AgentContext, input: { about: string; relation: string; value: string }) =>
+      bus.call<{ input: typeof input }, { ok?: boolean }>('tool:execute:memory_note', ctx, { input });
+    const priv = await note(ctxFor(teamAgentId, ALICE), {
+      about: 'launch', relation: 'codename', value: 'Bluefin launch codename',
+    });
+    const shared = await note(ctxFor(teamAgentId, ALICE, { audience: 'shared' }), {
+      about: 'launch', relation: 'date', value: 'launch on March 3',
+    });
+    expect(priv.ok).toBe(true);
+    expect(shared.ok).toBe(true);
+
+    const mint = async (sessionId: string): Promise<string> => {
+      const out = await bus.call<Record<string, unknown>, { sessionId: string; token: string }>(
+        'session:create',
+        ctxFor(teamAgentId, ALICE),
+        {
+          sessionId,
+          workspaceRoot: '/tmp/ws',
+          owner: {
+            userId: ALICE,
+            agentId: teamAgentId,
+            agentConfig: {
+              displayName: 'Team agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-6',
+              runner: 'claude-sdk',
+            },
+            conversationId: `canary-${sessionId}`,
+            source: 'external',
+            audience: 'shared',
+          },
+        },
+      );
+      return out.token;
+    };
+    const knownToken = await mint('s-1213-known');
+    const unrecognizedToken = await mint('s-1213-unrecognized');
+
+    // A newer (or hand-edited) build wrote a source this one can't place.
+    // session:create refuses it, so the column is set directly.
+    const { db } = await bus.call<unknown, {
+      db: { updateTable(t: string): { set(v: Record<string, unknown>): {
+        where(c: string, op: string, v: unknown): { execute(): Promise<unknown> };
+      } } };
+    }>('database:get-instance', ctxFor(teamAgentId, ALICE), {});
+    await db.updateTable('session_postgres_v2_session_agent')
+      .set({ source: 'satellite' })
+      .where('session_id', '=', 's-1213-unrecognized')
+      .execute();
+
+    const listener = await createHttpListener({ host: '127.0.0.1', port: 0, bus });
+    try {
+      const recall = async (token: string) => {
+        const r = await fetch(`http://127.0.0.1:${listener.port}/tool.execute-host`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ call: { id: 'c-1213', name: 'memory_recall', input: { query: 'launch' } } }),
+        });
+        return { status: r.status, body: JSON.stringify(await r.json()) };
+      };
+      // Control: an outsider on a team agent reads the private row too (TASK-1209).
+      const known = await recall(knownToken);
+      expect(known.status).toBe(200);
+      expect(known.body).toContain('Bluefin');
+      expect(known.body).toContain('March 3');
+
+      const unrecognized = await recall(unrecognizedToken);
+      expect(unrecognized.status).toBe(200);
+      expect(unrecognized.body).toContain('March 3');
+      expect(unrecognized.body).not.toContain('Bluefin');
+    } finally {
+      await listener.close();
+    }
   });
 
   it('flush writes exports under hostRoot; open-session mounts /memory read-only with the matching subPath', async () => {

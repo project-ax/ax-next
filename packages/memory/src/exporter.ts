@@ -1,8 +1,9 @@
 import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 
 import { memoryReadScope, resolveMemoryAccess } from './access.js';
-import { buildFactsExport, type ExportFact } from './export-render.js';
+import { buildFactsExport, validateExportRows, type ExportFact } from './export-render.js';
 import { syncFactsVolume, type MemoryVolumeConfig } from './export-volume.js';
+import { memberLabels } from './member-names.js';
 import { PLUGIN_NAME } from './plugin-name.js';
 
 export const FACTS_SCAN_HOOK = 'memory:facts:scan';
@@ -138,7 +139,15 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig) {
   async function runPass(ctx: AgentContext): Promise<{ changed: boolean }> {
     const access = await resolveMemoryAccess(bus, ctx);
     const rows = await scanAll(ctx, memoryReadScope(access));
-    const desired = buildFactsExport(rows, access);
+    // An unreadable row is refused by code before a subject is read below.
+    validateExportRows(rows);
+    // How each member's key reads in the file (TASK-1213): the names recall
+    // and the block show (`memberLabels`: a team agent only, current members
+    // only, cleaned, collision-checked, 2 s at most), decided by this pass's
+    // own turn. No `self`: one file per agent serves every session that
+    // mounts it, so nobody in it reads "you". Empty on a personal agent.
+    const labels = await memberLabels(bus, ctx, access, rows.map((row) => row.about), undefined);
+    const desired = buildFactsExport(rows, access, labels);
     // Again before publishing: access can be revoked while the scan runs.
     await resolveMemoryAccess(bus, ctx);
     return syncFactsVolume(config.volume, ctx.agentId, desired);

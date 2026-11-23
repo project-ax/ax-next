@@ -634,6 +634,57 @@ describe('buildFactsExport — superseded retracted re-mentions (TASK-657)', () 
   });
 });
 
+// TASK-1213: on a team agent a member's key reads in the export as it does in
+// recall and the block: the name `memberLabels` gives it, else "a teammate".
+// Never the raw `user:<id>`. The label is account-holder text, so every place
+// escapes it like any statement text. Order and paths stay the key's.
+describe('buildFactsExport — member names (TASK-1213)', () => {
+  const fileOf = (out: Map<unknown, string>, path: string): string =>
+    out.get([...out.keys()].find((k) => String(k) === path))!;
+  const membersRows = (): ExportFact[] => [
+    row({ about: 'user:alice', slot: 'lives_in', value: 'Seattle', conversationId: 'c1' }),
+    row({ about: 'user:bob', slot: 'works_at', value: 'Acme', conversationId: 'c2' }),
+  ];
+
+  it('prints a label for a subject key in team Profile headings, journal headings and Recent lines, escaped', () => {
+    const labels = new Map([
+      ['user:alice', 'Alice | Jones'],
+      ['user:bob', 'a teammate'],
+    ]);
+    const out = buildFactsExport(membersRows(), TEAM, labels);
+    const profile = fileOf(out, `${ROOT}/profile.md`);
+    const journal = fileOf(out, `${ROOT}/user/2026-09.md`);
+    const recent = fileOf(out, `${ROOT}/recent.md`);
+    for (const text of [profile, journal]) {
+      expect(text).toContain('## Alice \\| Jones');
+      expect(text).toContain('## a teammate');
+    }
+    expect(recent).toContain(' · Alice \\| Jones · noted · Seattle');
+    expect(recent).toContain(' · a teammate · noted · Acme');
+    for (const [path, text] of out) {
+      expect(text, String(path)).not.toContain('user:alice');
+      expect(text, String(path)).not.toContain('user:bob');
+      expect(text, String(path)).not.toContain('Alice | Jones');
+    }
+  });
+
+  it('sections keep their keys’ order, whatever the names read', () => {
+    const out = buildFactsExport(
+      membersRows(),
+      TEAM,
+      new Map([
+        ['user:alice', 'Zed'],
+        ['user:bob', 'Amy'],
+      ]),
+    );
+    for (const path of [`${ROOT}/profile.md`, `${ROOT}/user/2026-09.md`]) {
+      const text = fileOf(out, path);
+      expect(text.indexOf('## Zed'), path).toBeGreaterThan(-1);
+      expect(text.indexOf('## Zed'), path).toBeLessThan(text.indexOf('## Amy'));
+    }
+  });
+});
+
 describe('buildFactsExport — malformed rows', () => {
   it.each([
     ['missing id', { id: '' }],

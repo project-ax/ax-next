@@ -462,6 +462,8 @@ describe('external source + audience (TASK-1091)', () => {
     expect(isAttendedTurn({ source: 'user' })).toBe(true);
     expect(isAttendedTurn({ source: 'routine' })).toBe(false);
     expect(isAttendedTurn({ source: 'external' })).toBe(false);
+    // TASK-1213: a stored session source this build doesn't recognize.
+    expect(isAttendedTurn({ source: 'unrecognized' })).toBe(false);
     expect(isAttendedTurn({ source: 'bogus' as never })).toBe(false);
   });
 
@@ -480,6 +482,9 @@ describe('external source + audience (TASK-1091)', () => {
     { label: "'user'", source: 'user', outsider: false },
     { label: "'routine'", source: 'routine', outsider: false },
     { label: "'external'", source: 'external', outsider: true },
+    // TASK-1213: what a session store and the IPC auth hop read back for a
+    // stored source this build doesn't recognize.
+    { label: "'unrecognized'", source: 'unrecognized', outsider: true },
     { label: 'an unknown value', source: 'bogus', outsider: true },
     { label: 'an empty string', source: '', outsider: true },
   ] as const)('isOutsiderTurn fails closed: $label → $outsider', ({ source, outsider }) => {

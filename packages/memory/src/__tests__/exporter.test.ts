@@ -186,6 +186,9 @@ describe('createMemoryExporter', () => {
     ['non-array statements', { statements: 'nope' }],
     ['empty-string cursor', { statements: [FACT], nextAfter: '' }],
     ['non-string cursor', { statements: [FACT], nextAfter: 7 }],
+    // TASK-1213: a row's subject is read for its label before the export is
+    // built, so an unreadable row must still be refused by code, not crash.
+    ['a null row', { statements: [FACT, null] }],
   ])('refuses a malformed scan (%s) without a partial export', async (_l, page) => {
     const st = await stubExportBus();
     st.setScan(async () => page);

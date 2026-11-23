@@ -717,18 +717,20 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             //   outsider's session whatever its audience stamp (review F3:
             //   someone without access reads its replies, so a private stamp
             //   or none fails closed);
-            // - on any agent, a session whose source is outside
-            //   `AgentContextSource`, which only a host-built context can
-            //   carry (on a team agent too: TASK-1209's security review).
+            // - on any agent, a session from a source this build doesn't know
+            //   (on a team agent too: TASK-1209's security review): a value
+            //   outside `AgentContextSource`, which only a host-built context
+            //   can carry, or `'unrecognized'` (TASK-1213), which a session
+            //   store and IPC read back for a stored source they couldn't
+            //   place. `'unrecognized'` has no live path here today: the
+            //   owner comes from `sandbox:open-session`, whose schema refuses
+            //   it, and the opening turn's ctx is host-built, never read back
+            //   from a session record. It is withheld anyway, because this
+            //   follows recall's rule.
             //
             // A team agent's session from a source this build knows keeps the
             // view in every audience, an outsider's included (TASK-1209,
-            // design §4c), as its recall reads everything. That includes a
-            // stored session source a newer build wrote: session-postgres and
-            // ipc-core read it as `'external'` whatever its stamp, so it is
-            // withheld on a personal agent (the outsider rule above) and
-            // mounted on a team agent, like any outsider's (accepted; see
-            // `recallAudienceScope`, step 2).
+            // design §4c), as its recall reads everything.
             //
             // The owner's audience and source are the session's own:
             // host-stamped, and out of the runner's reach. The turn opening
@@ -1083,8 +1085,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // Every other member's key on this page, by their display name
           // (TASK-1209): only on a team agent, only in a turn whose recall
           // reads everything, only for a current member of its team, and
-          // never failing the read. Empty on a personal agent, which asks
-          // nobody.
+          // never failing the read. The caller (`ownSubject`) is asked too
+          // when another member key is on the page, only so a teammate who
+          // takes their name reads "a teammate" (TASK-1213). Empty on a
+          // personal agent, which asks nobody.
           const labels = await memberLabels(bus, ctx, access, page.map((row) => row.about), ownSubject);
 
           // Per-answer conversation ordinals (design doc "Signal" section,

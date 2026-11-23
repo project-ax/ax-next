@@ -34,8 +34,11 @@ import type { AgentContext, AgentContextSource } from '@ax/core';
  * its rows keep their conversation, and the owner's per-conversation feed
  * shows what was learned there. The residual: external threads count toward
  * the recurrence gate like any other conversation. A source this build does
- * not know is attributed to nothing, the least a row can claim. An explicit
- * switch, so a new source has to be decided here rather than fall through.
+ * not know is attributed to nothing, the least a row can claim. That includes
+ * `'unrecognized'` (TASK-1213), a stored session source the session store and
+ * IPC couldn't place: its rows are still stored, with no conversation. An
+ * explicit switch, so a new source has to be decided here rather than fall
+ * through.
  *
  * This is the STORED provenance only. The observer's batch idempotency key
  * still hashes `ctx.conversationId` itself, so two routine fires with a
@@ -58,6 +61,7 @@ export function conversationOf(
     case 'external':
       return ctx.conversationId;
     case 'routine':
+    case 'unrecognized':
       return undefined;
     default: {
       const _exhaustive: never = source;

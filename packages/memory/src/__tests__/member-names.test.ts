@@ -7,11 +7,13 @@ import {
   type AgentContextSource,
   type Logger,
 } from '@ax/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { resolveMemoryAccess, type MemoryAccess } from '../access.js';
 import {
   AUTH_GET_USER_HOOK,
   MEMBER_NAME_MAX,
+  MEMBER_NAMES_DEADLINE_MS,
   MEMBER_NAMES_FAILED_EVENT,
   memberKeyId,
   memberLabels,
@@ -28,6 +30,8 @@ import {
   engineRecord,
   eventsNamed,
   makeMemoryHarness,
+  registerMemoryAgents,
+  TEAM_ID,
   type LoggedEvent,
   type MemoryHarness,
   type MemoryHarnessOptions,
@@ -129,12 +133,66 @@ describe('member names (TASK-1209)', () => {
       expect(memberName(raw)).toBeUndefined();
     });
 
-    it.each(['You Li', 'Agent Smith', 'Ian Assistant', 'Userton', 'Mei'])(
+    it.each(['You Li', 'Agent Smith', 'Ian Assistant', 'Userton', 'Mei', 'Teammate Tina'])(
       'keeps %j: a name that only contains one of those words is still a name',
       (raw) => {
         expect(memberName(raw)).toBe(raw);
       },
     );
+
+    // TASK-1213: "a teammate" is what memory shows for a member it can't
+    // name. A member named that would pass for the fallback, so the reader
+    // couldn't tell a name from no name.
+    it.each(['a teammate', 'A Teammate', 'a-teammate', 'A  TEAMMATE.', 'ａ ｔｅａｍｍａｔｅ'])(
+      '%j is refused: it reads like "a teammate"',
+      (raw) => {
+        expect(memberName(raw)).toBeUndefined();
+      },
+    );
+
+    // TASK-1213: a member named like the agent would put their facts in the
+    // agent's own mouth. Compared word by word, as the reserved check is.
+    it.each([
+      ['Fern', 'Fern'],
+      ['fern.', 'Fern'],
+      ['ＦＥＲＮ', 'Fern'],
+      ['  FERN  ', 'Fern'],
+      ['Fern', '  fern '],
+    ])('%j is refused on an agent named %j: it reads as the agent', (raw, agent) => {
+      expect(memberName(raw, agent)).toBeUndefined();
+    });
+
+    it.each([
+      ['Fern Li', 'Fern'],
+      ['Ferns', 'Fern'],
+    ])('%j stays a name on an agent named %j', (raw, agent) => {
+      expect(memberName(raw, agent)).toBe(raw);
+    });
+
+    it('an agent name with no letter or digit refuses nothing by itself', () => {
+      expect(memberName('Bob', '\u{1F916}')).toBe('Bob');
+    });
+
+    // An agent's name may run to 128 characters, and a member's is shown cut
+    // to MEMBER_NAME_MAX. A member who copies a long agent name would be
+    // shown as its first 80 units: still the agent's name to a reader.
+    it(`a member who copies an agent name longer than ${MEMBER_NAME_MAX} units is refused`, () => {
+      const agent = 'Fern, the team helper who answers every question about the launch plan and its dates';
+      expect(agent.length).toBeGreaterThan(MEMBER_NAME_MAX);
+      expect(memberName(agent, agent)).toBeUndefined();
+      expect(memberName(` ${agent.toUpperCase()}. `, agent)).toBeUndefined();
+      // The agent's name as written still decides on its own words.
+      expect(memberName('Fern', agent)).toBe('Fern');
+    });
+
+    // And as written: a zero-width space inside the agent's name draws
+    // nothing wherever that name is shown, so a member named `Fern` still
+    // reads as an agent named Fe<ZWSP>rn. (Cleaned the way a member's name
+    // is, the agent's name would read `Fe rn`, and `Fern` would pass.)
+    it("an invisible character inside the agent's name hides nothing", () => {
+      expect(memberName('Fern', 'Fe​rn')).toBeUndefined();
+      expect(memberName('fern.', 'Fe​rn')).toBeUndefined();
+    });
   });
 
   describe('memberKeyId', () => {
@@ -198,6 +256,7 @@ describe('member names (TASK-1209)', () => {
 
     const named = (userId: string): unknown =>
       ({
+        'u-alice': { id: 'u-alice', displayName: 'Alice Jones', email: 'alice@x.test', isAdmin: false },
         'u-bob': { id: 'u-bob', displayName: 'Bob Smith', email: 'bob@x.test', isAdmin: false },
         'u-eve': { id: 'u-eve', displayName: 'Eve Example', email: 'eve@x.test', isAdmin: false },
       })[userId] ?? null;
@@ -211,7 +270,10 @@ describe('member names (TASK-1209)', () => {
       expect(memberAsked).toEqual([]);
     });
 
-    it("on a team agent, asks once per other member and names only member keys", async () => {
+    // TASK-1213: the caller is asked too, once, but only to count their name
+    // in the collision check. Their key never holds a label, even with a name
+    // nobody else holds: it reads `you` wherever it is shown.
+    it('asks once per member on the page, and the caller to count; names only other member keys', async () => {
       const logs: LoggedEvent[] = [];
       const { bus, asked, memberAsked } = authBus(named);
       const labels = await memberLabels(
@@ -221,8 +283,8 @@ describe('member names (TASK-1209)', () => {
         ['user:u-bob', 'user:u-bob', 'user:u-alice', 'acme_corp', 'user'],
         'user:u-alice',
       );
-      expect(memberAsked).toEqual(['u-bob']);
-      expect(asked).toEqual(['u-bob']);
+      expect([...memberAsked].sort()).toEqual(['u-alice', 'u-bob']);
+      expect([...asked].sort()).toEqual(['u-alice', 'u-bob']);
       expect([...labels]).toEqual([['user:u-bob', 'Bob Smith']]);
       expect(logs).toEqual([]);
     });
@@ -437,6 +499,30 @@ describe('member names (TASK-1209)', () => {
       expect(logs).toEqual([]);
     });
 
+    // TASK-1213: memory reads the agent's own name from `agents:resolve`
+    // (`MemoryAccess.agentName`), and a member who takes it reads "a
+    // teammate", like any reserved name. The others keep theirs.
+    it("a member who calls themself the agent's name reads \"a teammate\"", async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus(
+        (userId) =>
+          ({
+            'u-bob': { id: 'u-bob', displayName: 'fern' },
+            'u-carol': { id: 'u-carol', displayName: 'Carol Chen' },
+          })[userId] ?? null,
+      );
+      const labels = await memberLabels(
+        bus,
+        ctxOf(logs),
+        { ...TEAM, agentName: 'Fern' },
+        ['user:u-bob', 'user:u-carol'],
+        undefined,
+      );
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': 'Carol Chen' });
+      expect([...asked].sort()).toEqual(['u-bob', 'u-carol']);
+      expect(logs).toEqual([]);
+    });
+
     it("a member's name that only contains another's is still a name", async () => {
       const { bus } = authBus(
         (userId) =>
@@ -471,23 +557,85 @@ describe('member names (TASK-1209)', () => {
       expect(Object.fromEntries(together)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
     });
 
-    // DOCUMENTED RESIDUAL (round-2 review): `self` is never looked up, so the
-    // caller's own name never enters the collision set. In Alice's turn, Bob
-    // renamed "Alice Jones" reads "Alice Jones" beside Alice's rows, which the
-    // surfaces show as `you` (follow-up: count the caller's name as a holder).
-    it("DOCUMENTED RESIDUAL: the caller's own name is not a holder, so a member renamed to it reads as it", async () => {
-      const { bus, asked, memberAsked } = authBus(
+    // TASK-1213 (was a documented residual): the caller's own name is a
+    // holder. In Alice's turn, Bob renamed "Alice Jones" would pass for her
+    // beside her own rows, which the surfaces show as `you`. So he reads "a
+    // teammate", compared word by word, as any two members are.
+    it("the caller's own name is a holder: a member renamed to it reads \"a teammate\" in the caller's turn", async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus } = authBus(
+        (userId) =>
+          ({
+            'u-alice': { id: 'u-alice', displayName: 'Alice Jones' },
+            'u-bob': { id: 'u-bob', displayName: 'alice  jones.' },
+            'u-carol': { id: 'u-carol', displayName: 'Carol Chen' },
+          })[userId] ?? null,
+      );
+      const labels = await memberLabels(
+        bus,
+        ctxOf(logs),
+        TEAM,
+        ['user:u-alice', 'user:u-bob', 'user:u-carol'],
+        'user:u-alice',
+      );
+      expect(labels.get('user:u-bob')).toBe(TEAMMATE_TEXT);
+      expect(labels.get('user:u-carol')).toBe('Carol Chen');
+      // Counted, never shown: Alice's key reads `you` wherever it is shown.
+      expect(labels.has('user:u-alice')).toBe(false);
+      expect(logs).toEqual([]);
+    });
+
+    it("the caller's name counts even when none of the caller's own rows is on the page", async () => {
+      const { bus } = authBus(
         (userId) =>
           ({
             'u-alice': { id: 'u-alice', displayName: 'Alice Jones' },
             'u-bob': { id: 'u-bob', displayName: 'Alice Jones' },
           })[userId] ?? null,
       );
-      const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-alice', 'user:u-bob'], 'user:u-alice');
-      // Alice's key holds no label (it reads `you` where it is shown) and was never looked up.
-      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Alice Jones' });
+      const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob'], 'user:u-alice');
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+    });
+
+    // Nothing else on the page, nothing to collide with: nobody is asked.
+    it('the caller is asked only when another member key is on the page', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked, memberAsked } = authBus(named);
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-alice', 'launch_plan'], 'user:u-alice');
+      expect([...labels]).toEqual([]);
+      expect(memberAsked).toEqual([]);
+      expect(asked).toEqual([]);
+      expect(logs).toEqual([]);
+    });
+
+    // TASK-1209 row 35's per-id rule holds for the caller too: a lookup that
+    // fails leaves that one name out, and every other name stands.
+    it('a caller whose own lookup throws: the others keep their names; one warn', async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus((userId) => {
+        if (userId === 'u-alice') {
+          throw new PluginError({ code: 'store-unavailable', plugin: 'x', message: 'u-alice alice@x.test Alice' });
+        }
+        return named(userId);
+      });
+      const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-alice', 'user:u-bob'], 'user:u-alice');
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob Smith' });
+      expect([...asked].sort()).toEqual(['u-alice', 'u-bob']);
+      const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: AUTH_GET_USER_HOOK, code: 'store-unavailable' });
+      const logged = JSON.stringify(logs);
+      for (const secret of ['u-alice', 'alice@x.test', 'Alice', 'u-bob', 'Bob']) expect(logged).not.toContain(secret);
+    });
+
+    it('the caller goes through the same membership check: not answered a member, never asked by name', async () => {
+      const { bus, asked, memberAsked } = authBus(named, (input) =>
+        input.userId === 'u-alice' ? { member: false } : onTheTeam(input),
+      );
+      const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob'], 'user:u-alice');
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob Smith' });
+      expect([...memberAsked].sort()).toEqual(['u-alice', 'u-bob']);
       expect(asked).toEqual(['u-bob']);
-      expect(memberAsked).toEqual(['u-bob']);
     });
 
     it('never throws on a subject that is not a string', async () => {
@@ -499,14 +647,16 @@ describe('member names (TASK-1209)', () => {
 
     // Names follow the recall rule: a team agent's turn from a source this
     // build doesn't know reads shared rows only (it fails closed), so it is
-    // told no names either. Its members still never read as a raw id.
-    it("asks nobody in a turn from a source this build doesn't know, on a team agent", async () => {
+    // told no names either. Its members still never read as a raw id. That
+    // is one outside the type, and a stored one the session store and IPC
+    // read back as `'unrecognized'` (TASK-1213).
+    it.each(['satellite', 'unrecognized'])("asks nobody in a turn from a source this build doesn't know (%j), on a team agent", async (source) => {
       const logs: LoggedEvent[] = [];
       const { bus, asked, memberAsked } = authBus(named);
       for (const audience of ['shared', 'private', undefined] as const) {
         const labels = await memberLabels(
           bus,
-          ctxOf(logs, { source: 'satellite' as AgentContextSource, ...(audience !== undefined ? { audience } : {}) }),
+          ctxOf(logs, { source: source as AgentContextSource, ...(audience !== undefined ? { audience } : {}) }),
           TEAM,
           ['user:u-bob'],
           undefined,
@@ -528,6 +678,156 @@ describe('member names (TASK-1209)', () => {
         expect([...labels]).toEqual([['user:u-bob', 'Bob Smith']]);
       }
       expect(asked).toEqual(['u-bob', 'u-bob']);
+    });
+
+    // TASK-1213: a stalled lookup can't hold up a recall, the block or an
+    // export. The whole round races one timer, and a round that loses names
+    // nobody: a partial set of names can't be checked for collisions. The
+    // stalled tests carry a 2 s test timeout so a missing deadline fails fast.
+    describe('the deadline (TASK-1213)', () => {
+      const never = (): Promise<never> => new Promise<never>(() => {});
+      const SHORT = { deadlineMs: 20 } as const;
+
+      it(
+        'a membership check that never answers: every member reads "a teammate" by the deadline; one warn, code timeout, hook teams:is-member',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus, asked } = authBus(named, never);
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+          expect(asked).toEqual([]);
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.level).toBe('warn');
+          expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: TEAMS_IS_MEMBER_HOOK, code: 'timeout' });
+          const logged = JSON.stringify(logs);
+          for (const secret of ['u-bob', 'u-carol']) expect(logged).not.toContain(secret);
+        },
+        2_000,
+      );
+
+      it(
+        'a name lookup that never answers: nobody is named, not even a member whose name came back in time; hook auth:get-user',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus, asked } = authBus((userId) => (userId === 'u-carol' ? never() : named(userId)));
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+          expect([...asked].sort()).toEqual(['u-bob', 'u-carol']);
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: AUTH_GET_USER_HOOK, code: 'timeout' });
+          const logged = JSON.stringify(logs);
+          for (const secret of ['u-bob', 'Bob', 'u-carol', 'Carol']) expect(logged).not.toContain(secret);
+        },
+        2_000,
+      );
+
+      it(
+        'with a membership check and a name lookup both still out, the warn names the membership hook',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus } = authBus(
+            (userId) => (userId === 'u-carol' ? never() : named(userId)),
+            (input) => (input.userId === 'u-bob' ? never() : onTheTeam(input)),
+          );
+          await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'timeout' });
+        },
+        2_000,
+      );
+
+      it(
+        'a throw before the deadline is not logged as well: the timeout is the call\'s one warn',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          const { bus } = authBus(named, (input) => {
+            if (input.userId === 'u-bob') {
+              throw new PluginError({ code: 'store-unavailable', plugin: 'x', message: 'u-bob bob@x.test' });
+            }
+            return never();
+          });
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob', 'user:u-carol'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': TEAMMATE_TEXT });
+          const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+          expect(warns).toHaveLength(1);
+          expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'timeout' });
+        },
+        2_000,
+      );
+
+      // Something that WOULD name Bob happens after the deadline: his
+      // membership answers, auth is asked, auth answers. The map already
+      // returned must not move.
+      it(
+        'an answer that lands after the deadline changes nothing already returned',
+        async () => {
+          const logs: LoggedEvent[] = [];
+          let answerBob: (value: unknown) => void = () => {};
+          const late = new Promise<unknown>((resolve) => {
+            answerBob = resolve;
+          });
+          const { bus, asked } = authBus(named, (input) => (input.userId === 'u-bob' ? late : onTheTeam(input)));
+          const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], undefined, SHORT);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+          expect(asked).toEqual([]);
+
+          answerBob({ member: true });
+          await vi.waitFor(() => expect(asked).toEqual(['u-bob']), { interval: 1 });
+          await new Promise((resolve) => setImmediate(resolve));
+
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+          expect(eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT)).toHaveLength(1);
+        },
+        2_000,
+      );
+
+      it('a round that finishes in time names members as before, with no warn', async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus } = authBus(named);
+        const labels = await memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], 'user:u-alice', { deadlineMs: 1_000 });
+        expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob Smith' });
+        expect(logs).toEqual([]);
+      });
+
+      // Only `setTimeout`/`clearTimeout` are faked: the bus and its stubs
+      // answer on promises, which stay real.
+      it('the deadline is on by default', async () => {
+        expect(MEMBER_NAMES_DEADLINE_MS).toBe(2_000);
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const logs: LoggedEvent[] = [];
+          const { bus } = authBus(named, never);
+          let answer: ReadonlyMap<string, string> | undefined;
+          void memberLabels(bus, ctxOf(logs), TEAM, ['user:u-bob'], undefined).then((labels) => {
+            answer = labels;
+          });
+          await vi.advanceTimersByTimeAsync(MEMBER_NAMES_DEADLINE_MS - 1);
+          expect(answer).toBeUndefined();
+          await vi.advanceTimersByTimeAsync(1);
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(answer === undefined ? undefined : Object.fromEntries(answer)).toEqual({ 'user:u-bob': TEAMMATE_TEXT });
+          expect(eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT)).toHaveLength(1);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      // The deadline's timer is cleared the moment the round wins, so a
+      // name lookup leaves nothing behind it.
+      it('a round that answers in time leaves no timer running', async () => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+          const { bus } = authBus(named);
+          const labels = await memberLabels(bus, ctxOf([]), TEAM, ['user:u-bob'], undefined);
+          expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': 'Bob Smith' });
+          expect(vi.getTimerCount()).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
   });
 });
@@ -578,8 +878,28 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
       teal: 'you',
       Nightjar: 'launch plan',
     });
-    expect(h.memberCalls).toEqual([BOB]);
-    expect(h.authCalls).toEqual([BOB]);
+    // Alice is asked too, only to count her name (TASK-1213).
+    expect([...h.memberCalls].sort()).toEqual([ALICE, BOB].sort());
+    expect([...h.authCalls].sort()).toEqual([ALICE, BOB].sort());
+  });
+
+  // TASK-1213: the caller's own name is a holder, so a teammate who takes it
+  // can't pass for the person talking, whose own rows read `you`.
+  it("in a member's own turn, a teammate renamed to the caller's name reads \"a teammate\"", async () => {
+    const h = await makeHarness({
+      agent: TEAM_AGENT,
+      authUser: authOver({ ...PEOPLE, [BOB]: { displayName: 'ALICE JONES', email: 'bob@x.test' } }),
+    });
+    await seedTeam(h);
+    const aliceTurn = h.ctx();
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({
+      Boston: TEAMMATE_TEXT,
+      teal: 'you',
+      Nightjar: 'launch plan',
+    });
+    const tool = await recallTool(h, aliceTurn, 'Boston');
+    expect(tool).toContain('a teammate lives in: Boston');
+    expect(tool).not.toMatch(/alice jones/i);
   });
 
   it('without auth:get-user, a teammate reads "a teammate"', async () => {
@@ -614,6 +934,25 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
     const tool = await recallTool(h, outsider, 'teal');
     expect(tool).toContain('Alice Jones favorite color: teal');
     expect(tool).not.toContain('| user favorite color');
+  });
+
+  // TASK-1213: a member renamed to the agent's own name, in any case or
+  // spacing, would read as the agent talking about itself.
+  it('a teammate named like the agent reads "a teammate"', async () => {
+    const h = await makeHarness({
+      agent: { ...TEAM_AGENT, displayName: 'Fern' },
+      authUser: authOver({ ...PEOPLE, [BOB]: { displayName: 'fern.', email: 'bob@x.test' } }),
+    });
+    await seedTeam(h);
+    const aliceTurn = h.ctx();
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({
+      Boston: TEAMMATE_TEXT,
+      teal: 'you',
+      Nightjar: 'launch plan',
+    });
+    const tool = await recallTool(h, aliceTurn, 'Boston');
+    expect(tool).toContain('a teammate lives in: Boston');
+    expect(tool).not.toContain('fern.');
   });
 
   it('a teammate whose name reads as "you" reads "a teammate"', async () => {
@@ -735,8 +1074,9 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
       await seedTeam(h);
       h.teamMembers.delete(BOB);
       expect(aboutTexts(await h.recall({}, h.ctx())).Boston).toBe(TEAMMATE_TEXT);
-      expect(h.memberCalls).toEqual([BOB]);
-      expect(h.authCalls).toEqual([]);
+      // Alice, the caller, is still a member: asked by name, only to count it.
+      expect([...h.memberCalls].sort()).toEqual([ALICE, BOB].sort());
+      expect(h.authCalls).toEqual([ALICE]);
     });
 
     it('without teams:is-member nobody is named, auth is never asked, and the recall answers', async () => {
@@ -776,6 +1116,42 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
       expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'store-unavailable' });
       const logged = JSON.stringify(h.logs);
       for (const secret of [BOB, 'bob@x.test', 'Bob Smith']) expect(logged).not.toContain(secret);
+    });
+  });
+});
+
+describe("the agent's own name (TASK-1213)", () => {
+  const aliceCtx = (): AgentContext =>
+    makeAgentContext({
+      sessionId: 's',
+      agentId: 'agent-1',
+      userId: ALICE,
+      workspace: { rootPath: '/tmp' },
+      logger: capturingLogger([]),
+    });
+
+  /** `resolveMemoryAccess` over a bare bus whose `agents:resolve` answers as `agent` says. */
+  async function accessFor(agent: Parameters<typeof registerMemoryAgents>[1]): Promise<MemoryAccess> {
+    const bus = new HookBus();
+    registerMemoryAgents(bus, agent);
+    return resolveMemoryAccess(bus, aliceCtx());
+  }
+
+  // Memory already asks `agents:resolve` before any read, and its answer
+  // carries the agent's display name. A team agent keeps it, to refuse a
+  // member named like the agent. A personal agent has no teammates to name.
+  it("resolveMemoryAccess carries a team agent's display name as agentName; a personal agent carries none", async () => {
+    expect(await accessFor({ visibility: 'team', displayName: 'Fern' })).toEqual({
+      userId: ALICE,
+      visibility: 'team',
+      teamId: TEAM_ID,
+      agentName: 'Fern',
+    });
+    // An answer with no display name: nothing to compare with, so none is carried.
+    expect(await accessFor({ visibility: 'team' })).toEqual({ userId: ALICE, visibility: 'team', teamId: TEAM_ID });
+    expect(await accessFor({ visibility: 'personal', displayName: 'Fern' })).toEqual({
+      userId: ALICE,
+      visibility: 'personal',
     });
   });
 });
