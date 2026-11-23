@@ -37,20 +37,22 @@ import type { PermissionIn, SkillReach } from './turn-registry.js';
  *       2. `host-grants:grant` with `{ ownerUserId, agentId, host }`: the
  *          ctx's user and agent (the prompt's, which the gate re-proved),
  *          never the click's and never the agent the proxy answered with.
- *          It keeps the host on that agent's allowed sites for that person
- *          (the web app's "Always for this agent"; Settings › Allowed sites
- *          shows it, and removes it), so the agent's later sessions reach it
- *          too. It runs even when the session has already ended: a prompt
- *          lives a day, and the click is still the asker's. Nothing is kept
- *          unless step 1 answered.
+ *          It keeps the host on that agent's allowed sites, added by that
+ *          person (the web app's "Always for this agent"), so the agent's
+ *          later sessions reach it too. It runs even when the session has
+ *          already ended: a prompt lives a day, and the click is still the
+ *          asker's. Nothing is kept unless step 1 answered.
  *
  *       add-host refuses (forbidden, invalid-host)  → promptClosed (logged by code)
  *       add-host's answer can't be read             → promptClosed (logged: bad-response)
  *       added (true or false), then kept            → hostAllowed
  *       added, but not kept: no host-grants:grant,
- *       or it refuses (grant-limit, invalid-host,
- *       missing-field, logged by code), or its
- *       answer can't be read (logged: bad-response) → hostAllowedForNow, or hostEnded once ended
+ *       or it refuses (invalid-host, missing-field),
+ *       or its answer fails its shape (invalid-return),
+ *       or can't be read (bad-response), all logged
+ *       by code                                     → hostAllowedForNow, or hostEnded once ended
+ *       or the agent's list is full (grant-limit,
+ *       logged by code)                             → hostAllowedListFull, or hostEndedListFull once ended
  *       anything else, at either step               → thrown to the gate: "try again"
  *
  *     Every line settles the prompt, and none says "from now on" unless the
@@ -65,9 +67,14 @@ import type { PermissionIn, SkillReach } from './turn-registry.js';
  *
  * Known gaps: in a connected channel the prompt shows the host to everyone
  * there (the web app shows it to the person alone), and whether Slack links
- * a domain-shaped plain_text is unmeasured (TASK-1097's walk). Allowed sites
- * are per person and agent, so on a team agent an Allow is kept for the
- * person who clicked: a team-mate's own turn is still asked.
+ * a domain-shaped plain_text is unmeasured (TASK-1097's walk).
+ *
+ * The site is the agent's (TASK-1212), not the clicker's. On a team agent an
+ * Allow covers every member's later sessions, and an outsider's turn, which
+ * runs as its requester, reaches it too. This widens a capability on
+ * purpose: it is why the prompt says "Once allowed, it stays allowed". Its
+ * owners and team admins see it, and remove it, in the agent's settings. On
+ * a personal agent nothing is different: only its owner can add one.
  *
  * A SKILL: a catalog skill the agent asked to use (`request_capability`'s
  * card, kind `skill`), asked about in a DM or an attended turn after its
@@ -159,8 +166,12 @@ export function hostSubject(host: string): string | null {
 
 /** The proxy's refusals that close a prompt for good: not the asker's session, or a host it won't take. */
 const REFUSALS: ReadonlySet<string> = new Set(['forbidden', 'invalid-host']);
-/** The allowed sites' refusals, which trying again can't change: the list is full, or a host or key it won't take. */
-const REMEMBER_REFUSALS: ReadonlySet<string> = new Set(['grant-limit', 'invalid-host', 'missing-field']);
+/**
+ * The allowed sites' refusals, which trying again can't change: the list is full, or a host or key it won't take.
+ * `invalid-return` is the bus saying the answer failed its shape AFTER the handler ran (core hook-bus.ts), so the
+ * site may have been kept: never "try again", and never "from now on".
+ */
+const REMEMBER_REFUSALS: ReadonlySet<string> = new Set(['grant-limit', 'invalid-host', 'missing-field', 'invalid-return']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -214,7 +225,11 @@ export function createHostAnswer(d: { bus: HookBus }): SubjectAnswer {
         host: subject.host,
       });
     } catch (err) {
-      if (err instanceof PluginError && REMEMBER_REFUSALS.has(err.code)) return failed('remember', err.code, notKept);
+      if (err instanceof PluginError && REMEMBER_REFUSALS.has(err.code)) {
+        // A full list says so: "for now" alone would invite a retry that can't stick.
+        const full: Answer = { line: added ? COPY.hostAllowedListFull : COPY.hostEndedListFull, settle: true };
+        return failed('remember', err.code, err.code === 'grant-limit' ? full : notKept);
+      }
       throw err;
     }
     // `created: false` is a host already kept: kept all the same.
