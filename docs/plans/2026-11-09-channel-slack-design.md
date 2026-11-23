@@ -59,7 +59,8 @@ the owner chose to put there.
     blocked website's prompt keeps the site on the agent's own allowed sites
     (`@ax/host-grants`), so the agent's later sessions can reach it, not just
     the one that asked. On a personal agent the list is that agent's owner's,
-    who sees and removes it in Settings › Sites. On a team agent one Allow
+    who sees and removes it in Settings › Sites, or in the agent's settings
+    › Connectors. On a team agent one Allow
     covers every member's later sessions of that agent, outsider turns and
     routine runs included; every member sees the list in the agent's settings
     under Connectors, and only its owners and team admins remove sites there
@@ -1336,8 +1337,9 @@ Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory ke
        `host-grants:grant` with the prompt's user, agent and host (the web
        app's "Always for this agent"). The host is kept even when the session
        has already ended, so the line reads "Allowed from now on". If it
-       can't be kept (no `host-grants:grant`, an answer that can't be read, or
-       a refusal: `invalid-host`, `missing-field`, `invalid-return`), the line
+       can't be kept (no `host-grants:grant`, an answer that can't be read, a
+       refusal: `invalid-host`, `missing-field`, or `invalid-return`, where it
+       may in fact have been kept but we can't confirm it), the line
        says "Allowed for now" while the session lives, or "I'd already
        finished working on that" once it has ended.
        A full list (256 distinct sites per agent) says so instead of "Allowed
@@ -1599,7 +1601,8 @@ connectors. The protections are:
   widens a capability on purpose. Owners and team admins see and remove sites
   in the agent's settings > Connectors. A late Allow (a day-old prompt, or a
   web "Always" after the session ended) is kept, and its "now allowed" line
-  arrives at the agent's next fresh session. A teammate's session that is
+  arrives at the agent's next fresh session (an outsider's turn reaches the
+  site but isn't told, per TASK-1091). A teammate's session that is
   already running learns of a new site only at its next fresh spawn. A web
   "Always" clicked mid-turn and then idle-reaped before the next message gets
   no line.

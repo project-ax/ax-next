@@ -17,4 +17,4 @@ Settings > Sites now shows personal agents only. Team agents are managed in thei
 Smaller fixes:
 
 - The web app's "Always" now sticks after a conversation went quiet, and says when it couldn't keep the site.
-- A site allowed while the agent wasn't running reaches its next reply, with the usual "now allowed" note.
+- A site allowed while the agent wasn't running reaches its next reply, with the usual "now allowed" note. (An outsider's turn can reach the site too, but we don't tell the agent about it there.)
