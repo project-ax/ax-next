@@ -719,7 +719,7 @@ describe('AgentRail — the side panel shell', () => {
 describe('AgentSettings — "Granted by you"', () => {
   it('is a separate group, sourced from the grant record, with revoke', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     renderConnectorsSettings();
     await openGrants();
@@ -730,7 +730,7 @@ describe('AgentSettings — "Granted by you"', () => {
 
   it('the Revoke button revokes — and re-reads rather than removing the row itself', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     revokeMock.mockResolvedValue({ revoked: true });
     renderConnectorsSettings();
@@ -760,7 +760,7 @@ describe('AgentSettings — "Granted by you"', () => {
 
   it('reports "already gone" as a refusal, not as a success', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     revokeMock.mockResolvedValue({ revoked: false });
     renderConnectorsSettings();
@@ -772,7 +772,7 @@ describe('AgentSettings — "Granted by you"', () => {
 
   it('says nothing changed when the revoke itself failed', async () => {
     railMock.mockResolvedValue(
-      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false } }),
+      rail({ grants: { status: 'ok', rows: [siteGrant()], incomplete: false, shared: false } }),
     );
     revokeMock.mockRejectedValue(new Error('boom'));
     renderConnectorsSettings();
@@ -789,6 +789,7 @@ describe('AgentSettings — "Granted by you"', () => {
           status: 'ok',
           rows: [siteGrant({ revocable: false })],
           incomplete: false,
+          shared: false,
         },
       }),
     );

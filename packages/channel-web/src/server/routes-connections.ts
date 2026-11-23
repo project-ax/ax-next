@@ -37,7 +37,12 @@ interface AgentSkillAttachment {
   credentialBindings: Record<string, string>;
 }
 interface AgentsResolveOutput {
-  agent: { id: string; skillAttachments: AgentSkillAttachment[] };
+  agent: {
+    id: string;
+    skillAttachments: AgentSkillAttachment[];
+    /** Optional: a duck-typed read. Only an explicit `personal` counts as one. */
+    visibility?: 'personal' | 'team';
+  };
 }
 
 interface SkillsListInput {
@@ -61,18 +66,19 @@ interface SkillsListOutput {
   skills: SkillSummaryLite[];
 }
 
-// TASK-54 — host-grants (per-(user, agent) "always allow" sites). Host-internal
-// hooks shipped by @ax/host-grants (TASK-44); this CSRF-gated route is the
-// settings consumer. Conditionally called (optionalCalls + hasService) so a
-// preset without @ax/host-grants degrades to empty.
+// TASK-54 — host-grants ("always allow" sites). Host-internal hooks shipped by
+// @ax/host-grants (TASK-44); this CSRF-gated route is the settings consumer.
+// Conditionally called (optionalCalls + hasService) so a preset without
+// @ax/host-grants degrades to empty. TASK-1212 — an agent's sites belong to
+// the agent: `list` and `revoke` are keyed by agent alone, and host-grants
+// checks no ACL, so these routes do.
 interface HostGrantsListInput {
-  ownerUserId: string;
   agentId: string;
 }
 interface HostGrantsListOutput {
   hosts: Array<{ host: string; grantedAt: string }>;
 }
-// The Settings one-list view: every grant the user owns across ALL their agents.
+// The Settings one-list view: every site the user ADDED, across all their agents.
 interface HostGrantsListForUserInput {
   ownerUserId: string;
 }
@@ -80,7 +86,6 @@ interface HostGrantsListForUserOutput {
   grants: Array<{ host: string; agentId: string; grantedAt: string }>;
 }
 interface HostGrantsRevokeInput {
-  ownerUserId: string;
   agentId: string;
   host: string;
 }
@@ -221,6 +226,26 @@ async function resolveAgentOr404(
     res.status(500).json({ error: 'internal' });
     return null;
   }
+}
+
+/**
+ * TASK-1212 — Settings › Sites adds and removes PERSONAL agents' sites only.
+ * Anything else is 403 `team-agent`, answered here and `true` returned.
+ *
+ * A site is the agent's: on a team agent one Remove takes it away from every
+ * member, and host-grants checks no ACL. On a personal agent, agents:resolve
+ * has already admitted its owner and nobody else, so "personal" is the whole
+ * check. A team agent's sites are managed in that agent's settings, behind
+ * its manage check. An agent that does not say it is personal is refused too:
+ * "personal" is the one answer that skips a check, so it is never assumed.
+ */
+function refusedUnlessPersonal(
+  agent: AgentsResolveOutput['agent'],
+  res: RouteResponse,
+): boolean {
+  if (agent.visibility === 'personal') return false;
+  res.status(403).json({ error: 'team-agent' });
+  return true;
 }
 
 export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentContext }) {
@@ -404,7 +429,11 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
     // TASK-54 — Allowed-sites panel (design P3/P6/P7.3). The Settings mirror of
     // the reactive wall's "Always for this agent" choice (TASK-44). Same posture
     // as the connections reads: auth → agents:resolve ACL (404, no leak) →
-    // host-grants:* with a SERVER-FORCED ownerUserId. host-grants:* are
+    // host-grants:*. A site is the AGENT's (TASK-1212): list and revoke are
+    // keyed by agent, and grant's ownerUserId (SERVER-FORCED from auth) records
+    // who added it. host-grants checks no ACL, so add and remove here are for
+    // personal agents only (403 `team-agent` otherwise; a team agent's sites are
+    // managed in its settings, behind its manage check). host-grants:* are
     // host-internal hooks (the untrusted runner can never grant/revoke its own
     // persistent egress — same reasoning as proxy:add-host); this CSRF-gated
     // route is the only settings caller. Conditionally called + hasService-gated:
@@ -421,8 +450,9 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
      *
      * Security (invariant #5; the one widening surface here): identity is the
      * AUTHENTICATED user (auth:require-user → 401); the agent ACL is enforced
-     * (agents:resolve → 404, no existence leak); ownerUserId is SERVER-FORCED
-     * from auth — never the body (no cross-user grant / IDOR). The browser-
+     * (agents:resolve → 404, no existence leak); a personal agent only (403
+     * `team-agent`, TASK-1212); ownerUserId is SERVER-FORCED from auth — never
+     * the body (no cross-user grant / IDOR). The browser-
      * supplied host is UNTRUSTED — the @ax/host-grants store is the authoritative
      * validator (assertValidHost: exact-match hostname only, no wildcards/ports/
      * schemes) and cap (256/agent); a client field is convenience, never the gate.
@@ -442,6 +472,8 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
       // ACL: a not-accessible agent → 404 (no cross-user grant, no leak).
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
+      // Before any host-grants call: a team agent's sites are not this page's.
+      if (refusedUnlessPersonal(agent, res)) return;
 
       let host: string;
       try {
@@ -490,11 +522,16 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
 
     /**
      * GET /api/chat/allowed-sites — the flat, all-agents view. Returns every
-     * grant the session user owns across ALL their agents (each row carries its
-     * agentId), so the Settings panel can list each host once and show which
-     * agents it applies to. Owner-scoped at the store; no per-agent ACL needed
-     * here because the list only ever contains the caller's OWN grants. Degrades
-     * to an empty list when @ax/host-grants isn't loaded.
+     * site the session user ADDED, across ALL their agents (each row carries
+     * its agentId), so the Settings panel can list each host once and show
+     * which agents it applies to. Owner-scoped at the store; no per-agent ACL
+     * needed here because the list only ever contains the caller's OWN adds.
+     * Degrades to an empty list when @ax/host-grants isn't loaded.
+     *
+     * TASK-1212 — a site is the agent's, so on a team agent these rows are not
+     * that agent's list: a teammate may have added others. Settings › Sites
+     * shows the personal agents' rows only, where the owner is the only one
+     * who can add, so their adds ARE the agent's list.
      */
     async listAllowedSitesForUser(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -511,7 +548,12 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
       res.status(200).json({ grants } satisfies AllAllowedSitesResponse);
     },
 
-    /** GET /api/chat/allowed-sites/:agentId */
+    /**
+     * GET /api/chat/allowed-sites/:agentId — the agent's allowed sites
+     * (TASK-1212: on a team agent, everyone's adds). Anyone agents:resolve
+     * admits may read them, the same list the agent's settings show every
+     * member: each one is reach their own runs of the agent have.
+     */
     async listAllowedSites(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
@@ -528,7 +570,7 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
         const r = await bus.call<HostGrantsListInput, HostGrantsListOutput>(
           'host-grants:list',
           initCtx,
-          { ownerUserId: userId, agentId },
+          { agentId },
         );
         hosts = r.hosts;
       }
@@ -543,7 +585,13 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
      * at open). The current live session keeps the host until it ends — there is
      * no live-removal hook, and absence fails SAFE (a stale live host dies with
      * the session, never widens egress). Idempotent: 204 whether or not a row
-     * existed (and whether or not @ax/host-grants is present). */
+     * existed (and whether or not @ax/host-grants is present).
+     *
+     * TASK-1212 — the revoke takes the site off the AGENT, for everyone who
+     * uses it, whoever added it. So this route removes a personal agent's
+     * sites only (its owner is the only one agents:resolve admits) and answers
+     * 403 `team-agent` for anything else: a team agent's site is for its
+     * owners and team admins to remove, in that agent's settings. */
     async revokeAllowedSite(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
@@ -556,12 +604,14 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
       // ACL: a not-accessible agent → 404 (no cross-user revoke, no leak).
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
+      // Before any host-grants call: on a team agent this would remove the
+      // site for the whole team, and this route has no manage check.
+      if (refusedUnlessPersonal(agent, res)) return;
       if (bus.hasService('host-grants:revoke')) {
-        // ownerUserId SERVER-FORCED from auth — never from the request.
         await bus.call<HostGrantsRevokeInput, HostGrantsRevokeOutput>(
           'host-grants:revoke',
           initCtx,
-          { ownerUserId: userId, agentId, host },
+          { agentId, host },
         );
       }
       res.status(204).end();

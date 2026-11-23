@@ -114,6 +114,14 @@ interface AgentRecord {
   mcpConfigIds: string[];
   skillAttachments: Array<{ skillId: string }>;
   connectorAttachments: string[];
+  /**
+   * `personal` unless a test says otherwise: every agent this file was written
+   * about is its owner's own. `undefined` is an alternate impl that carries
+   * less (TASK-1212 treats it as "not known to be personal").
+   */
+  visibility?: 'personal' | 'team' | undefined;
+  /** A team agent's members. `agents:resolve` admits exactly these. */
+  teamMembers?: string[];
 }
 
 interface StoredDecisionLike {
@@ -175,9 +183,24 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   /** What the route last told the policy plugin this agent cannot reach. */
   let lastOutOfReach: string[] | null;
   let ruledTools: Map<string, { verdict: string; ruleId: string }>;
+  /**
+   * Keyed by agent id ALONE (TASK-1212): an agent's allowed sites belong to
+   * the agent, whoever added them, so there is no reader in the key.
+   */
   let siteGrants: Map<string, Array<{ host: string; grantedAt: string }>>;
+  /** Every input `host-grants:list` was handed, in order. */
+  let siteListInputs: unknown[];
   let wallGrants: Map<string, Array<{ kind: string; value: string }>>;
   let revoked: unknown[];
+  /** Who `auth:require-user` says is asking. A test reassigns it to switch callers. */
+  let caller: { id: string; isAdmin: boolean } | null;
+  /**
+   * `agents:can-manage-connectors`' answer, per asking userId. An `Error` is
+   * thrown; anything else is returned exactly as given, junk included.
+   */
+  let manageAnswers: Map<string, unknown>;
+  /** Every input `agents:can-manage-connectors` was handed, in order. */
+  let manageCalls: unknown[];
   let decisions: StoredDecisionLike[];
   /** Every input `decisions:count` was handed this render, in order. */
   let countCalls: Array<Record<string, unknown>>;
@@ -196,16 +219,50 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       mcpConfigIds: [],
       skillAttachments: [],
       connectorAttachments: [],
+      visibility: 'personal',
       ...over,
     };
   }
 
   function registerAuth(user: { id: string; isAdmin: boolean } | null): void {
+    caller = user;
     bus.registerService('auth:require-user', 'auth', async () => {
-      if (user === null) {
+      if (caller === null) {
         throw new PluginError({ code: 'unauthenticated', plugin: 'auth', message: 'no' });
       }
-      return { user };
+      return { user: caller };
+    });
+  }
+
+  /**
+   * @ax/agents' ACL in miniature: a personal agent admits its owner, a team
+   * agent its members, and everyone else gets the same `not-found`.
+   */
+  function registerResolve(): void {
+    bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
+      const { agentId, userId } = i as { agentId: string; userId: string };
+      const row = agents.get(agentId);
+      const admitted =
+        row !== undefined &&
+        (row.visibility === 'team'
+          ? (row.teamMembers ?? []).includes(userId)
+          : row.ownerId === userId);
+      if (!admitted) throw notFound();
+      return { agent: row };
+    });
+  }
+
+  /**
+   * `agents:can-manage-connectors`, answering per caller from
+   * `manageAnswers`. Every ask is recorded, so "the check was never asked" is
+   * something a test can assert rather than assume.
+   */
+  function registerManage(): void {
+    bus.registerService('agents:can-manage-connectors', 'agents', async (_c, i: unknown) => {
+      manageCalls.push(i);
+      const answer = manageAnswers.get((i as { actor: { userId: string } }).actor.userId);
+      if (answer instanceof Error) throw answer;
+      return answer;
     });
   }
 
@@ -294,8 +351,9 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
 
   function registerGrants(): void {
     bus.registerService('host-grants:list', 'host-grants', async (_c, i: unknown) => {
-      const { ownerUserId, agentId } = i as { ownerUserId: string; agentId: string };
-      return { hosts: siteGrants.get(`${ownerUserId}/${agentId}`) ?? [] };
+      siteListInputs.push(i);
+      const { agentId } = i as { agentId: string };
+      return { hosts: siteGrants.get(agentId) ?? [] };
     });
     bus.registerService('host-grants:revoke', 'host-grants', async (_c, i: unknown) => {
       revoked.push(i);
@@ -372,18 +430,16 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     lastOutOfReach = null;
     ruledTools = new Map();
     siteGrants = new Map();
+    siteListInputs = [];
     wallGrants = new Map();
     revoked = [];
+    manageAnswers = new Map();
+    manageCalls = [];
     decisions = [];
     countCalls = [];
     listCalls = 0;
 
-    bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
-      const { agentId, userId } = i as { agentId: string; userId: string };
-      const row = agents.get(agentId);
-      if (row === undefined || row.ownerId !== userId) throw notFound();
-      return { agent: row };
-    });
+    registerResolve();
     registerAuth({ id: 'u1', isAdmin: false });
   });
 
@@ -1237,12 +1293,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   });
 
   function beforeEachBusReset(): void {
-    bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
-      const { agentId, userId } = i as { agentId: string; userId: string };
-      const row = agents.get(agentId);
-      if (row === undefined || row.ownerId !== userId) throw notFound();
-      return { agent: row };
-    });
+    registerResolve();
     registerAuth({ id: 'u1', isAdmin: false });
   }
 
@@ -1253,10 +1304,12 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   it('separates "Granted by you" from built-in rules', async () => {
     registerPolicy();
     registerGrants();
-    siteGrants.set('u1/a1', [
+    siteGrants.set('a1', [
       { host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' },
     ]);
     const body = (await railFor()).body as AgentRailData;
+    // A personal agent's group is its owner's alone.
+    expect(body.grants.shared).toBe(false);
     expect(body.grants.rows.map((g) => g.source)).toEqual(['grant:api.linear.app']);
     expect(body.grants.rows[0]).toMatchObject({
       verdict: 'allow',
@@ -1305,7 +1358,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     registerPolicy();
     registerGrants();
     agents.set('a1', agent({ id: 'a1', connectorAttachments: ['linear'] }));
-    siteGrants.set('u1/a1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+    siteGrants.set('a1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
     wallGrants.set('u1/a1//linear', [{ kind: 'host', value: 'api.linear.app' }]);
 
     const body = (await railFor()).body as AgentRailData;
@@ -1654,9 +1707,8 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     );
     expect(captured.statusCode).toBe(200);
     expect(captured.body).toEqual({ revoked: true });
-    expect(revoked).toEqual([
-      { ownerUserId: 'u1', agentId: 'a1', host: 'api.linear.app' },
-    ]);
+    // The agent and the host, nothing else: a site is the agent's (TASK-1212).
+    expect(revoked).toEqual([{ agentId: 'a1', host: 'api.linear.app' }]);
   });
 
   it('revokes an approved capability against its own subject', async () => {
@@ -1722,6 +1774,217 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       res,
     );
     expect(captured.statusCode).toBe(503);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-1212 — an agent's allowed sites belong to the agent. On a team agent
+  // every member reads the same list, and only whoever may manage the agent's
+  // connectors (its team admins, a workspace admin on the team) can take a
+  // site back. `host-grants:revoke` checks no ACL of its own, so the route's
+  // check is the only thing between a plain member and the whole team's site.
+  // -------------------------------------------------------------------------
+
+  /** Team agent `t1`, these members, one site somebody on the team allowed. */
+  function teamAgentWithSite(members: string[]): void {
+    agents.set(
+      't1',
+      agent({ id: 't1', ownerId: 'team-1', visibility: 'team', teamMembers: members }),
+    );
+    siteGrants.set('t1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+  }
+
+  async function revokeSite(agentId: string): Promise<CapturedRes> {
+    const { res, captured } = mkRes();
+    await handlers().revokeGrant(
+      mkReq({ agentId }, { ref: { grant: 'site', host: 'api.linear.app' } }),
+      res,
+    );
+    return captured;
+  }
+
+  it("a team agent's sites: every member reads the agent's list", async () => {
+    registerGrants();
+    teamAgentWithSite(['u1', 'u2']);
+    siteGrants.set('t1', [
+      { host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' },
+      { host: 'status.example.com', grantedAt: '2026-08-15T09:00:00.000Z' },
+    ]);
+
+    // u1 is a plain member. Whoever added these, they are what the agent
+    // reaches on every member's runs, so u1 is shown all of them.
+    const asMember = (await railFor('t1')).body as AgentRailData;
+    expect(asMember.grants.status).toBe('ok');
+    expect(asMember.grants.shared).toBe(true);
+    expect(asMember.grants.rows.map((g) => g.label)).toEqual([
+      'api.linear.app',
+      'status.example.com',
+    ]);
+
+    caller = { id: 'u2', isAdmin: false };
+    const asTeammate = (await railFor('t1')).body as AgentRailData;
+    expect(asTeammate.grants.rows.map((g) => g.label)).toEqual([
+      'api.linear.app',
+      'status.example.com',
+    ]);
+
+    // The key is the agent and nothing else. A reader's id riding along would
+    // be a field the store ignores, and a reason to think it narrows the list.
+    expect(siteListInputs).toEqual([{ agentId: 't1' }, { agentId: 't1' }]);
+  });
+
+  it("a plain member gets no Revoke on a team agent's site; a team admin does", async () => {
+    registerGrants();
+    registerManage();
+    teamAgentWithSite(['u1', 'u2', 'u3']);
+    manageAnswers.set('u1', { allowed: false }); // a plain member
+    manageAnswers.set('u2', { allowed: true }); // the team's admin
+    manageAnswers.set('u3', { allowed: true }); // a workspace admin on the team
+
+    const plain = (await railFor('t1')).body as AgentRailData;
+    expect(plain.grants.rows[0]).toMatchObject({ label: 'api.linear.app', revocable: false });
+
+    caller = { id: 'u2', isAdmin: false };
+    const teamAdmin = (await railFor('t1')).body as AgentRailData;
+    expect(teamAdmin.grants.rows[0]).toMatchObject({ label: 'api.linear.app', revocable: true });
+
+    caller = { id: 'u3', isAdmin: true };
+    const workspaceAdmin = (await railFor('t1')).body as AgentRailData;
+    expect(workspaceAdmin.grants.rows[0]?.revocable).toBe(true);
+
+    // Asked as the person themselves, admin bit included: the hook decides
+    // what an admin may do, never this route.
+    expect(manageCalls).toEqual([
+      { actor: { userId: 'u1', isAdmin: false }, agentId: 't1' },
+      { actor: { userId: 'u2', isAdmin: false }, agentId: 't1' },
+      { actor: { userId: 'u3', isAdmin: true }, agentId: 't1' },
+    ]);
+  });
+
+  it("a personal agent's owner can revoke, and the manage check is never asked", async () => {
+    registerGrants();
+    registerManage();
+    // It would say no if asked. It must not be asked: agents:resolve already
+    // proved the caller owns this agent, and nobody else can reach it.
+    manageAnswers.set('u1', { allowed: false });
+    siteGrants.set('a1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+
+    const body = (await railFor('a1')).body as AgentRailData;
+    expect(body.grants.shared).toBe(false);
+    expect(body.grants.rows[0]?.revocable).toBe(true);
+
+    const captured = await revokeSite('a1');
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ revoked: true });
+    expect(revoked).toEqual([{ agentId: 'a1', host: 'api.linear.app' }]);
+    expect(manageCalls).toEqual([]);
+  });
+
+  it('on a team agent, a missing or throwing manage check means no Revoke', async () => {
+    registerGrants();
+    teamAgentWithSite(['u1']);
+
+    // No manage check in this deployment at all.
+    let body = (await railFor('t1')).body as AgentRailData;
+    expect(body.grants).toMatchObject({ status: 'ok', shared: true });
+    expect(body.grants.rows.map((g) => [g.label, g.revocable])).toEqual([
+      ['api.linear.app', false],
+    ]);
+
+    registerManage();
+    for (const answer of [new Error('agents down'), { allowed: 'yes' }, undefined]) {
+      manageAnswers.set('u1', answer);
+      body = (await railFor('t1')).body as AgentRailData;
+      // The sites were read fine. Only who may take them back is unknown, and
+      // unknown hides the control. It never fails the section.
+      expect(body.grants.status).toBe('ok');
+      expect(body.grants.rows.map((g) => [g.label, g.revocable])).toEqual([
+        ['api.linear.app', false],
+      ]);
+    }
+  });
+
+  it('an agent that does not say it is personal is never treated as one', async () => {
+    // An alternate agents impl that carries no visibility. "Personal" is the
+    // one answer that skips the manage check, so it has to be stated, never
+    // assumed from silence.
+    registerGrants();
+    agents.set('a1', agent({ id: 'a1', visibility: undefined }));
+    siteGrants.set('a1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+
+    const body = (await railFor('a1')).body as AgentRailData;
+    expect(body.grants.shared).toBe(false);
+    expect(body.grants.rows[0]?.revocable).toBe(false);
+
+    const captured = await revokeSite('a1');
+    expect(captured.statusCode).not.toBe(200);
+    expect(revoked).toEqual([]);
+  });
+
+  it("a plain member's revoke of a team agent's site is 403 and nothing is removed", async () => {
+    registerGrants();
+    registerManage();
+    teamAgentWithSite(['u1', 'u2']);
+    manageAnswers.set('u1', { allowed: false });
+
+    const captured = await revokeSite('t1');
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'forbidden' });
+    expect(revoked).toEqual([]);
+    expect(manageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: false }, agentId: 't1' }]);
+
+    // Someone outside the team never gets as far as the question.
+    caller = { id: 'u9', isAdmin: false };
+    const outsider = await revokeSite('t1');
+    expect(outsider.statusCode).toBe(404);
+    expect(revoked).toEqual([]);
+    expect(manageCalls).toHaveLength(1);
+  });
+
+  it("a team admin's revoke takes the site off the agent: host-grants:revoke({ agentId, host })", async () => {
+    registerGrants();
+    registerManage();
+    teamAgentWithSite(['u1', 'u2']);
+    manageAnswers.set('u2', { allowed: true });
+    caller = { id: 'u2', isAdmin: false };
+
+    const captured = await revokeSite('t1');
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ revoked: true });
+    // Exactly the agent and the host. No adder's id: the site goes for
+    // everyone on the team, whoever added it.
+    expect(revoked).toEqual([{ agentId: 't1', host: 'api.linear.app' }]);
+  });
+
+  it("on a team agent, a revoke the manage check can't vouch for removes nothing", async () => {
+    registerGrants();
+    teamAgentWithSite(['u1']);
+
+    // No manage check in this deployment: nobody can be shown to manage the
+    // agent. That is "unavailable", the same answer as having no revoke at
+    // all, and never "forbidden" (TASK-803).
+    const missing = await revokeSite('t1');
+    expect(missing.statusCode).toBe(503);
+    expect(missing.body).toEqual({ error: 'grants-unavailable' });
+
+    registerManage();
+    // A throw, or an answer with no verdict, is a fault rather than a "no"
+    // (the hook's own contract), so it is not reported as "forbidden". It
+    // stops the revoke all the same: the router answers it as a 500.
+    for (const answer of [new Error('agents down'), { allowed: 'yes' }]) {
+      manageAnswers.set('u1', answer);
+      await expect(revokeSite('t1')).rejects.toThrow();
+    }
+
+    // The agent went away between agents:resolve and the manage check.
+    manageAnswers.set(
+      'u1',
+      new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' }),
+    );
+    const gone = await revokeSite('t1');
+    expect(gone.statusCode).toBe(404);
+    expect(gone.body).toEqual({ error: 'agent-not-found' });
+
+    expect(revoked).toEqual([]);
   });
 
   function iso(daysAgo: number): string {

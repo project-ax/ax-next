@@ -46,13 +46,32 @@ const initCtx: AgentContext = makeAgentContext({
   userId: 'system',
 });
 
+/**
+ * What `agents:resolve` hands u1 for each agent u1 can reach: `a1` is u1's own
+ * personal agent, `t1` a team agent u1 is a member of, and `a-unknown` an
+ * alternate impl's record that says nothing about its visibility (TASK-1212
+ * treats that as "not known to be personal"). Anything else is `not-found`.
+ */
+const RESOLVABLE: Record<string, Record<string, unknown>> = {
+  a1: {
+    id: 'a1',
+    displayName: 'Research',
+    visibility: 'personal',
+    skillAttachments: [{ skillId: 'memory', credentialBindings: {} }],
+  },
+  t1: { id: 't1', displayName: 'Support', visibility: 'team', skillAttachments: [] },
+  'a-unknown': { id: 'a-unknown', displayName: 'Archive', skillAttachments: [] },
+};
+
 describe('channel-web Connections BFF', () => {
   let bus: HookBus;
   let detachCalls: Array<{ userId: string; agentId: string; skillId: string }>;
-  let grantListCalls: Array<{ ownerUserId: string; agentId: string }>;
+  // `unknown`, so a stray field (an `ownerUserId` the store would ignore) fails
+  // the exact-shape assertions below instead of being typed away.
+  let grantListCalls: unknown[];
   let forUserListCalls: Array<{ ownerUserId: string }>;
   let grantCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
-  let revokeCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
+  let revokeCalls: unknown[];
 
   beforeEach(() => {
     bus = new HookBus();
@@ -66,7 +85,8 @@ describe('channel-web Connections BFF', () => {
     }));
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
       const input = i as { agentId: string };
-      if (input.agentId !== 'a1') {
+      const agent = RESOLVABLE[input.agentId];
+      if (agent === undefined) {
         const e = new (await import('@ax/core')).PluginError({
           code: 'not-found',
           plugin: 'agents',
@@ -74,13 +94,7 @@ describe('channel-web Connections BFF', () => {
         });
         throw e;
       }
-      return {
-        agent: {
-          id: 'a1',
-          displayName: 'Research',
-          skillAttachments: [{ skillId: 'memory', credentialBindings: {} }],
-        },
-      };
+      return { agent };
     });
     bus.registerService('skills:list-user-attachments', 'skills', async () => ({
       attachments: [{ skillId: 'linear', credentialBindings: {} }],
@@ -108,7 +122,7 @@ describe('channel-web Connections BFF', () => {
       return { removed: true };
     });
     bus.registerService('host-grants:list', 'host-grants', async (_c, i: unknown) => {
-      grantListCalls.push(i as { ownerUserId: string; agentId: string });
+      grantListCalls.push(i);
       return { hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }] };
     });
     bus.registerService('host-grants:list-for-user', 'host-grants', async (_c, i: unknown) => {
@@ -126,7 +140,7 @@ describe('channel-web Connections BFF', () => {
       return { created: true };
     });
     bus.registerService('host-grants:revoke', 'host-grants', async (_c, i: unknown) => {
-      revokeCalls.push(i as { ownerUserId: string; agentId: string; host: string });
+      revokeCalls.push(i);
       return { revoked: true };
     });
   });
@@ -270,7 +284,7 @@ describe('channel-web Connections BFF', () => {
         user: { id: 'u1', isAdmin: false },
       }));
       b.registerService('agents:resolve', 'agents', async () => ({
-        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+        agent: { id: 'a1', displayName: 'Research', visibility: 'personal', skillAttachments: [] },
       }));
       b.registerService('host-grants:grant', 'host-grants', async () => {
         throw new (await import('@ax/core')).PluginError({
@@ -295,7 +309,7 @@ describe('channel-web Connections BFF', () => {
         user: { id: 'u1', isAdmin: false },
       }));
       b.registerService('agents:resolve', 'agents', async () => ({
-        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+        agent: { id: 'a1', displayName: 'Research', visibility: 'personal', skillAttachments: [] },
       }));
       b.registerService('host-grants:grant', 'host-grants', async () => {
         throw new (await import('@ax/core')).PluginError({
@@ -320,7 +334,7 @@ describe('channel-web Connections BFF', () => {
         user: { id: 'u1', isAdmin: false },
       }));
       b.registerService('agents:resolve', 'agents', async () => ({
-        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+        agent: { id: 'a1', displayName: 'Research', visibility: 'personal', skillAttachments: [] },
       }));
       const h = makeConnectionsHandlers({ bus: b, initCtx });
       const { res, captured } = mkRes();
@@ -333,7 +347,7 @@ describe('channel-web Connections BFF', () => {
   });
 
   describe('GET /api/chat/allowed-sites/:agentId (TASK-54)', () => {
-    it('lists the per-(user, agent) host grants', async () => {
+    it("lists the agent's allowed sites, read with { agentId } alone", async () => {
       const h = makeConnectionsHandlers({ bus, initCtx });
       const { res, captured } = mkRes();
       await h.listAllowedSites(mkReq({ agentId: 'a1' }), res);
@@ -342,8 +356,9 @@ describe('channel-web Connections BFF', () => {
         agentId: 'a1',
         hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }],
       });
-      // ownerUserId is SERVER-FORCED from auth ('u1'), never read from the request.
-      expect(grantListCalls).toEqual([{ ownerUserId: 'u1', agentId: 'a1' }]);
+      // TASK-1212 — an agent's sites belong to the agent. The ACL is
+      // agents:resolve above; no reader's id goes to the store.
+      expect(grantListCalls).toEqual([{ agentId: 'a1' }]);
     });
 
     it('404s an agent the caller cannot access (no existence leak)', async () => {
@@ -375,7 +390,7 @@ describe('channel-web Connections BFF', () => {
         user: { id: 'u1', isAdmin: false },
       }));
       b.registerService('agents:resolve', 'agents', async () => ({
-        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+        agent: { id: 'a1', displayName: 'Research', visibility: 'personal', skillAttachments: [] },
       }));
       const h = makeConnectionsHandlers({ bus: b, initCtx });
       const { res, captured } = mkRes();
@@ -436,10 +451,10 @@ describe('channel-web Connections BFF', () => {
       const { res, captured } = mkRes();
       await h.revokeAllowedSite(mkReq({ agentId: 'a1', host: 'status.example.com' }), res);
       expect(captured.statusCode).toBe(204);
-      // ownerUserId SERVER-FORCED from auth ('u1'); host from the path param.
-      expect(revokeCalls).toEqual([
-        { ownerUserId: 'u1', agentId: 'a1', host: 'status.example.com' },
-      ]);
+      // The agent from the path (proven u1's own by agents:resolve, a1 being
+      // personal) and the host from the path. No owner: the site is the
+      // agent's (TASK-1212).
+      expect(revokeCalls).toEqual([{ agentId: 'a1', host: 'status.example.com' }]);
     });
 
     it('404s an agent the caller cannot access (no cross-user revoke)', async () => {
@@ -456,12 +471,56 @@ describe('channel-web Connections BFF', () => {
         user: { id: 'u1', isAdmin: false },
       }));
       b.registerService('agents:resolve', 'agents', async () => ({
-        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+        agent: { id: 'a1', displayName: 'Research', visibility: 'personal', skillAttachments: [] },
       }));
       const h = makeConnectionsHandlers({ bus: b, initCtx });
       const { res, captured } = mkRes();
       await h.revokeAllowedSite(mkReq({ agentId: 'a1', host: 'x.example.com' }), res);
       expect(captured.statusCode).toBe(204);
+    });
+  });
+
+  // TASK-1212 — a team agent's sites are the team's: one Remove takes a site
+  // away from every member, and host-grants checks no ACL of its own. Settings
+  // has no manage check, so it changes personal agents' sites only. A team
+  // agent's sites are managed in that agent's settings instead.
+  describe('Settings › Sites is for personal agents (TASK-1212)', () => {
+    it.each([
+      ['a team agent', 't1'],
+      ['an agent that does not say it is personal', 'a-unknown'],
+    ] as const)(
+      'adding or removing a site on %s from Settings is 403 team-agent, and host-grants is never called',
+      async (_which, agentId) => {
+        const h = makeConnectionsHandlers({ bus, initCtx });
+
+        const add = mkRes();
+        await h.addAllowedSite(mkReq({ agentId }, { host: 'status.example.com' }), add.res);
+        expect(add.captured.statusCode).toBe(403);
+        expect(add.captured.body).toEqual({ error: 'team-agent' });
+
+        const remove = mkRes();
+        await h.revokeAllowedSite(mkReq({ agentId, host: 'status.example.com' }), remove.res);
+        expect(remove.captured.statusCode).toBe(403);
+        expect(remove.captured.body).toEqual({ error: 'team-agent' });
+
+        // Refused before host-grants is asked anything. Its revoke takes the
+        // site off the whole agent, so a plain member's Remove here would have
+        // taken it away from everyone on the team.
+        expect(grantCalls).toEqual([]);
+        expect(revokeCalls).toEqual([]);
+      },
+    );
+
+    it("a member reading a team agent's list gets the agent's list, the one its settings show", async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSites(mkReq({ agentId: 't1' }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({
+        agentId: 't1',
+        hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }],
+      });
+      expect(grantListCalls).toEqual([{ agentId: 't1' }]);
     });
   });
 });
