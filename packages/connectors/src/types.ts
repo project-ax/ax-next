@@ -267,6 +267,15 @@ const HealthcheckSchema = z.union([
 ]);
 const ServiceArgvSchema = z.array(z.string().max(4096)).max(32);
 const ServicePositiveInt = z.number().int().positive();
+// Same rule as @ax/skills-parser's isSafeWritablePath (kept in step by hand).
+function isSafeWritablePath(p: string): boolean {
+  if (!p.startsWith('/')) return false;
+  const segs = p.split('/').slice(1);
+  const real = segs.filter((s) => s !== '');
+  if (real.length === 0) return false; // bare "/"
+  if (segs.some((s) => s === '.' || s === '..')) return false;
+  return !['proc', 'sys', 'dev'].includes(real[0]!);
+}
 const ServiceSizeRangeSchema = z
   .object({ request: ServicePositiveInt, limit: ServicePositiveInt })
   .strict()
@@ -285,7 +294,10 @@ const ServiceDescriptorSchema = z
       }
     }),
     healthcheck: HealthcheckSchema.optional(),
-    writablePaths: z.array(z.string().regex(/^\//).max(256)).max(16).default([]),
+    writablePaths: z
+      .array(z.string().max(256).refine(isSafeWritablePath, 'writablePaths entries must be absolute, not / or under /proc /sys /dev, with no . or .. segments'))
+      .max(16)
+      .default([]),
     command: ServiceArgvSchema.optional(),
     entrypoint: ServiceArgvSchema.optional(),
     job: z.boolean().optional(),

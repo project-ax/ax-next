@@ -75,9 +75,11 @@ services:
     depends_on:
       mongos:
         condition: service_healthy
+    environment:
+      MONGOS_HOST: mongos
     entrypoint: ["/bin/bash", "-c"]
     command:
-      - mongo --host mongos:27017 --eval 'sh.addShard("shard0/shard0:27018")'
+      - mongo --host $${MONGOS_HOST}:27017 --eval 'sh.addShard("shard0/shard0:27018")'
     profiles: [e2e]
 
   kafka:

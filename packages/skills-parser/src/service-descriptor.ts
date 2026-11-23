@@ -47,6 +47,18 @@ const ARGV_MAX = 32;
 const ARGV_LEN_MAX = 4096;
 const HEALTHCHECK_ARG_LEN_MAX = 256;
 
+/** A scratch path a backend may mount: absolute, never `/`, no `.`/`..`
+ *  segments, nothing under /proc, /sys or /dev. Kept identical in the
+ *  @ax/connectors and @ax/sandbox-protocol copies. */
+function isSafeWritablePath(p: string): boolean {
+  if (!p.startsWith('/')) return false;
+  const segs = p.split('/').slice(1);
+  const real = segs.filter((s) => s !== '');
+  if (real.length === 0) return false; // bare "/"
+  if (segs.some((s) => s === '.' || s === '..')) return false;
+  return !['proc', 'sys', 'dev'].includes(real[0]!);
+}
+
 const PortSchema = z.number().int().min(1).max(65535);
 
 /** argv override (command / entrypoint) — bounded so it can't be an abuse vector. */
@@ -101,7 +113,7 @@ export const ServiceDescriptorSchema = z
     // Scratch paths the service may write to (e.g. a data dir). Absolute only —
     // a relative path is meaningless to a backend and a `../` escape vector.
     writablePaths: z
-      .array(z.string().regex(/^\//, 'writablePaths entries must be absolute').max(PATH_LEN_MAX))
+      .array(z.string().max(PATH_LEN_MAX).refine(isSafeWritablePath, 'writablePaths entries must be absolute, not / or under /proc /sys /dev, with no . or .. segments'))
       .max(WRITABLE_PATHS_MAX)
       .default([]),
     // Optional overrides of the image's argv. Array order is argv order.

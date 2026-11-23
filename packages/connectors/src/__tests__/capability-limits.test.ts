@@ -152,3 +152,19 @@ describe('services cap depends on servicesMode', () => {
     ).toBe(false);
   });
 });
+
+describe('service writablePaths safety', () => {
+  const svc = (path: string) => ({
+    name: 'db',
+    image: `registry.example.com/x@sha256:${'a'.repeat(64)}`,
+    ports: [5432],
+    env: {},
+    writablePaths: [path],
+  });
+  it.each(['/', '//', '/../etc', '/a/./b', '/proc', '/proc/self', '/sys/x', '/dev', '//dev/shm'])('rejects %s', (path) => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: [svc(path)] }).success).toBe(false);
+  });
+  it('accepts an ordinary scratch path', () => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: [svc('/data/db')] }).success).toBe(true);
+  });
+});

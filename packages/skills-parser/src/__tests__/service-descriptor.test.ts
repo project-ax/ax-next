@@ -21,6 +21,17 @@ function wellFormed() {
   };
 }
 
+describe('ServiceDescriptorSchema writablePaths safety', () => {
+  it.each(['/', '//', '/../etc', '/a/./b', '/proc', '/proc/self', '/sys/x', '/dev', '//dev/shm'])('rejects %s', (path) => {
+    expect(ServiceDescriptorSchema.safeParse({ ...wellFormed(), writablePaths: [path] }).success).toBe(false);
+  });
+  it('accepts ordinary scratch paths', () => {
+    expect(
+      ServiceDescriptorSchema.safeParse({ ...wellFormed(), writablePaths: ['/tmp', '/data/db', '/devices'] }).success,
+    ).toBe(true);
+  });
+});
+
 describe('ServiceDescriptorSchema', () => {
   it('accepts a well-formed descriptor', () => {
     const r = ServiceDescriptorSchema.safeParse(wellFormed());

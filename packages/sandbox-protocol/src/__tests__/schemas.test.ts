@@ -757,6 +757,17 @@ describe('OpenSessionInputSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it.each(['/', '//', '/../etc', '/a/./b', '/proc', '/proc/self', '/sys/x', '/dev', '//dev/shm'])('rejects unsafe writable path %s', (path) => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+      services: [{ ...validServiceDescriptor(), writablePaths: [path] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects a service carrying smuggled backend vocabulary (strict) (I2)', () => {
     const result = OpenSessionInputSchema.safeParse({
       sessionId: 'sess-1',

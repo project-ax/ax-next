@@ -124,20 +124,45 @@ const DROPPED_FIELDS = [
 /** Digest-pinned image reference (mirrors service-descriptor's regex). */
 const DIGEST_PINNED_IMAGE_RE = /.+@sha256:[0-9a-f]{64}$/;
 
-/** Short, safe echo of a dropped value for the UI notice. */
+/** Short, safe echo of a dropped value for the UI notice. Bounded by BUDGET
+ *  characters while it WALKS the value, so an alias-bomb (a list of ten aliases
+ *  to a list of ten aliases …) can't expand before we truncate. */
 function echoValue(v: unknown): string | undefined {
   if (v === undefined) return undefined;
-  let s: string;
-  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-    s = String(v);
-  } else {
-    try {
-      s = JSON.stringify(v);
-    } catch {
-      return undefined;
-    }
-  }
-  return s.length > 200 ? s.slice(0, 197) + '…' : s;
+  const LIMIT = 200;
+  let budget = LIMIT + 1;
+  const walk = (x: unknown, depth: number): string => {
+    if (budget <= 0) return '';
+    let out: string;
+    if (typeof x === 'string') out = JSON.stringify(x.slice(0, budget));
+    else if (typeof x === 'number' || typeof x === 'boolean' || x === null) out = String(x);
+    else if (depth > 8) out = '…';
+    else if (Array.isArray(x)) {
+      const parts: string[] = [];
+      for (const el of x) {
+        if (budget <= 0) break;
+        parts.push(walk(el, depth + 1));
+      }
+      out = `[${parts.join(',')}]`;
+    } else if (typeof x === 'object') {
+      const parts: string[] = [];
+      for (const [k, val] of Object.entries(x as Record<string, unknown>)) {
+        if (budget <= 0) break;
+        parts.push(`${JSON.stringify(k.slice(0, budget))}:${walk(val, depth + 1)}`);
+      }
+      out = `{${parts.join(',')}}`;
+    } else out = '';
+    budget -= out.length;
+    return out;
+  };
+  const s = walk(v, 0);
+  // Top-level scalars echo bare (as before); structures echo as JSON.
+  const text = typeof v === 'string' ? v : s;
+  return text.length > LIMIT ? text.slice(0, LIMIT - 3) + '…' : text;
+}
+
+function isScalar(v: unknown): v is string | number | boolean {
+  return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean';
 }
 
 /**
@@ -147,7 +172,7 @@ function echoValue(v: unknown): string | undefined {
  * "pass through from the host env" form — we declare it empty, never reading the
  * host env). Unknown shapes yield `{}`.
  */
-function coerceEnv(raw: unknown): Record<string, string> {
+function coerceEnv(raw: unknown): Record<string, string> | null {
   const out: Record<string, string> = {};
   if (Array.isArray(raw)) {
     for (const entry of raw) {
@@ -163,6 +188,9 @@ function coerceEnv(raw: unknown): Record<string, string> {
   }
   if (raw !== null && typeof raw === 'object') {
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      // Scalars only: String() on a nested list/map (reachable through YAML
+      // aliases) can expand exponentially.
+      if (v !== null && v !== undefined && !isScalar(v)) return null;
       out[k] = v === null || v === undefined ? '' : unescapeComposeDollars(String(v));
     }
   }
@@ -282,13 +310,18 @@ function splitCommandString(str: string): string[] {
   return out;
 }
 
-/** compose `command` / `entrypoint` (list or string) → argv with `$$` → `$`. */
-function coerceArgv(raw: unknown): string[] | undefined {
+/** compose `command` / `entrypoint` (list or string) → argv with `$$` → `$`.
+ *  `bad` when a list holds a non-scalar element (never stringified: an alias
+ *  bomb would expand). Other shapes are ignored, as for every unknown field. */
+function coerceArgv(raw: unknown): { argv?: string[]; bad?: true } {
   let argv: string[] | undefined;
   if (typeof raw === 'string') argv = splitCommandString(raw);
-  else if (Array.isArray(raw)) argv = raw.map((a) => String(a));
-  if (argv === undefined || argv.length === 0) return undefined;
-  return argv.map(unescapeComposeDollars);
+  else if (Array.isArray(raw)) {
+    if (!raw.every(isScalar)) return { bad: true };
+    argv = raw.map((a) => String(a));
+  }
+  if (argv === undefined || argv.length === 0) return {};
+  return { argv: argv.map(unescapeComposeDollars) };
 }
 
 interface MountReading {
@@ -365,7 +398,7 @@ function readDependsOn(raw: unknown): { names: string[] } | { badCondition: stri
     for (const [dep, cfg] of Object.entries(raw as Record<string, unknown>)) {
       const cond = cfg !== null && typeof cfg === 'object' ? (cfg as { condition?: unknown }).condition : undefined;
       if (cond !== undefined && (typeof cond !== 'string' || !DEPENDS_CONDITIONS.includes(cond))) {
-        return { badCondition: `depends_on "${dep}" has unknown condition "${String(cond)}"` };
+        return { badCondition: `depends_on "${dep}" has unknown condition "${echoValue(cond) ?? ''}"` };
       }
       names.push(dep);
     }
@@ -439,6 +472,8 @@ export function translateComposeToServices(
   const invalid: ComposeInvalid[] = [];
   const appServices: ComposeAppService[] = [];
   const profiles = new Set<string>();
+  /** Every service in the chosen profile, however it fared. */
+  const selectedNames = new Set<string>();
   /** Translated services, in declaration order, before start-order sorting. */
   const entries: Array<{ desc: ServiceDescriptor; unpinned: boolean; deps: string[] }> = [];
 
@@ -465,6 +500,8 @@ export function translateComposeToServices(
     if (svcProfiles.length > 0 && (opts.profile === undefined || !svcProfiles.includes(opts.profile))) {
       continue;
     }
+
+    selectedNames.add(name);
 
     // I10 — record every dangerous field we're dropping (allow-list map means
     // they never cross; this just makes the removal visible to the author).
@@ -507,17 +544,26 @@ export function translateComposeToServices(
     const writablePaths = [...new Set([...mounts.writable, '/tmp'])];
 
     // ALLOW-LIST map — only these fields cross.
+    const env = coerceEnv(svc.environment);
+    if (env === null) {
+      invalid.push({ name, image, reason: 'environment values must be plain strings, numbers or booleans' });
+      continue;
+    }
     const candidate: Record<string, unknown> = {
       name,
       image: unpinned ? image + PLACEHOLDER_IMAGE_DIGEST : image,
       ports,
-      env: coerceEnv(svc.environment),
+      env,
       writablePaths,
     };
     const command = coerceArgv(svc.command);
-    if (command !== undefined) candidate.command = command;
     const entrypoint = coerceArgv(svc.entrypoint);
-    if (entrypoint !== undefined) candidate.entrypoint = entrypoint;
+    if (command.bad || entrypoint.bad) {
+      invalid.push({ name, image, reason: 'command/entrypoint entries must be plain strings' });
+      continue;
+    }
+    if (command.argv !== undefined) candidate.command = command.argv;
+    if (entrypoint.argv !== undefined) candidate.entrypoint = entrypoint.argv;
     if (isJob) candidate.job = true;
     // A job never gets published ports (it exits; nothing to forward to).
     if (!isJob && published.length > 0) candidate.publishedPorts = published;
@@ -540,6 +586,22 @@ export function translateComposeToServices(
         reason: first ? `${first.path.join('.') || 'descriptor'}: ${first.message}` : 'invalid descriptor',
       });
     }
+  }
+
+  // A dependency must be defined in the chosen profile (compose refuses an
+  // undefined one too). One exception: the app runs in the sandbox, so a
+  // dependency on it is removed from the ordering and reported.
+  const appNames = new Set(appServices.map((a) => a.service));
+  for (const e of entries) {
+    const kept: string[] = [];
+    for (const d of e.deps) {
+      if (appNames.has(d)) {
+        drops.push({ service: e.desc.name, field: 'depends_on', value: d });
+      } else if (!selectedNames.has(d)) {
+        return { ok: false, error: `Refused: ${e.desc.name} depends_on "${d}", which is not defined in this profile` };
+      } else kept.push(d);
+    }
+    e.deps = kept;
   }
 
   // Start order. A cycle refuses the whole import.

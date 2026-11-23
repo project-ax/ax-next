@@ -333,8 +333,7 @@ services:
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.error).toMatch(/cycle/i);
-    expect(r.error).toContain('a');
-    expect(r.error).toContain('b');
+    expect(r.error).toContain('a, b');
     expect(r.error).not.toMatch(/\bc\b/);
   });
 
@@ -351,8 +350,9 @@ services:
 `);
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.error).toContain('b');
+    expect(r.error).toMatch(/Refused: b:/);
     expect(r.error).toContain('service_sleepy');
+    expect(r.error).toContain('"a"');
   });
 
   it('unescapes $$ in environment values (list and map forms)', () => {
@@ -371,6 +371,81 @@ services:
     if (!r.ok) throw new Error(r.error);
     expect(r.services[0]!.env).toEqual({ FOO: '$x', BAR: '${KEEP}' });
     expect(r.services[1]!.env).toEqual({ BAZ: '$y' });
+  });
+
+  it('all three init jobs use $${VAR} and reach the argv as ${VAR}', () => {
+    for (const n of ['configsvr-init', 'shard-init', 'mongo-init']) {
+      expect(stack).toMatch(new RegExp(`${n}:[\\s\\S]*?\\$\\$\\{`));
+      expect(byName(n).command?.at(-1)).toMatch(/\$\{[A-Z_]+\}/);
+      expect(byName(n).command?.at(-1)).not.toContain('$$');
+    }
+  });
+
+  it('refuses a depends_on on a name not defined in the chosen profile', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on: [dtaabase]
+`);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('a depends_on "dtaabase"');
+  });
+
+  it('removes a depends_on on an app service from the ordering and reports it', () => {
+    const r = translateComposeToServices(`
+services:
+  worker:
+    image: node:20
+    volumes: ["./src:/app"]
+  db:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on: [worker]
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([{ service: 'worker', reason: 'mounts-source' }]);
+    expect(r.services.map((s) => s.name)).toEqual(['db']);
+    expect(r.drops).toContainEqual({ service: 'db', field: 'depends_on', value: 'worker' });
+  });
+
+  it('returns (never throws) on nested-alias bombs in command, entrypoint, env and volumes', () => {
+    const anchors = ['a'];
+    let y = 'x-a: &a [x, x, x, x, x, x, x, x, x, x]\n';
+    for (let i = 1; i < 10; i++) {
+      const prev = String.fromCharCode(96 + i);
+      const cur = String.fromCharCode(97 + i);
+      anchors.push(cur);
+      y += `x-${cur}: &${cur} [${Array(10).fill('*' + prev).join(', ')}]\n`;
+    }
+    const svc = (extra: string) => `${y}services:\n  s:\n    image: x@sha256:${'a'.repeat(64)}\n${extra}\n`;
+    for (const extra of [
+      '    command: [*j]',
+      '    entrypoint: [*j]',
+      '    environment: { K: *j }',
+      '    volumes: [*j]',
+      '    privileged: *j',
+    ]) {
+      const r = translateComposeToServices(svc(extra));
+      expect(typeof r.ok).toBe('boolean');
+    }
+    const r = translateComposeToServices(svc('    command: [*j]'));
+    if (!r.ok) throw new Error(r.error);
+    expect(r.invalid[0]!.name).toBe('s');
+  });
+
+  it('refuses unsafe writable paths from untrusted mounts', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    volumes: ["v:/", "w:/../etc"]
+    tmpfs: /proc
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.services).toEqual([]);
+    expect(r.invalid[0]!.name).toBe('a');
+    expect(r.invalid[0]!.reason).toContain('writablePaths');
   });
 
   it('never imports host bind mounts as writable paths', () => {
