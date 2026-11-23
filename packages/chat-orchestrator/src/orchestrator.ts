@@ -67,6 +67,17 @@ import {
   runnerExitLogFields,
   type RunnerExitInfo,
 } from './runner-exit.js';
+import {
+  effectiveLimits,
+  runnerEnv,
+  warmSandboxTooOld,
+  DEFAULT_MAX_IDLE_MINUTES,
+  DEFAULT_MAX_TURN_MINUTES,
+  MID_TURN_ROTATION_MS,
+  type AgentLimitSettings,
+  type EffectiveLimits,
+  type RunnerSize,
+} from './agent-limits.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -176,8 +187,26 @@ export interface ChatOrchestratorConfig {
   runnerBinaries: Readonly<Record<string, string>>;
   // Bounded wait for chat:end. Defaults to 10 min. If the runner crashes or
   // hangs without emitting chat-end, we synthesize a terminated outcome
-  // after this elapses.
+  // after this elapses. §6.2: the DEFAULT turn limit — an agent's own
+  // `turnLimitMinutes` (clamped to `maxTurnMinutes`) replaces it.
   chatTimeoutMs?: number;
+  /**
+   * §6.2 — the chart's `chat.maxTurnMinutes`: an agent's `turnLimitMinutes`
+   * is clamped to it on use (never refused). Default 120.
+   */
+  maxTurnMinutes?: number;
+  /**
+   * §6.2 — the chart's `chat.maxIdleMinutes`: an agent's `idleMinutes` is
+   * clamped to it on use. Default 60.
+   */
+  maxIdleMinutes?: number;
+  /**
+   * §6.4(5) — the longest a sandbox lives from its open (the k8s pod ceiling,
+   * `activeDeadlineSeconds`), in ms. A warm sandbox with less than the turn
+   * limit plus 10 minutes left is retired instead of reused. Unset: sandboxes
+   * have no ceiling, and nothing is retired for age.
+   */
+  sandboxMaxLifetimeMs?: number;
   /**
    * Bound on each `chat:start` subscriber, in ms. Defaults to
    * `CHAT_START_SUBSCRIBER_TIMEOUT_MS` (60 s); a subscriber past it is skipped
@@ -244,7 +273,11 @@ export interface ChatOrchestratorConfig {
    * one-shot cancel path is not taken.
    */
   keepAlive?: boolean;
-  /** Idle window before the reaper queues a graceful cancel (ms). Default 5 min. */
+  /**
+   * Idle window before the reaper queues a graceful cancel (ms). Default 5 min.
+   * §6.2: the DEFAULT — an agent's own `idleMinutes` (clamped to
+   * `maxIdleMinutes`) replaces it.
+   */
   idleWindowMs?: number;
   /** Grace after the cancel before a force handle.kill() (ms). Default 10 s. */
   idleGraceMs?: number;
@@ -256,9 +289,10 @@ export interface ChatOrchestratorConfig {
    * person approved). Past it the session is reaped anyway
    * (`keepalive_reap_hold_expired`): the host can't tell a running decision
    * continuation from a stale binding (a refused turn, a wake-up that never
-   * ran, a failed compare-clear). Default 15 min, the cap channel-slack puts
-   * on one reply, a woken continuation's included. A finite number ≥ 0
-   * (0 never holds); anything else is refused at init.
+   * ran, a failed compare-clear). §6.5: the hold is max(30 min, the agent's
+   * turn limit), since a continuation may run as long as a turn. Set, this
+   * replaces it for an agent with no turn limit of its own. A finite number
+   * ≥ 0 (0 never holds); anything else is refused at init.
    */
   reapHoldMaxMs?: number;
   /** System/built-in skills materialized into every session at LOWEST precedence
@@ -411,7 +445,10 @@ interface AgentsResolveInput {
   agentId: string;
   userId: string;
 }
-interface AgentRecord {
+// §6.2 — `turnLimitMinutes`, `idleMinutes` and `runnerSize` come from
+// AgentLimitSettings (null/absent = the default; clamped on use, see
+// ./agent-limits.ts).
+interface AgentRecord extends AgentLimitSettings {
   id: string;
   ownerId: string;
   ownerType: 'user' | 'team';
@@ -1102,6 +1139,16 @@ interface OpenSessionInput {
    * until the S7 end-to-end canary closes it.
    */
   services?: ServiceDescriptorParsed[];
+  /**
+   * §3.5 — the agent's runner size (millicores / MiB), as stored. The sandbox
+   * clamps it to the chart maximums. Omitted when the agent sets none.
+   */
+  runnerSize?: RunnerSize;
+  /**
+   * §6.2 — the runner's idle floor and turn limit, whole ms as digit strings
+   * (`runnerEnv`). The only env this hook lets the orchestrator set.
+   */
+  env?: { AX_INBOX_IDLE_MS?: string; AX_TURN_LIMIT_MS?: string };
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -1465,6 +1512,20 @@ function validReapHoldMax(value: number): number {
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     message: `reapHoldMaxMs must be a finite number of 0 or more (got ${value})`,
+  });
+}
+
+/**
+ * §6.2 — the turn/idle caps and the sandbox lifetime must be finite and
+ * positive: a cap of 0 would end every turn at once, and `Infinity` is no cap.
+ * Refused at boot.
+ */
+function validPositiveLimit(name: string, value: number): number {
+  if (Number.isFinite(value) && value > 0) return value;
+  throw new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    message: `${name} must be a finite number greater than 0 (got ${value})`,
   });
 }
 
@@ -2273,7 +2334,24 @@ export function createOrchestrator(
   const keepAlive = config.keepAlive ?? false;
   const idleWindowMs = config.idleWindowMs ?? 5 * 60 * 1000;
   const idleGraceMs = config.idleGraceMs ?? 10 * 1000;
-  const reapHoldMaxMs = validReapHoldMax(config.reapHoldMaxMs ?? 15 * 60 * 1000);
+  // §6.2 — the per-agent clocks. `chatTimeoutMs`, `idleWindowMs` and an
+  // explicit `reapHoldMaxMs` are what an agent without its own settings gets;
+  // otherwise the hold is max(30 min, the turn limit) (effectiveLimits).
+  const limitCaps = {
+    maxTurnMinutes: validPositiveLimit('maxTurnMinutes', config.maxTurnMinutes ?? DEFAULT_MAX_TURN_MINUTES),
+    maxIdleMinutes: validPositiveLimit('maxIdleMinutes', config.maxIdleMinutes ?? DEFAULT_MAX_IDLE_MINUTES),
+    defaults: {
+      turnMs: chatTimeoutMs,
+      idleMs: idleWindowMs,
+      ...(config.reapHoldMaxMs !== undefined
+        ? { reapHoldMs: validReapHoldMax(config.reapHoldMaxMs) }
+        : {}),
+    },
+  };
+  const sandboxMaxLifetimeMs =
+    config.sandboxMaxLifetimeMs === undefined
+      ? undefined
+      : validPositiveLimit('sandboxMaxLifetimeMs', config.sandboxMaxLifetimeMs);
   // Sessions that have already been cancelled — prevents a second
   // chat:turn-end (from a misbehaving runner) from queueing a duplicate
   // cancel entry.
@@ -2290,12 +2368,20 @@ export function createOrchestrator(
   // the row binds a request to this session (`activeSessionId` is this
   // session and `activeReqId` is set) it re-arms instead. No conversation, no
   // conversations:get, or a read that fails: it reaps, as before. The hold is
-  // bounded: `reapHoldMaxMs` (15 min) in total, counted from the first hold
+  // bounded: `reapHoldMs` (max(30 min, turn limit)) in total, counted from the first hold
   // since a turn last started or ended there, or since the row bound another
   // request. The host can't tell a running continuation from a stale binding,
   // so past the bound it reaps anyway.
   interface WarmEntry {
     handle: OpenSessionHandle;
+    // §6.4(5) — when this sandbox was opened: Date.now() taken BEFORE
+    // sandbox:open-session, so it can only overstate the sandbox's age. Wall
+    // clock, like the lifetime ceiling it is checked against.
+    openedAt: number;
+    // §6.2 — the agent's idle window and reap hold (effectiveLimits), as of
+    // the latest turn that spawned or was routed here.
+    idleMs: number;
+    reapHoldMs: number;
     // The agent this runner serves (`ctx.agentId` at spawn). `agents:deleted`
     // (TASK-718) finds a deleted agent's warm runners by it.
     agentId: string;
@@ -2324,7 +2410,7 @@ export function createOrchestrator(
     reapReading: boolean;
     // TASK-1150 — when the row first held this session's reap since a turn
     // last started or ended there (`performance.now()`), or null. The hold
-    // ends `reapHoldMaxMs` after it. Only a turn resets it (resetReapHold),
+    // ends `reapHoldMs` after it. Only a turn resets it (resetReapHold),
     // or the row binding another request than `heldReqId`: the reaper's own
     // re-arm keeps it.
     heldSince: number | null;
@@ -2355,13 +2441,14 @@ export function createOrchestrator(
     entry.heldReqId = null;
   }
 
-  // Arms the idle reap `delayMs` from now. When it fires it reads the row and
-  // holds off while a turn is bound there, for `reapHoldMaxMs` at most
-  // (reapUnlessTurnRunning), unless `force` is set: then it reaps without
-  // asking (the deleted-connector reap at a turn end, see onTurnEnd).
+  // Arms the idle reap `delayMs` (default: the agent's idle window) from now.
+  // When it fires it reads the row and holds off while a turn is bound there,
+  // for the entry's `reapHoldMs` at most (reapUnlessTurnRunning), unless
+  // `force` is set: then it reaps without asking (the deleted-connector reap
+  // at a turn end, see onTurnEnd).
   function armReapTimer(
     ctx: AgentContext,
-    delayMs: number = idleWindowMs,
+    delayMs?: number,
     opts: { force?: boolean } = {},
   ): void {
     const sessionId = ctx.sessionId;
@@ -2394,7 +2481,7 @@ export function createOrchestrator(
         entry.reapReading = false;
         reapNow(ctx, sessionId, entry);
       });
-    }, delayMs);
+    }, delayMs ?? entry.idleMs);
     entry.idleTimer.unref?.();
   }
 
@@ -2457,7 +2544,7 @@ export function createOrchestrator(
   // re-arms a full window (a second at least, REAP_HOLD_RECHECK_MIN_MS), or
   // only what is left of the hold when that is shorter: the session is checked
   // again then, or reaped from the bound turn's own turn end. The hold lasts
-  // `reapHoldMaxMs` from the first one (`heldSince`), or from the first read
+  // `reapHoldMs` from the first one (`heldSince`), or from the first read
   // that found another request bound than that one did (`heldReqId`: a
   // continuation approved since); past it the session is reaped anyway
   // (`keepalive_reap_hold_expired`), because a binding nothing will clear
@@ -2491,10 +2578,10 @@ export function createOrchestrator(
         entry.heldSince = now;
         entry.heldReqId = boundReqId;
       }
-      const holdLeftMs = entry.heldSince + reapHoldMaxMs - now;
+      const holdLeftMs = entry.heldSince + entry.reapHoldMs - now;
       if (holdLeftMs > 0) {
         ctx.logger.info('keepalive_reap_deferred', { sessionId });
-        armReapTimer(ctx, Math.min(Math.max(idleWindowMs, REAP_HOLD_RECHECK_MIN_MS), holdLeftMs));
+        armReapTimer(ctx, Math.min(Math.max(entry.idleMs, REAP_HOLD_RECHECK_MIN_MS), holdLeftMs));
         return;
       }
       ctx.logger.warn('keepalive_reap_hold_expired', { sessionId });
@@ -2517,6 +2604,48 @@ export function createOrchestrator(
   // fire-and-forget at turn end, so a message sent before it settles still
   // routes to the old session; the one after that re-spawns.
   const rotationFailedSessions = new Set<string>();
+
+  // I10 — fire `proxy:rotate-session` for a session that needs it (see
+  // sessionsNeedingRotation), fire-and-forget. Called at turn end (onTurnEnd)
+  // and every 30 minutes while a turn runs (startMidTurnRotation).
+  function rotateSessionCredentials(ctx: AgentContext, sessionId: string): void {
+    if (!sessionsNeedingRotation.has(sessionId)) return;
+    void bus
+      .call<{ sessionId: string }, { envMap: Record<string, string> }>(
+        'proxy:rotate-session',
+        ctx,
+        { sessionId },
+      )
+      .catch((err: unknown) => {
+        // TASK-783 — name/code only (a refresh failure's message can carry
+        // the OAuth server's own text), plus OUR env key for the credential
+        // that failed, when the proxy named one.
+        const envName = failedCredentialEnvName(err);
+        ctx.logger.warn('proxy_rotate_session_failed', {
+          sessionId,
+          ...errorLogFields(err),
+          ...(envName !== undefined ? { envName } : {}),
+        });
+        // A warm session whose credentials could not be refreshed would run
+        // its next turn on a dead token and fail at the provider with nothing
+        // naming the cause. Retire it instead: the next turn re-spawns, and
+        // the fresh proxy:open-session resolves every ref again — so a dead
+        // connector sign-in surfaces as `connector-needs-reconnect` naming
+        // that connector (or the turn simply runs, if this was a blip).
+        rotationFailedSessions.add(sessionId);
+      });
+  }
+
+  // §6.4(2) — OAuth tokens last about an hour, and a turn may now run two.
+  // While a turn runs, its session's sign-ins rotate every 30 minutes through
+  // the same hook as the turn-end rotation. Returns the stop function; both
+  // turn paths call it in the `finally` that clears the turn timer, so every
+  // way a turn ends (turn end, error, timeout, runner exit, Stop) clears it.
+  function startMidTurnRotation(ctx: AgentContext, sessionId: string): () => void {
+    const interval = setInterval(() => rotateSessionCredentials(ctx, sessionId), MID_TURN_ROTATION_MS);
+    interval.unref?.();
+    return () => clearInterval(interval);
+  }
 
   // Sessions whose skills changed must re-spawn next turn (the runner reads
   // skills only at spawn, "frozen at spawn", design §D6). Two producers, both
@@ -3165,6 +3294,10 @@ export function createOrchestrator(
       return outcome;
     }
 
+    // §6.2 — this agent's turn limit, idle window, reap hold and runner size,
+    // clamped to the chart's caps (never refused).
+    const limits: EffectiveLimits = effectiveLimits(agent, limitCaps);
+
     // 3. Build the agent config snapshot we'll freeze on the session.
     //    Per Invariant I10: this is captured ONCE at session creation;
     //    live edits to the agent row (via /admin/agents PATCH in Task 9)
@@ -3351,6 +3484,20 @@ export function createOrchestrator(
             // Routine-only feature (`=== 'routine'`, not `!isAttendedTurn`): it
             // serves routines' run warnings, which an external turn has none of.
             const routineRetire = ctx.source === 'routine' && !sessionBusy(candidate);
+            // §6.4(5) — an IDLE warm sandbox with less than this turn's limit
+            // plus 10 minutes left before its lifetime ceiling would cut the
+            // turn short: retire it and spawn fresh. A BUSY one is left alone
+            // (retiring it would cut the turn it is running); this turn queues.
+            const warmEntry = warmSessions.get(candidate);
+            const lifetimeShort =
+              warmEntry !== undefined &&
+              !sessionBusy(candidate) &&
+              warmSandboxTooOld({
+                openedAt: warmEntry.openedAt,
+                now: Date.now(),
+                lifetimeMs: sandboxMaxLifetimeMs,
+                turnMs: limits.turnMs,
+              });
             // TASK-806 — asked only when nothing else already retires it, and
             // only for a session that skipped a connector at spawn.
             let rotationFailed = rotationFailedSessions.has(candidate);
@@ -3366,6 +3513,7 @@ export function createOrchestrator(
               (!(
                 modeChanged ||
                 routineRetire ||
+                lifetimeShort ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -3376,6 +3524,7 @@ export function createOrchestrator(
               !(
                 modeChanged ||
                 routineRetire ||
+                lifetimeShort ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -3390,6 +3539,7 @@ export function createOrchestrator(
               !(
                 modeChanged ||
                 routineRetire ||
+                lifetimeShort ||
                 skillsDirty ||
                 augmentStale ||
                 hostSessionMissing ||
@@ -3404,6 +3554,7 @@ export function createOrchestrator(
             if (
               modeChanged ||
               routineRetire ||
+              lifetimeShort ||
               skillsDirty ||
               augmentStale ||
               hostSessionMissing ||
@@ -3452,6 +3603,9 @@ export function createOrchestrator(
               // via terminate), so a deleted connector's key stops being
               // substituted no later than this turn.
               //
+              // §6.4(5): and when it is idle and too near its lifetime ceiling
+              // for this turn's limit (see lifetimeShort above).
+              //
               // TASK-1091: and when it is idle and was spawned for another turn
               // mode (see modeChanged above). The fresh spawn writes this
               // turn's source and audience onto its own session record.
@@ -3461,17 +3615,19 @@ export function createOrchestrator(
                   ? 'turn-mode-changed'
                   : routineRetire
                     ? 'routine-turn'
-                    : hostSessionMissing
-                      ? 'host-session-lost'
-                      : skillsDirty
-                        ? 'skills-changed'
-                        : augmentStale
-                          ? 'system-prompt-augment-changed'
-                          : rotationFailed
-                            ? 'credential-rotation-failed'
-                            : connectorsChanged
-                              ? 'connectors-changed'
-                              : 'connector-signed-in',
+                    : lifetimeShort
+                      ? 'sandbox-lifetime-short'
+                      : hostSessionMissing
+                        ? 'host-session-lost'
+                        : skillsDirty
+                          ? 'skills-changed'
+                          : augmentStale
+                            ? 'system-prompt-augment-changed'
+                            : rotationFailed
+                              ? 'credential-rotation-failed'
+                              : connectorsChanged
+                                ? 'connectors-changed'
+                                : 'connector-signed-in',
               });
               // The channel has already bound this request to the conversation.
               // Move that binding before terminating the old session: its
@@ -3626,6 +3782,12 @@ export function createOrchestrator(
       if (keepAlive) {
         clearReapTimers(sessionId);
         resetReapHold(sessionId);
+        // §6.2 — the reaper after this turn follows the agent's settings now.
+        const entry = warmSessions.get(sessionId);
+        if (entry !== undefined) {
+          entry.idleMs = limits.idleMs;
+          entry.reapHoldMs = limits.reapHoldMs;
+        }
       }
 
       // (1) Bind reqId on the conversation row. ctx.conversationId is
@@ -3724,12 +3886,13 @@ export function createOrchestrator(
       //     handle isn't ours. If the sandbox dies mid-turn, session:terminate
       //     fires, the conversations subscriber clears active_session_id, and
       //     the next agent:invoke on this conversation routes to fresh. The
-      //     in-flight chat will time out via the bounded chatTimeoutMs path.
+      //     in-flight chat will time out via the bounded turn-limit path.
       let resolvedByChatEndSubscriber = true;
       const timeoutHandle = setTimeout(() => {
-        deferred.reject(new ChatTimeoutError(chatTimeoutMs));
-      }, chatTimeoutMs);
+        deferred.reject(new ChatTimeoutError(limits.turnMs));
+      }, limits.turnMs);
       timeoutHandle.unref?.();
+      const stopMidTurnRotation = startMidTurnRotation(ctx, sessionId);
 
       let outcome: AgentOutcome;
       try {
@@ -3743,6 +3906,7 @@ export function createOrchestrator(
         };
       } finally {
         clearTimeout(timeoutHandle);
+        stopMidTurnRotation();
         unregisterWaiter(sessionId, ctx.reqId);
       }
 
@@ -4878,7 +5042,12 @@ export function createOrchestrator(
         // non-connector / CLI paths leave the field unset. Both backends render
         // it; the wire schema re-validates (digest-pin, caps, no smuggled vocab).
         ...(foldedServices.length > 0 ? { services: foldedServices } : {}),
+        // §3.5 / §6.2 — the agent's runner size (the sandbox clamps it) and
+        // the runner's idle floor and turn limit.
+        ...(limits.runnerSize !== undefined ? { runnerSize: limits.runnerSize } : {}),
+        env: runnerEnv(limits),
       };
+      const openedAt = Date.now();
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
@@ -4915,6 +5084,7 @@ export function createOrchestrator(
         // proxy in keepalive mode (see the finally below).
         warmSessions.set(sessionId, {
           handle, agentId: ctx.agentId, proxyOpened, idleTimer: null, graceTimer: null,
+          openedAt, idleMs: limits.idleMs, reapHoldMs: limits.reapHoldMs,
           // TASK-1150 — what the reaper reads the row with (see WarmEntry).
           conversationId: ctx.conversationId, userId: ctx.userId, reapGen: 0, reapForced: false,
           reapReading: false, heldSince: null, heldReqId: null,
@@ -5101,10 +5271,11 @@ export function createOrchestrator(
     //      c. timeout. chat:end was NEVER fired — we must fire it ourselves.
     let resolvedByChatEndSubscriber = true; // set to false in the non-(a) paths
     const timeoutHandle = setTimeout(() => {
-      deferred.reject(new ChatTimeoutError(chatTimeoutMs));
-    }, chatTimeoutMs);
+      deferred.reject(new ChatTimeoutError(limits.turnMs));
+    }, limits.turnMs);
     // Don't keep the host event loop alive on a hung chat.
     timeoutHandle.unref?.();
+    const stopMidTurnRotation = startMidTurnRotation(ctx, sessionId);
 
     // Sandbox exit before chat:end is a terminated outcome. Do NOT reject
     // the deferred — resolve it with a structured outcome so the downstream
@@ -5148,6 +5319,7 @@ export function createOrchestrator(
       };
     } finally {
       clearTimeout(timeoutHandle);
+      stopMidTurnRotation();
       unregisterWaiter(sessionId, ctx.reqId);
     }
 
@@ -5277,32 +5449,7 @@ export function createOrchestrator(
     // re-spawns, and its fresh proxy:open-session reports a dead connector
     // sign-in as `connector-needs-reconnect` naming the connector, rather than
     // the turn failing later at the provider with a bare 401.
-    if (sessionsNeedingRotation.has(ctx.sessionId)) {
-      void bus
-        .call<{ sessionId: string }, { envMap: Record<string, string> }>(
-          'proxy:rotate-session',
-          ctx,
-          { sessionId: ctx.sessionId },
-        )
-        .catch((err: unknown) => {
-          // TASK-783 — name/code only (a refresh failure's message can carry
-          // the OAuth server's own text), plus OUR env key for the credential
-          // that failed, when the proxy named one.
-          const envName = failedCredentialEnvName(err);
-          ctx.logger.warn('proxy_rotate_session_failed', {
-            sessionId: ctx.sessionId,
-            ...errorLogFields(err),
-            ...(envName !== undefined ? { envName } : {}),
-          });
-          // A warm session whose credentials could not be refreshed would run
-          // its next turn on a dead token and fail at the provider with nothing
-          // naming the cause. Retire it instead: the next turn re-spawns, and
-          // the fresh proxy:open-session resolves every ref again — so a dead
-          // connector sign-in surfaces as `connector-needs-reconnect` naming
-          // that connector (or the turn simply runs, if this was a blip).
-          rotationFailedSessions.add(ctx.sessionId);
-        });
-    }
+    rotateSessionCredentials(ctx, ctx.sessionId);
 
     if (keepAlive) {
       // Keepalive: the turn is complete. The real reply already streamed via
@@ -5314,7 +5461,7 @@ export function createOrchestrator(
       resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
       resolveFoldedWaiters(ctx.sessionId, payload?.foldedReqIds);
       // TASK-1150 — a turn ended here: a hold the reaper starts after this one
-      // counts from its own start (`reapHoldMaxMs`).
+      // counts from its own start (the entry's `reapHoldMs`).
       resetReapHold(ctx.sessionId);
       // TASK-833 — a session holding a since-deleted connector loses its proxy
       // session now (TASK-877), rather than on runner exit, and is reaped now.
@@ -5329,7 +5476,7 @@ export function createOrchestrator(
         closeProxyForDeletedConnector(ctx, ctx.sessionId);
         armReapTimer(ctx, 0, { force: true });
       } else {
-        armReapTimer(ctx, idleWindowMs);
+        armReapTimer(ctx); // the agent's idle window (WarmEntry.idleMs)
       }
       return;
     }

@@ -30,7 +30,10 @@
  * that takes longer than the bus default still comes back as an OUTCOME.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { HookBus, makeAgentContext, createLogger, type AgentOutcome } from '@ax/core';
+import {
+  HookBus, makeAgentContext, createLogger, type AgentOutcome, type ServiceHandler,
+} from '@ax/core';
+import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
 import { AGENT_INVOKE_TIMEOUT_MS } from '../orchestrator.js';
 
@@ -117,5 +120,77 @@ describe('agent:invoke service timeout', () => {
       message: { role: 'user', content: 'hi' },
     });
     expect(outcome.kind).toBe('terminated');
+  });
+});
+
+/*
+  §6.2 — the turn limit is the agent's own `turnLimitMinutes`, clamped to the
+  chart's `chat.maxTurnMinutes`; `chatTimeoutMs` is only the default for an
+  agent without one. Fake timers: the clocks run for two hours.
+*/
+describe('per-agent turn limit', () => {
+  const MIN = 60_000;
+
+  async function turnSetup(
+    agent: Record<string, unknown>,
+    config: Partial<Parameters<typeof createChatOrchestratorPlugin>[0]> = {},
+  ) {
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: {
+        id: 'test-agent', ownerId: 'test-user', ownerType: 'user', visibility: 'personal',
+        displayName: 'Test', allowedTools: [], mcpConfigIds: [],
+        model: 'anthropic/claude-sonnet-4-7', runner: 'claude-sdk', ...agent,
+      } }),
+      'session:queue-work': async () => ({ cursor: 0 }),
+      'session:terminate': async () => ({}),
+      'sandbox:open-session': async () => ({
+        runnerEndpoint: 'unix:///tmp/m.sock',
+        handle: { kill: async () => undefined, exited: new Promise<never>(() => undefined) },
+      }),
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
+      'proxy:close-session': async () => ({}),
+    };
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, keepAlive: true, ...config,
+      })],
+    });
+    const settled: { out?: AgentOutcome } = {};
+    void h.bus.call<unknown, AgentOutcome>('agent:invoke', ctx(), {
+      message: { role: 'user', content: 'hi' },
+    }).then((out) => { settled.out = out; });
+    await vi.advanceTimersByTimeAsync(0); // the spawn; the turn clock starts here
+    return settled;
+  }
+
+  it('a 120-minute agent turn is not cut at 10 minutes', async () => {
+    vi.useFakeTimers();
+    try {
+      // No chatTimeoutMs: the default (10 min) applies only without the agent's own.
+      const settled = await turnSetup({ turnLimitMinutes: 120 });
+      await vi.advanceTimersByTimeAsync(10 * MIN + 1);
+      expect(settled.out).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(110 * MIN - 2);
+      expect(settled.out).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled.out).toMatchObject({ kind: 'terminated', reason: 'chat-run-timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('turn limit above the cap runs at the cap', async () => {
+    vi.useFakeTimers();
+    try {
+      // Stored above today's cap (clamped on use, never refused).
+      const settled = await turnSetup({ turnLimitMinutes: 300 }, { maxTurnMinutes: 30 });
+      await vi.advanceTimersByTimeAsync(30 * MIN - 1);
+      expect(settled.out).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled.out).toMatchObject({ kind: 'terminated', reason: 'chat-run-timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

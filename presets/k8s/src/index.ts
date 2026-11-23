@@ -376,8 +376,13 @@ export interface K8sPresetConfig {
   chat?: {
     runnerBinaries?: Record<string, string>;
     chatTimeoutMs?: number;
-    /** chat.maxTurnMinutes, checked at boot against the pod deadline. */
+    /**
+     * chat.maxTurnMinutes, checked at boot against the pod deadline. The
+     * orchestrator clamps an agent's own turn limit to it.
+     */
     maxTurnMinutes?: number;
+    /** chat.maxIdleMinutes: the orchestrator clamps an agent's own idle time to it. */
+    maxIdleMinutes?: number;
     oneShot?: boolean;
   };
   /**
@@ -1027,9 +1032,24 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     // Keepalive: the channel-web chat UI is multi-turn. Leave the runner warm
     // between turns so a follow-up reuses it (skips pod-create + workspace
     // re-materialize). Idle windows use orchestrator defaults (5 min / 10 s
-    // grace); the pod ceiling is sandbox-k8s activeDeadlineSeconds (6 h).
+    // grace) unless the agent sets its own; the pod ceiling is sandbox-k8s
+    // activeDeadlineSeconds (6 h).
     keepAlive: true,
+    // §6.4(5) — the same ceiling, so a warm pod too old for the agent's turn
+    // limit is retired instead of reused. Every sandbox-k8s backend counts it
+    // from (about) the open: the pod's activeDeadlineSeconds, or the claim's
+    // shutdownTime.
+    sandboxMaxLifetimeMs:
+      (config.sandbox?.activeDeadlineSeconds ?? DEFAULT_POD_DEADLINE_SECONDS) * 1000,
   };
+  // §6.2 — the chart's caps on the agents' own turn limit and idle time.
+  // Unset, the orchestrator keeps its own (120 / 60 minutes).
+  if (config.chat?.maxTurnMinutes !== undefined) {
+    orchestratorCfg.maxTurnMinutes = config.chat.maxTurnMinutes;
+  }
+  if (config.chat?.maxIdleMinutes !== undefined) {
+    orchestratorCfg.maxIdleMinutes = config.chat.maxIdleMinutes;
+  }
   if (config.chat?.oneShot !== undefined) {
     orchestratorCfg.oneShot = config.chat.oneShot;
   }
@@ -1963,6 +1983,8 @@ export function loadK8sConfigFromEnv(
   }
   const maxTurnMinutes = positiveInt('AX_CHAT_MAX_TURN_MINUTES', env.AX_CHAT_MAX_TURN_MINUTES);
   if (maxTurnMinutes !== undefined) chat.maxTurnMinutes = maxTurnMinutes;
+  const maxIdleMinutes = positiveInt('AX_CHAT_MAX_IDLE_MINUTES', env.AX_CHAT_MAX_IDLE_MINUTES);
+  if (maxIdleMinutes !== undefined) chat.maxIdleMinutes = maxIdleMinutes;
 
   // ---- agent workspace (the web interface) ----------------------------
   // Always on; there is no switch. `AX_AGENT_WORKSPACE` (and the older

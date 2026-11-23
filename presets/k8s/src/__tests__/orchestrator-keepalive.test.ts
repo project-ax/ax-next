@@ -49,4 +49,24 @@ describe('@ax/preset-k8s orchestrator keepalive', () => {
     expect(captured.cfg).toBeDefined();
     expect(captured.cfg?.keepAlive).toBe(true);
   });
+
+  // §6.2 / §6.4(5) — the chart's caps clamp the agents' own settings, and the
+  // pod ceiling decides when a warm sandbox is too old for a long turn.
+  it('passes the turn and idle caps and the sandbox lifetime to the orchestrator', () => {
+    createK8sPlugins({
+      ...stubConfig,
+      sandbox: { ...stubConfig.sandbox, activeDeadlineSeconds: 18_000 },
+      chat: { ...stubConfig.chat, maxTurnMinutes: 90, maxIdleMinutes: 45 },
+    });
+    expect(captured.cfg).toMatchObject({
+      maxTurnMinutes: 90, maxIdleMinutes: 45, sandboxMaxLifetimeMs: 18_000_000,
+    });
+  });
+
+  it('without caps, the orchestrator keeps its own and the sandbox lifetime is the 6 h default', () => {
+    createK8sPlugins(stubConfig);
+    expect(captured.cfg).not.toHaveProperty('maxTurnMinutes');
+    expect(captured.cfg).not.toHaveProperty('maxIdleMinutes');
+    expect(captured.cfg?.sandboxMaxLifetimeMs).toBe(21_600_000);
+  });
 });

@@ -2356,6 +2356,12 @@ describeIfHelm('ax-next chart: artifact content origin (agent artifacts §6.5)',
 });
 
 describeIfHelm('ax-next chart: turn cap vs load balancer timeout', () => {
+  it('the host gets the turn and idle caps as env', () => {
+    const env = findHostEnv(helmTemplate([]));
+    expect(env.find((e) => e.name === 'AX_CHAT_MAX_TURN_MINUTES')?.value).toBe('120');
+    expect(env.find((e) => e.name === 'AX_CHAT_MAX_IDLE_MINUTES')?.value).toBe('60');
+  });
+
   it('gke values render timeoutSec 7500', () => {
     const docs = helmTemplate(['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']);
     const bc = docs.find((d) => d.kind === 'BackendConfig');

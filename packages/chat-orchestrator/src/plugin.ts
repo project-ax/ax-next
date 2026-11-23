@@ -153,7 +153,8 @@ export function createChatOrchestratorPlugin(
       // TASK-1150 — the keepalive idle reaper reads `conversations:get` too,
       // for a warm session opened for a conversation: it holds off while the
       // row binds a request to that session (a decision continuation), for
-      // `reapHoldMaxMs` (15 min) at most. Without the hook it reaps as before.
+      // max(30 min, the agent's turn limit) at most. Without the hook it reaps
+      // as before.
       //
       // The system-prompt contribution family (W1) —
       // `system-prompt:augment:required:<name>` / `…:optional:<name>` — is
