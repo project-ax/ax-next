@@ -55,6 +55,7 @@ import { createStepSummariesPlugin } from '@ax/step-summaries';
 import { createMemoryFactsPostgresPlugin } from '@ax/memory-facts-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
+import { checkNodeFit, checkTurnCaps, LARGEST_SERVICE_SET_MIB } from './turn-caps.js';
 import { parseContentOrigin, type ParsedContentOrigin } from './content-origin.js';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createChannelSlackPlugin } from '@ax/channel-slack';
@@ -307,6 +308,13 @@ export interface K8sPresetConfig {
     cpuRequest?: string;
     memoryRequest?: string;
     activeDeadlineSeconds?: number;
+    /** Chart caps for service sidecars (sandbox.serviceMax, serviceStorageDefaultMiB). */
+    serviceCpuLimitMaxMillis?: number;
+    serviceMemoryLimitMaxMiB?: number;
+    serviceStorageDefaultMiB?: number;
+    /** sandbox.runnerMax.memoryMiB and sandbox.nodeAllocatableMiB, for the boot-time fit check. */
+    runnerMaxMemoryMiB?: number;
+    nodeAllocatableMiB?: number;
     readinessPollMs?: number;
     readinessTimeoutMs?: number;
     /**
@@ -366,6 +374,8 @@ export interface K8sPresetConfig {
   chat?: {
     runnerBinaries?: Record<string, string>;
     chatTimeoutMs?: number;
+    /** chat.maxTurnMinutes, checked at boot against the pod deadline. */
+    maxTurnMinutes?: number;
     oneShot?: boolean;
   };
   /**
@@ -632,6 +642,9 @@ export interface K8sPresetConfig {
  * store (admin-seeded via /admin/credentials, Phase 9.5) and are resolved
  * by the credential-proxy at proxy:open-session time, not at plugin init.
  */
+// sandbox-k8s's own default for activeDeadlineSeconds (config.ts): 6 h.
+const DEFAULT_POD_DEADLINE_SECONDS = 21600;
+
 export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const plugins: Plugin[] = [];
 
@@ -948,6 +961,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     ...(config.sandbox?.activeDeadlineSeconds !== undefined
       ? { activeDeadlineSeconds: config.sandbox.activeDeadlineSeconds }
       : {}),
+    ...(config.sandbox?.serviceCpuLimitMaxMillis !== undefined
+      ? { serviceCpuLimitMaxMillis: config.sandbox.serviceCpuLimitMaxMillis }
+      : {}),
+    ...(config.sandbox?.serviceMemoryLimitMaxMiB !== undefined
+      ? { serviceMemoryLimitMaxMiB: config.sandbox.serviceMemoryLimitMaxMiB }
+      : {}),
+    ...(config.sandbox?.serviceStorageDefaultMiB !== undefined
+      ? { serviceStorageDefaultMiB: config.sandbox.serviceStorageDefaultMiB }
+      : {}),
     ...(config.sandbox?.readinessPollMs !== undefined
       ? { readinessPollMs: config.sandbox.readinessPollMs }
       : {}),
@@ -965,6 +987,24 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       : {}),
   };
   plugins.push(createSandboxK8sPlugin(sandboxOpts));
+
+  // Boot checks on the chart's caps. The turn cap must sit well inside the pod
+  // deadline (throws); the biggest runner plus a service set should fit a node
+  // (warns, because a node's size is often unknown).
+  if (config.chat?.maxTurnMinutes !== undefined) {
+    checkTurnCaps({
+      maxTurnMinutes: config.chat.maxTurnMinutes,
+      activeDeadlineSeconds: config.sandbox?.activeDeadlineSeconds ?? DEFAULT_POD_DEADLINE_SECONDS,
+    });
+  }
+  if (config.sandbox?.runnerMaxMemoryMiB !== undefined) {
+    const warning = checkNodeFit({
+      runnerMaxMiB: config.sandbox.runnerMaxMemoryMiB,
+      largestServiceSetMiB: LARGEST_SERVICE_SET_MIB,
+      nodeAllocatableMiB: config.sandbox.nodeAllocatableMiB,
+    });
+    if (warning !== null) process.stderr.write(`[ax] warning: ${warning}\n`);
+  }
 
   plugins.push(
     createIpcHttpPlugin({
@@ -1778,6 +1818,22 @@ export function loadK8sConfigFromEnv(
     }
     sandbox.agentSandboxApiVersion = env.K8S_AGENT_SANDBOX_API_VERSION;
   }
+  const positiveInt = (name: string, raw: string | undefined): number | undefined => {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid ${name}=${raw}; expected a positive integer`);
+    return n;
+  };
+  const serviceCpuMax = positiveInt('K8S_SERVICE_MAX_CPU_MILLIS', env.K8S_SERVICE_MAX_CPU_MILLIS);
+  if (serviceCpuMax !== undefined) sandbox.serviceCpuLimitMaxMillis = serviceCpuMax;
+  const serviceMemMax = positiveInt('K8S_SERVICE_MAX_MEMORY_MIB', env.K8S_SERVICE_MAX_MEMORY_MIB);
+  if (serviceMemMax !== undefined) sandbox.serviceMemoryLimitMaxMiB = serviceMemMax;
+  const serviceStorage = positiveInt('K8S_SERVICE_STORAGE_DEFAULT_MIB', env.K8S_SERVICE_STORAGE_DEFAULT_MIB);
+  if (serviceStorage !== undefined) sandbox.serviceStorageDefaultMiB = serviceStorage;
+  const runnerMaxMem = positiveInt('K8S_RUNNER_MAX_MEMORY_MIB', env.K8S_RUNNER_MAX_MEMORY_MIB);
+  if (runnerMaxMem !== undefined) sandbox.runnerMaxMemoryMiB = runnerMaxMem;
+  const nodeAlloc = positiveInt('K8S_NODE_ALLOCATABLE_MIB', env.K8S_NODE_ALLOCATABLE_MIB);
+  if (nodeAlloc !== undefined) sandbox.nodeAllocatableMiB = nodeAlloc;
   if (env.K8S_NAMESPACE !== undefined && env.K8S_NAMESPACE !== '') {
     sandbox.namespace = env.K8S_NAMESPACE;
   }
@@ -1895,6 +1951,8 @@ export function loadK8sConfigFromEnv(
     }
     chat.chatTimeoutMs = n;
   }
+  const maxTurnMinutes = positiveInt('AX_CHAT_MAX_TURN_MINUTES', env.AX_CHAT_MAX_TURN_MINUTES);
+  if (maxTurnMinutes !== undefined) chat.maxTurnMinutes = maxTurnMinutes;
 
   // ---- agent workspace (the web interface) ----------------------------
   // Always on; there is no switch. `AX_AGENT_WORKSPACE` (and the older

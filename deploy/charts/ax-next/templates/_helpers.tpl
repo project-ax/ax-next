@@ -312,6 +312,23 @@ Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- end -}}
 
+{{/*
+ax-next.validateTurnCap — the GCE load balancer cuts a streamed response at
+ingress.backendConfig.timeoutSec, so a turn allowed to run longer than that
+would be cut mid-answer. Fail the render when backend config is on and
+timeoutSec is not above chat.maxTurnMinutes * 60.
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateTurnCap" -}}
+{{- if (include "ax-next.bool" .Values.ingress.backendConfig.enabled) -}}
+{{- $cap := mul (int .Values.chat.maxTurnMinutes) 60 -}}
+{{- if le (int .Values.ingress.backendConfig.timeoutSec) $cap -}}
+{{- fail (printf "ingress.backendConfig.timeoutSec (%v) must be above chat.maxTurnMinutes * 60 (%d): the load balancer would cut a long turn mid-answer. Raise timeoutSec (for a 120-minute cap, 7500 works) or lower chat.maxTurnMinutes." .Values.ingress.backendConfig.timeoutSec $cap) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "ax-next.memoryFactsRoot" -}}
 /var/lib/ax-next/memory-facts
 {{- end -}}

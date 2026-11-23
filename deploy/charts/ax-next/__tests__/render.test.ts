@@ -761,19 +761,19 @@ describeIfHelm('ax-next chart: GKE BackendConfig + SSE timeout (TASK-168)', () =
     expect(svc?.metadata?.annotations?.['cloud.google.com/backend-config']).toBeUndefined();
   });
 
-  it('enabled: a BackendConfig renders with apiVersion cloud.google.com/v1 and the default timeoutSec=3600', () => {
+  it('enabled: a BackendConfig renders with apiVersion cloud.google.com/v1 and the default timeoutSec=7500', () => {
     const docs = helmTemplate(bcArgs);
     const bc = docs.find((d) => d.kind === 'BackendConfig');
     expect(bc, 'BackendConfig renders when enabled').toBeDefined();
     expect(bc?.apiVersion).toBe('cloud.google.com/v1');
     expect(bc?.metadata?.name).toBe(BC_NAME);
-    expect(bc?.spec?.timeoutSec).toBe(3600);
+    expect(bc?.spec?.timeoutSec).toBe(7500);
   });
 
   it('enabled: ingress.backendConfig.timeoutSec overrides the default', () => {
-    const docs = helmTemplate([...bcArgs, '--set', 'ingress.backendConfig.timeoutSec=120']);
+    const docs = helmTemplate([...bcArgs, '--set', 'ingress.backendConfig.timeoutSec=9000']);
     const bc = docs.find((d) => d.kind === 'BackendConfig');
-    expect(bc?.spec?.timeoutSec).toBe(120);
+    expect(bc?.spec?.timeoutSec).toBe(9000);
   });
 
   it('enabled: host Service carries the backend-config annotation pointing at the BackendConfig name', () => {
@@ -2352,5 +2352,22 @@ describeIfHelm('ax-next chart: artifact content origin (agent artifacts §6.5)',
     expect(env.find((e) => e.name === 'AX_CONTENT_FRAME_ANCESTORS')?.value).toBe(
       'http://localhost:9090,http://localhost:19090,http://localhost:5173',
     );
+  });
+});
+
+describeIfHelm('ax-next chart: turn cap vs load balancer timeout', () => {
+  it('gke values render timeoutSec 7500', () => {
+    const docs = helmTemplate(['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']);
+    const bc = docs.find((d) => d.kind === 'BackendConfig');
+    expect(bc?.spec?.timeoutSec).toBe(7500);
+  });
+
+  it('render fails when backendConfig is on and timeoutSec <= maxTurnMinutes*60', () => {
+    const r = helmTemplateExpectFailure([
+      '--set', 'ingress.backendConfig.enabled=true',
+      '--set', 'ingress.backendConfig.timeoutSec=7200',
+    ]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/must be above chat\.maxTurnMinutes \* 60 \(7200\)/);
   });
 });

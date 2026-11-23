@@ -5,6 +5,7 @@
 {{- include "ax-next.validateProxyTransport" . -}}
 {{- include "ax-next.validateDevServicesKubeVersion" . -}}
 {{- include "ax-next.validateAllowedModels" . -}}
+{{- include "ax-next.validateTurnCap" . -}}
 {{- include "ax-next.validateSharedPool" . -}}
 {{- include "ax-next.validateContentOrigin" . -}}
 {{- include "ax-next.validateAppsBridge" . -}}
@@ -500,6 +501,24 @@ spec:
             # Unset, the preset keeps its own default.
             {{- with .Values.chat.timeoutMs }}
             - name: AX_CHAT_TIMEOUT_MS
+              value: {{ . | quote }}
+            {{- end }}
+
+            # Chart caps the preset checks at boot (turn cap vs the pod
+            # deadline; runner + service set vs the node) and the sandbox
+            # plugin clamps service sizes to.
+            - name: AX_CHAT_MAX_TURN_MINUTES
+              value: {{ .Values.chat.maxTurnMinutes | quote }}
+            - name: K8S_RUNNER_MAX_MEMORY_MIB
+              value: {{ .Values.sandbox.runnerMax.memoryMiB | quote }}
+            - name: K8S_SERVICE_MAX_CPU_MILLIS
+              value: {{ .Values.sandbox.serviceMax.cpuMillis | quote }}
+            - name: K8S_SERVICE_MAX_MEMORY_MIB
+              value: {{ .Values.sandbox.serviceMax.memoryMiB | quote }}
+            - name: K8S_SERVICE_STORAGE_DEFAULT_MIB
+              value: {{ .Values.sandbox.serviceStorageDefaultMiB | quote }}
+            {{- with .Values.sandbox.nodeAllocatableMiB }}
+            - name: K8S_NODE_ALLOCATABLE_MIB
               value: {{ . | quote }}
             {{- end }}
 
