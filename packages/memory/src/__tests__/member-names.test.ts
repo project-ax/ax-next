@@ -9,6 +9,7 @@ import {
 } from '@ax/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { resolveMemoryAccess, type MemoryAccess } from '../access.js';
 import {
   AUTH_GET_USER_HOOK,
   MEMBER_NAME_MAX,
@@ -28,6 +29,8 @@ import {
   engineRecord,
   eventsNamed,
   makeMemoryHarness,
+  registerMemoryAgents,
+  TEAM_ID,
   type LoggedEvent,
   type MemoryHarness,
   type MemoryHarnessOptions,
@@ -129,12 +132,57 @@ describe('member names (TASK-1209)', () => {
       expect(memberName(raw)).toBeUndefined();
     });
 
-    it.each(['You Li', 'Agent Smith', 'Ian Assistant', 'Userton', 'Mei'])(
+    it.each(['You Li', 'Agent Smith', 'Ian Assistant', 'Userton', 'Mei', 'Teammate Tina'])(
       'keeps %j: a name that only contains one of those words is still a name',
       (raw) => {
         expect(memberName(raw)).toBe(raw);
       },
     );
+
+    // TASK-1213: "a teammate" is what memory shows for a member it can't
+    // name. A member named that would pass for the fallback, so the reader
+    // couldn't tell a name from no name.
+    it.each(['a teammate', 'A Teammate', 'a-teammate', 'A  TEAMMATE.', 'ａ ｔｅａｍｍａｔｅ'])(
+      '%j is refused: it reads like "a teammate"',
+      (raw) => {
+        expect(memberName(raw)).toBeUndefined();
+      },
+    );
+
+    // TASK-1213: a member named like the agent would put their facts in the
+    // agent's own mouth. Compared word by word, as the reserved check is.
+    it.each([
+      ['Fern', 'Fern'],
+      ['fern.', 'Fern'],
+      ['ＦＥＲＮ', 'Fern'],
+      ['  FERN  ', 'Fern'],
+      ['Fern', '  fern '],
+    ])('%j is refused on an agent named %j: it reads as the agent', (raw, agent) => {
+      expect(memberName(raw, agent)).toBeUndefined();
+    });
+
+    it.each([
+      ['Fern Li', 'Fern'],
+      ['Ferns', 'Fern'],
+    ])('%j stays a name on an agent named %j', (raw, agent) => {
+      expect(memberName(raw, agent)).toBe(raw);
+    });
+
+    it('an agent name with no letter or digit refuses nothing by itself', () => {
+      expect(memberName('Bob', '\u{1F916}')).toBe('Bob');
+    });
+
+    // An agent's name may run to 128 characters, and a member's is shown cut
+    // to MEMBER_NAME_MAX. A member who copies a long agent name would be
+    // shown as its first 80 units: still the agent's name to a reader.
+    it(`a member who copies an agent name longer than ${MEMBER_NAME_MAX} units is refused`, () => {
+      const agent = 'Fern, the team helper who answers every question about the launch plan and its dates';
+      expect(agent.length).toBeGreaterThan(MEMBER_NAME_MAX);
+      expect(memberName(agent, agent)).toBeUndefined();
+      expect(memberName(` ${agent.toUpperCase()}. `, agent)).toBeUndefined();
+      // The agent's name as written still decides on its own words.
+      expect(memberName('Fern', agent)).toBe('Fern');
+    });
   });
 
   describe('memberKeyId', () => {
@@ -437,6 +485,30 @@ describe('member names (TASK-1209)', () => {
       expect(logs).toEqual([]);
     });
 
+    // TASK-1213: memory reads the agent's own name from `agents:resolve`
+    // (`MemoryAccess.agentName`), and a member who takes it reads "a
+    // teammate", like any reserved name. The others keep theirs.
+    it("a member who calls themself the agent's name reads \"a teammate\"", async () => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = authBus(
+        (userId) =>
+          ({
+            'u-bob': { id: 'u-bob', displayName: 'fern' },
+            'u-carol': { id: 'u-carol', displayName: 'Carol Chen' },
+          })[userId] ?? null,
+      );
+      const labels = await memberLabels(
+        bus,
+        ctxOf(logs),
+        { ...TEAM, agentName: 'Fern' },
+        ['user:u-bob', 'user:u-carol'],
+        undefined,
+      );
+      expect(Object.fromEntries(labels)).toEqual({ 'user:u-bob': TEAMMATE_TEXT, 'user:u-carol': 'Carol Chen' });
+      expect([...asked].sort()).toEqual(['u-bob', 'u-carol']);
+      expect(logs).toEqual([]);
+    });
+
     it("a member's name that only contains another's is still a name", async () => {
       const { bus } = authBus(
         (userId) =>
@@ -618,6 +690,25 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
     expect(tool).not.toContain('| user favorite color');
   });
 
+  // TASK-1213: a member renamed to the agent's own name, in any case or
+  // spacing, would read as the agent talking about itself.
+  it('a teammate named like the agent reads "a teammate"', async () => {
+    const h = await makeHarness({
+      agent: { ...TEAM_AGENT, displayName: 'Fern' },
+      authUser: authOver({ ...PEOPLE, [BOB]: { displayName: 'fern.', email: 'bob@x.test' } }),
+    });
+    await seedTeam(h);
+    const aliceTurn = h.ctx();
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({
+      Boston: TEAMMATE_TEXT,
+      teal: 'you',
+      Nightjar: 'launch plan',
+    });
+    const tool = await recallTool(h, aliceTurn, 'Boston');
+    expect(tool).toContain('a teammate lives in: Boston');
+    expect(tool).not.toContain('fern.');
+  });
+
   it('a teammate whose name reads as "you" reads "a teammate"', async () => {
     const h = await makeHarness({
       agent: TEAM_AGENT,
@@ -778,6 +869,42 @@ describe('memory:recall names a teammate (TASK-1209)', () => {
       expect(warns[0]!.bindings).toMatchObject({ hook: TEAMS_IS_MEMBER_HOOK, code: 'store-unavailable' });
       const logged = JSON.stringify(h.logs);
       for (const secret of [BOB, 'bob@x.test', 'Bob Smith']) expect(logged).not.toContain(secret);
+    });
+  });
+});
+
+describe("the agent's own name (TASK-1213)", () => {
+  const aliceCtx = (): AgentContext =>
+    makeAgentContext({
+      sessionId: 's',
+      agentId: 'agent-1',
+      userId: ALICE,
+      workspace: { rootPath: '/tmp' },
+      logger: capturingLogger([]),
+    });
+
+  /** `resolveMemoryAccess` over a bare bus whose `agents:resolve` answers as `agent` says. */
+  async function accessFor(agent: Parameters<typeof registerMemoryAgents>[1]): Promise<MemoryAccess> {
+    const bus = new HookBus();
+    registerMemoryAgents(bus, agent);
+    return resolveMemoryAccess(bus, aliceCtx());
+  }
+
+  // Memory already asks `agents:resolve` before any read, and its answer
+  // carries the agent's display name. A team agent keeps it, to refuse a
+  // member named like the agent. A personal agent has no teammates to name.
+  it("resolveMemoryAccess carries a team agent's display name as agentName; a personal agent carries none", async () => {
+    expect(await accessFor({ visibility: 'team', displayName: 'Fern' })).toEqual({
+      userId: ALICE,
+      visibility: 'team',
+      teamId: TEAM_ID,
+      agentName: 'Fern',
+    });
+    // An answer with no display name: nothing to compare with, so none is carried.
+    expect(await accessFor({ visibility: 'team' })).toEqual({ userId: ALICE, visibility: 'team', teamId: TEAM_ID });
+    expect(await accessFor({ visibility: 'personal', displayName: 'Fern' })).toEqual({
+      userId: ALICE,
+      visibility: 'personal',
     });
   });
 });

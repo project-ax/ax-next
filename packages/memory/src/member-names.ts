@@ -54,8 +54,10 @@
  * surrogate, one line, single spaces), clamped, and refused when it has no
  * letter or digit, or when it would read as the person talking (`you` in the
  * block and the memory view, where `aboutText === 'you'` is the self
- * sentinel; `user` in the evidence table) or as the agent. Every sink still
- * escapes it (`escapeStatementText`).
+ * sentinel; `user` in the evidence table), as the agent (its kind, such as
+ * "Assistant", or its own display name, `MemoryAccess.agentName`), or as
+ * {@link TEAMMATE_TEXT}, which would pass for a member memory can't name
+ * (TASK-1213). Every sink still escapes it (`escapeStatementText`).
  *
  * ## It never fails a read
  *
@@ -100,13 +102,23 @@ export const MEMBER_NAMES_FAILED_EVENT = 'memory_member_names_failed';
 export const MEMBER_NAME_MAX = 80;
 
 /**
- * Whole names, as {@link nameWords} reads them, that would read as the person
- * talking or as the agent: what memory's surfaces call the person talking
- * (`you`, and the evidence table's `user`), and the agent's own voice in the
- * block ("I also hold memory about"). `isPersonSubject` and `isAgentSubject`
- * answer the rest.
+ * Whole names, as {@link nameWords} reads them, that memory never shows for a
+ * member: what its surfaces call the person talking (`you`, and the evidence
+ * table's `user`), the agent's own voice in the block ("I also hold memory
+ * about"), and the fallback itself, "a teammate" (TASK-1213).
+ * `isPersonSubject` and `isAgentSubject` answer the rest, and the agent's own
+ * name is checked per agent ({@link memberName}).
  */
-const SELF_WORDS = new Set(['you', 'yourself', 'user', 'the user', 'i', 'me', 'myself']);
+const RESERVED_NAMES = new Set([
+  'you',
+  'yourself',
+  'user',
+  'the user',
+  'i',
+  'me',
+  'myself',
+  nameWords(TEAMMATE_TEXT).join(' '),
+]);
 
 /** `user:<id>` with a non-empty id → `<id>`; anything else (`user`, `user:`, `User:x`, `acme`) → undefined. */
 export function memberKeyId(about: string): string | undefined {
@@ -117,26 +129,50 @@ export function memberKeyId(about: string): string | undefined {
 /**
  * A display name fit to show for a member, or undefined: not a string, no
  * letter or digit left once cleaned, or a name that reads as the person
- * talking or as the agent.
+ * talking, as the agent (its kind, or `agentName`, its own display name), or
+ * as {@link TEAMMATE_TEXT}.
  *
  * The reserved check compares the whole name, word by word ({@link nameWords}:
  * fullwidth forms folded, invisible format characters and accents dropped,
  * case folded, punctuation a separator). So `You.`, fullwidth `you`, `you`
- * with a soft hyphen inside and `Yoü` are all `you`, while `You Li` and
- * `Agent Smith` are names.
+ * with a soft hyphen inside and `Yoü` are all `you`, `fern.` and fullwidth
+ * `ＦＥＲＮ` are an agent named `Fern`, and `A-Teammate.` is the fallback,
+ * while `You Li`, `Agent Smith`, `Fern Li` and `Teammate Tina` are names.
  */
-export function memberName(raw: unknown): string | undefined {
+export function memberName(raw: unknown, agentName?: string): string | undefined {
   if (typeof raw !== 'string') return undefined;
-  const flat = toWellFormedText(replaceSurfaceRewriters(raw)).replace(/\s+/g, ' ').trim();
-  const name = clampCodeUnits(flat, MEMBER_NAME_MAX).trimEnd();
+  const name = asShown(raw);
   const words = nameWords(name);
   // Nothing to read it by: blank, or only an emoji, punctuation, or a
   // character that draws nothing and isn't in core's class (a soft hyphen).
   if (words.length === 0) return undefined;
-  if (isPersonSubject(name) || SELF_WORDS.has(words.join(' ')) || isAgentSubject(words.join('_'))) {
+  const key = words.join(' ');
+  if (isPersonSubject(name) || RESERVED_NAMES.has(key) || isAgentSubject(words.join('_'))) {
     return undefined;
   }
+  if (agentName !== undefined && readsAsAgentName(key, agentName)) return undefined;
   return name;
+}
+
+/** A display name as memory shows it: cleaned onto one line, then clamped (see the file header). */
+function asShown(raw: string): string {
+  const flat = toWellFormedText(replaceSurfaceRewriters(raw)).replace(/\s+/g, ' ').trim();
+  return clampCodeUnits(flat, MEMBER_NAME_MAX).trimEnd();
+}
+
+/**
+ * Whether a name's words (`key`, from {@link memberName}) are the agent's own
+ * name's. The agent's name is compared as written, so an invisible character
+ * in it hides nothing ({@link nameWords} drops it), and as memory would show
+ * it for a member: an agent's name may run past {@link MEMBER_NAME_MAX}, and a
+ * member who copies it is shown cut to that length. An agent name with no
+ * letter or digit refuses nothing.
+ */
+function readsAsAgentName(key: string, agentName: string): boolean {
+  return [agentName, asShown(agentName)].some((form) => {
+    const agentKey = nameWords(form).join(' ');
+    return agentKey !== '' && agentKey === key;
+  });
 }
 
 /**
@@ -175,7 +211,7 @@ export function memberName(raw: unknown): string | undefined {
 export async function memberLabels(
   bus: HookBus,
   ctx: AgentContext,
-  access: Pick<MemoryAccess, 'visibility' | 'teamId'>,
+  access: Pick<MemoryAccess, 'visibility' | 'teamId' | 'agentName'>,
   subjects: Iterable<string>,
   self: string | undefined,
 ): Promise<ReadonlyMap<string, string>> {
@@ -223,7 +259,7 @@ export async function memberLabels(
       try {
         const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
         if (!isRecord(user) || user.id !== userId) return;
-        const name = memberName(user.displayName);
+        const name = memberName(user.displayName, access.agentName);
         if (name !== undefined) named.set(about, name);
       } catch (err) {
         faults.push({ hook: AUTH_GET_USER_HOOK, err });
