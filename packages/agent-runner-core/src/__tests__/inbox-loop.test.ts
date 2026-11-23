@@ -284,15 +284,15 @@ describe('inbox-loop idle floor', () => {
     expect(loop.cursor).toBe(4);
   });
 
-  it('surfaces a host-note delivery, with its reqId, and advances the cursor', async () => {
+  it('surfaces host-note deliveries with their reqIds and advances the cursor', async () => {
     const { client } = makeMockClient([
       { type: 'host-note', note: 'Services are up.', reqId: 'req-1', cursor: 5 },
-      { type: 'host-note', note: 'No reqId.', cursor: 6 },
+      { type: 'host-note', note: 'Second.', reqId: 'req-2', cursor: 6 },
     ]);
     const loop = createInboxLoop({ client });
     expect(await loop.next()).toEqual({ type: 'host-note', note: 'Services are up.', reqId: 'req-1' });
     expect(loop.cursor).toBe(5);
-    expect(await loop.next()).toEqual({ type: 'host-note', note: 'No reqId.' });
+    expect(await loop.next()).toEqual({ type: 'host-note', note: 'Second.', reqId: 'req-2' });
     expect(loop.cursor).toBe(6);
   });
 

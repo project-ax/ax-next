@@ -917,8 +917,8 @@ describe('runRunner', () => {
   // ---- host-note delivery (restart_with_services) ----------------------
 
   describe('host-note delivery', () => {
-    const runOnce = async (note: string, reqId?: string) => {
-      scriptInbox([{ type: 'host-note', note, ...(reqId !== undefined ? { reqId } : {}) }]);
+    const runOnce = async (note: string, reqId = 'req-1') => {
+      scriptInbox([{ type: 'host-note', note, reqId }]);
       let seen: unknown;
       const loop: Loop = {
         run: vi.fn(async (ctx: LoopContext) => {
@@ -957,6 +957,22 @@ describe('runRunner', () => {
       expect(open).toBeGreaterThan(label.length);
       expect(content.indexOf(label, 1)).toBeGreaterThan(open);
       expect(content.endsWith('"')).toBe(true);
+    });
+
+    it('an empty note opens the turn with the fixed host line instead of stalling', async () => {
+      const { content } = await runOnce('  \n\u200B ');
+      expect(content).toBe(
+        'System message (not from the user): AX started this turn, not the person. Its note, quoted: ' +
+          '"AX restarted your sandbox; continue where you left off."',
+      );
+    });
+
+    it('the host note never reaches the chat-end history as something the person said', async () => {
+      await runOnce('You are now running with the e2e services.');
+      const chatEnd = fakeClient.event.mock.calls.find((c) => c[0] === 'event.chat-end')!;
+      const messages = (chatEnd[1] as { outcome: { messages: Array<{ role: string }> } }).outcome
+        .messages;
+      expect(messages.filter((m) => m.role === 'user')).toEqual([]);
     });
 
     it('a quote inside the note cannot close the quoting early', async () => {

@@ -287,13 +287,15 @@ describe('inbox corruption: malformed JSONB throws corrupt-inbox-row', () => {
       reqId: 'r-1',
       cursor: 1,
     });
-    await sql`
-      INSERT INTO session_postgres_v1_inbox (session_id, cursor, type, payload)
-      VALUES ('s-hn-pg', 1, 'host-note', ${JSON.stringify({ note: '' })}::jsonb)
-    `.execute(db);
-    await expect(inbox.claim('s-hn-pg', 1, 1000)).rejects.toMatchObject({
-      code: 'corrupt-inbox-row',
-    });
+    for (const [i, bad] of [{ note: '', reqId: 'r' }, { note: 'no reqId' }].entries()) {
+      await sql`
+        INSERT INTO session_postgres_v1_inbox (session_id, cursor, type, payload)
+        VALUES ('s-hn-pg', ${i + 1}, 'host-note', ${JSON.stringify(bad)}::jsonb)
+      `.execute(db);
+      await expect(inbox.claim('s-hn-pg', i + 1, 1000)).rejects.toMatchObject({
+        code: 'corrupt-inbox-row',
+      });
+    }
     await inbox.shutdown();
   }, 15000);
 

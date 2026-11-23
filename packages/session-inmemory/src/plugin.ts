@@ -419,12 +419,12 @@ function requireInboxEntry(
       });
     }
     const reqId = (value as { reqId?: unknown }).reqId;
-    if (reqId !== undefined && (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128)) {
+    if (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128) {
       throw new PluginError({
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         hookName,
-        message: `'entry.reqId' must be a non-empty string of at most 128 characters for host-note entries`,
+        message: `'entry.reqId' is required: a non-empty string of at most 128 characters for host-note entries`,
       });
     }
     return;

@@ -1172,14 +1172,12 @@ async function runRunnerInner(
         // reason needs no chat:start re-check: it belongs to the agent:invoke
         // already in flight, which passed it. Framed and quoted, never trusted.
         const content = composeHostNoteMessage(entry.note ?? '');
-        if (content === null) {
-          process.stderr.write('runner: host-note delivery had an empty note; ignoring\n');
-          continue;
-        }
         const noteReqId =
           typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
         adoptReqIdForTurn({ reqId: noteReqId });
-        chatEndHistory.push({ role: 'user', content });
+        // Deliberately NOT pushed into chatEndHistory: `outcome.messages` feeds
+        // memory extraction, which must never save a system line as something
+        // the person said.
         return { content, id: trackMessage(noteReqId) };
       }
       if (entry.payload === undefined) continue;

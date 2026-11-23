@@ -119,7 +119,7 @@ type WireResponse =
   | { type: 'cancel'; cursor: number }
   | { type: 'interrupt'; cursor: number }
   | { type: 'timeout'; cursor: number }
-  | { type: 'host-note'; note: string; reqId?: string; cursor: number }
+  | { type: 'host-note'; note: string; reqId: string; cursor: number }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -193,13 +193,12 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
       }
       if (resp.type === 'host-note') {
         // Host-authored note opening a turn inside the same agent:invoke.
-        // `note` is set for this type (as for decision-resolved); `reqId`
-        // passes through only when present, never defaulted.
+        // `note` and `reqId` are both required on the wire.
         cursor = resp.cursor;
         return {
           type: 'host-note',
           note: resp.note,
-          ...(resp.reqId !== undefined ? { reqId: resp.reqId } : {}),
+          reqId: resp.reqId,
         };
       }
       if (resp.type === 'decision-resolved') {

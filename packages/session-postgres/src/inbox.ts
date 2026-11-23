@@ -72,7 +72,7 @@ export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' }
   | { type: 'interrupt' }
-  | { type: 'host-note'; note: string; reqId?: string }
+  | { type: 'host-note'; note: string; reqId: string }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -85,7 +85,7 @@ export type ClaimResult =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'interrupt'; cursor: number }
-  | { type: 'host-note'; note: string; reqId?: string; cursor: number }
+  | { type: 'host-note'; note: string; reqId: string; cursor: number }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -544,14 +544,16 @@ async function fetchEntry(
       wrapped !== null && wrapped !== undefined && typeof wrapped === 'object'
         ? wrapped.reqId
         : undefined;
+    // reqId is REQUIRED for host-note: a row without one is corruption.
     if (
       wrapped === null ||
       wrapped === undefined ||
       typeof wrapped !== 'object' ||
       typeof wrapped.note !== 'string' ||
       wrapped.note.length === 0 ||
-      (reqId !== undefined &&
-        (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128))
+      typeof reqId !== 'string' ||
+      reqId.length === 0 ||
+      reqId.length > 128
     ) {
       throw new PluginError({
         code: 'corrupt-inbox-row',
@@ -559,7 +561,7 @@ async function fetchEntry(
         hookName: 'session:claim-work',
         message:
           `inbox row id=${String(row.id)} (session='${sessionId}', cursor=${cursor}) ` +
-          `has malformed JSONB payload: expected { note, reqId? } shape. ` +
+          `has malformed JSONB payload: expected { note, reqId } shape. ` +
           `Recovery: delete the row ` +
           `(DELETE FROM session_postgres_v1_inbox WHERE id = ${String(row.id)}).`,
       });
@@ -567,7 +569,7 @@ async function fetchEntry(
     return {
       type: 'host-note',
       note: wrapped.note,
-      ...(reqId !== undefined ? { reqId: reqId as string } : {}),
+      reqId,
     };
   }
   if (row.type === 'decision-resolved') {
@@ -650,10 +652,7 @@ function inboxPayload(entry: InboxEntry): unknown {
     return { message: entry.payload, reqId: entry.reqId };
   }
   if (entry.type === 'host-note') {
-    return {
-      note: entry.note,
-      ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
-    };
+    return { note: entry.note, reqId: entry.reqId };
   }
   if (entry.type === 'decision-resolved') {
     return {
@@ -689,7 +688,7 @@ function deliver(entry: InboxEntry, cursor: number): ClaimResult {
     return {
       type: 'host-note',
       note: entry.note,
-      ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
+      reqId: entry.reqId,
       cursor: cursor + 1,
     };
   }

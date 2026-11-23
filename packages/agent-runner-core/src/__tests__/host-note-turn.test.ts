@@ -16,7 +16,8 @@ describe('composeHostNoteMessage', () => {
     expect(quoted.endsWith('…')).toBe(true);
   });
 
-  it('returns null for a note that is empty once sanitised', () => {
-    expect(composeHostNoteMessage('  \n​ ')).toBeNull();
+  it('falls back to a fixed host line for a note that is empty once sanitised', () => {
+    const out = composeHostNoteMessage('  \n\u200B ');
+    expect(out).toContain('"AX restarted your sandbox; continue where you left off."');
   });
 });

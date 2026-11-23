@@ -74,7 +74,7 @@ export function createInbox(): Inbox {
       return {
         type: 'host-note',
         note: entry.note,
-        ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
+        reqId: entry.reqId,
         cursor: cursor + 1,
       };
     }

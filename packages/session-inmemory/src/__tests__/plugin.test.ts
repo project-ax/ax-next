@@ -804,6 +804,7 @@ describe('@ax/session-inmemory plugin', () => {
       { type: 'host-note', note: '' },
       { type: 'host-note', note: 'x'.repeat(4001) },
       { type: 'host-note', note: 'n', reqId: '' },
+      { type: 'host-note', note: 'n' },
     ];
     for (const entry of bad) {
       await expect(
@@ -813,7 +814,7 @@ describe('@ax/session-inmemory plugin', () => {
     await expect(
       h.bus.call('session:queue-work', ctx, {
         sessionId: 's-hn2',
-        entry: { type: 'host-note', note: 'x'.repeat(4000) },
+        entry: { type: 'host-note', note: 'x'.repeat(4000), reqId: 'r-1' },
       }),
     ).resolves.toEqual({ cursor: 0 });
   });

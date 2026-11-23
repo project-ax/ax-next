@@ -866,13 +866,12 @@ export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
   // what is running now. Never the person's words, never model text. The
   // runner quotes it and labels it as the system's (`composeHostNoteMessage`).
   //
-  // `reqId` is the in-flight request's chat correlation, optional like
-  // `decision-resolved`'s: present, the turn streams under it; absent, it runs
-  // dark.
+  // `reqId` is the in-flight request's chat correlation. REQUIRED: a host-note
+  // always runs inside an `agent:invoke`, so there is always one to stream to.
   z.object({
     type: z.literal('host-note'),
     note: z.string().min(1).max(HOST_NOTE_MAX),
-    reqId: z.string().min(1).max(128).optional(),
+    reqId: z.string().min(1).max(128),
     cursor: z.number().int().nonnegative(),
   }),
 ]);

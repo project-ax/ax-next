@@ -103,7 +103,7 @@ export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' }
   | { type: 'interrupt' }
-  | { type: 'host-note'; note: string; reqId?: string }
+  | { type: 'host-note'; note: string; reqId: string }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -116,7 +116,7 @@ export type ClaimResult =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'interrupt'; cursor: number }
-  | { type: 'host-note'; note: string; reqId?: string; cursor: number }
+  | { type: 'host-note'; note: string; reqId: string; cursor: number }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -405,7 +405,7 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('host-note'),
     note: z.string(),
-    reqId: z.string().min(1).max(128).optional(),
+    reqId: z.string().min(1).max(128),
     cursor: z.number(),
   }),
   z.object({

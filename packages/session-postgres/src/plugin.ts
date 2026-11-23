@@ -358,7 +358,7 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('host-note'),
     note: z.string(),
-    reqId: z.string().min(1).max(128).optional(),
+    reqId: z.string().min(1).max(128),
     cursor: z.number(),
   }),
   z.object({
@@ -742,12 +742,12 @@ function requireInboxEntry(
       });
     }
     const reqId = (value as { reqId?: unknown }).reqId;
-    if (reqId !== undefined && (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128)) {
+    if (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128) {
       throw new PluginError({
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         hookName,
-        message: `'entry.reqId' must be a non-empty string of at most 128 characters for host-note entries`,
+        message: `'entry.reqId' is required: a non-empty string of at most 128 characters for host-note entries`,
       });
     }
     return;

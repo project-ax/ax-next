@@ -323,17 +323,6 @@ describe('@ax/session-postgres plugin', () => {
       }),
     ).toEqual({ type: 'host-note', note: 'Services are up.', reqId: 'r-1', cursor: 1 });
 
-    await h.bus.call('session:queue-work', ctx, {
-      sessionId: 's-hn',
-      entry: { type: 'host-note', note: 'no reqId' },
-    });
-    expect(
-      await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>('session:claim-work', ctx, {
-        sessionId: 's-hn',
-        cursor: 1,
-        timeoutMs: 500,
-      }),
-    ).toEqual({ type: 'host-note', note: 'no reqId', cursor: 2 });
   });
 
   it('queue-work refuses an empty or over-4000-character host-note (postgres)', async () => {
@@ -347,6 +336,7 @@ describe('@ax/session-postgres plugin', () => {
       { type: 'host-note', note: '' },
       { type: 'host-note', note: 'x'.repeat(4001) },
       { type: 'host-note', note: 'n', reqId: '' },
+      { type: 'host-note', note: 'n' },
     ]) {
       await expect(
         h.bus.call('session:queue-work', ctx, { sessionId: 's-hn2', entry }),

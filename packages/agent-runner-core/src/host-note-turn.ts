@@ -17,29 +17,22 @@
  * Not an authorisation. It is information; nothing here grants anything.
  */
 
-import { replaceSurfaceRewriters } from '@ax/core/surface-text';
-import { SYSTEM_PREFIX } from './decision-turn.js';
+import { HOST_NOTE_MAX } from '@ax/ipc-protocol';
+import { SYSTEM_PREFIX, sanitizeHostAuthoredNote } from './decision-turn.js';
 
 /**
- * Cap on the note, in CODE POINTS (not UTF-16 units: a slice would split a
- * surrogate pair). Matches `HOST_NOTE_MAX` on the wire in @ax/ipc-protocol;
- * the wire already enforces it, this is the runner-side belt.
+ * What the model is told when the note is empty once sanitised. A stalled
+ * invoke is worse than a generic line, so the turn always opens.
  */
-const HOST_NOTE_MAX_CODE_POINTS = 4000;
-
-function sanitizeHostNote(note: string): string {
-  const flat = replaceSurfaceRewriters(note).replace(/\s+/g, ' ').trim();
-  const points = [...flat];
-  if (points.length <= HOST_NOTE_MAX_CODE_POINTS) return flat;
-  return `${points.slice(0, HOST_NOTE_MAX_CODE_POINTS - 1).join('').trimEnd()}…`;
-}
+const FALLBACK_NOTE = 'AX restarted your sandbox; continue where you left off.';
 
 /**
- * Returns `null` when the note is empty after sanitising: the shell re-polls
- * rather than waking the model on a blank prompt.
+ * Always returns a message: an empty note falls back to the fixed host line,
+ * framed the same way.
  */
-export function composeHostNoteMessage(note: string): string | null {
-  const clean = sanitizeHostNote(note);
-  if (clean.length === 0) return null;
+export function composeHostNoteMessage(note: string): string {
+  // HOST_NOTE_MAX counts characters on the wire; the sanitiser caps code points,
+  // which is never more than that, so the wire bound still holds.
+  const clean = sanitizeHostAuthoredNote(note, HOST_NOTE_MAX) || FALLBACK_NOTE;
   return `${SYSTEM_PREFIX} AX started this turn, not the person. Its note, quoted: ${JSON.stringify(clean)}`;
 }
