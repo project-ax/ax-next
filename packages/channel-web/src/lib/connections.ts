@@ -88,7 +88,7 @@ export async function attachConnectionSkill(
   return (await res.json()) as { created: boolean };
 }
 
-// TASK-54 — Allowed sites (the durable per-(user, agent) "always allow" grants,
+// TASK-54 — Allowed sites (the durable per-agent "always allow" grants,
 // design P3/P6; backed by @ax/host-grants from TASK-44). The Settings mirror of
 // the reactive wall's "Always for this agent" choice.
 
@@ -171,7 +171,7 @@ export async function revokeAllowedSite(agentId: string, host: string): Promise<
 // One grant per (agent, host). The Settings panel lists each host once and shows
 // which agents it applies to; "all agents" is just "every agent you have right
 // now" (a grant per agent), so the per-agent egress least-privilege boundary is
-// unchanged — this is a management view over the same per-(user, agent) rows.
+// unchanged — this is a management view over the same per-agent rows.
 
 /** One grant in the flat view — carries the `agentId` it applies to. */
 export interface AllAllowedSite {

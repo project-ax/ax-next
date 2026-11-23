@@ -76,7 +76,7 @@ const MEL_DM: PromptContext = {
 const SESSION = 'sess_live_0001';
 const HOST = 'api.example.com';
 const HOST_PROMPT: PromptSubject = { kind: 'host', host: HOST, sessionId: SESSION };
-/** What an Allow on Mel's prompt keeps: the host, on her agent's allowed sites, for her (@ax/host-grants' key). */
+/** What an Allow on Mel's prompt keeps: the host, on her agent's allowed sites, added by her (@ax/host-grants' key). */
 const MEL_KEY = { ownerUserId: 'usr_mel', agentId: 'agt_mel', host: HOST };
 
 /** The longest name HOST_RE takes: 253 characters, in labels of at most 63. */

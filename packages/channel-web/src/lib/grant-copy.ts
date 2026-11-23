@@ -67,7 +67,7 @@ export function grantPackagesVisible(request: PermissionRequest): boolean {
  * grant card — the one that actually widens what an agent may do — said none of
  * it. Every clause here is true: the grant is durable, nothing is applied until
  * the click, and both halves are revocable in Settings (skills detach from the
- * Skills tab, hosts from Allowed sites).
+ * Skills tab, hosts from the agent's settings > Connectors on a team agent, owners and team admins; Settings > Sites on a personal one).
  */
 export const GRANT_REASSURANCE =
   'Connecting lets this agent do this from now on. Nothing happens until you ' +
