@@ -16,7 +16,6 @@ import { createConversationsPlugin } from '../plugin.js';
 import type {
   CreateInput,
   CreateOutput,
-  DeleteInput,
   GetInput,
   GetOutput,
   SetServiceSetInput,
