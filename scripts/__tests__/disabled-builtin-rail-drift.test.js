@@ -30,7 +30,12 @@
 // sends when the command finishes wakes the model for another turn while the
 // runner is still warm; a shell `(sleep N; ...) &` and a connector's own API
 // can still start work that runs later too. What is gone is the CLI's built-in
-// scheduler (CronCreate, CronDelete, CronList, ScheduleWakeup, RemoteTrigger).
+// scheduler: its tools (CronCreate, CronDelete, CronList, ScheduleWakeup,
+// RemoteTrigger) are off the allowlist, and its headless cron loop, which would
+// otherwise run prompts planted in `<cwd>/.claude/scheduled_tasks.json` with no
+// tool call, is switched off by CLAUDE_CODE_DISABLE_CRON in the claude-sdk
+// runner's env floor (`bundled-skills-env.ts`). This guard sees only the first
+// half; the runner's `cron-scheduler-real-sdk.e2e.test.ts` pins the second.
 // Others are aliases or companions of a row that already says it (`Agent` is
 // `Task` on the wire; CronList lists what only CronCreate could make), a UI mode
 // with no reach (plan mode), inert in an AX session (PushNotification), or

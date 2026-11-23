@@ -141,8 +141,16 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // them as covered by this row.
     //
     // The clause is narrow on purpose: it names the mechanism the runner took
-    // away, the CLI's built-in scheduler (CronCreate, CronDelete, CronList,
-    // ScheduleWakeup, RemoteTrigger). Other ways to have something happen later
+    // away, the CLI's built-in scheduler. That has two halves, and the row is
+    // true only with both. The scheduling tools (CronCreate, CronDelete,
+    // CronList, ScheduleWakeup, RemoteTrigger) are off the `tools` allowlist.
+    // The CLI's headless cron loop is not a tool: unless
+    // CLAUDE_CODE_DISABLE_CRON is set it reads `<cwd>/.claude/scheduled_tasks.json`
+    // from the agent's writable home and fires unprompted turns with the
+    // prompts it finds, so a planted file would schedule work with no tool call
+    // at all. The runner's env floor (`buildBundledSkillsEnv()`) sets that var;
+    // the claude-sdk runner's `cron-scheduler-real-sdk.e2e.test.ts` pins it on
+    // the real binary. Other ways to have something happen later
     // remain. Bash `run_in_background` is kept on purpose, and when a
     // background command finishes the CLI sends a task-notification that wakes
     // the model for an unprompted turn while the runner is still warm

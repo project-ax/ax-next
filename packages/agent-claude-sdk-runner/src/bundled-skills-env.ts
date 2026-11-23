@@ -19,6 +19,20 @@
 //     `!CLAUDE_CODE_DISABLE_CRON && flag("tengu_kairos_cron")`, and it covers
 //     only cron things: the three Cron tools (already excluded), cron restore,
 //     a cron tip, the interactive scheduler and dream's schedule mode.
+//     It ALSO switches off the CLI's own headless scheduler, and that is the
+//     part that is load-bearing for security (TASK-1207 review r3, measured
+//     on the pinned binary in the runner's configuration). With the var
+//     unset, the print path the SDK drives starts a scheduler that reads
+//     `<cwd>/.claude/scheduled_tasks.json` and fires unprompted turns with the
+//     prompts it finds there. `cwd` is the agent's durable, writable home, so
+//     an agent could plant that file with Write or Bash and schedule its own
+//     turns: no CronCreate call, no routine, no hold. The `tools` allowlist
+//     does not stop it (the scheduler is not a tool). Measured: unset, a
+//     past-due entry reached the model within ~2s of an idle session opening;
+//     set, zero model calls. `cron-scheduler-real-sdk.e2e.test.ts` pins both.
+//     This var is therefore what makes the rail row `builtins.cron-create`
+//     ("Cannot schedule things with its built-in timer instead of a routine")
+//     true. KEEP IT even if a future CLI drops the `loop` skill.
 //   - CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL=1 takes `claude-api` out.
 //
 // Nothing switches off the rest (update-config, simplify, init, …). That is
@@ -37,7 +51,8 @@
 //   - Bare mode (CLAUDE_CODE_SIMPLE=1) drops AX's own skills too.
 //
 // Capability minimization (invariant #5): this only removes CLI features. It
-// adds no reach.
+// adds no reach. One of the features it removes (the cron scheduler) is reach
+// the agent should never have had.
 //
 // Ordering contract: main.ts spreads buildBundledSkillsEnv() right AFTER
 // ...buildTelemetryEnv(), which is after ...proxyStartup.providerEnv, so these
@@ -48,7 +63,9 @@
 
 /**
  * Env vars that switch off the CLI's bundled `loop` (cron-backed) and
- * `claude-api` skills. Pure and constant: takes no input and returns a fresh
+ * `claude-api` skills, and the CLI's own cron scheduler (which would otherwise
+ * run prompts planted in `<cwd>/.claude/scheduled_tasks.json`). The cron var is
+ * load-bearing for the rail row `builtins.cron-create`; never drop it. Pure and constant: takes no input and returns a fresh
  * object each call. Spread right after `...buildTelemetryEnv()` in the main.ts
  * SDK `query()` env literal (a floor, not an overridable default).
  */
