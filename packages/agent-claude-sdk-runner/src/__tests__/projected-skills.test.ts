@@ -208,4 +208,14 @@ describe('skillRefusal', () => {
         'session started. Use the tools you were given.',
     );
   });
+
+  // `readProjectedSkills` never returns both today, but the order is the
+  // fail-closed rule: a load error refuses even a name the set holds, so a
+  // reorder that checks `names` first goes red here.
+  it('a load error refuses even a name the set holds', () => {
+    const both = { names: new Set(['weekly-report']), loadError: 'EACCES' };
+    const reason = skillRefusal({ skill: 'weekly-report' }, both);
+    expect(reason).toBeDefined();
+    expect(reason).toContain("this agent's skills couldn't be read when the session started");
+  });
 });
