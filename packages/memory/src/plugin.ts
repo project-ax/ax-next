@@ -1085,8 +1085,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // Every other member's key on this page, by their display name
           // (TASK-1209): only on a team agent, only in a turn whose recall
           // reads everything, only for a current member of its team, and
-          // never failing the read. Empty on a personal agent, which asks
-          // nobody.
+          // never failing the read. The caller (`ownSubject`) is asked too
+          // when another member key is on the page, only so a teammate who
+          // takes their name reads "a teammate" (TASK-1213). Empty on a
+          // personal agent, which asks nobody.
           const labels = await memberLabels(bus, ctx, access, page.map((row) => row.about), ownSubject);
 
           // Per-answer conversation ordinals (design doc "Signal" section,

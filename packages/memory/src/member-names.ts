@@ -186,27 +186,31 @@ function readsAsAgentName(key: string, agentName: string): boolean {
  * `teams:is-member`, then one `auth:get-user` if and only if it answered
  * `member: true`. Ids are asked in parallel. Never throws.
  *
- * A name is shown only when no other key WITHIN THIS ONE ANSWER reads the
- * same, compared word by word as the reserved check does ({@link nameWords}),
- * so `Bob Smith` and `bob  smith.` collide. Otherwise every key holding it
- * reads {@link TEAMMATE_TEXT}: a member who renames themself to a teammate's
- * name can't pass for them beside that teammate's rows, and neither reads as
- * the other.
+ * The caller counts too (TASK-1213). When `self` is a member key and at least
+ * one other member key is on the page, the caller's id goes through the same
+ * two lookups, but only so their name joins the check below. It is never a
+ * label. With no other member key on the page there is nothing to collide
+ * with, and nobody is asked, the caller included.
+ *
+ * A name is shown only when no other key WITHIN THIS ONE ANSWER, and not the
+ * caller, reads the same, compared word by word as the reserved check does
+ * ({@link nameWords}), so `Bob Smith` and `bob  smith.` collide. Otherwise
+ * every key holding it reads {@link TEAMMATE_TEXT}: a member who renames
+ * themself to a teammate's name can't pass for them beside that teammate's
+ * rows, nor for the person talking, whose own rows read `you`.
  *
  * Residuals, documented and pinned by tests, not fixed here:
  *
- * - The check sees only the keys in this answer. A member who renames
- *   themself to a teammate's display name reads as that name wherever the
- *   real teammate's rows aren't in the same answer. Display names are
- *   self-chosen account text, the same as wherever names show (Slack
- *   included). A team-wide check needs the member list, which
+ * - The check sees only the keys in this answer and the caller. A member who
+ *   renames themself to a teammate's display name reads as that name
+ *   wherever the real teammate's rows aren't in the same answer. Display
+ *   names are self-chosen account text, the same as wherever names show
+ *   (Slack included). A team-wide check needs the member list, which
  *   `teams:list-members` gives only admins: follow-up.
  * - Homoglyph and invisible variants of a name (a Cyrillic `а` for a Latin
  *   `a`) pass {@link nameWords}, so they don't collide.
- * - `self` never enters the check: the caller's own key is never looked up,
- *   so it holds no name. In Alice's turn, a Bob renamed "Alice Jones" reads
- *   "Alice Jones" beside Alice's own rows, which read `you`. Follow-up:
- *   count the caller's name as a holder.
+ * - A lookup that fails, the caller's own included, leaves that one name out
+ *   of the check for this answer (each id is its own question).
  */
 export async function memberLabels(
   bus: HookBus,
@@ -240,10 +244,15 @@ export async function memberLabels(
   ) {
     return labels;
   }
+  // Every other member key on the page is asked about, to be shown. So is the
+  // caller's own key, only to be counted.
+  const lookups = [...ids].map(([about, userId]) => ({ about, userId, shown: true }));
+  const selfId = self === undefined ? undefined : memberKeyId(self);
+  if (self !== undefined && selfId !== undefined) lookups.push({ about: self, userId: selfId, shown: false });
   const faults: Array<{ hook: string; err: unknown }> = [];
-  const named = new Map<string, string>();
+  const found: Array<{ about: string; name: string; shown: boolean }> = [];
   await Promise.all(
-    [...ids].map(async ([about, userId]) => {
+    lookups.map(async ({ about, userId, shown }) => {
       let membership: unknown;
       try {
         membership = await bus.call<{ teamId: string; userId: string }, unknown>(TEAMS_IS_MEMBER_HOOK, ctx, {
@@ -260,23 +269,24 @@ export async function memberLabels(
         const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
         if (!isRecord(user) || user.id !== userId) return;
         const name = memberName(user.displayName, access.agentName);
-        if (name !== undefined) named.set(about, name);
+        if (name !== undefined) found.push({ about, name, shown });
       } catch (err) {
         faults.push({ hook: AUTH_GET_USER_HOOK, err });
       }
     }),
   );
-  // Two different members whose names read the same, word by word, would
-  // pass for each other: both read "a teammate" in this answer instead.
-  // Within this answer only, and `self` holds no name here: see the
-  // residuals on {@link memberLabels}.
+  // Two different people whose names read the same, word by word, would
+  // pass for each other: every member key holding that name reads "a
+  // teammate" in this answer instead. The caller's name counts here and is
+  // never shown. Within this answer only: see the residuals on
+  // {@link memberLabels}.
   const holders = new Map<string, number>();
-  for (const name of named.values()) {
+  for (const { name } of found) {
     const key = nameWords(name).join(' ');
     holders.set(key, (holders.get(key) ?? 0) + 1);
   }
-  for (const [about, name] of named) {
-    if (holders.get(nameWords(name).join(' ')) === 1) labels.set(about, name);
+  for (const { about, name, shown } of found) {
+    if (shown && holders.get(nameWords(name).join(' ')) === 1) labels.set(about, name);
   }
   const first = faults[0];
   if (first !== undefined) {
