@@ -55,7 +55,7 @@ function invalid(message: string): PluginError {
  * connector that already had this id before slice 2c can still be read,
  * edited and deleted, and `connectors:live-ids` still answers for it.
  */
-const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored', 'directory']);
+const RESERVED_CONNECTOR_IDS: ReadonlySet<string> = new Set(['authored', 'directory', 'pin-images']);
 
 /** Refuse an id no NEW connector or request may take. Call on create paths
  *  only, after `validateConnectorId`. */

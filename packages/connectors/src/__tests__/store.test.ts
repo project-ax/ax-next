@@ -561,6 +561,7 @@ describe('boundary validators', () => {
   it('`directory` is reserved on create (GET /admin/connectors/directory would shadow it) but still a valid id', () => {
     expect(validateConnectorId('directory')).toBe('directory');
     expect(() => assertConnectorIdCreatable('directory')).toThrow(/reserved/);
+    expect(() => assertConnectorIdCreatable('pin-images')).toThrow(/reserved/);
   });
 
   it('validateKeyMode rejects out-of-enum', () => {
