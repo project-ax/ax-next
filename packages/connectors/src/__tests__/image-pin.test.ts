@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveImageDigest } from '../image-pin.js';
+import { createPinnedFetch, isBlockedIp } from '../safe-registry-fetch.js';
 
 const D = 'sha256:' + 'a'.repeat(64);
 
@@ -42,7 +43,7 @@ describe('resolveImageDigest', () => {
   it('pins mongo:4.4 via a fake registry', async () => {
     const { f, seen } = fakeRegistry();
     const out = await resolveImageDigest('mongo:4.4', { fetch: f });
-    expect(out).toEqual({ pinned: `registry-1.docker.io/library/mongo@${D}` });
+    expect(out).toEqual({ pinned: `mongo@${D}` });
     const head = seen.find((s) => s.url.includes('/manifests/'));
     expect(head?.url).toBe('https://registry-1.docker.io/v2/library/mongo/manifests/4.4');
     expect(head?.method).toBe('HEAD');
@@ -56,7 +57,7 @@ describe('resolveImageDigest', () => {
   it('pins a namespaced and a third-party registry ref', async () => {
     const { f, seen } = fakeRegistry({ requireAuth: false });
     expect(await resolveImageDigest('bitnami/redis', { fetch: f })).toEqual({
-      pinned: `registry-1.docker.io/bitnami/redis@${D}`,
+      pinned: `bitnami/redis@${D}`,
     });
     expect(await resolveImageDigest('ghcr.io/org/app:1.2', { fetch: f })).toEqual({
       pinned: `ghcr.io/org/app@${D}`,
@@ -66,7 +67,7 @@ describe('resolveImageDigest', () => {
 
   it('an already-pinned ref is returned unchanged, with no network call', async () => {
     const { f, seen } = fakeRegistry();
-    const ref = `registry-1.docker.io/library/mongo@${D}`;
+    const ref = `mongo@${D}`;
     expect(await resolveImageDigest(ref, { fetch: f })).toEqual({ pinned: ref });
     expect(seen).toEqual([]);
   });
@@ -142,7 +143,7 @@ describe('resolveImageDigest', () => {
       return new Response(null, { status: 200, headers: { 'docker-content-digest': D } });
     }) as typeof fetch;
     expect(await resolveImageDigest('mongo:4.4', { fetch: f })).toEqual({
-      pinned: `registry-1.docker.io/library/mongo@${D}`,
+      pinned: `mongo@${D}`,
     });
   });
 
@@ -184,5 +185,43 @@ describe('resolveImageDigest', () => {
     const bad = (async () =>
       new Response(null, { status: 200, headers: { 'docker-content-digest': 'sha256:xyz' } })) as typeof fetch;
     expect(await resolveImageDigest('mongo:4.4', { fetch: bad })).toHaveProperty('error');
+  });
+
+  it('keeps the input spelling: only the tag becomes the digest', async () => {
+    const { f } = fakeRegistry({ requireAuth: false });
+    expect(await resolveImageDigest('bitnamilegacy/kafka:latest', { fetch: f })).toEqual({
+      pinned: `bitnamilegacy/kafka@${D}`,
+    });
+    expect(await resolveImageDigest('gcr.io/x/y:t', { fetch: f })).toEqual({ pinned: `gcr.io/x/y@${D}` });
+    expect(await resolveImageDigest('docker.io/library/mongo:4', { fetch: f })).toEqual({
+      pinned: `docker.io/library/mongo@${D}`,
+    });
+  });
+});
+
+describe('connect-time address vetting', () => {
+  it.each(['10.0.0.1', '127.0.0.1', '169.254.169.254', '100.64.0.1', '192.168.1.1', '::1', 'fd00::1', '::ffff:10.0.0.1'])(
+    'blocks %s',
+    (ip) => expect(isBlockedIp(ip)).toBe(true),
+  );
+  it('allows a public address', () => expect(isBlockedIp('93.184.216.34')).toBe(false));
+
+  it('a public-looking name that resolves to 10.x is refused before any connection', async () => {
+    const resolver = async () => [{ address: '10.0.0.1', family: 4 }];
+    const f = createPinnedFetch({ timeoutMs: 2000, resolver });
+    expect(await resolveImageDigest('registry.example.com/app:1', { fetch: f })).toEqual({
+      error: 'registry address is not public',
+    });
+  });
+
+  it('a mixed public/private answer is refused too', async () => {
+    const resolver = async () => [
+      { address: '93.184.216.34', family: 4 },
+      { address: '10.0.0.1', family: 4 },
+    ];
+    const f = createPinnedFetch({ timeoutMs: 2000, resolver });
+    expect(await resolveImageDigest('registry.example.com/app:1', { fetch: f })).toEqual({
+      error: 'registry address is not public',
+    });
   });
 });

@@ -91,7 +91,7 @@ describe('POST /admin/connectors/pin-images', () => {
     await h.pinImages(req({ images: ['mongo:4.4', '10.0.0.1/x:1'] }), r);
     expect(out.status).toBe(200);
     const results = (out.body as { results: Array<Record<string, string>> }).results;
-    expect(results[0]).toEqual({ image: 'mongo:4.4', pinned: `registry-1.docker.io/library/mongo@${D}` });
+    expect(results[0]).toEqual({ image: 'mongo:4.4', pinned: `mongo@${D}` });
     expect(results[1]?.image).toBe('10.0.0.1/x:1');
     expect(results[1]?.error).toBeTruthy();
   });

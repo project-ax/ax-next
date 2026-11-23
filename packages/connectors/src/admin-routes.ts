@@ -49,7 +49,8 @@ import {
   type DirectorySearchInputLike,
   type DirectorySearchOutputLike,
 } from './directory-route.js';
-import { resolveImageDigest } from './image-pin.js';
+import { resolveImageDigest, REQUEST_TIMEOUT_MS } from './image-pin.js';
+import { createPinnedFetch } from './safe-registry-fetch.js';
 import {
   markDirectoryProvenanceEdited,
   parseFromDirectory,
@@ -355,8 +356,8 @@ export async function probeConnector(
 
 export interface AdminRouteDeps {
   bus: HookBus;
-  /** Test seam for the image-pin registry calls. Default: the global fetch,
-   *  looked up at call time. */
+  /** Test seam for the image-pin registry calls. Default: an undici fetch whose
+   *  DNS lookup rejects private addresses. */
   fetchImpl?: typeof fetch;
 }
 
@@ -506,6 +507,8 @@ export function createConnectorRouteHandlers(
   deps: AdminRouteDeps & { mode?: ConnectorRouteMode },
 ) {
   const mode: ConnectorRouteMode = deps.mode ?? 'admin';
+  // Registry calls for pin-images: connect-time-vetted (safe-registry-fetch.ts).
+  let pinnedFetch: typeof fetch | undefined;
   // Per-handler-bundle ctx mirrors the @ax/mcp-client / @ax/agents pattern. The
   // synthetic ctx attributes the bus calls; the real actor id flows through the
   // hook input (`userId`), forced from the authenticated session below.
@@ -1205,7 +1208,8 @@ export function createConnectorRouteHandlers(
         res.status(400).json({ error: 'images must be an array of at most 32 strings' });
         return;
       }
-      const doFetch: typeof fetch = deps.fetchImpl ?? ((input, init) => fetch(input, init));
+      const doFetch: typeof fetch =
+        deps.fetchImpl ?? (pinnedFetch ??= createPinnedFetch({ timeoutMs: REQUEST_TIMEOUT_MS }));
       const results = await Promise.all(
         (images as string[]).map(async (image) => {
           const out = await resolveImageDigest(image, { fetch: doFetch });

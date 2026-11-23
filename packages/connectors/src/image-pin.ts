@@ -21,6 +21,9 @@
 //     image gets a plain error.
 // ---------------------------------------------------------------------------
 
+import { ResponseTooLargeError, capResponseBody } from '@ax/core/response-cap';
+import { BlockedRequestError } from './safe-registry-fetch.js';
+
 export const REQUEST_TIMEOUT_MS = 10_000;
 export const TOKEN_BODY_MAX_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 3;
@@ -46,7 +49,7 @@ interface ParsedRef {
   registry: string; // host, already host-checked
   repo: string;
   tag: string;
-  /** Reference as pinned output prefix: registry/repo */
+  /** Pinned output prefix: the input's own spelling, minus the tag */
   name: string;
   digest?: string;
 }
@@ -87,6 +90,10 @@ function parseRef(ref: string): ParsedRef | { error: string } {
     rest = m[1] as string;
   }
   const parts = rest.split('/');
+  // R15: the pinned output keeps the input's own spelling (registry and repo as
+  // typed); only the tag is replaced by the digest. Normalization below is for
+  // the request target only.
+  const spelling = parts.slice(0, -1).concat((parts[parts.length - 1] as string).split(':')[0] as string).join('/');
   let registry = DOCKER_HUB_REGISTRY;
   const first = parts[0] as string;
   if (parts.length > 1 && (first.includes('.') || first.includes(':') || first === 'localhost')) {
@@ -123,7 +130,7 @@ function parseRef(ref: string): ParsedRef | { error: string } {
     registry = hostname.toLowerCase().replace(/\.$/, '');
   }
   const repo = parts.join('/');
-  return { registry, repo, tag, name: `${registry}/${repo}`, ...(digest !== undefined && { digest }) };
+  return { registry, repo, tag, name: spelling, ...(digest !== undefined && { digest }) };
 }
 
 type Deps = { fetch: typeof fetch };
@@ -142,29 +149,6 @@ async function discard(res: Response): Promise<void> {
   } catch {
     // nothing to release
   }
-}
-
-async function readCappedText(res: Response, cap: number): Promise<string | null> {
-  const declared = Number(res.headers.get('content-length') ?? '0');
-  if (Number.isFinite(declared) && declared > cap) {
-    await discard(res);
-    return null;
-  }
-  if (res.body === null) return '';
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > cap) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 function parseChallenge(header: string): { realm: string; service?: string; scope?: string } | null {
@@ -207,8 +191,13 @@ async function fetchToken(
     await discard(res);
     return { error: 'registry refused anonymous access (is the image private?)' };
   }
-  const text = await readCappedText(res, TOKEN_BODY_MAX_BYTES);
-  if (text === null) return { error: 'registry token response too large' };
+  let text: string;
+  try {
+    text = await capResponseBody(res, TOKEN_BODY_MAX_BYTES).text();
+  } catch (err) {
+    if (err instanceof ResponseTooLargeError) return { error: 'registry token response too large' };
+    throw err;
+  }
   try {
     const j = JSON.parse(text) as { token?: unknown; access_token?: unknown };
     const t = typeof j.token === 'string' ? j.token : j.access_token;
@@ -278,7 +267,16 @@ export async function resolveImageDigest(ref: string, deps: Deps): Promise<PinRe
       return { error: `registry answered ${res.status}` };
     }
     return { error: 'too many redirects' };
-  } catch {
+  } catch (err) {
+    if (causedByBlocked(err)) return { error: 'registry address is not public' };
     return { error: 'could not reach the registry' };
   }
+}
+
+/** undici wraps a lookup failure in a TypeError('fetch failed') cause chain. */
+function causedByBlocked(err: unknown): boolean {
+  for (let e: unknown = err, i = 0; e instanceof Error && i < 5; e = e.cause, i++) {
+    if (e instanceof BlockedRequestError) return true;
+  }
+  return false;
 }
