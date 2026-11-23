@@ -145,8 +145,9 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     // true only with both. The scheduling tools (CronCreate, CronDelete,
     // CronList, ScheduleWakeup, RemoteTrigger) are off the `tools` allowlist.
     // The CLI's headless cron loop is not a tool: unless
-    // CLAUDE_CODE_DISABLE_CRON is set it reads `<cwd>/.claude/scheduled_tasks.json`
-    // from the agent's writable home and fires unprompted turns with the
+    // CLAUDE_CODE_DISABLE_CRON is set to 1, it reads
+    // `<cwd>/.claude/scheduled_tasks.json` from the agent's writable home and
+    // fires unprompted turns with the
     // prompts it finds, so a planted file would schedule work with no tool call
     // at all. The runner's env floor (`buildBundledSkillsEnv()`) sets that var;
     // the claude-sdk runner's `cron-scheduler-real-sdk.e2e.test.ts` pins it on
