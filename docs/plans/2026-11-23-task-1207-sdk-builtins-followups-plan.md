@@ -72,6 +72,7 @@ These are planner probes against CLI 2.1.119, configured like `main.ts`: `tools`
 - `CLAUDE_CODE_DISABLE_CRON=1` takes `loop` out of both lists. `Skill({skill:'loop'})` then returns is_error `<tool_use_error>Unknown skill: loop</tool_use_error>`, and the PreToolUse hook is never called.
   - Its gate is `!CLAUDE_CODE_DISABLE_CRON && flag("tengu_kairos_cron")`.
   - The same gate covers only cron things: the three Cron tools (already excluded), cron restore, a cron tip, the interactive scheduler and dream's schedule mode.
+  - **Correction (review r3/r4).** "The interactive scheduler" was wrong. The headless print path the SDK drives starts that scheduler too. It reads `<cwd>/.claude/scheduled_tasks.json` and runs the prompts in it with no user turn. The runner's cwd is the agent's writable home, so on origin/main (and in prod) injected content could get the agent to Write that file and get unprompted turns that skip routine approval. So Task 3 does not "only remove CLI features": it closes that self-scheduling hole. `cron-scheduler-real-sdk.e2e.test.ts` pins it.
 - `CLAUDE_CODE_DISABLE_CLAUDE_API_SKILL=1` takes `claude-api` out.
 - A PreToolUse hook sees `{tool_name:'Skill', tool_input:{skill:'/init'}}` verbatim, leading `/` included. A `permissionDecision:'deny'` reason arrives as an is_error tool_result. An allowed AX skill returns `Launching skill: weekly-report`.
 - **Naming.** The CLI lists a user skill by FOLDER name. `Skill('<frontmatter name>')` also resolves when they differ. AX guarantees folder == name: `skills-parser/src/manifest.ts:295` sets `id: name`, and connector bundles use `connector-union.ts:968,1010`.
@@ -397,7 +398,7 @@ Run `security-checklist` for this task. It touches the pre-call gate and model-c
 
 ## PR notes
 
-- **Security note:** one `security-checklist` pass covering Task 2 (consent claim) and Task 4 (model input at the pre-call gate). Mention that Task 3 only removes CLI features (no reach added).
+- **Security note:** one `security-checklist` pass covering Task 2 (consent claim) and Task 4 (model input at the pre-call gate). Task 3 is not "only removing CLI features". It closes a self-scheduling hole that was open on origin/main (and so in prod): injected content → Write `<cwd>/.claude/scheduled_tasks.json` → the CLI's scheduler runs unprompted turns that skip routine approval. The note must cover it (see the correction under "Switches that work").
 - **Boundary review:** not required (no hook-surface change). State it.
 - **Card item 4:** not done here. Walk TASK-1205 covered it.
 - **Refuted premise:** say that the card asked for ~20 rows, why it got one, and point at `OFF_RAIL`.
