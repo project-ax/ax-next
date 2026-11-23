@@ -107,6 +107,24 @@ const transcriptSource: TranscriptSource = {
   write: vi.fn().mockResolvedValue('accepted'),
 };
 
+describe('runRunner — inbox idle floor from the env', () => {
+  const idleOptionFor = async (env: RunnerEnv): Promise<unknown> => {
+    (createInboxLoop as unknown as Mock).mockClear();
+    const loop: Loop = { run: async () => 0 };
+    expect(await runRunner(() => loop, seams(() => env))).toBe(0);
+    const opts = (createInboxLoop as unknown as Mock).mock.calls.at(-1)![0] as { idleTimeoutMs?: number };
+    return 'idleTimeoutMs' in opts ? opts.idleTimeoutMs : 'absent';
+  };
+
+  it('AX_INBOX_IDLE_MS reaches the inbox loop as idleTimeoutMs', async () => {
+    expect(await idleOptionFor({ ...fakeEnv(), inboxIdleMs: 2_100_000 })).toBe(2_100_000);
+  });
+
+  it('leaves idleTimeoutMs unset when the env is absent, so the inbox loop keeps its default', async () => {
+    expect(await idleOptionFor(fakeEnv())).toBe('absent');
+  });
+});
+
 describe('runRunner — bounded final history and visible event refusals', () => {
   it('keeps the final history inside the wire cap while retaining the newest message', async () => {
     const loop: Loop = { run: async ctx => {

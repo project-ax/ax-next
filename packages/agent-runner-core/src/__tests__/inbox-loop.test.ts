@@ -153,6 +153,21 @@ function alwaysTimeoutClient() {
 }
 
 describe('inbox-loop idle floor', () => {
+  it('keeps a 15 minute idle floor when idleTimeoutMs is not given', async () => {
+    let nowMs = 1_000_000;
+    const start = nowMs;
+    const inbox = createInboxLoop({
+      client: alwaysTimeoutClient(),
+      now: () => nowMs,
+      sleep: async (ms: number) => {
+        nowMs += ms;
+      },
+    });
+    expect((await inbox.next()).type).toBe('idle-timeout');
+    expect(nowMs - start).toBeGreaterThanOrEqual(15 * 60 * 1000);
+    expect(nowMs - start).toBeLessThan(16 * 60 * 1000);
+  });
+
   it('returns an idle-timeout entry once the cumulative idle floor elapses', async () => {
     let nowMs = 1_000_000;
     const inbox = createInboxLoop({
