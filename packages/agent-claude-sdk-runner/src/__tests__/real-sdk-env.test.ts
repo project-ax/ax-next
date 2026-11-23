@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { stripClaudeCodeEnv } from './real-sdk-env.js';
 
 describe('stripClaudeCodeEnv', () => {
-  it('drops every variable that steers a Claude Code CLI and keeps the rest', () => {
+  it('drops CLAUDECODE, CLAUDE_* and ANTHROPIC_* and keeps the rest', () => {
     const out = stripClaudeCodeEnv({
       CLAUDECODE: '1',
       CLAUDE_CODE_ENTRYPOINT: 'cli',
@@ -27,7 +27,35 @@ describe('stripClaudeCodeEnv', () => {
   });
 });
 
+// The three ways a test hands the spawned CLI the parent's env wholesale.
+const PARENT_ENV_HANDOFF = [
+  /\.\.\.\s*process\.env\b/, // { ...process.env }
+  /\benv\s*:\s*process\.env\b/, // env: process.env
+  /Object\.assign\([^)]*process\.env\b/, // Object.assign({}, process.env)
+];
+
+function handsOverParentEnv(source: string): boolean {
+  return PARENT_ENV_HANDOFF.some((re) => re.test(source));
+}
+
 describe('real-SDK e2e tests', () => {
+  it('the scan catches each way of handing over the parent env, and not the helper', () => {
+    for (const bad of [
+      'env: { ...process.env, X: "1" }',
+      'env: process.env,',
+      'const env = Object.assign({}, process.env, { X: "1" });',
+    ]) {
+      expect(handsOverParentEnv(bad), bad).toBe(true);
+    }
+    for (const ok of [
+      'env: { ...stripClaudeCodeEnv(), X: "1" }',
+      'env: stripClaudeCodeEnv(process.env),',
+      "const key = process.env['ANTHROPIC_API_KEY'];",
+    ]) {
+      expect(handsOverParentEnv(ok), ok).toBe(false);
+    }
+  });
+
   it('no real-SDK e2e test hands the CLI the parent process env', () => {
     const dir = fileURLToPath(new URL('.', import.meta.url));
     const files = readdirSync(dir).filter((f) => /real-sdk.*\.e2e\.test\.ts$/.test(f));
@@ -35,7 +63,7 @@ describe('real-SDK e2e tests', () => {
     expect(files.length).toBeGreaterThanOrEqual(5);
     for (const file of files) {
       const source = readFileSync(`${dir}${file}`, 'utf8');
-      expect(source, file).not.toMatch(/\.\.\.\s*process\.env\b/);
+      expect(handsOverParentEnv(source), file).toBe(false);
     }
   });
 });
