@@ -4,7 +4,7 @@ import { attributeFacts, attributeSpeakers } from './attribution.js';
 import { speakerSubject, type SpeakerScope } from './audience.js';
 import { extractFacts, type ExtractedFact, type LlmCallFn } from './extract.js';
 import { dropNegatedFacts } from './negation.js';
-import { isAgentContextSelfReport } from './self-report.js';
+import { isAgentContextSelfReport, isTurnNarration } from './self-report.js';
 import { deriveSlot, type Slot } from './slots.js';
 import { dropTwins, hasActiveTwin, hasRetractedTwin, type PriorRow } from './twins.js';
 import type { MemoryStatementKind } from './types.js';
@@ -160,8 +160,9 @@ export type ObserverResult =
       /**
        * Facts dropped because they were the agent describing its own context
        * ("I have no rules"), its memory operations ("I couldn't save that to
-       * memory") and its tool failures (TASK-612, TASK-1136) — see
-       * `self-report.ts`. Not `unusable`: nothing is wrong with the extractor
+       * memory") and its tool failures (TASK-612, TASK-1136), and the turn's
+       * narration filed under someone else (TASK-1210, `isTurnNarration`) —
+       * see `self-report.ts`. Not `unusable`: nothing is wrong with the extractor
        * when this is non-zero.
        */
       selfReports: number;
@@ -802,8 +803,10 @@ export function toStatements(
     // The Rules file, memory's store and each tool's own state are the
     // sources of truth, and the report goes stale the moment one of them
     // moves. Dropped before the date check, and counted apart from `unusable`
-    // because it is not an extractor failure.
-    if (isAgentContextSelfReport(fact)) {
+    // because it is not an extractor failure. TASK-1210: so is the turn's
+    // narration filed under someone else (the speaker's Slack id, their
+    // request for a verbatim reply, a memory miss filed under a person).
+    if (isAgentContextSelfReport(fact) || isTurnNarration(fact)) {
       selfReports += 1;
       continue;
     }

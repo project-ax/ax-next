@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { classifyAgentFact, isAgentContextSelfReport, isAgentSubject } from '../self-report.js';
+import { classifyAgentFact, isAgentContextSelfReport, isAgentSubject, isTurnNarration } from '../self-report.js';
 
 /**
  * TASK-612. The fact below is the one walk TASK-607 measured the observer
@@ -639,6 +639,102 @@ describe("the assistant's narration of its own actions, and what it says it can'
       classifyAgentFact({ subject: 'assistant', predicate: 'listed_limitations', object });
     }
     classifyAgentFact({ subject: 'assistant', predicate: `created_${'a_new_'.repeat(20_000)}routine`, object: 'x' });
+    expect(performance.now() - start).toBeLessThan(250);
+  });
+});
+
+// TASK-1210: more of the turn's narration. The drop rows are walk TASK-1192's
+// live replay (2026-11-23) and kind's stored rows; the keep rows are the
+// LongMemEval banks' near misses, which a wider rule measured dropping.
+describe("more of the turn's narration (TASK-1210)", () => {
+  it.each([
+    // Its memory misses.
+    ['assistant', 'stated_no_record', 'Assistant told vinay it has no record of his favorite color, as it had not come up'],
+    ['assistant', 'stated', "Fern had no record of vinay's favorite color and asked vinay to share it"],
+    ['assistant', 'stated', "No record of vinay's favorite color existed in prior conversations as of 2026-11-22"],
+    ['assistant', 'stated_no_standup_on_record', "No team standup time is saved anywhere in memory for vinay's team"],
+    ['assistant', 'stated', 'No team standup time is on record for vinay, and the assistant has no calendar access'],
+    ['assistant', 'stated_no_standup_time_on_file', 'for vinay'],
+    ['assistant', 'stated', "I don't have your team standup time on file"],
+  ])('drops the memory miss %s | %s | %s as its own narration', (subject, predicate, object) => {
+    expect(classifyAgentFact({ subject, predicate, object })).toBe('own-narration');
+  });
+
+  it.each([
+    // Its requests to its admin, and for a capability.
+    ['assistant', 'requested_admin_capability', 'asked its admin to add the capability to send Slack messages'],
+    ['assistant', 'filed_admin_request', 'Automatically filed a request with the admin to add a Slack connector'],
+    ['assistant', 'filed_request', "Automatically filed a request with the user's admin to add the scheduler capability"],
+    ['assistant', 'requested_capability', 'Requested the walk-haiku skill via request_capability'],
+    // Its offers, and its compliance.
+    ['assistant', 'offered_to_set_up_reminder', 'a daily reminder before the standup'],
+    ['assistant', 'offered_further_help', 'with the standup summary'],
+    ['assistant', 'complied_with_instruction', 'replied with exactly the three words'],
+  ])('drops %s | %s | %s as action narration', (subject, predicate, object) => {
+    expect(classifyAgentFact({ subject, predicate, object })).toBe('action-narration');
+  });
+
+  it.each([
+    // Content a wider rule would drop: what it offered, admin topics, records as content.
+    ['assistant', 'offered_appointment_slots', '9:00-9:30, 9:30-10:00, 10:00-10:30'],
+    ['assistant', 'offered_discount', 'A one-time discount on the weighted blanket'],
+    ['assistant', 'listed_admin_steps', 'Log in to the Google Workspace Admin console, then Add a new user'],
+    ['assistant', 'recommended_admin_hours', '5-10 hours per week on administrative tasks'],
+    ['assistant', 'denied_surgeon_claim', 'stated it had no record of saying that, and that he was a lawyer'],
+    ['assistant', 'stated_fact', "The world's largest snowflake on record measured 15 inches wide"],
+    ['assistant', 'stated_notion_pricing', 'Notion free plan (limitations on file uploads and version history)'],
+    ['assistant', 'stated', 'There is no record of Shakespeare attending university'],
+  ])('keeps %s | %s | %s', (subject, predicate, object) => {
+    expect(isAgentContextSelfReport({ subject, predicate, object })).toBe(false);
+  });
+
+  it.each([
+    // The speaker's Slack id.
+    ['user:u1', 'slack_user_id', 'UHTE83XE1 (Slack user ID, interacts with Fern bot in Slack)'],
+    ['vinay', 'has_slack_user_id', 'UHTE83XE1'],
+    ['user:u1', 'slack_identity', 'Slack user ID UHTE83XE1, messaging in the #walk-two-bots channel'],
+    // The speaker's request for a verbatim reply.
+    ['user:u1', 'requested_exact_reply', 'asked Fern to reply with exactly these lines: hello <!channel>, testing'],
+    ['user:u1', 'requested_exact_reply', 'hello <!channel>, testing'], // the predicate alone says it
+    ['user:u1', 'asked_verbatim', 'alpha beta gamma.'],
+    ['user:u1', 'instructed_assistant', 'instructed Fern to reply with exactly these three words and nothing else'],
+    ['vinay', 'instructed_in_slack', 'instructed Fern to reply with exactly these lines: hello <!channel>, testing'],
+    // A memory miss filed under the person, or a topic.
+    ['user:u1', 'team_standup_time', "no team standup time is on record for vinay's team"],
+    ['user:u1', 'has_no_standup_time_on_record', "no team standup time is saved anywhere in memory for vinay's team"],
+    ['vinay_team_standup', 'has_no_recorded_time', "no standup time is on record for vinay's team"],
+  ])('isTurnNarration drops %s | %s | %s', (subject, predicate, object) => {
+    const fact = { subject, predicate, object };
+    expect(isTurnNarration(fact)).toBe(true);
+    // Not a fact about the agent: the one-off cleanup never reads it.
+    expect(classifyAgentFact(fact)).toBeNull();
+  });
+
+  it.each([
+    // The walk's real facts.
+    ['user:u1', 'team_standup_time', 'Team standup is at 9:30 every weekday'],
+    ['user:u1', 'favorite_color', 'teal'],
+    // A person's requests and instructions are theirs: LongMemEval evidence rows.
+    ['user:u1', 'requested_reservation', 'Wanted a reservation at Roscioli for tomorrow evening at 7:00 pm'],
+    ['user:u1', 'instructed_formatting', 'Use markdown, do not use backslashes, do not use code blocks'],
+    ['user:u1', 'instructed_response_format', 'Answer each statement with only "Agree" or "Disagree"'],
+    ['user:u1', 'requested_reply', 'Asked for a reply to a Facebook comment praising baked goods'],
+    ['user:u1', 'requested_fetch', 'asked Fern to fetch example.com and report the page title'],
+    // A person's own "no … on file", not a lookup that came back empty.
+    ['user:u1', 'medical_records', 'no allergies are on file at the clinic'],
+    // The agent's own rows are classifyAgentFact's.
+    ['assistant', 'slack_user_id', 'U0FERN'],
+  ])('isTurnNarration keeps %s | %s | %s', (subject, predicate, object) => {
+    expect(isTurnNarration({ subject, predicate, object })).toBe(false);
+  });
+
+  it('stays fast on huge, repetitive, untrusted input', () => {
+    const start = performance.now();
+    for (const word of ['no ', 'no record of ', 'is on record ', "don't have ", 'reply with ']) {
+      const object = `${word.repeat(100_000)}x`;
+      classifyAgentFact({ subject: 'assistant', predicate: 'stated', object });
+      isTurnNarration({ subject: 'user', predicate: `requested_${word.replace(/ /g, '_').repeat(20_000)}`, object });
+    }
     expect(performance.now() - start).toBeLessThan(250);
   });
 });
