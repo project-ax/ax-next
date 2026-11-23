@@ -6,8 +6,23 @@ import { type K8sPresetConfig } from '../index.js';
 // orchestrator here — we assert the preset wires it in keepalive mode (I3: the
 // warm-sandbox path is actually reachable, not half-wired).
 const { captured } = vi.hoisted(() => ({
-  captured: { cfg: undefined as Record<string, unknown> | undefined },
+  captured: {
+    cfg: undefined as Record<string, unknown> | undefined,
+    webCfg: undefined as Record<string, unknown> | undefined,
+  },
 }));
+
+// Capture the config handed to channel-web (the stream-buffer sizing hint).
+vi.mock('@ax/channel-web/server', async (importActual) => {
+  const actual = await importActual<typeof import('@ax/channel-web/server')>();
+  return {
+    ...actual,
+    createChannelWebServerPlugin: (cfg: Record<string, unknown>) => {
+      captured.webCfg = cfg;
+      return actual.createChannelWebServerPlugin(cfg);
+    },
+  };
+});
 
 vi.mock('@ax/chat-orchestrator', () => ({
   createChatOrchestratorPlugin: (cfg: Record<string, unknown>) => {
@@ -68,5 +83,15 @@ describe('@ax/preset-k8s orchestrator keepalive', () => {
     expect(captured.cfg).not.toHaveProperty('maxTurnMinutes');
     expect(captured.cfg).not.toHaveProperty('maxIdleMinutes');
     expect(captured.cfg?.sandboxMaxLifetimeMs).toBe(21_600_000);
+  });
+
+  it('hands channel-web the turn cap in ms, so the stream buffer outlives a long turn', () => {
+    createK8sPlugins({ ...stubConfig, chat: { ...stubConfig.chat, maxTurnMinutes: 90 } });
+    expect(captured.webCfg?.maxTurnMs).toBe(90 * 60_000);
+  });
+
+  it('without a turn cap, channel-web gets no maxTurnMs', () => {
+    createK8sPlugins(stubConfig);
+    expect(captured.webCfg).not.toHaveProperty('maxTurnMs');
   });
 });

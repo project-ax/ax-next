@@ -4,6 +4,7 @@ import { chunkBufferOptsFor } from '../../server/plugin';
 const MIN = 60_000;
 const SLACK = 5 * MIN;
 
+
 describe('chunk buffer shell max age', () => {
   it('shell max age follows the turn cap, not the default timeout', () => {
     expect(chunkBufferOptsFor({ chatTimeoutMs: 10 * MIN, maxTurnMs: 120 * MIN })).toEqual({
