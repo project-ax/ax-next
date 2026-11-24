@@ -36,6 +36,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 const CSS = readFileSync(join(__dirname, '..', 'index.css'), 'utf8');
+// The legacy names in index.css are `var(--ax-*)` aliases onto this theme, so
+// contrast is measured on the values they resolve to.
+const THEME_CSS = readFileSync(join(__dirname, '..', '..', '..', 'ui', 'theme.css'), 'utf8');
 
 /** WCAG 2.1 AA for normal-sized text. Every string measured here is body copy or a button label. */
 const AA_NORMAL = 4.5;
@@ -45,20 +48,33 @@ const AA_NORMAL = 4.5;
  * Brace-matched rather than regex'd to the closing brace, because the dark
  * block nests an `@media` inside it.
  */
-function tokensAfter(selector: string): Map<string, string> {
-  const at = CSS.indexOf(selector);
-  if (at === -1) throw new Error(`selector not found in index.css: ${selector}`);
-  let i = CSS.indexOf('{', at);
+function declsAfter(css: string, selector: string): Map<string, string> {
+  const at = css.indexOf(selector);
+  if (at === -1) throw new Error(`selector not found: ${selector}`);
+  let i = css.indexOf('{', at);
   let depth = 0;
   const start = i;
-  for (; i < CSS.length; i++) {
-    if (CSS[i] === '{') depth++;
-    else if (CSS[i] === '}' && --depth === 0) break;
+  for (; i < css.length; i++) {
+    if (css[i] === '{') depth++;
+    else if (css[i] === '}' && --depth === 0) break;
   }
-  const body = CSS.slice(start, i);
+  const body = css.slice(start, i);
   const out = new Map<string, string>();
   for (const m of body.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) {
     out.set(m[1]!, m[2]!.trim());
+  }
+  return out;
+}
+
+function tokensAfter(selector: string): Map<string, string> {
+  // Aliases are declared once in the base `:root` and cascade into both dark
+  // blocks, so layer the selector's own declarations over that base.
+  const own = new Map([...declsAfter(CSS, ':root {'), ...declsAfter(CSS, selector)]);
+  const theme = new Map([...declsAfter(THEME_CSS, ':root {'), ...declsAfter(THEME_CSS, selector)]);
+  const out = new Map<string, string>();
+  for (const [k, v] of own) {
+    const ref = v.match(/^var\((--ax-[a-z0-9-]+)\)$/);
+    out.set(k, ref ? (theme.get(ref[1]!) ?? v) : v);
   }
   return out;
 }

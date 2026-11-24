@@ -35,6 +35,7 @@
     { "path": "../routines-contract" },
     { "path": "../sandbox-mount-protocol" },
     { "path": "../teams" },
-    { "path": "../tool-policy" }
+    { "path": "../tool-policy" },
+    { "path": "../ui" }
   ]
 }
