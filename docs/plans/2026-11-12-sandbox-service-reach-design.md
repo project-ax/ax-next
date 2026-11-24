@@ -38,7 +38,7 @@ sandbox can't already reach. Only an admin picks which images run.
 | 7 | **Services come from the repo's compose file, one profile.** For the coding agent that's `e2e`. | Decided (Vinay, 2026-11-23) |
 | 8 | **The importer learns what `e2e` needs** (§4): `command`/`entrypoint`, start order, one-shot jobs, service names on `localhost`, published ports, pinning at import, sizes, more than 8 services. | Our call |
 | 9 | **The worker runs in the sandbox, without GDAL, for now.** The repo's code must run when GDAL isn't found; e2e tests that need it skip. | Decided (Vinay, 2026-11-23) |
-| 10 | **npm reaches the private registry at `gitlab.com`** through a connector host and a credential slot. | Decided (Vinay, 2026-11-23) |
+| 10 | **npm reaches the private package registry host** through a connector host and a credential slot. | Decided (Vinay, 2026-11-23) |
 | 11 | **Per-agent turn and idle settings**, with chart caps, mid-turn credential refresh and the stream fixes (§6). | Decided (Vinay, 2026-11-12) |
 | 12 | **No clock may cut off a long silent think or a long test run** inside the agent's turn limit (§6.1). | Decided (Vinay, 2026-11-23) |
 | 13 | **A per-agent runner size** (CPU and memory, request and limit), clamped by chart maximums; defaults unchanged (§3.5). | Decided (Vinay, 2026-11-23) |
@@ -242,7 +242,7 @@ to nothing.
 | `tmpfs:`, named volumes | Writable paths, each an `emptyDir` with a size limit (a chart default, say 2 GiB). Every service also gets `/tmp`. | Mongo, Kafka and Redis data. Today's `emptyDir`s have no size limit (`pod-spec.ts:344`). |
 | No health check | A TCP check on the service's first port. | The Firestore emulator has none, and the order needs something to gate on. |
 | More than 8 services | `SERVICES_MAX` rises to 16 for on-demand connectors (`service-descriptor.ts`, `connectors/src/types.ts:233`). Always-on keeps 8. | `e2e` has 9 without the worker. |
-| A service that bind-mounts source | Flagged "this looks like your app: run it in the sandbox", not imported. | `worker-e2e` (§4.4). |
+| A service that bind-mounts source | Flagged "this looks like your app: run it in the sandbox", not imported. | The app's worker service (§4.4). |
 
 Ignored, as today: `container_name`, `networks`, `platform`, `restart` other
 than `"no"`, and the `x-` anchors once YAML has merged them.
@@ -264,18 +264,18 @@ The runner starts after all of them.
 
 ### 4.4 The worker, without GDAL
 
-`worker-e2e` is the app, not infrastructure: compose mounts `./processor/src`,
-runs `npm install` with the person's `~/.npmrc`, and builds on
-`gdal-node-alpine`. In the sandbox the agent:
+The app's worker service is the app itself, not infrastructure: compose
+mounts the app source directory, runs `npm install` with the person's
+`~/.npmrc`, and builds on a GDAL base image. In the sandbox the agent:
 
-1. runs `npm install` in `processor/src`. The private registry is on
-   **`gitlab.com`**. An admin adds it as a connector host with a credential
-   slot. The sandbox's `.npmrc` names the slot's placeholder, and the credential
+1. runs `npm install` in the app source directory. The packages come from
+   **the private package registry host**. An admin adds it as a connector
+   host with a credential slot. The sandbox's `.npmrc` names the slot's placeholder, and the credential
    proxy swaps in the real token only on requests to that host
    (`credential-proxy/src/listener.ts:797-829`). The token never enters the
-   sandbox. `gitlab.com` is probably already allowed for pushing MRs, so the
-   token needs package-registry read scope, or a second credential goes on the
-   same host.
+   sandbox. The registry host is probably already allowed for pushing code, so
+   the token needs package-registry read scope, or a second credential goes on
+   the same host.
 2. starts the worker in the background, with the compose values unchanged
    (`MONGO_HOST=mongos-e2e:27017`, `KAFKA_URL=kafka-e2e:9092`) and
    `FIRESTORE_EMULATOR_HOST=localhost:8085`.
@@ -545,8 +545,8 @@ Each step is a PR (invariant 3).
      The stack starts in order, the sharded cluster initializes, and the turn
      continues in the same stream with the host's note. Record any writable
      paths the images needed.
-   - In the sandbox, `npm install` reaches `gitlab.com` through the proxy, the
-     worker starts without GDAL, and the e2e command passes with GDAL tests
+   - In the sandbox, `npm install` reaches the private package registry host
+     through the proxy, the worker starts without GDAL, and the e2e command passes with GDAL tests
      skipped.
    - A task check-in does the same; the next check-in starts without services.
    - A second conversation on the same agent gets its own stack; the eleventh
