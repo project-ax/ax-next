@@ -31,8 +31,8 @@ const lead = [
 ].join('\n');
 
 const RESEND =
-  "When you ask to connect a capability, allowing it connects it, but this conversation doesn't pick back up on its own: once they've allowed it, they send their message again. " +
-  "So when you ask, tell them that, whatever a tool's description or what you're told about connecting capabilities says.";
+  "When you ask to connect a capability and the result says they've been asked to approve it, tell them that once they've allowed it, they send their message again: " +
+  "this conversation doesn't pick back up on its own, whatever a tool's description or what you're told about connecting capabilities says.";
 const DM_LINE = `This is a private Slack DM with your owner. They can approve anything that needs approval. ${RESEND}`;
 const MEMBER_LINE = `This is a Slack channel, and the person writing is one of your people. They can approve anything that needs approval. ${RESEND}`;
 const OUTSIDER_LINE =
@@ -217,9 +217,15 @@ describe('the note a Slack session reads (TASK-1131)', () => {
     (mode) => {
       const note = slackTurnNote(mode);
       expect(SLACK_NOTE_CAPABILITY_RESEND).toBe(RESEND);
-      expect(note).toContain(
-        "once they've allowed it, they send their message again. So when you ask, tell them that",
-      );
+      expect(note).toContain("tell them that once they've allowed it, they send their message again");
+      // Conditioned on the person having been asked (the broker's REQUESTED_MESSAGE), so it
+      // can't override the description's "nobody was asked" guard for a result with no card,
+      // or a not-found that goes to the admin (TASK-1135; review of 9fea514d1).
+      expect(
+        SLACK_NOTE_CAPABILITY_RESEND.startsWith(
+          "When you ask to connect a capability and the result says they've been asked to approve it,",
+        ),
+      ).toBe(true);
       // It names the texts that claim otherwise, so the model reads it as overriding them.
       expect(note).toContain("whatever a tool's description or what you're told about connecting capabilities says.");
       // Scoped to connecting a capability: a held call's Allow does pick the call up
@@ -230,7 +236,7 @@ describe('the note a Slack session reads (TASK-1131)', () => {
       const carryOn = note
         .split(/(?<=[.,;:])\s+|\s+—\s+/)
         .filter((c) =>
-          /continu|carr(y|ies|ied|ying) on|resum|follow(s|ed|ing)?[- ]?up|pick(s|ed|ing)? (it |this |that |things )?(back )?up|get back to/i.test(
+          /continu|carr(y|ies|ied|ying) on|resum|follow(s|ed|ing)?[- ]?up|pick(s|ed|ing)? (it |this |that |things )?(back )?up|get back to|automatic/i.test(
             c,
           ),
         );
@@ -239,10 +245,17 @@ describe('the note a Slack session reads (TASK-1131)', () => {
     },
   );
 
-  it.each(['dm', 'attended', 'external'] as const)('%s: no Slack note says a conversation continues automatically', (mode) => {
-    expect(slackTurnNote(mode)).not.toMatch(/continues?\s+automatically/i);
+  // No Slack note promises the conversation goes on by itself. Negation-aware, so an
+  // accurate "doesn't continue automatically" stays allowed (review of 9fea514d1).
+  it.each(['dm', 'attended', 'external'] as const)('%s: no clause says anything continues automatically', (mode) => {
+    const auto = slackTurnNote(mode)
+      .split(/(?<=[.,;:])\s+|\s+—\s+/)
+      .filter((c) => /automatic/i.test(c));
+    for (const c of auto) expect(c).toMatch(/\bnever\b|n't\b|\bnot\b/);
   });
 
+  // Not vacuous: this pins keeping the sentence out of SLACK_NOTE_LEAD, which the outsider
+  // note shares (the card suggested the lead; an outsider can't allow anything).
   it("the outsider line doesn't tell them to resend: they can't allow anything", () => {
     expect(slackTurnNote('external')).not.toContain(SLACK_NOTE_CAPABILITY_RESEND);
     expect(slackTurnNote('external')).not.toMatch(/send their message again/);

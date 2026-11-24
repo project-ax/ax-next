@@ -84,13 +84,17 @@ export const SLACK_NOTE_LEAD = [
  * the thread either. Both texts are static and shared by every session, so
  * this overrides them for a Slack session by topic, as the outsider line
  * does. Scoped to connecting a capability: a held call's Allow is a
- * different path (`decisionAllowed` does pick it up). Not in the lead: an
+ * different path (`decisionAllowed` does pick it up). It opens with the
+ * condition the broker's REQUESTED_MESSAGE states (the person was asked), so
+ * it doesn't override the description's "nobody was asked" guard (TASK-1135)
+ * for a result with no card, nor a not-found that goes to the admin. Not in
+ * the lead: an
  * outsider can't allow anything, and their line already says nothing
  * continues. Fixed text, nothing interpolated.
  */
 export const SLACK_NOTE_CAPABILITY_RESEND =
-  "When you ask to connect a capability, allowing it connects it, but this conversation doesn't pick back up on its own: once they've allowed it, they send their message again. " +
-  "So when you ask, tell them that, whatever a tool's description or what you're told about connecting capabilities says.";
+  "When you ask to connect a capability and the result says they've been asked to approve it, tell them that once they've allowed it, they send their message again: " +
+  "this conversation doesn't pick back up on its own, whatever a tool's description or what you're told about connecting capabilities says.";
 
 /** `dm`: the owner, alone with their own personal agent. */
 export const SLACK_NOTE_DM =
