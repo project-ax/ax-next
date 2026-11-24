@@ -77,8 +77,8 @@ export const brand = {
 
 export const status = {
   neutral: {
-    light: { base: fg.light.muted, soft: bg.light.muted, fg: fg.light.default },
-    dark: { base: fg.dark.muted, soft: bg.dark.muted, fg: fg.dark.default },
+    light: { base: fg.light.muted, soft: bg.light.muted, fg: fg.light.inverse },
+    dark: { base: fg.dark.muted, soft: bg.dark.muted, fg: fg.dark.inverse },
   },
   info: {
     light: { base: accent.light.base, soft: accent.light.soft, fg: accent.light.fg },
