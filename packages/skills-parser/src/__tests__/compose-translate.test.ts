@@ -555,3 +555,53 @@ ${dep === 'db_main' ? `  db_main:
     expect(r.invalid[0]!.draft).toBeDefined();
   });
 });
+
+describe('translateComposeToServices: which service is the person\'s own app (A3)', () => {
+  it('a config FILE bind (./init.sql, ./nginx.conf) is dropped and reported; the service imports', () => {
+    const r = translateComposeToServices(`
+services:
+  db:
+    image: ${PINNED}
+    ports: ["5432"]
+    volumes: ["./init.sql:/docker-entrypoint-initdb.d/init.sql"]
+  web:
+    image: ${PINNED_REDIS}
+    ports: ["80"]
+    volumes:
+      - type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/nginx.conf
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([]);
+    expect(r.services.map((s) => s.name).sort()).toEqual(['db', 'web']);
+    expect(r.drops.filter((d) => d.field === 'volumes').map((d) => d.service).sort()).toEqual(['db', 'web']);
+  });
+
+  it('a source DIRECTORY bind (no extension, or a trailing slash, or ".") marks the app', () => {
+    for (const source of ['./src', './data/', '.', '../shared']) {
+      const r = translateComposeToServices(`
+services:
+  app:
+    image: ${PINNED}
+    volumes: ["${source}:/app"]
+`);
+      if (!r.ok) throw new Error(r.error);
+      expect(r.appServices).toEqual([{ service: 'app', reason: 'mounts-source' }]);
+    }
+  });
+
+  it('a service with build: is the app even without a bind mount', () => {
+    const r = translateComposeToServices(`
+services:
+  api:
+    build: .
+    image: ${PINNED}
+  db:
+    image: ${PINNED_REDIS}
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([{ service: 'api', reason: 'builds-image' }]);
+    expect(r.services.map((s) => s.name)).toEqual(['db']);
+  });
+});

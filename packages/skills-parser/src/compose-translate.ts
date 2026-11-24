@@ -29,8 +29,9 @@ import { checkServiceSetClashes } from './service-set-checks.js';
 //     through a shell here), `restart: "no"` (job), both sides of `ports`,
 //     `depends_on` (start order only), `profiles` (selection), and `tmpfs` /
 //     NAMED volumes (writable scratch paths). Host bind mounts are STILL
-//     dropped and reported; a relative, writable bind mount of source marks the
-//     service as the app (`appServices`) rather than infrastructure.
+//     dropped and reported; a relative, writable bind mount of a source
+//     DIRECTORY, or a `build:`, marks the service as the app (`appServices`)
+//     rather than infrastructure (A3: a single config-file bind doesn't).
 //   - `js-yaml`'s default `load()` uses the safe schema (no `!!js/function`
 //     code-exec — that needs the separate `js-yaml-js-types` extension, which we
 //     do not install). We still wrap it in try/catch and guard cyclic
@@ -65,10 +66,12 @@ export interface ComposeInvalid {
 }
 
 /** A service the importer did not import because it looks like the person's own
- *  app (it bind-mounts source): run it in the sandbox instead. */
+ *  app: run it in the sandbox instead. `mounts-source`: it bind-mounts a source
+ *  DIRECTORY writable (see {@link looksLikeDirectory}); `builds-image`: it has
+ *  a `build:` (its image is built from the person's code). */
 export interface ComposeAppService {
   service: string;
-  reason: 'mounts-source';
+  reason: 'mounts-source' | 'builds-image';
 }
 
 /** The slice of a compose service that start-order sorting needs. */
@@ -334,6 +337,22 @@ interface MountReading {
   mountsSource: boolean;
 }
 
+/**
+ * A3 — whether a relative bind source names a DIRECTORY (the person's source
+ * tree) rather than one config file. A directory: `.` or `..`, a trailing
+ * `/`, or a last path segment with no extension (no `.` after its first
+ * character, so `src`, `.git` and `.config` are directories, `init.sql` and
+ * `nginx.conf` are files). A file bind is a config mount for infrastructure
+ * (postgres with ./init.sql, nginx with ./nginx.conf): dropped and reported,
+ * and the service still imports.
+ */
+function looksLikeDirectory(source: string): boolean {
+  if (source.endsWith('/')) return true;
+  const last = source.split('/').at(-1) ?? '';
+  if (last === '.' || last === '..' || last === '') return true;
+  return !last.slice(1).includes('.');
+}
+
 /** A named volume is a bare name; anything that looks like a path or an
  *  interpolation is a host bind mount. */
 const NAMED_VOLUME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -384,7 +403,9 @@ function readMounts(svc: Record<string, unknown>): MountReading {
       continue;
     }
     out.binds.push(echoValue(v) ?? String(source));
-    if (source !== undefined && /^\.{1,2}(\/|$)/.test(source) && !readOnly) out.mountsSource = true;
+    if (source !== undefined && /^\.{1,2}(\/|$)/.test(source) && !readOnly && looksLikeDirectory(source)) {
+      out.mountsSource = true;
+    }
   }
   return out;
 }
@@ -523,6 +544,10 @@ export function translateComposeToServices(
     }
     if (mounts.mountsSource) {
       appServices.push({ service: name, reason: 'mounts-source' });
+      continue;
+    }
+    if (svc.build !== undefined && svc.build !== null) {
+      appServices.push({ service: name, reason: 'builds-image' });
       continue;
     }
 
