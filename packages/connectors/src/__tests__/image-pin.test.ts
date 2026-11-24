@@ -149,7 +149,7 @@ describe('resolveImageDigest', () => {
 
   it('refuses an oversized token response', async () => {
     const f = (async (input: unknown) => {
-      if (String(input).startsWith('https://auth.docker.io')) {
+      if (new URL(String(input)).host === 'auth.docker.io') {
         return new Response('x'.repeat(70 * 1024), { status: 200 });
       }
       return new Response(null, {
@@ -164,7 +164,7 @@ describe('resolveImageDigest', () => {
 
   it('gives a plain error for a private image and for a missing tag', async () => {
     const denied = (async (input: unknown) => {
-      if (String(input).startsWith('https://auth.docker.io')) return new Response('{}', { status: 401 });
+      if (new URL(String(input)).host === 'auth.docker.io') return new Response('{}', { status: 401 });
       return new Response(null, {
         status: 401,
         headers: { 'www-authenticate': 'Bearer realm="https://auth.docker.io/token",service="s"' },
