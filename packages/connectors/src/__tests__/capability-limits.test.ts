@@ -168,3 +168,44 @@ describe('service writablePaths safety', () => {
     expect(CapabilitiesSchema.safeParse({ ...base(), services: [svc('/data/db')] }).success).toBe(true);
   });
 });
+
+// A4 — the shared cross-service checks (@ax/skills-parser) run at save, so a
+// set that would always fail to start can't be saved. Read stays lenient
+// (TASK-712: a stored row must always open, so it can be fixed or deleted).
+describe('services: cross-service checks at save (A4)', () => {
+  const svc = (name: string, ports: number[], extra: Record<string, unknown> = {}) => ({
+    name, image: `registry.example.com/x@sha256:${'a'.repeat(64)}`, ports, env: {}, writablePaths: [], ...extra,
+  });
+  const refusal = (value: unknown): PluginError => {
+    try {
+      validateCapabilitiesForWrite(value);
+    } catch (err) {
+      return err as PluginError;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  it('two services on one container port are refused at write, naming both; read still parses it', () => {
+    const spec = { ...base(), services: [svc('db', [5432]), svc('db-test', [5432])] };
+    const err = refusal(spec);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toContain('"db"');
+    expect(err.message).toContain('"db-test"');
+    expect(validateCapabilities(spec).services).toHaveLength(2);
+  });
+
+  it('a published port that is another service\'s container port is refused at write', () => {
+    const err = refusal({
+      ...base(),
+      services: [svc('a', [1000], { publishedPorts: [{ published: 2000, target: 1000 }] }), svc('b', [2000])],
+    });
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toMatch(/clashes with a container port of "b"/);
+  });
+
+  it('a clean set saves', () => {
+    expect(validateCapabilitiesForWrite({ ...base(), services: [svc('db', [5432]), svc('cache', [6379])] }).services)
+      .toHaveLength(2);
+  });
+});

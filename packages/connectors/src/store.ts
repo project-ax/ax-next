@@ -1,4 +1,5 @@
 import { PluginError } from '@ax/core';
+import { checkServiceSetClashes } from '@ax/skills-parser';
 import { sql, type Kysely, type Selectable } from 'kysely';
 import type { ZodError, ZodType } from 'zod';
 import {
@@ -152,7 +153,16 @@ export function validateCapabilities(value: unknown): Capabilities {
  * `assembleProposal`'s slot-name check on the authored path.
  */
 export function validateCapabilitiesForWrite(value: unknown): Capabilities {
-  return checkCapabilities(CapabilitiesWriteSchema, value);
+  const caps = checkCapabilities(CapabilitiesWriteSchema, value);
+  // A4 — the cross-service rules every sandbox start would hit (one shared
+  // network namespace, spec §4.2), from the one shared copy in
+  // @ax/skills-parser (a pure, lint-allowed runtime import). Write only: a
+  // stored row that breaks them must still open, to be fixed or deleted
+  // (TASK-712). The reason names services only; names already passed the
+  // descriptor's name-shape check, so it is safe to echo in the 400.
+  const clash = checkServiceSetClashes(caps.services ?? []);
+  if (clash !== null) throw invalid(`capabilities.services: ${clash}`);
+  return caps;
 }
 
 /** The Capabilities fields a message may name. */
