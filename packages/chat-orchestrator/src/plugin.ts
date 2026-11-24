@@ -137,7 +137,7 @@ export function createChatOrchestratorPlugin(
           // catalog still boot (the @ax/agents identity tools' convention).
           hook: 'tool:register',
           degradation:
-            'restart_with_services and stop_services are not offered to agents; their tool:execute services still answer',
+            'restart_with_services and stop_services are not offered to agents; their tool:execute services still answer. (Also not offered when onDemandServices.enabled is not true.)',
         },
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
@@ -481,7 +481,9 @@ export function createChatOrchestratorPlugin(
           async (ctx, call) => handler(ctx, call),
         );
       }
-      if (bus.hasService('tool:register')) {
+      // C3 — offered to agents only where on-demand services are on; off, the
+      // executors above still answer (with a refusal) but nothing offers them.
+      if (config.onDemandServices?.enabled === true && bus.hasService('tool:register')) {
         const initCtx = makeAgentContext({ sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system' });
         for (const descriptor of SERVICE_TOOL_DESCRIPTORS) {
           await bus.call('tool:register', initCtx, descriptor);

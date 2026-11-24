@@ -13,7 +13,8 @@ import { main } from '../main.js';
 
 // Dev services on demand: the CLI runs @ax/sandbox-subprocess, which refuses
 // `job` and `publishedPorts`, so a service set can't run here. The orchestrator
-// is loaded with on-demand services OFF: restart_with_services refuses.
+// is loaded with on-demand services OFF: neither service tool is in the
+// catalog agents are offered, and restart_with_services refuses if called.
 
 const SCRIPT: StubRunnerScript = {
   entries: [
@@ -36,7 +37,7 @@ describe('@ax/cli on-demand services are off (subprocess sandbox)', () => {
     await fs.rm(tmp, { recursive: true, force: true });
   });
 
-  it('restart_with_services refuses on a real CLI boot', { timeout: 20_000 }, async () => {
+  it('no service tool is offered, and restart_with_services refuses, on a real CLI boot', { timeout: 20_000 }, async () => {
     let bus: HookBus | undefined;
     const captor: Plugin = {
       manifest: { name: '@ax/test-ondemand-observer', version: '0.0.0', registers: [], calls: [], subscribes: [] },
@@ -55,6 +56,12 @@ describe('@ax/cli on-demand services are off (subprocess sandbox)', () => {
     });
     expect(rc).toBe(0);
     const ctx: AgentContext = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    // The catalog the runner's tool list is built from: none offered.
+    const listed = await bus!.call<Record<string, never>, { tools: Array<{ name: string }> }>('tool:list', ctx, {});
+    const names = listed.tools.map((t) => t.name);
+    expect(names.length).toBeGreaterThan(0); // the catalog is real (memory, skills...)
+    expect(names).not.toContain('restart_with_services');
+    expect(names).not.toContain('stop_services');
     const r = await bus!.call<unknown, { ok: boolean; message: string }>(
       'tool:execute:restart_with_services', ctx, { id: 'c1', name: 'restart_with_services', input: { set: 'e2e' } },
     );

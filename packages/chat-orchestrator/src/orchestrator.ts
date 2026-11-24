@@ -325,10 +325,13 @@ export interface ChatOrchestratorConfig {
    *  (an explicit or default-attached skill of the same id wins). Empty by default. */
   builtinSkills?: ResolvedSkillForOrch[];
   /**
-   * Dev services on demand (spec §3). `enabled` (default true): on-demand
-   * connectors' service sets can be started with `restart_with_services`;
-   * false folds none of them and offers no set (a preset that can't run them
-   * yet). `maxPerAgent` (default DEFAULT_MAX_SERVICE_SANDBOXES_PER_AGENT, 10):
+   * Dev services on demand (spec §3). `enabled` (default FALSE: a preset
+   * turns them on only when its sandbox backend can run a set): on-demand
+   * connectors' service sets can be started with `restart_with_services`.
+   * Off folds none of them, offers no set and registers neither tool in the
+   * catalog. On requires `keepAlive: true` (the restart swaps a warm sandbox
+   * within one request; without it the turn's own sandbox is killed before
+   * the swap), refused at init otherwise. `maxPerAgent` (default DEFAULT_MAX_SERVICE_SANDBOXES_PER_AGENT, 10):
    * the most live sandboxes with a set, plus pending restarts, one agent may
    * have (the chart's `chat.maxServiceSandboxesPerAgent`, §3.4). A positive
    * integer; anything else is refused at init.
@@ -2400,7 +2403,14 @@ export function createOrchestrator(
   // THIS orchestrator instance, so a misnamed provider warns once, not per spawn.
   const augmentUnknownClassLogged = new Set<string>();
   // Dev services on demand (§3.1, §3.4).
-  const onDemandServicesEnabled = config.onDemandServices?.enabled ?? true;
+  // C3 — off unless asked for: a preset whose sandbox can't run a set must
+  // not offer one by forgetting the flag.
+  const onDemandServicesEnabled = config.onDemandServices?.enabled === true;
+  if (onDemandServicesEnabled && config.keepAlive !== true) {
+    throw new Error(
+      'chat-orchestrator: onDemandServices.enabled requires keepAlive: true (a service restart swaps a warm sandbox inside one request)',
+    );
+  }
   const maxServiceSandboxesPerAgent = validPositiveInteger(
     'onDemandServices.maxPerAgent',
     config.onDemandServices?.maxPerAgent ?? DEFAULT_MAX_SERVICE_SANDBOXES_PER_AGENT,

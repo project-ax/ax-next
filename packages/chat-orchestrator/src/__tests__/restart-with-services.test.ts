@@ -88,6 +88,9 @@ async function setup(opts: {
   noteGate?: Promise<void>;
   /** Also attach an always-on connector carrying this service (a fold collision with the set). */
   alwaysOnCollision?: boolean;
+  /** Replaces the whole onDemandServices config (undefined key: omitted). */
+  onDemandConfig?: { enabled?: boolean; maxPerAgent?: number } | 'omit';
+  keepAlive?: boolean;
 } = {}) {
   const rows: Record<string, Row> = {};
   for (const [id, r] of Object.entries(opts.rows ?? {})) {
@@ -105,6 +108,7 @@ async function setup(opts: {
   const turnErrors: Array<{ reqId: string; reason: string; detail?: string }> = [];
   const activeReqClears: string[] = [];
   const logs: string[] = [];
+  const registeredTools: string[] = [];
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...AGENT } }),
@@ -188,17 +192,26 @@ async function setup(opts: {
     },
     'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
     'proxy:close-session': async () => ({}),
+    // The tool catalog (@ax/mcp-client's dispatcher): what agents are offered.
+    'tool:register': async (_c, input: unknown) => {
+      registeredTools.push((input as { name: string }).name);
+      return { ok: true };
+    },
   };
   const busRef: { bus: HookBus | null } = { bus: null };
   const h = await createTestHarness({
     services,
     plugins: [createChatOrchestratorPlugin({
       runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: opts.chatTimeoutMs ?? 60_000,
-      keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
-      onDemandServices: {
-        ...(opts.maxPerAgent !== undefined ? { maxPerAgent: opts.maxPerAgent } : {}),
-        ...(opts.enabled !== undefined ? { enabled: opts.enabled } : {}),
-      },
+      keepAlive: opts.keepAlive ?? true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      ...(opts.onDemandConfig === 'omit'
+        ? {}
+        : {
+            onDemandServices: opts.onDemandConfig ?? {
+              ...(opts.maxPerAgent !== undefined ? { maxPerAgent: opts.maxPerAgent } : {}),
+              enabled: opts.enabled ?? true,
+            },
+          }),
     })],
   });
   busRef.bus = h.bus;
@@ -268,7 +281,7 @@ async function setup(opts: {
   const notes = () => queued.filter((q) => q.entry.type === 'host-note');
   return {
     h, rows, row, opens, handles, queued, terminated, setServiceSetCalls, turnEnds, segmentEnds, turnErrors,
-    activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes,
+    activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes, registeredTools,
   };
 }
 
@@ -966,5 +979,36 @@ describe('restart_with_services: a set that no longer folds (C2)', () => {
     const o1 = await t.invoke('s-1', 'conv-1', 'req-1');
     expect(o1).toMatchObject({ kind: 'terminated', reason: 'connector-services-invalid' });
     expect(t.setServiceSetCalls).toEqual([]);
+  });
+});
+
+// ---- Final review C3: on-demand services are off unless a preset turns them on ----
+describe('restart_with_services: the on-demand switch (C3)', () => {
+  it('unset, on-demand services are OFF: no set folds, the tool refuses, no tool is offered', async () => {
+    const t = await setup({ onDemandConfig: 'omit', rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    expect(t.registeredTools).toEqual([]);
+    const p = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'the message');
+    expect(t.opens[0]!.services).toBeUndefined();
+    const r = await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' });
+    expect(r).toEqual({ ok: false, message: expect.stringContaining('turned off on this host') });
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    await p;
+  });
+
+  it('enabled: false offers neither tool', async () => {
+    const t = await setup({ enabled: false });
+    expect(t.registeredTools).toEqual([]);
+  });
+
+  it('enabled: true offers both tools', async () => {
+    const t = await setup();
+    expect(t.registeredTools.sort()).toEqual([RESTART_WITH_SERVICES, STOP_SERVICES].sort());
+  });
+
+  it('refuses enabled without keepAlive at init (the restart needs a warm sandbox to swap)', async () => {
+    await expect(setup({ keepAlive: false })).rejects.toThrow(/onDemandServices\.enabled requires keepAlive/);
+    // Off, keepAlive doesn't matter.
+    await expect(setup({ keepAlive: false, enabled: false })).resolves.toBeDefined();
   });
 });
