@@ -435,6 +435,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@project-ax/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0
