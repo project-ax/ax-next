@@ -692,3 +692,69 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
     expect(peak).toBe(4);
   });
 });
+
+// A5 — the dev-service fields added for services on demand (command,
+// entrypoint, job, publishedPorts, resources, storageMiB) and the connector's
+// servicesMode are reach: what runs, what is opened to the agent, how big it
+// is, and whether a set waits to be asked for. Each moves the digest. Each is
+// added ONLY when present, so a connector without them keeps the digest an
+// in-flight approval already holds.
+describe('@ax/skill-broker — the freshness predicate sees the on-demand service fields (A5)', () => {
+  const BASE_SVC = {
+    name: 'db', image: `postgres@sha256:${'b'.repeat(64)}`, ports: [5432], env: {}, writablePaths: ['/tmp'],
+  };
+  const withSvc = (extra: Record<string, unknown> = {}, caps: Record<string, unknown> = {}): StubResolve => ({
+    capabilities: {
+      allowedHosts: [], credentials: [], packages: { npm: [], pypi: [] },
+      services: [{ ...BASE_SVC, ...extra }], ...caps,
+    },
+  });
+
+  it('PINS the digest of a service with none of the new fields (unchanged by A5)', async () => {
+    const bus = await bootWith({ linear: PRESENT, registry: { linear: withSvc() } });
+    const { predicate } = await capture(bus, 'linear');
+    expect((predicate as { value: string }).value).toBe('linear@f62548b69bb1ff52');
+  });
+
+  const moves: Array<[string, StubResolve, StubResolve]> = [
+    ['a command arriving', withSvc(), withSvc({ command: ['postgres', '-c', 'fsync=off'] })],
+    ['a reordered command', withSvc({ command: ['a', 'b'] }), withSvc({ command: ['b', 'a'] })],
+    ['an entrypoint arriving', withSvc(), withSvc({ entrypoint: ['/bin/sh', '-c'] })],
+    ['a reordered entrypoint', withSvc({ entrypoint: ['a', 'b'] }), withSvc({ entrypoint: ['b', 'a'] })],
+    ['becoming a job', withSvc(), withSvc({ job: true })],
+    ['a published port arriving', withSvc(), withSvc({ publishedPorts: [{ published: 15432, target: 5432 }] })],
+    [
+      'a published port re-pointed',
+      withSvc({ publishedPorts: [{ published: 15432, target: 5432 }] }),
+      withSvc({ publishedPorts: [{ published: 25432, target: 5432 }] }),
+    ],
+    ['resources arriving', withSvc(), withSvc({ resources: { cpuMillis: { request: 100, limit: 500 } } })],
+    [
+      'resources growing',
+      withSvc({ resources: { memoryMiB: { request: 256, limit: 512 } } }),
+      withSvc({ resources: { memoryMiB: { request: 256, limit: 4096 } } }),
+    ],
+    ['storage arriving', withSvc(), withSvc({ storageMiB: 2048 })],
+    ['the set going on-demand', withSvc(), withSvc({}, { servicesMode: 'on-demand' })],
+  ];
+  for (const [what, before, after] of moves) {
+    it(`DISAGREES on ${what}`, async () => {
+      const catalog: Catalog = { linear: PRESENT, registry: { linear: before } };
+      const bus = await bootWith(catalog);
+      const { predicate } = await capture(bus, 'linear');
+      catalog.registry = { linear: after };
+      const out = await check(bus, predicate);
+      expect(out.value).not.toBe((predicate as { value: string }).value);
+    });
+  }
+
+  it('a reordered published-port list is not a change', async () => {
+    const a = { published: 15432, target: 5432 };
+    const b = { published: 15433, target: 5433 };
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: withSvc({ ports: [5432, 5433], publishedPorts: [a, b] }) } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+    catalog.registry = { linear: withSvc({ ports: [5432, 5433], publishedPorts: [b, a] }) };
+    expect((await check(bus, predicate)).value).toBe((predicate as { value: string }).value);
+  });
+});
