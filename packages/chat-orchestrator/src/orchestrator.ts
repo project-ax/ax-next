@@ -3251,9 +3251,11 @@ export function createOrchestrator(
           });
           // The kill did not take. With the timers cleared nothing else would
           // ever retire this runner short of the runner floor / pod ceiling, so
-          // hand it back to the idle reaper as the retry.
+          // hand it back to the idle reaper as the retry. On the host's
+          // configured idle window (B4), not the entry's: that is the deleted
+          // agent's own idle time, up to an hour.
           if (warmSessions.get(sessionId) === entry) {
-            armReapTimer({ ...ctx, sessionId });
+            armReapTimer({ ...ctx, sessionId }, idleWindowMs);
           }
         }
       }),
