@@ -437,6 +437,14 @@ export function createOpenSession(deps: OpenSessionDeps) {
     //    with no pod. Mirror the createNamespacedPod failure handler
     //    below — best-effort terminate, then re-throw.
     let podSpec;
+    const extraEnv: Record<string, string> | undefined = (() => {
+      const e: Record<string, string> = {
+        ...(process.env.AX_COMMIT_TRACE !== undefined ? { AX_COMMIT_TRACE: process.env.AX_COMMIT_TRACE } : {}),
+        ...(input.env?.AX_INBOX_IDLE_MS !== undefined ? { AX_INBOX_IDLE_MS: input.env.AX_INBOX_IDLE_MS } : {}),
+        ...(input.env?.AX_TURN_LIMIT_MS !== undefined ? { AX_TURN_LIMIT_MS: input.env.AX_TURN_LIMIT_MS } : {}),
+      };
+      return Object.keys(e).length > 0 ? e : undefined;
+    })();
     try {
       // `input.workspaceRoot` (the host's cwd) went to session:create above
       // and stops there: it names nothing inside the runner pod.
@@ -481,15 +489,16 @@ export function createOpenSession(deps: OpenSessionDeps) {
         // AX_USERFILES_ROOT. Spread-when-present mirrors services/installedSkills
         // — a dropped field here silently disables the durable mount.
         ...(mounts.length > 0 ? { mounts } : {}),
+        // §3.5 — the agent's runner size; pod-spec clamps it to the chart max.
+        ...(input.runnerSize !== undefined ? { runnerSize: input.runnerSize } : {}),
         // Debug: forward the opt-in per-turn transcript-persistence trace flag
         // from the host env (set AX_COMMIT_TRACE=1 on the host deployment) into
         // the runner pod, so commit-trace.ts's decision trace is reachable in
         // k8s — the path was otherwise observable only on failure (the TASK-11
-        // diagnosis blocker). Forwards ONLY this one debug boolean, nothing
-        // else from the host env; off (absent) by default.
-        ...(process.env.AX_COMMIT_TRACE !== undefined
-          ? { extraEnv: { AX_COMMIT_TRACE: process.env.AX_COMMIT_TRACE } }
-          : {}),
+        // diagnosis blocker). From the host env it forwards ONLY this one debug
+        // boolean (off when absent), plus the two schema-checked timing values
+        // the orchestrator set on the session (§6.2) — nothing else.
+        ...(extraEnv !== undefined ? { extraEnv } : {}),
       }, deps.config);
     } catch (err) {
       podLog.error('pod_spec_build_failed', {
@@ -536,6 +545,7 @@ export function createOpenSession(deps: OpenSessionDeps) {
       const pooled = deps.config.sharedPool &&
         Object.values(deps.config.sharedPool.runnerBinaries).includes(input.runnerBinary) &&
         (input.services?.length ?? 0) === 0 &&
+        input.runnerSize === undefined &&
         !readOnlyHome;
       if (deps.config.backend === 'agent-sandbox' && !pooled) {
         podSpec = await prepareAgentSandboxMounts(deps.preparationApi ?? deps.api, podSpec, deps.config, podLog);

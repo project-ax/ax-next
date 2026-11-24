@@ -725,6 +725,34 @@ describe('OpenSessionInputSchema', () => {
     expect(result.error.issues.map((i) => i.path.join('.'))).toEqual(['proxyConfig']);
   });
 
+  it('accepts runnerSize and the two idle/turn env names, and refuses other env', () => {
+    const base = {
+      sessionId: 'sess-1', workspaceRoot: '/tmp/ws', runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+    };
+    const sized = OpenSessionInputSchema.safeParse({
+      ...base,
+      runnerSize: { cpuMillis: { request: 2000, limit: 4000 }, memoryMiB: { request: 6144, limit: 8192 } },
+      env: { AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' },
+    });
+    expect(sized.success).toBe(true);
+    // Above any chart max is NOT a schema error: the backend clamps, never refuses.
+    expect(OpenSessionInputSchema.safeParse({
+      ...base, runnerSize: { memoryMiB: { request: 1, limit: 999_999_999 } },
+    }).success).toBe(true);
+    for (const bad of [
+      { runnerSize: { cpuMillis: { request: 4000, limit: 2000 } } },
+      { runnerSize: { cpuMillis: { request: 0, limit: 2000 } } },
+      { runnerSize: { memoryMiB: { request: 1.5, limit: 2 } } },
+      { runnerSize: { memory: '8Gi' } },
+      { env: { LD_PRELOAD: '/x' } },
+      { env: { AX_INBOX_IDLE_MS: 'soon' } },
+      { env: { AX_TURN_LIMIT_MS: '-5' } },
+    ]) {
+      expect(OpenSessionInputSchema.safeParse({ ...base, ...bad }).success).toBe(false);
+    }
+  });
+
   it('still accepts an input with no services (back-compat)', () => {
     const result = OpenSessionInputSchema.safeParse({
       sessionId: 'sess-1',
@@ -757,6 +785,17 @@ describe('OpenSessionInputSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it.each(['/', '//', '/../etc', '/a/./b', '/proc', '/proc/self', '/sys/x', '/dev', '//dev/shm'])('rejects unsafe writable path %s', (path) => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+      services: [{ ...validServiceDescriptor(), writablePaths: [path] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects a service carrying smuggled backend vocabulary (strict) (I2)', () => {
     const result = OpenSessionInputSchema.safeParse({
       sessionId: 'sess-1',
@@ -768,8 +807,8 @@ describe('OpenSessionInputSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects more than 8 services (carrier cap)', () => {
-    const services = Array.from({ length: 9 }, (_, i) => ({
+  it('rejects more than 16 services (carrier cap)', () => {
+    const services = Array.from({ length: 17 }, (_, i) => ({
       ...validServiceDescriptor(),
       name: `svc-${i}`,
     }));
@@ -786,6 +825,50 @@ describe('OpenSessionInputSchema', () => {
 
 // --- ServiceDescriptorSchema (standalone wire re-validation) ----------------
 describe('ServiceDescriptorSchema', () => {
+  it('open-session services carry the new descriptor fields and up to 16', () => {
+    const full = {
+      ...validServiceDescriptor(),
+      command: ['postgres', '-c', 'fsync=off'],
+      entrypoint: ['docker-entrypoint.sh'],
+      job: false,
+      publishedPorts: [{ published: 15432, target: 5432 }],
+      resources: {
+        cpuMillis: { request: 100, limit: 500 },
+        memoryMiB: { request: 128, limit: 512 },
+      },
+      storageMiB: 1024,
+    };
+    const input = (services: unknown[]) => ({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: validProxyConfig(),
+      services,
+    });
+    const sixteen = Array.from({ length: 16 }, (_, i) => ({ ...full, name: `svc-${i}` }));
+    expect(OpenSessionInputSchema.safeParse(input(sixteen)).success).toBe(true);
+    expect(
+      OpenSessionInputSchema.safeParse(input([...sixteen, { ...full, name: 'svc-16' }])).success,
+    ).toBe(false);
+    expect(
+      ServiceDescriptorSchema.safeParse({
+        ...full,
+        resources: { cpuMillis: { request: 500, limit: 100 } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('wire copy keys equal the canonical schema keys', () => {
+    // @ax/sandbox-protocol must not import @ax/skills-parser, so the canonical
+    // key list (ServiceDescriptorSchema in packages/skills-parser/src/service-descriptor.ts)
+    // is hard-coded here. Update both together.
+    const canonical = [
+      'command', 'entrypoint', 'env', 'healthcheck', 'image', 'job', 'name', 'ports',
+      'publishedPorts', 'resources', 'storageMiB', 'writablePaths',
+    ];
+    expect(Object.keys(ServiceDescriptorSchema.shape).sort()).toEqual(canonical);
+  });
+
   it('accepts a well-formed descriptor', () => {
     expect(ServiceDescriptorSchema.safeParse(validServiceDescriptor()).success).toBe(true);
   });

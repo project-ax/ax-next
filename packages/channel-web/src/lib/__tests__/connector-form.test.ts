@@ -9,6 +9,8 @@ import {
   connectorIdFromName,
   splitList,
   applyComposeToForm,
+  applyPinResults,
+  servicesProblem,
   STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
 } from '../connector-form';
@@ -545,7 +547,12 @@ services:
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.form.services).toEqual([
-      { name: 'db', image: PINNED, ports: [5432], env: { POSTGRES_PASSWORD: 'secret' }, writablePaths: [] },
+      expect.objectContaining({
+        name: 'db',
+        image: PINNED,
+        ports: [5432],
+        env: { POSTGRES_PASSWORD: 'secret' },
+      }),
     ]);
     expect(result.drops).toEqual([]);
     expect(result.invalid).toEqual([]);
@@ -592,6 +599,118 @@ services:
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.form.services.map((s) => s.name)).toEqual(['db']);
+  });
+
+  // --- on-demand compose profiles (Task 1.6) -----------------------------
+
+  const PROFILED = `
+services:
+  db:
+    image: ${PINNED}
+    profiles: [dev]
+  cache:
+    image: redis:7
+    profiles: [dev]
+    depends_on: [db]
+  web:
+    image: ${PINNED}
+    profiles: [ci]
+`;
+
+  it('picking a profile re-translates and keeps the mode', () => {
+    const f = { ...emptyConnectorForm(), servicesMode: 'on-demand' as const };
+    const dev = applyComposeToForm(f, PROFILED, 'dev');
+    expect(dev.ok).toBe(true);
+    if (!dev.ok) return;
+    expect(dev.form.composeProfile).toBe('dev');
+    expect(dev.form.servicesMode).toBe('on-demand');
+    expect(dev.profiles.sort()).toEqual(['ci', 'dev']);
+    expect(dev.form.services.map((s) => s.name)).toEqual(['db']);
+    const ci = applyComposeToForm(dev.form, PROFILED, 'ci');
+    if (!ci.ok) throw new Error('expected ok');
+    expect(ci.form.composeProfile).toBe('ci');
+    expect(ci.form.servicesMode).toBe('on-demand');
+    expect(ci.form.services.map((s) => s.name)).toEqual(['web']);
+  });
+
+  it('pinning replaces tags in the saved services, in start order', () => {
+    const f = emptyConnectorForm();
+    const r = applyComposeToForm(f, PROFILED, 'dev');
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.form.drafts.map((d) => d.image)).toEqual(['redis:7']);
+    expect(servicesProblem(r.form)).toMatch(/cache/);
+    const pinned = `redis@sha256:${'b'.repeat(64)}`;
+    const out = applyPinResults(r.form, [{ image: 'redis:7', pinned }]);
+    expect(out.errors).toEqual({});
+    expect(out.form.drafts).toEqual([]);
+    expect(out.form.services.map((s) => [s.name, s.image])).toEqual([
+      ['db', PINNED],
+      ['cache', pinned],
+    ]);
+    expect(out.form.pinned).toEqual({ 'redis:7': pinned });
+    expect(capabilitiesFromForm(out.form).services?.map((s) => s.name)).toEqual(['db', 'cache']);
+    expect(servicesProblem(out.form)).toBeNull();
+  });
+
+  it('a failed pin keeps the draft, reports the error, and blocks saving', () => {
+    const r = applyComposeToForm(emptyConnectorForm(), PROFILED, 'dev');
+    if (!r.ok) throw new Error('expected ok');
+    const out = applyPinResults(r.form, [{ image: 'redis:7', error: 'not found' }]);
+    expect(out.errors).toEqual({ cache: 'We couldn’t find it: not found' });
+    expect(out.form.drafts).toHaveLength(1);
+    expect(servicesProblem(out.form)).not.toBeNull();
+  });
+
+  it('app services are listed, not saved', () => {
+    const yaml = `services:\n  db:\n    image: ${PINNED}\n  app:\n    image: ${PINNED}\n    volumes:\n      - ./src:/app\n`;
+    const r = applyComposeToForm(emptyConnectorForm(), yaml);
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.form.appServices).toEqual([{ service: 'app', reason: 'mounts-source' }]);
+    expect(capabilitiesFromForm(r.form).services?.map((s) => s.name)).toEqual(['db']);
+  });
+
+  it('a pasted file that yields no services blocks saving', () => {
+    const r = applyComposeToForm(emptyConnectorForm(), PROFILED.replace(/profiles: \[ci\]/, 'profiles: [dev]').replace(/\n  db:[\s\S]*$/, '\n  x:\n    image: ' + PINNED + '\n    profiles: [dev]\n'));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.form.services).toEqual([]);
+    expect(servicesProblem(r.form)).toMatch(/No services came in/);
+    expect(servicesProblem(emptyConnectorForm())).toBeNull();
+  });
+
+  it('two services on the same port block saving, in plain words (A1)', () => {
+    const form = {
+      ...emptyConnectorForm(),
+      services: [
+        { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+        { name: 'db-test', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+      ],
+    };
+    expect(servicesProblem(form)).toBe(
+      '“db” and “db-test” both use port 5432. Here they share one network, so change the port on one of them.',
+    );
+  });
+
+  it('A8c: a file whose services are all the person’s own app says so, with no group to pick', () => {
+    const r = applyComposeToForm(emptyConnectorForm(), `services:\n  app:\n    build: .\n    image: ${PINNED}\n`);
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.form.services).toEqual([]);
+    const msg = servicesProblem(r.form);
+    expect(msg).toBe('Everything in your file runs your own code, so no services came in. The agent runs that in its sandbox. Add a database or cache by hand if it needs one.');
+    expect(msg).not.toMatch(/group/i);
+  });
+
+  it('more than 8 services needs on-demand', () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({
+      name: `s${i}`, image: PINNED, ports: [], env: {}, writablePaths: [],
+    }));
+    const off = { ...emptyConnectorForm(), services: many };
+    expect(servicesProblem(off)).toMatch(/Start only when needed/);
+    expect(servicesProblem({ ...off, servicesMode: 'on-demand' })).toBeNull();
+    expect(
+      servicesProblem({ ...off, servicesMode: 'on-demand', services: [...many, ...many] }),
+    ).toMatch(/16/);
+    expect(capabilitiesFromForm({ ...off, servicesMode: 'on-demand' }).servicesMode).toBe('on-demand');
+    expect(capabilitiesFromForm(off).servicesMode).toBeUndefined();
   });
 
   // --- oauth credential slots (Task 8) ------------------------------------

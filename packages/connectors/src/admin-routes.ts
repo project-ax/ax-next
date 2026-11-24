@@ -49,6 +49,8 @@ import {
   type DirectorySearchInputLike,
   type DirectorySearchOutputLike,
 } from './directory-route.js';
+import { resolveImageDigest, REQUEST_TIMEOUT_MS } from './image-pin.js';
+import { createPinnedFetch } from './safe-registry-fetch.js';
 import {
   markDirectoryProvenanceEdited,
   parseFromDirectory,
@@ -121,6 +123,9 @@ interface AuthoredProposalView {
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/connectors';
+
+/** Most images one pin-images request may name. */
+const PIN_IMAGES_MAX = 32;
 
 /** 64 KiB cap on request bodies. Mirrors @ax/mcp-client / @ax/agents — wide
  *  enough for a full connector with its capabilities spec but smaller than the
@@ -351,6 +356,9 @@ export async function probeConnector(
 
 export interface AdminRouteDeps {
   bus: HookBus;
+  /** Test seam for the image-pin registry calls. Default: an undici fetch whose
+   *  DNS lookup rejects private addresses. */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -499,6 +507,8 @@ export function createConnectorRouteHandlers(
   deps: AdminRouteDeps & { mode?: ConnectorRouteMode },
 ) {
   const mode: ConnectorRouteMode = deps.mode ?? 'admin';
+  // Registry calls for pin-images: connect-time-vetted (safe-registry-fetch.ts).
+  let pinnedFetch: typeof fetch | undefined;
   // Per-handler-bundle ctx mirrors the @ax/mcp-client / @ax/agents pattern. The
   // synthetic ctx attributes the bus calls; the real actor id flows through the
   // hook input (`userId`), forced from the authenticated session below.
@@ -1174,6 +1184,40 @@ export function createConnectorRouteHandlers(
         handleHookError(err, res, ctx.logger);
       }
     },
+
+    /**
+     * POST /admin/connectors/pin-images  { images: string[] } — resolve image
+     * tags to `name@sha256:` pins (dev services import). adminOnly. Outbound,
+     * anonymous registry calls with SSRF guards (image-pin.ts). A bad image is
+     * a per-image `error`, never a failed request.
+     */
+    async pinImages(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await authenticate(req, res, { adminOnly: true });
+      if (actor === null) return;
+      const parsed = parseAndValidateBody(req.body);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const images = (parsed.value as { images?: unknown } | null)?.images;
+      if (
+        !Array.isArray(images) ||
+        images.length > PIN_IMAGES_MAX ||
+        !images.every((i) => typeof i === 'string')
+      ) {
+        res.status(400).json({ error: `images must be an array of at most ${PIN_IMAGES_MAX} strings` });
+        return;
+      }
+      const doFetch: typeof fetch =
+        deps.fetchImpl ?? (pinnedFetch ??= createPinnedFetch({ timeoutMs: REQUEST_TIMEOUT_MS }));
+      const results = await Promise.all(
+        (images as string[]).map(async (image) => {
+          const out = await resolveImageDigest(image, { fetch: doFetch });
+          return 'pinned' in out ? { image, pinned: out.pinned } : { image, error: out.error };
+        }),
+      );
+      res.status(200).json({ results });
+    },
   };
 }
 
@@ -1219,6 +1263,7 @@ export async function registerAdminConnectorRoutes(
     // TASK-1100 — directory search. Exact paths beat `:id` whatever the
     // registration order, so `directory` is reserved like `authored`.
     { method: 'GET', path: '/admin/connectors/directory', handler: handlers.directorySearch },
+    { method: 'POST', path: '/admin/connectors/pin-images', handler: handlers.pinImages },
     { method: 'GET', path: '/admin/connectors/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/connectors/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/connectors/:id', handler: handlers.destroy },

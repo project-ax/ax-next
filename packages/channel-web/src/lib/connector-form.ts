@@ -31,7 +31,10 @@
  * beyond-first entries untouched.
  */
 import {
+  findServiceSetClash,
   translateComposeToServices,
+  type ComposeAppService,
+  type ServiceSetClash,
   type ComposeDrop,
   type ComposeInvalid,
 } from '@ax/skills-parser';
@@ -116,6 +119,21 @@ export interface ConnectorFormState {
    * {@link applyComposeToForm}.
    */
   services: ServiceDescriptor[];
+  /** 'always' keeps services running all session (max 8); 'on-demand' starts
+   *  them only when the work needs them (max 16). */
+  servicesMode: 'always' | 'on-demand';
+  /** The compose profile the services were imported from (null = none picked). */
+  composeProfile: string | null;
+  /** Image tag as written → the digest-pinned ref it was resolved to. Display only. */
+  pinned: Record<string, string>;
+  /** Imported services still waiting on a digest (image is the tag). NOT saved. */
+  drafts: ServiceDescriptor[];
+  /** Start order of every imported service, drafts included. */
+  composeOrder: string[];
+  /** True once a compose file was imported (so an empty result can be told apart from "nothing declared"). */
+  composePasted: boolean;
+  /** Services that look like the person's own app: run in the sandbox. NOT saved. */
+  appServices: ComposeAppService[];
   /**
    * The loaded connector's full capabilities (empty for a new connector). The
    * form edits the LEADING slice for the chosen mechanism; beyond-first
@@ -138,6 +156,13 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   allowedHosts: '',
   credentialSlots: [],
   services: [],
+  servicesMode: 'always',
+  composeProfile: null,
+  pinned: {},
+  drafts: [],
+  composeOrder: [],
+  appServices: [],
+  composePasted: false,
   baseCapabilities: emptyCapabilities(),
 });
 
@@ -220,6 +245,13 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     // TASK-154 — declared services ride alongside the mechanism slice; read them
     // straight off the loaded capabilities (absent ⟹ no services).
     services: caps.services ?? [],
+    servicesMode: caps.servicesMode ?? 'always',
+    composeProfile: null,
+    pinned: {},
+    drafts: [],
+    composeOrder: [],
+    appServices: [],
+    composePasted: false,
     baseCapabilities: caps,
   };
 }
@@ -513,6 +545,7 @@ export function capabilitiesFromForm(
     mcpServers,
     packages,
     ...(form.services.length > 0 ? { services: form.services } : {}),
+    ...(form.servicesMode === 'on-demand' ? { servicesMode: 'on-demand' as const } : {}),
   };
 }
 
@@ -608,34 +641,155 @@ export const STARTER_SERVICE_EXAMPLES: readonly StarterServiceExample[] = [
 // the supported path for everything else; the approval wall is the curation point.
 
 /** The outcome of pasting a compose file into the form. `ok:false` carries a
- *  human-readable reason the paste was unusable (not YAML / not a mapping / no
- *  services). `ok:true` carries the new form (services REPLACED, not appended, so
- *  a re-paste is idempotent) plus what we removed (`drops`, I10) and flagged
- *  (`invalid`, e.g. un-pinned images, I8) for the author to see. */
+ *  human-readable reason the paste was unusable (not YAML / a dependency cycle /
+ *  an undefined dependency / no services). `ok:true` carries the new form
+ *  (services REPLACED, not appended, so a re-paste is idempotent), what we
+ *  removed (`drops`), what still needs a digest (`invalid`), and every profile
+ *  named in the file (`profiles`) for the picker. */
 export type ApplyComposeResult =
-  | { ok: true; form: ConnectorFormState; drops: ComposeDrop[]; invalid: ComposeInvalid[] }
+  | {
+      ok: true;
+      form: ConnectorFormState;
+      drops: ComposeDrop[];
+      invalid: ComposeInvalid[];
+      profiles: string[];
+    }
   | { ok: false; error: string };
 
 /**
- * Translate a pasted `docker-compose.yml` and fold the resulting descriptors
- * into the form's `services`. CURATED: the heavy lifting (drop host mounts /
- * privileged / cap_add / network_mode:host / socket mounts, flag un-pinned
- * images, never shell out) lives in the pure `@ax/skills-parser`
- * `translateComposeToServices` — this is just the form-state glue. Services are
- * REPLACED (not appended) so re-pasting a corrected file doesn't duplicate.
+ * Translate a pasted `docker-compose.yml` (for one compose `profile`) and fold
+ * the result into the form. The heavy lifting lives in the pure
+ * `@ax/skills-parser` `translateComposeToServices`; this is the form-state glue.
+ * Services are REPLACED, and the chosen mode is kept, so picking another profile
+ * is a plain re-translate. Tag-only images wait in `drafts` until pinned.
  */
 export function applyComposeToForm(
   form: ConnectorFormState,
   composeYaml: string,
+  profile?: string | null,
 ): ApplyComposeResult {
-  const r = translateComposeToServices(composeYaml);
+  const r = translateComposeToServices(composeYaml, profile ? { profile } : {});
   if (!r.ok) return { ok: false, error: r.error };
   return {
     ok: true,
-    form: { ...form, services: r.services },
+    form: {
+      ...form,
+      services: r.services,
+      composeProfile: profile ?? null,
+      pinned: {},
+      drafts: r.invalid.flatMap((i) => (i.draft ? [i.draft] : [])),
+      composeOrder: r.order,
+      appServices: r.appServices,
+      composePasted: true,
+    },
     drops: r.drops,
     invalid: r.invalid,
+    profiles: r.profiles,
   };
+}
+
+/** One entry of the pin-images route's answer. */
+export interface PinResult {
+  image: string;
+  pinned?: string;
+  error?: string;
+}
+
+/**
+ * Fold pin results into the form: each pinned draft becomes a saved service (its
+ * image swapped for the digest ref) at its place in the start order. A draft
+ * whose pin failed stays a draft, and its error comes back keyed by service name.
+ */
+export function applyPinResults(
+  form: ConnectorFormState,
+  results: readonly PinResult[],
+): { form: ConnectorFormState; errors: Record<string, string> } {
+  const byImage = new Map(results.map((r) => [r.image, r]));
+  const errors: Record<string, string> = {};
+  const pinned = { ...form.pinned };
+  const stillDrafts: ServiceDescriptor[] = [];
+  const done: ServiceDescriptor[] = [];
+  for (const d of form.drafts) {
+    const r = byImage.get(d.image);
+    if (r?.pinned) {
+      pinned[d.image] = r.pinned;
+      done.push({ ...d, image: r.pinned });
+    } else {
+      stillDrafts.push(d);
+      errors[d.name] = r?.error
+        ? `We couldn’t find it: ${r.error}`
+        : 'We couldn’t look up this image. Check the name, then try again.';
+    }
+  }
+  const rank = (n: string) => {
+    const i = form.composeOrder.indexOf(n);
+    return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+  };
+  const services = [...form.services, ...done].sort((a, b) => rank(a.name) - rank(b.name));
+  return { form: { ...form, services, drafts: stillDrafts, pinned }, errors };
+}
+
+export const ALWAYS_ON_SERVICES_LIMIT = 8;
+export const ON_DEMAND_SERVICES_LIMIT = 16;
+
+/** Plain-language reason the services can't be saved yet, or null when they can. */
+export function servicesProblem(form: ConnectorFormState): string | null {
+  if (form.composePasted && form.services.length === 0 && form.drafts.length === 0) {
+    // A8c — no group menu to point at when the file's services are all the
+    // person's own app.
+    if (form.appServices.length > 0) {
+      return 'Everything in your file runs your own code, so no services came in. The agent runs that in its sandbox. Add a database or cache by hand if it needs one.';
+    }
+    return 'No services came in from your file yet. Pick a group above, or add a service by hand.';
+  }
+  if (form.drafts.length > 0) {
+    const names = form.drafts.map((d) => d.name).join(', ');
+    return `We still need to look up the exact version of: ${names}. Try again, or fix the image name.`;
+  }
+  const n = form.services.length;
+  if (n > ON_DEMAND_SERVICES_LIMIT) {
+    return `That’s ${n} services. We can run up to ${ON_DEMAND_SERVICES_LIMIT}, so please remove some.`;
+  }
+  if (n > ALWAYS_ON_SERVICES_LIMIT && form.servicesMode !== 'on-demand') {
+    return `That’s ${n} services. Without “Start only when needed”, we can keep up to ${ALWAYS_ON_SERVICES_LIMIT} running. Turn on “Start only when needed” to start them only when they’re needed (up to ${ON_DEMAND_SERVICES_LIMIT}), or remove some.`;
+  }
+  // The same cross-service rules the server applies at save (spec §4.2).
+  const clash = findServiceSetClash(form.services);
+  return clash === null ? null : serviceClashCopy(clash);
+}
+
+/** A port clash between services, in plain words. */
+function serviceClashCopy(clash: ServiceSetClash): string {
+  const [a, b] = clash.services;
+  switch (clash.kind) {
+    case 'container-port-shared':
+      return `“${a}” and “${b}” both use port ${clash.port}. Here they share one network, so change the port on one of them.`;
+    case 'published-twice':
+      return `“${a}” and “${b}” both open port ${clash.port} to the agent. Change it on one of them.`;
+    case 'published-is-own-port':
+      return `“${a}” opens port ${clash.port} to the agent, but it already uses that port inside. Pick a different outside port.`;
+    case 'published-is-container-port':
+      return `“${a}” opens port ${clash.port} to the agent, but “${b}” already uses that port. Pick a different outside port.`;
+    case 'target-not-own':
+      return `“${a}” opens port ${clash.port} to the agent, but doesn’t listen on it. Add ${clash.port} to its ports, or remove it.`;
+    case 'job-published':
+      return `“${a}” runs once and stops, so it can’t open a port to the agent. Remove its outside ports.`;
+    case 'too-many-published':
+      return `That’s ${clash.total} ports opened to the agent. We can open up to ${clash.max}.`;
+  }
+}
+
+/**
+ * A8e — what the editor says when a pasted file doesn't import. The importer
+ * refuses a file it read fine but can't take as a whole (a start-order cycle,
+ * a missing dependency, a port clash) with a `Refused: <reason>` error; that
+ * is said plainly. Anything else means the text wasn't a Compose file.
+ */
+export function composeErrorMessage(error: string): string {
+  const REFUSED = 'Refused: ';
+  return error.startsWith(REFUSED)
+    ? `We can’t import this file: ${error.slice(REFUSED.length)}`
+    : `We couldn’t read that as a Compose file: ${error}`;
 }
 
 /** Map a summary into the subset of form fields it carries (edit fallback). */

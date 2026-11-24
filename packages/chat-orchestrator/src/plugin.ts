@@ -1,9 +1,20 @@
 import {
+  CHAT_TURN_END_HOLD_HOOK,
+  CHAT_TURN_SEGMENT_END_HOOK,
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
+  makeAgentContext,
   type AgentOutcome,
+  type ChatTurnEndHoldPayload,
   type Plugin,
   type SystemPromptAugmentChangedPayload,
+  type ToolCall,
 } from '@ax/core';
+import {
+  RESTART_WITH_SERVICES,
+  SERVICE_TOOL_DESCRIPTORS,
+  STOP_SERVICES,
+  type ServiceToolResult,
+} from './service-tools.js';
 import {
   AGENT_INVOKE_TIMEOUT_MS,
   createOrchestrator,
@@ -47,6 +58,9 @@ export function createChatOrchestratorPlugin(
         // OUT of `calls`.
         'agent:interrupt',
         'agent:apply-authored-capability-grant',
+        // Dev services on demand (spec §3.2) — the two host tools' executors.
+        `tool:execute:${RESTART_WITH_SERVICES}`,
+        `tool:execute:${STOP_SERVICES}`,
       ],
       // The orchestrator drives the per-chat lifecycle by calling these
       // peers. `session:create` is NOT listed — sandbox:open-session mints
@@ -116,6 +130,15 @@ export function createChatOrchestratorPlugin(
           degradation:
             'no identity, soul or Instructions reach the prompt: every session composes normal mode with the display-name identity line, and no identity tool is offered or hidden',
         },
+        {
+          // Dev services on demand — the tool catalog (@ax/mcp-client's
+          // dispatcher, which calls nothing, so this edge closes no cycle).
+          // Optional so the harnesses that boot the orchestrator without a
+          // catalog still boot (the @ax/agents identity tools' convention).
+          hook: 'tool:register',
+          degradation:
+            'restart_with_services and stop_services are not offered to agents; their tool:execute services still answer. (Also not offered when onDemandServices.enabled is not true.)',
+        },
       ],
       // ----- fired events (the manifest has no `fires` list; recorded here) -----
       //
@@ -153,7 +176,8 @@ export function createChatOrchestratorPlugin(
       // TASK-1150 — the keepalive idle reaper reads `conversations:get` too,
       // for a warm session opened for a conversation: it holds off while the
       // row binds a request to that session (a decision continuation), for
-      // `reapHoldMaxMs` (15 min) at most. Without the hook it reaps as before.
+      // max(30 min, the agent's turn limit) at most. Without the hook it reaps
+      // as before.
       //
       // The system-prompt contribution family (W1) —
       // `system-prompt:augment:required:<name>` / `…:optional:<name>` — is
@@ -169,6 +193,10 @@ export function createChatOrchestratorPlugin(
       // closed (no routing, no bind) is the correct degraded behavior —
       // a missing conversations plugin can't keep state about active
       // sessions anyway.
+      //
+      // Dev services on demand — `conversations:set-service-set` (@ax/conversations,
+      // Task 3.1) is in this same category: the two tools and the routing
+      // write the conversation's set only when it is registered.
       //
       // Same pattern as the existing `ipc:stop` non-declaration: when a
       // hook is conditionally consumed, we don't declare it.
@@ -224,9 +252,14 @@ export function createChatOrchestratorPlugin(
         'agents:deleted',
         // TASK-833 — fired by @ax/connectors after a delete purged the key.
         'connectors:deleted',
+        // Dev services on demand (R27) — @ax/ipc-core asks before it
+        // broadcasts a runner's turn-end; held, it fires the segment-end
+        // instead. See @ax/core `turn-segment.ts`.
+        CHAT_TURN_END_HOLD_HOOK,
+        CHAT_TURN_SEGMENT_END_HOOK,
       ],
     },
-    init({ bus }) {
+    async init({ bus }) {
       const orch = createOrchestrator(bus, config);
 
       // `stallWarnMs: Infinity` (TASK-505) — opt OUT of the bus's stall watch,
@@ -412,6 +445,50 @@ export function createChatOrchestratorPlugin(
           return undefined;
         },
       );
+
+      // Dev services on demand (R27). `chat:turn-end-hold` is a question: the
+      // answer is the payload with `held: true`, given only for a pending
+      // restart of exactly that sandbox and request (onTurnEndHold), so a
+      // runner can't hold anything. `chat:turn-segment-end` replaces the held
+      // turn-ends; the closing one settles the segment and the request goes on
+      // in a new sandbox (continueAfterServiceRestart).
+      bus.subscribe<ChatTurnEndHoldPayload>(
+        CHAT_TURN_END_HOLD_HOOK,
+        PLUGIN_NAME,
+        async (ctx, payload) => orch.onTurnEndHold(ctx, payload),
+      );
+      bus.subscribe<unknown>(
+        CHAT_TURN_SEGMENT_END_HOOK,
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          orch.onTurnSegmentEnd(ctx, payload);
+          return undefined;
+        },
+      );
+
+      // Dev services on demand (spec §3.2) — the two host tools. The ctx is
+      // the runner's IPC ctx (session, agent, person, conversation from the
+      // session record). Refusals are `ok: false` results, never throws.
+      const toolHandlers: Record<string, (ctx: Parameters<typeof orch.stopServices>[0], call: ToolCall) => Promise<ServiceToolResult>> = {
+        [RESTART_WITH_SERVICES]: orch.restartWithServices,
+        [STOP_SERVICES]: orch.stopServices,
+      };
+      for (const descriptor of SERVICE_TOOL_DESCRIPTORS) {
+        const handler = toolHandlers[descriptor.name]!;
+        bus.registerService<ToolCall, ServiceToolResult>(
+          `tool:execute:${descriptor.name}`,
+          PLUGIN_NAME,
+          async (ctx, call) => handler(ctx, call),
+        );
+      }
+      // C3 — offered to agents only where on-demand services are on; off, the
+      // executors above still answer (with a refusal) but nothing offers them.
+      if (config.onDemandServices?.enabled === true && bus.hasService('tool:register')) {
+        const initCtx = makeAgentContext({ sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system' });
+        for (const descriptor of SERVICE_TOOL_DESCRIPTORS) {
+          await bus.call('tool:register', initCtx, descriptor);
+        }
+      }
     },
   };
 }

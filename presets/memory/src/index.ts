@@ -2,6 +2,7 @@ import { isAbsolute, parse, posix, resolve, sep } from 'node:path';
 
 import type { Plugin } from '@ax/core';
 import {
+  channelWebTurnSizing,
   createK8sPlugins,
   loadK8sConfigFromEnv,
   type K8sPresetConfig,
@@ -186,7 +187,8 @@ export function createMemoryPlugins(config: MemoryPresetConfig): Plugin[] {
     // route answered with the SPA's index.html (TASK-717). The canary's
     // TASK-717 block pins this ordering on the real assembly, so a change here
     // has to keep passing it rather than reason about route order by eye.
-    createChannelWebServerPlugin({ chatTimeoutMs }),
+    // B1 — the same sizing hint as the k8s preset's, turn cap included.
+    createChannelWebServerPlugin(channelWebTurnSizing({ ...config.chat, chatTimeoutMs })),
   ];
 }
 

@@ -400,13 +400,14 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // it is NOT Zod-validated at the protocol layer. The server-side parsing
 // of that query string is the IPC server's responsibility.
 //
-// Only the response body is protocol-level — the five variants are what
+// Only the response body is protocol-level — the six variants are what
 // the sandbox inbox loop branches on. (`decision-resolved` joined the
-// original three in TASK-227; `interrupt` in TASK-688.)
+// original three in TASK-227; `interrupt` in TASK-688; `host-note` with
+// restart_with_services.)
 //
 // Cursor semantics: the response `cursor` is the NEXT cursor the client
 // should request. On a real delivery (`user-message` / `cancel` /
-// `interrupt` / `decision-resolved`) it's the index of the delivered entry + 1; on
+// `interrupt` / `decision-resolved` / `host-note`) it's the index of the delivered entry + 1; on
 // `timeout` it's the cursor the client sent (echo — no entry was
 // delivered, so no advancement). The sandbox inbox loop stores this value
 // verbatim and passes it back on the next GET.
@@ -806,6 +807,9 @@ export type SkillProposeResponse = z.infer<typeof SkillProposeResponseSchema>;
 // reaches a runner originated from a host request, and that request had a
 // reqId before it entered the inbox; allowing it to be missing would let a
 // stream chunk emit with no correlation handle, which the host can't route.
+/** Cap on a `host-note`'s text, in characters. Also checked at `session:queue-work`. */
+export const HOST_NOTE_MAX = 4000;
+
 export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('user-message'),
@@ -855,6 +859,19 @@ export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
     // carry nothing, and the runner then runs dark exactly as before.
     // Bounded like every other short id on this wire.
     reqId: z.string().min(1).max(128).optional(),
+    cursor: z.number().int().nonnegative(),
+  }),
+  // A note the HOST wrote, opening a turn inside the SAME `agent:invoke`: after
+  // `restart_with_services` swaps the sandbox mid-turn, the new runner is told
+  // what is running now. Never the person's words, never model text. The
+  // runner quotes it and labels it as the system's (`composeHostNoteMessage`).
+  //
+  // `reqId` is the in-flight request's chat correlation. REQUIRED: a host-note
+  // always runs inside an `agent:invoke`, so there is always one to stream to.
+  z.object({
+    type: z.literal('host-note'),
+    note: z.string().min(1).max(HOST_NOTE_MAX),
+    reqId: z.string().min(1).max(128),
     cursor: z.number().int().nonnegative(),
   }),
 ]);

@@ -29,14 +29,16 @@
 // ---------------------------------------------------------------------------
 
 import type { Plugin } from '@ax/core';
-import { ServiceDescriptorSchema } from '@ax/skills-parser';
+import { checkServiceSetClashes, ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';
 import { findForbiddenVocab } from './forbidden-vocab.js';
 
 const PLUGIN_NAME = '@ax/validator-service';
 
-/** Carrier cap — at most this many services per unit of work. Mirrors the
- *  @ax/skills-parser `SERVICES_MAX` and the @ax/sandbox-protocol wire cap. */
-const SERVICES_MAX = 8;
+/** Carrier cap — at most this many services per unit of work (the on-demand
+ *  ceiling). Mirrors the @ax/skills-parser `SERVICES_MAX` and the
+ *  @ax/sandbox-protocol wire cap. The tighter always-on cap (8) is per connector
+ *  mode, which this validator never sees, so it lives in the connectors schema. */
+const SERVICES_MAX = 16;
 
 /** Input: the (untrusted) service descriptor list to validate. */
 export interface ServicesValidateInput {
@@ -47,6 +49,17 @@ export interface ServicesValidateInput {
 export type ServicesValidateOutput =
   | { verdict: 'clean' }
   | { verdict: 'invalid'; reason: string };
+
+/**
+ * Cross-service checks over already-parsed descriptors: the shared
+ * @ax/skills-parser rules (one network namespace — a published port is no
+ * other published port and no service's container port; a target is one of
+ * its own ports; no two services on one container port; ≤64 published).
+ * Returns a reason naming the services involved, or null.
+ */
+export function checkPortClashes(services: ServiceDescriptor[]): string | null {
+  return checkServiceSetClashes(services);
+}
 
 /**
  * Validate one descriptor list. Pure — exported for direct unit testing and so
@@ -63,6 +76,7 @@ export function validateServices(services: unknown[]): ServicesValidateOutput {
     };
   }
 
+  const parsedList: ServiceDescriptor[] = [];
   for (let i = 0; i < services.length; i++) {
     const raw = services[i];
 
@@ -90,7 +104,17 @@ export function validateServices(services: unknown[]): ServicesValidateOutput {
         reason: `services[${i}]${where}: ${first?.message ?? 'invalid service descriptor'}`,
       };
     }
+    if (parsed.data.job === true && (parsed.data.publishedPorts?.length ?? 0) > 0) {
+      return {
+        verdict: 'invalid',
+        reason: `services[${i}]: job "${parsed.data.name}" cannot have publishedPorts (a job exits; nothing to reach)`,
+      };
+    }
+    parsedList.push(parsed.data);
   }
+
+  const clash = checkPortClashes(parsedList);
+  if (clash !== null) return { verdict: 'invalid', reason: clash };
 
   return { verdict: 'clean' };
 }

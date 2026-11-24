@@ -356,6 +356,12 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
   // missing from it is refused at the hook boundary before it ever reaches
   // @ax/ipc-core's handler.
   z.object({
+    type: z.literal('host-note'),
+    note: z.string(),
+    reqId: z.string().min(1).max(128),
+    cursor: z.number(),
+  }),
+  z.object({
     type: z.literal('decision-resolved'),
     decisionId: z.string(),
     outcome: z.enum(['approved', 'dismissed']),
@@ -666,6 +672,12 @@ function parseOptionalIdentity(
  */
 const DECISION_NOTE_MAX = 2000;
 
+/**
+ * Cap on the host-authored `host-note` note. Mirrors `HOST_NOTE_MAX` in
+ * @ax/ipc-protocol, for the same reason as above.
+ */
+const HOST_NOTE_MAX = 4000;
+
 function requireInboxEntry(
   value: unknown,
   hookName: string,
@@ -719,6 +731,27 @@ function requireInboxEntry(
   if (type === 'cancel') return;
   // TASK-688. Payload-free: nothing to validate, and `inboxPayload` stores null.
   if (type === 'interrupt') return;
+  if (type === 'host-note') {
+    const note = (value as { note?: unknown }).note;
+    if (typeof note !== 'string' || note.length === 0 || note.length > HOST_NOTE_MAX) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.note' must be a non-empty string of at most ${HOST_NOTE_MAX} characters`,
+      });
+    }
+    const reqId = (value as { reqId?: unknown }).reqId;
+    if (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.reqId' is required: a non-empty string of at most 128 characters for host-note entries`,
+      });
+    }
+    return;
+  }
   // AW-6. `decision-resolved` is HOST-INTERNAL: it is produced only by
   // @ax/decisions after a human answered, and no IPC action routes to
   // `session:queue-work`. The checks below are the trust-boundary belt anyway
@@ -776,7 +809,7 @@ function requireInboxEntry(
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     hookName,
-    message: `'entry.type' must be 'user-message', 'cancel', 'interrupt' or 'decision-resolved'`,
+    message: `'entry.type' must be 'user-message', 'cancel', 'interrupt', 'host-note' or 'decision-resolved'`,
   });
 }
 

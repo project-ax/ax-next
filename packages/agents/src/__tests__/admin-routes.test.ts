@@ -481,6 +481,91 @@ describe('@ax/agents admin routes', () => {
     expect(bad.status).toBe(400);
   });
 
+  // Per-agent turn, idle and runner size over HTTP.
+  describe('turn, idle and runner size', () => {
+    const size = {
+      cpuMillis: { request: 250, limit: 1000 },
+      memoryMiB: { request: 512, limit: 2048 },
+    };
+    type Settings = {
+      turnLimitMinutes: number | null;
+      idleMinutes: number | null;
+      runnerSize: unknown;
+    };
+
+    it('POST round-trips through GET; unset fields serialize as explicit nulls', async () => {
+      const cookie = await signIn(stack);
+      const set = await http(stack.port, 'POST', '/admin/agents', {
+        cookie,
+        body: { ...makeBody({ displayName: 'Sized' }), turnLimitMinutes: 60, idleMinutes: 10, runnerSize: size },
+      });
+      expect(set.status).toBe(201);
+      const bare = await http(stack.port, 'POST', '/admin/agents', {
+        cookie,
+        body: makeBody({ displayName: 'Bare' }),
+      });
+      expect(bare.status).toBe(201);
+      expect((bare.body as { agent: Settings }).agent).toMatchObject({
+        turnLimitMinutes: null,
+        idleMinutes: null,
+        runnerSize: null,
+      });
+      const list = (await http(stack.port, 'GET', '/admin/agents', { cookie })).body as {
+        agents: Array<SerializedAgent & Settings>;
+      };
+      const byName = new Map(list.agents.map((a) => [a.displayName, a]));
+      expect(byName.get('Sized')).toMatchObject({ turnLimitMinutes: 60, idleMinutes: 10, runnerSize: size });
+      expect(byName.get('Bare')).toMatchObject({ turnLimitMinutes: null, idleMinutes: null, runnerSize: null });
+      const id = (set.body as { agent: SerializedAgent }).agent.id;
+      const got = await http(stack.port, 'GET', `/admin/agents/${id}`, { cookie });
+      expect((got.body as { agent: Settings }).agent).toMatchObject({
+        turnLimitMinutes: 60,
+        idleMinutes: 10,
+        runnerSize: size,
+      });
+    });
+
+    it('PATCH sets each field, and null clears each one', async () => {
+      const cookie = await signIn(stack);
+      const created = await http(stack.port, 'POST', '/admin/agents', { cookie, body: makeBody() });
+      const id = (created.body as { agent: SerializedAgent }).agent.id;
+      const set = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+        cookie,
+        body: { turnLimitMinutes: 30, idleMinutes: 5, runnerSize: size },
+      });
+      expect(set.status).toBe(200);
+      expect((set.body as { agent: Settings }).agent).toMatchObject({
+        turnLimitMinutes: 30,
+        idleMinutes: 5,
+        runnerSize: size,
+      });
+      for (const [field, expected] of [
+        ['turnLimitMinutes', { turnLimitMinutes: null, idleMinutes: 5, runnerSize: size }],
+        ['idleMinutes', { turnLimitMinutes: null, idleMinutes: null, runnerSize: size }],
+        ['runnerSize', { turnLimitMinutes: null, idleMinutes: null, runnerSize: null }],
+      ] as const) {
+        const r = await http(stack.port, 'PATCH', `/admin/agents/${id}`, { cookie, body: { [field]: null } });
+        expect(r.status).toBe(200);
+        expect((r.body as { agent: Settings }).agent).toMatchObject(expected);
+      }
+    });
+
+    it.each([
+      ['minutes above range', { turnLimitMinutes: 1441 }],
+      ['minutes below range', { idleMinutes: 0 }],
+      ['a string quantity', { runnerSize: { memoryMiB: { request: '1Gi', limit: '2Gi' } } }],
+      ['request above limit', { runnerSize: { cpuMillis: { request: 3000, limit: 2000 } } }],
+    ])('a bad value (%s) is a 400 on POST and PATCH', async (_name, bad) => {
+      const cookie = await signIn(stack);
+      const post = await http(stack.port, 'POST', '/admin/agents', { cookie, body: { ...makeBody(), ...bad } });
+      expect(post.status).toBe(400);
+      const created = await http(stack.port, 'POST', '/admin/agents', { cookie, body: makeBody() });
+      const id = (created.body as { agent: SerializedAgent }).agent.id;
+      const patch = await http(stack.port, 'PATCH', `/admin/agents/${id}`, { cookie, body: bad });
+      expect(patch.status).toBe(400);
+    });
+  });
+
   it('POST /admin/agents with allowedTools=[] AND mcpConfigIds=[] → 400 with wildcard reject message', async () => {
     const cookie = await signIn(stack);
     const r = await http(stack.port, 'POST', '/admin/agents', {

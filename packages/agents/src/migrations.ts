@@ -110,6 +110,24 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ADD COLUMN IF NOT EXISTS connector_exclusions JSONB NOT NULL DEFAULT '[]'
   `.execute(db);
 
+  // Per-agent sandbox settings: turn limit and idle timeout in minutes, and
+  // the runner's size as JSONB ({cpuMillis?, memoryMiB?} request/limit pairs).
+  // Additive and nullable: NULL (what every existing row reads as) means "use
+  // the chart default". Shape is checked on write; the chart's caps clamp at
+  // use, never on read.
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS turn_limit_minutes INTEGER
+  `.execute(db);
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS idle_minutes INTEGER
+  `.execute(db);
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS runner_size JSONB
+  `.execute(db);
+
   // TASK-142 (conversational-agent-identity Phase 4): DROP the legacy
   // `system_prompt` column. The column carries nothing live (identity moved
   // out of it in TASK-142, and into `agents_v1_identity` below in TASK-989).
@@ -240,6 +258,9 @@ export interface AgentsRow {
   skill_attachments: unknown; // JSONB; validated by store
   connector_attachments: unknown; // JSONB; validated by store (TASK-107)
   connector_exclusions: unknown; // JSONB; validated by store (TASK-739)
+  turn_limit_minutes: number | null;
+  idle_minutes: number | null;
+  runner_size: unknown; // JSONB | null; validated by store
   created_at: Date;
   updated_at: Date;
 }

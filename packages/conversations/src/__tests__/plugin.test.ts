@@ -31,6 +31,7 @@ describe('@ax/conversations plugin manifest', () => {
         // Phase F (2026-05-03): post-creation title update for the
         // auto-title pipeline + future user-driven rename UI.
         'conversations:set-title',
+        'conversations:set-service-set',
         // Phase A (routines foundation, 2026-05-14): mark a conversation
         // hidden so it disappears from list queries but remains readable
         // by id. Half-wired window OPEN: caller lands in Phase B

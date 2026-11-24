@@ -104,13 +104,15 @@ async function makeWorld(o: {
   keepAlive?: boolean;
   idleGraceMs?: number;
   extraServices?: Record<string, ServiceHandler>;
+  /** Fields merged into the resolved agent (e.g. its own idleMinutes). */
+  agentExtra?: Record<string, unknown>;
 }): Promise<World> {
   const opened: string[] = [];
   const cancels: string[] = [];
   const proxyClosed: string[] = [];
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async (_c, input: unknown) => ({
-      agent: { ...TEST_AGENT, id: (input as { agentId: string }).agentId },
+      agent: { ...TEST_AGENT, ...o.agentExtra, id: (input as { agentId: string }).agentId },
     }),
     'session:queue-work': async (_c, input: unknown) => {
       const i = input as { sessionId: string; entry: { type: string } };
@@ -265,6 +267,20 @@ describe('chat-orchestrator — agents:deleted', () => {
     // is the reaper: graceful cancel after the window, forced kill after grace.
     await vi.waitFor(() => { expect(w.cancels).toEqual(['s-a1']); }, { timeout: 2_000 });
     await vi.waitFor(() => { expect(a1.state.kills).toBe(2); }, { timeout: 2_000 });
+  });
+
+  // B4 — the retry runs on the host's configured idle window, not on the
+  // deleted agent's own idle time (up to 60 minutes): a runner whose kill
+  // failed must not stay up that long for an agent that no longer exists.
+  it('the kill-retry reap uses the configured idle window, not the agent\'s own idle time', async () => {
+    const a1 = makeHandle({ killRejects: true });
+    const w = await makeWorld({
+      handles: { 's-a1': a1 }, idleWindowMs: 150, idleGraceMs: 100, agentExtra: { idleMinutes: 60 },
+    });
+    await w.warmUp('agent-a', 's-a1');
+    await w.bus.fire('agents:deleted', deleteCtx([]), deletedPayload('agent-a'));
+    expect(a1.state.kills).toBe(1);
+    await vi.waitFor(() => { expect(w.cancels).toEqual(['s-a1']); }, { timeout: 2_000 });
   });
 
   it('is a no-op for an agent with no warm sandbox, and for a malformed payload', async () => {

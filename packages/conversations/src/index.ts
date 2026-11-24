@@ -51,6 +51,8 @@ export type {
   GetOutput,
   ListInput,
   ListOutput,
+  SetServiceSetInput,
+  SetServiceSetOutput,
   SetTitleInput,
   SetTitleOutput,
   StoreRunnerSessionInput,

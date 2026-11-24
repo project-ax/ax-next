@@ -205,7 +205,7 @@ ingress:
   # annotation, both surviving `helm upgrade`. See deploy/GKE.md Step M7.
   backendConfig:
     enabled: true
-    timeoutSec: 3600   # 1h headroom; raise if you expect very long single turns
+    timeoutSec: 7500   # 125 min: above chat.maxTurnMinutes (120) x 60; the render fails if not
 
 # ─── HTTP server (public surface) ────────────────────────────────
 # cookieKey signs the auth session cookie — provide via `--set http.cookieKey=`

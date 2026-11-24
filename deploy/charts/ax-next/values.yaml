@@ -272,6 +272,19 @@ sandbox:
     kubeletPodsPath: /var/lib/kubelet/pods
     ledgerPath: /var/lib/ax-shared-storage
   runtimeClassName: gvisor
+  # Largest runner an agent may be sized to (CPU in millicores, memory in MiB).
+  runnerMax:
+    cpuMillis: 8000
+    memoryMiB: 16384
+  # Largest a single service sidecar may be sized to, and the default size of
+  # a service's scratch storage.
+  serviceMax:
+    cpuMillis: 4000
+    memoryMiB: 4096
+  serviceStorageDefaultMiB: 2048
+  # Allocatable memory (MiB) of one sandbox node. Optional: when set, the host
+  # warns at boot if the largest runner plus a service set can't fit on it.
+  nodeAllocatableMiB: ""
   # Node-filesystem path that the host pod and every runner pod both
   # mount at /var/run/ax. When set, the credential-proxy's Unix socket
   # + MITM CA cert live here so runner pods can dial the proxy. When
@@ -720,7 +733,7 @@ ingress:
   # flips it on. Harmless without an Ingress — it's just an unused object.
   backendConfig:
     enabled: false
-    timeoutSec: 3600   # LB backend response timeout (seconds); 1h headroom for long turns
+    timeoutSec: 7500   # LB backend response timeout (seconds); must exceed chat.maxTurnMinutes * 60
 
 # ─── Artifact content origin (agent artifacts, spec §6.5) ────────
 # Agent-made HTML pages and images are shown from a SECOND site, never the
@@ -909,6 +922,15 @@ connectorDirectory:
 # the host refuses to boot on anything else.
 chat:
   timeoutMs: ""
+  # Ceilings on what an agent's own settings may ask for. An agent's turn limit
+  # and idle time are clamped to these (minutes). The turn cap must sit well
+  # inside sandbox pod's 6 h deadline (the host refuses to boot within 20 min
+  # of it), and, when ingress.backendConfig is on, below its timeoutSec (the
+  # render fails otherwise).
+  maxTurnMinutes: 120
+  maxIdleMinutes: 60
+  # Live sandboxes with services one agent may hold at once.
+  maxServiceSandboxesPerAgent: 10
 
 # ─── ax-next runtime config ──────────────────────────────────────
 # Rendered verbatim into a ConfigMap mounted at /etc/ax-next/ax.config.yaml.

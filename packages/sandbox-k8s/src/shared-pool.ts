@@ -18,7 +18,7 @@ interface Resource {
   spec?: { nodeName?: string }; status?: { sandbox?: { name?: string }; podName?: string; phase?: string };
 }
 interface RunnerContainer { name: string; args: string[]; env: { name: string; value?: string; valueFrom?: unknown }[];
-  command?: string[]; envFrom?: unknown[]; securityContext: Record<string, unknown>;
+  command?: string[]; envFrom?: unknown[]; resources?: { limits?: Record<string, string>; requests?: Record<string, string> }; securityContext: Record<string, unknown>;
   volumeMounts: { name: string; mountPath: string; subPath?: string; readOnly?: boolean; mountPropagation?: string }[] }
 const extension = (namespace: string, plural: string) => ({ group: 'extensions.agents.x-k8s.io', version: 'v1beta1', namespace, plural });
 
@@ -171,7 +171,12 @@ export async function createSharedPoolSessionApi(pods: K8sCoreApi, custom: Sandb
       // TASK-1122 — so does a read-only /files (an outsider's session): the storage helper binds
       // user-files read-write whatever the pod's readOnly says, so a standby would hand it a
       // writable home. (Its AX_USERFILES_READONLY env would also fail the bootstrap allowlist.)
-      if (!className || (pod.spec.initContainers as { restartPolicy?: string }[]).some(c => c.restartPolicy === 'Always') ||
+      // A sized runner (§3.5) never takes a standby either: the pool's pods all come from one
+      // template at the chart default, so a pod asking for anything else goes cold.
+      const r = runner.resources;
+      const sized = r?.limits?.cpu !== config.cpuLimit || r?.limits?.memory !== config.memoryLimit ||
+        r?.requests?.cpu !== config.cpuRequest || r?.requests?.memory !== config.memoryRequest;
+      if (!className || sized || (pod.spec.initContainers as { restartPolicy?: string }[]).some(c => c.restartPolicy === 'Always') ||
           runner.volumeMounts.some(m => m.mountPath === '/files' && m.readOnly === true)) {
         return direct.createNamespacedPod(req);
       }

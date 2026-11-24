@@ -117,3 +117,95 @@ describe('connector capability list limits apply on write only (TASK-945)', () =
     expect(validateCapabilities(spec).allowedHosts).toHaveLength(L.allowedHosts + 1);
   });
 });
+
+describe('services cap depends on servicesMode', () => {
+  const svc = (i: number) => ({
+    name: `svc-${i}`,
+    image: `registry.example.com/x@sha256:${'a'.repeat(64)}`,
+    ports: [5432],
+    env: {},
+    writablePaths: [],
+  });
+  const many = (n: number) => Array.from({ length: n }, (_, i) => svc(i));
+
+  it('9 services refused when always-on, accepted on-demand', () => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: many(9) }).success).toBe(false);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(9), servicesMode: 'always' }).success,
+    ).toBe(false);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(9), servicesMode: 'on-demand' }).success,
+    ).toBe(true);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(16), servicesMode: 'on-demand' }).success,
+    ).toBe(true);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), services: many(17), servicesMode: 'on-demand' }).success,
+    ).toBe(false);
+  });
+
+  it('servicesMode defaults to always', () => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: many(8) }).success).toBe(true);
+    expect(CapabilitiesWriteSchema.safeParse({ ...base(), services: many(9) }).success).toBe(false);
+    expect(
+      CapabilitiesSchema.safeParse({ ...base(), servicesMode: 'sometimes' }).success,
+    ).toBe(false);
+  });
+});
+
+describe('service writablePaths safety', () => {
+  const svc = (path: string) => ({
+    name: 'db',
+    image: `registry.example.com/x@sha256:${'a'.repeat(64)}`,
+    ports: [5432],
+    env: {},
+    writablePaths: [path],
+  });
+  it.each(['/', '//', '/../etc', '/a/./b', '/proc', '/proc/self', '/sys/x', '/dev', '//dev/shm'])('rejects %s', (path) => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: [svc(path)] }).success).toBe(false);
+  });
+  it('accepts an ordinary scratch path', () => {
+    expect(CapabilitiesSchema.safeParse({ ...base(), services: [svc('/data/db')] }).success).toBe(true);
+  });
+});
+
+// A4 — the shared cross-service checks (@ax/skills-parser) run at save, so a
+// set that would always fail to start can't be saved. Read stays lenient
+// (TASK-712: a stored row must always open, so it can be fixed or deleted).
+describe('services: cross-service checks at save (A4)', () => {
+  const svc = (name: string, ports: number[], extra: Record<string, unknown> = {}) => ({
+    name, image: `registry.example.com/x@sha256:${'a'.repeat(64)}`, ports, env: {}, writablePaths: [], ...extra,
+  });
+  const refusal = (value: unknown): PluginError => {
+    try {
+      validateCapabilitiesForWrite(value);
+    } catch (err) {
+      return err as PluginError;
+    }
+    throw new Error('expected a refusal');
+  };
+
+  it('two services on one container port are refused at write, naming both; read still parses it', () => {
+    const spec = { ...base(), services: [svc('db', [5432]), svc('db-test', [5432])] };
+    const err = refusal(spec);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toContain('"db"');
+    expect(err.message).toContain('"db-test"');
+    expect(validateCapabilities(spec).services).toHaveLength(2);
+  });
+
+  it('a published port that is another service\'s container port is refused at write', () => {
+    const err = refusal({
+      ...base(),
+      services: [svc('a', [1000], { publishedPorts: [{ published: 2000, target: 1000 }] }), svc('b', [2000])],
+    });
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toMatch(/clashes with a container port of "b"/);
+  });
+
+  it('a clean set saves', () => {
+    expect(validateCapabilitiesForWrite({ ...base(), services: [svc('db', [5432]), svc('cache', [6379])] }).services)
+      .toHaveLength(2);
+  });
+});

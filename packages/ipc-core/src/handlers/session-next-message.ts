@@ -19,9 +19,9 @@ import type { HandlerResult } from './types.js';
 // by HTTP's and our body-reader's contract), so we validate it by hand.
 //
 // `session:claim-work` owns the actual wait. Its response matches the
-// SessionNextMessageResponseSchema directly — a FIVE-variant discriminated
+// SessionNextMessageResponseSchema directly — a SIX-variant discriminated
 // union keyed on `type`: `user-message`, `cancel`, `timeout`,
-// `decision-resolved` (TASK-227) and `interrupt` (TASK-688).
+// `decision-resolved` (TASK-227), `interrupt` (TASK-688) and `host-note`.
 //
 // We re-validate that response below before returning it. That check is the
 // host's own OUTBOUND drift guard, and it shares one constant with the

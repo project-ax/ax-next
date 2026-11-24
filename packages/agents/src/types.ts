@@ -41,6 +41,22 @@ export interface SkillAttachment {
  */
 export type RunnerId = 'claude-sdk' | 'aisdk';
 
+/** A request/limit pair in plain numbers (no Kubernetes quantity strings). */
+export interface ResourcePair {
+  request: number;
+  limit: number;
+}
+
+/**
+ * Per-agent runner sandbox size. Same numeric shape as a service's resources.
+ * Only the stored shape is checked here; the chart's maximum is applied (by
+ * clamping, never by refusing) where the value is used.
+ */
+export interface RunnerSize {
+  cpuMillis?: ResourcePair;
+  memoryMiB?: ResourcePair;
+}
+
 export interface Agent {
   id: string;
   ownerId: string;
@@ -74,6 +90,14 @@ export interface Agent {
    * agents:detach-connector with `exclude: true` (adds).
    */
   connectorExclusions: string[];
+  /**
+   * Per-agent sandbox settings. Absent/null = use the chart default. Stored
+   * as given (turn/idle 1..1440 minutes); the chart's caps clamp them where
+   * they are used, so a stored value above today's cap still loads.
+   */
+  turnLimitMinutes?: number | null;
+  idleMinutes?: number | null;
+  runnerSize?: RunnerSize | null;
   /**
    * Set only on the record `agents:resolve` returns, when the admin has since
    * removed this agent's stored model: `model` is then the Default and this is
@@ -120,6 +144,12 @@ export interface AgentInput {
    * (best-effort — denies if @ax/teams isn't loaded).
    */
   teamId?: string;
+  /** Per-agent turn limit in minutes (1..1440). `null` clears it. */
+  turnLimitMinutes?: number | null;
+  /** Per-agent idle timeout in minutes (1..1440). `null` clears it. */
+  idleMinutes?: number | null;
+  /** Per-agent runner size. `null` clears it. */
+  runnerSize?: RunnerSize | null;
 }
 
 /**
@@ -169,6 +199,8 @@ const SkillAttachmentSchema = z.object({
   credentialBindings: z.record(z.string()),
 });
 
+const ResourcePairSchema = z.object({ request: z.number(), limit: z.number() });
+
 const AgentSchema = z.object({
   id: z.string(),
   ownerId: z.string(),
@@ -191,6 +223,17 @@ const AgentSchema = z.object({
   // Declared explicitly for the same reason as `runner`: a zod object strips
   // undeclared keys, and this schema is the `returns` contract of agents:resolve.
   requestedModel: z.string().optional(),
+  // Declared for the same strip reason: the orchestrator reads these via
+  // agents:resolve. No caps here: a stored value above today's cap must load.
+  turnLimitMinutes: z.number().nullable().optional(),
+  idleMinutes: z.number().nullable().optional(),
+  runnerSize: z
+    .object({
+      cpuMillis: ResourcePairSchema.optional(),
+      memoryMiB: ResourcePairSchema.optional(),
+    })
+    .nullable()
+    .optional(),
 
   createdAt: z.date(),
   updatedAt: z.date(),

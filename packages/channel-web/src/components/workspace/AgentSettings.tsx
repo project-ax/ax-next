@@ -64,6 +64,7 @@ import {
 } from '@/lib/workspace-route';
 import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
+import { AgentAdvancedLimits } from './AgentAdvancedLimits';
 import { AgentApps } from './AgentApps';
 import { AgentSlack } from './AgentSlack';
 import { ConnectorsTab } from './ConnectorsTab';
@@ -337,7 +338,12 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
     case 'skills':
       return <SkillsAppStore key={agent.id} isAdmin={isAdmin} agentId={agent.id} agentName={agent.name} />;
     case 'routines':
-      return <RoutinesTab key={agent.id} isAdmin={isAdmin} agentId={agent.id} agentName={agent.name} onViewSkills={() => onSection('skills')} />;
+      return (
+        <>
+          <RoutinesTab key={agent.id} isAdmin={isAdmin} agentId={agent.id} agentName={agent.name} onViewSkills={() => onSection('skills')} />
+          <AgentAdvancedLimits key={`limits-${agent.id}`} agentId={agent.id} agentName={agent.name} />
+        </>
+      );
   }
 }
 

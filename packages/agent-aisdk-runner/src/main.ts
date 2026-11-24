@@ -280,6 +280,8 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             // Bash) is never offered to the model. Host-catalog denies were
             // already dropped from `catalog` by runner-core.
             disallowed: agentConfig.disallowedTools,
+            // A Bash call may run as long as the turn does (spec §6.3).
+            bashMaxTimeoutMs: env.turnLimitMs,
           }),
         },
         {

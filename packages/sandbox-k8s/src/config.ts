@@ -90,6 +90,16 @@ export interface SandboxK8sConfig {
    * broker, Mongo) want headroom to start.
    */
   serviceMemoryRequest?: string;
+  /** Ceiling for an agent's runner CPU request and limit (millicores). Default: 8000. */
+  runnerCpuLimitMaxMillis?: number;
+  /** Ceiling for an agent's runner memory request and limit (MiB). Default: 16384. */
+  runnerMemoryLimitMaxMiB?: number;
+  /** Ceiling for a descriptor's per-service CPU request and limit (millicores). Default: 4000. */
+  serviceCpuLimitMaxMillis?: number;
+  /** Ceiling for a descriptor's per-service memory request and limit (MiB). Default: 4096. */
+  serviceMemoryLimitMaxMiB?: number;
+  /** Size limit (MiB) of a service's writable-path emptyDir when the descriptor sets none. Default: 2048. */
+  serviceStorageDefaultMiB?: number;
   /**
    * TASK-151 — per-service cold-start allowance (ms) added to the pod-readiness
    * budget for EACH declared service. Native sidecars start SEQUENTIALLY (each
@@ -209,6 +219,11 @@ export interface ResolvedSandboxK8sConfig {
   serviceMemoryLimit: string;
   serviceCpuRequest: string;
   serviceMemoryRequest: string;
+  runnerCpuLimitMaxMillis: number;
+  runnerMemoryLimitMaxMiB: number;
+  serviceCpuLimitMaxMillis: number;
+  serviceMemoryLimitMaxMiB: number;
+  serviceStorageDefaultMiB: number;
   perServiceColdStartMs: number;
   /** See SandboxK8sConfig.proxySocketHostPath. Empty = unset. */
   proxySocketHostPath: string;
@@ -267,6 +282,11 @@ export function resolveConfig(
     serviceMemoryLimit: raw.serviceMemoryLimit ?? '1Gi',
     serviceCpuRequest: raw.serviceCpuRequest ?? '100m',
     serviceMemoryRequest: raw.serviceMemoryRequest ?? '512Mi',
+    runnerCpuLimitMaxMillis: raw.runnerCpuLimitMaxMillis ?? 8000,
+    runnerMemoryLimitMaxMiB: raw.runnerMemoryLimitMaxMiB ?? 16_384,
+    serviceCpuLimitMaxMillis: raw.serviceCpuLimitMaxMillis ?? 4000,
+    serviceMemoryLimitMaxMiB: raw.serviceMemoryLimitMaxMiB ?? 4096,
+    serviceStorageDefaultMiB: raw.serviceStorageDefaultMiB ?? 2048,
     perServiceColdStartMs: raw.perServiceColdStartMs ?? 120_000,
     proxySocketHostPath: raw.proxySocketHostPath ?? '',
     proxyEndpoint: raw.proxyEndpoint ?? '',

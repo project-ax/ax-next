@@ -153,6 +153,21 @@ function alwaysTimeoutClient() {
 }
 
 describe('inbox-loop idle floor', () => {
+  it('keeps a 15 minute idle floor when idleTimeoutMs is not given', async () => {
+    let nowMs = 1_000_000;
+    const start = nowMs;
+    const inbox = createInboxLoop({
+      client: alwaysTimeoutClient(),
+      now: () => nowMs,
+      sleep: async (ms: number) => {
+        nowMs += ms;
+      },
+    });
+    expect((await inbox.next()).type).toBe('idle-timeout');
+    expect(nowMs - start).toBeGreaterThanOrEqual(15 * 60 * 1000);
+    expect(nowMs - start).toBeLessThan(16 * 60 * 1000);
+  });
+
   it('returns an idle-timeout entry once the cumulative idle floor elapses', async () => {
     let nowMs = 1_000_000;
     const inbox = createInboxLoop({
@@ -267,6 +282,18 @@ describe('inbox-loop idle floor', () => {
       reqId: 'req-continuation-1',
     });
     expect(loop.cursor).toBe(4);
+  });
+
+  it('surfaces host-note deliveries with their reqIds and advances the cursor', async () => {
+    const { client } = makeMockClient([
+      { type: 'host-note', note: 'Services are up.', reqId: 'req-1', cursor: 5 },
+      { type: 'host-note', note: 'Second.', reqId: 'req-2', cursor: 6 },
+    ]);
+    const loop = createInboxLoop({ client });
+    expect(await loop.next()).toEqual({ type: 'host-note', note: 'Services are up.', reqId: 'req-1' });
+    expect(loop.cursor).toBe(5);
+    expect(await loop.next()).toEqual({ type: 'host-note', note: 'Second.', reqId: 'req-2' });
+    expect(loop.cursor).toBe(6);
   });
 
   it('defence-in-depth (non-validating client only): re-polls past an unknown delivery type instead of crashing the turn', async () => {

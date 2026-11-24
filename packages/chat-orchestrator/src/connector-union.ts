@@ -101,6 +101,14 @@ export interface ConnectorCapabilities {
    * `.default([])`s it, so a store round-trip always yields an array.
    */
   services?: ServiceDescriptorParsed[];
+  /**
+   * Dev services on demand (§3.1) — structural mirror of @ax/connectors'
+   * `servicesMode`. Absent or `'always'`: the services fold into every
+   * sandbox (today). `'on-demand'`: they are a SERVICE SET named by the
+   * connector's id, folded only into a sandbox whose conversation turned that
+   * set on (`foldConnectorCaps`' `serviceSet`).
+   */
+  servicesMode?: 'always' | 'on-demand';
 }
 
 /**
@@ -862,6 +870,7 @@ export function foldConnectorCaps(
   baseAllowSet: Set<string>,
   baseCreds: Record<string, { ref: string; kind: string; allowedHosts?: string[] }>,
   slotOwners: Map<string, string>,
+  opts: { serviceSet?: string | null } = {},
 ): FoldConnectorResult {
   const installedEntries: FoldConnectorResult['installedEntries'] = [];
   const connectorSlotEnvNames: Array<{ envName: string; bareSlot: string }> = [];
@@ -947,7 +956,14 @@ export function foldConnectorCaps(
     // service name = one descriptor — silently merging two possibly-different
     // images/ports under one name would be a footgun). The orchestrator catches
     // the throw and maps it to a terminated outcome.
-    for (const svc of c.capabilities.services ?? []) {
+    //
+    // Dev services on demand (§3.1): an on-demand connector's services are a
+    // set, folded only when the conversation turned on THIS connector's set.
+    // Everything else about the connector (hosts, slots, MCP servers, usage
+    // note) folds as usual.
+    const onDemand = c.capabilities.servicesMode === 'on-demand';
+    const services = onDemand && c.id !== opts.serviceSet ? [] : c.capabilities.services ?? [];
+    for (const svc of services) {
       const existing = servicesByName.get(svc.name);
       if (existing !== undefined && existing.connectorId !== c.id) {
         throw new ConnectorServiceCollisionError(svc.name, existing.connectorId, c.id);

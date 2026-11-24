@@ -1,10 +1,23 @@
 // @vitest-environment node
 import { randomBytes } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginError, type Plugin } from '@ax/core';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
+
+// Pass-through spy on the buffer factory: what init hands it is the wiring.
+const { bufferOpts } = vi.hoisted(() => ({ bufferOpts: [] as unknown[] }));
+vi.mock('../../server/chunk-buffer', async (importActual) => {
+  const actual = await importActual<typeof import('../../server/chunk-buffer')>();
+  return {
+    ...actual,
+    createChunkBuffer: (opts?: Parameters<typeof actual.createChunkBuffer>[0]) => {
+      bufferOpts.push(opts);
+      return actual.createChunkBuffer(opts);
+    },
+  };
+});
 import type { AgentMemoryRead } from '../../lib/workspace-types';
 import { registerIdentityStoreFake, type IdentityStoreFake } from './identity-store-fake';
 
@@ -509,6 +522,8 @@ function memoryMockPlugin(state: {
 }
 
 interface BootArgs {
+  /** Config handed to the channel-web plugin. */
+  webConfig?: Parameters<typeof createChannelWebServerPlugin>[0];
   user?: { id: string; isAdmin: boolean } | null;
   /** AW-13 — load the Memory-tab facts hooks. Omitted = no memory plugin at all. */
   memory?: Parameters<typeof memoryMockPlugin>[0];
@@ -579,7 +594,7 @@ async function boot(args: BootArgs = {}): Promise<{
       attachmentsMockPlugin(),
       skillsMockPlugin(),
       ...(args.memory === undefined ? [] : [memoryMockPlugin(args.memory)]),
-      createChannelWebServerPlugin(),
+      createChannelWebServerPlugin(args.webConfig),
     ],
   });
   return { harness, port: http.boundPort(), http };
@@ -593,6 +608,13 @@ describe('@ax/channel-web server plugin (integration)', () => {
       await harness.close({ onError: () => {} });
       harness = null;
     }
+  });
+
+  it('init sizes the chunk buffer from maxTurnMs plus the shell slack', async () => {
+    bufferOpts.length = 0;
+    const booted = await boot({ webConfig: { chatTimeoutMs: 10 * 60_000, maxTurnMs: 120 * 60_000 } });
+    harness = booted.harness;
+    expect(bufferOpts).toEqual([{ shellMaxAgeMs: 125 * 60_000 }]);
   });
 
   it('GET /api/chat/stream/:reqId returns 401 unauthenticated', async () => {

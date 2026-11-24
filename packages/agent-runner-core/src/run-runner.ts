@@ -20,7 +20,9 @@ import { translateContentBlocks } from './attachment-translation.js';
 import { commitTrace } from './commit-trace.js';
 import { assertConfigDirFresh, assertConfigDirOutsideAgentHome } from './config-dir-guard.js';
 import { readRunnerEnv, runnerHomeDir, type RunnerEnv } from './env.js';
+import { startServiceForwards } from './service-forwards.js';
 import { decisionResolvedTurn } from './decision-turn.js';
+import { composeHostNoteMessage } from './host-note-turn.js';
 import { buildEgressAllowedNote } from './egress-note.js';
 import { createInboxLoop, type InboxLoopEntry } from './inbox-loop.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
@@ -770,7 +772,10 @@ async function runRunnerInner(
     );
   }
 
-  const inbox = createInboxLoop({ client });
+  const inbox = createInboxLoop({
+    client,
+    ...(env.inboxIdleMs !== undefined ? { idleTimeoutMs: env.inboxIdleMs } : {}),
+  });
 
   // Phase 2: whether the loop's provider accepts `document` content blocks.
   // A per-loop capability (each SDK pin answers differently), so the loop
@@ -1162,6 +1167,20 @@ async function runRunnerInner(
         chatEndHistory.push({ role: 'user', content });
         return { content, id: trackMessage(continuationReqId) };
       }
+      if (entry.type === 'host-note') {
+        // A note the HOST wrote (restart_with_services swapped this sandbox
+        // mid-turn). It opens a turn like decision-resolved, and for the same
+        // reason needs no chat:start re-check: it belongs to the agent:invoke
+        // already in flight, which passed it. Framed and quoted, never trusted.
+        const content = composeHostNoteMessage(entry.note ?? '');
+        const noteReqId =
+          typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
+        adoptReqIdForTurn({ reqId: noteReqId });
+        // Deliberately NOT pushed into chatEndHistory: `outcome.messages` feeds
+        // memory extraction, which must never save a system line as something
+        // the person said.
+        return { content, id: trackMessage(noteReqId) };
+      }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
       // emissions correlate back to the originating request. Both fields
@@ -1245,6 +1264,10 @@ async function runRunnerInner(
       };
     }
   }
+
+  // Loopback forwards for published service ports (127.0.0.1:<published> ->
+  // 127.0.0.1:<target>). Bind failures are logged and skipped inside.
+  const serviceForwards = await startServiceForwards(env.serviceForwards ?? []);
 
   let exitCode = 0;
   let terminatedReason: string | undefined;
@@ -1822,5 +1845,8 @@ async function runRunnerInner(
       /* swallow */
     }
   }
+  await serviceForwards.close().catch(() => {
+    /* best-effort; the process is exiting */
+  });
   return exitCode;
 }

@@ -39,6 +39,8 @@ export type {
   BlobHolding,
   BlobRef,
 } from './blob-collect-refs.js';
+export { CHAT_TURN_END_HOLD_HOOK, CHAT_TURN_SEGMENT_END_HOOK } from './turn-segment.js';
+export type { ChatTurnEndHoldPayload } from './turn-segment.js';
 export {
   SYSTEM_PROMPT_AUGMENT_CHANGED_HOOK,
   SYSTEM_PROMPT_AUGMENT_MAX_BODY_CHARS,

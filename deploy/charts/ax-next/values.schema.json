@@ -134,9 +134,75 @@
         }
       }
     },
+    "chat": {
+      "type": "object",
+      "properties": {
+        "maxTurnMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Longest a chat turn may run, in minutes. Agents' own turn limits clamp to it."
+        },
+        "maxIdleMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How long a sandbox stays warm between turns (minutes). Agents' own idle settings clamp to it."
+        },
+        "maxServiceSandboxesPerAgent": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Live sandboxes with services one agent may hold at once."
+        }
+      }
+    },
     "sandbox": {
       "type": "object",
       "properties": {
+        "runnerMax": {
+          "type": "object",
+          "description": "Largest runner an agent may be sized to.",
+          "properties": {
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Millicores."
+            },
+            "memoryMiB": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "MiB."
+            }
+          }
+        },
+        "serviceMax": {
+          "type": "object",
+          "description": "Largest a single service sidecar may be sized to.",
+          "properties": {
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Millicores."
+            },
+            "memoryMiB": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "MiB."
+            }
+          }
+        },
+        "serviceStorageDefaultMiB": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Default size of a service's scratch storage, in MiB."
+        },
+        "nodeAllocatableMiB": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "minimum": 1,
+          "pattern": "^$|^[1-9][0-9]*$",
+          "description": "Allocatable memory of one sandbox node, in MiB. Empty means unknown; the boot-time fit check is skipped."
+        },
         "devServices": {
           "type": "object",
           "properties": {

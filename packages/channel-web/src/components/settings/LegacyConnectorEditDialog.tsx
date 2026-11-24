@@ -31,7 +31,7 @@
  *
  * shadcn primitives + semantic tokens only (invariant #6).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, ChevronDown } from 'lucide-react';
 import type { ComposeDrop, ComposeInvalid } from '@ax/skills-parser';
 import {
@@ -52,6 +52,7 @@ import {
   type ConnectorSummary,
   type ConnectorKeyMode,
   type ConnectorWriteBase,
+  pinImages,
   type ServiceDescriptor,
 } from '@/lib/connectors';
 import { HTTP_FAILED, isConfirmedRefusal, userFacingMessage } from '@/lib/http';
@@ -64,6 +65,9 @@ import {
   endpointChangedServers,
   pointsSomewhereNew,
   applyComposeToForm,
+  composeErrorMessage,
+  applyPinResults,
+  servicesProblem,
   summaryToForm,
   connectorIdFromName,
   splitList,
@@ -88,6 +92,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Card,
@@ -189,6 +194,8 @@ const textToPaths = (s: string): string[] =>
 const isDigestPinned = (image: string): boolean =>
   /.+@sha256:[0-9a-f]{64}$/.test(image.trim());
 
+const NO_PROFILE = '__none__';
+
 /**
  * The Services ("service bundle") section — declare dev services a connector
  * brings alongside the sandbox (a database, a cache, …). Paste a
@@ -198,32 +205,93 @@ const isDigestPinned = (image: string): boolean =>
  * `Button` / `Input` / `Label` / `Textarea` + semantic tokens (invariant #6).
  */
 function ServicesSection({
-  services,
-  onChange,
+  form,
+  setForm,
 }: {
-  services: ServiceDescriptor[];
-  onChange: (next: ServiceDescriptor[]) => void;
+  form: ConnectorFormState;
+  setForm: (next: ConnectorFormState | ((prev: ConnectorFormState) => ConnectorFormState)) => void;
 }) {
+  const services = form.services;
+  // A hand edit that empties the list is "nothing declared", not "an empty import".
+  const onChange = (next: ServiceDescriptor[]) =>
+    setForm((f) => ({
+      ...f,
+      services: next,
+      ...(next.length === 0 ? { composePasted: false } : {}),
+    }));
+  // Newest translation wins: a slower pin result from an older one is dropped.
+  const seq = useRef(0);
   const [compose, setCompose] = useState('');
   const [drops, setDrops] = useState<ComposeDrop[]>([]);
   const [invalid, setInvalid] = useState<ComposeInvalid[]>([]);
+  const [profiles, setProfiles] = useState<string[]>([]);
   const [composeError, setComposeError] = useState<string | null>(null);
+  const [pinErrors, setPinErrors] = useState<Record<string, string>>({});
+  const [pinning, setPinning] = useState(false);
+  const needsGroup =
+    profiles.length > 0 && form.composeProfile === null && services.length === 0;
 
-  const translate = () => {
+  // Look up the exact version of every image still written as a tag. Results
+  // merge onto the LATEST form (never a stale snapshot), and only if no newer
+  // translation has started since.
+  const pinDrafts = async (from: ConnectorFormState, id: number) => {
+    if (from.drafts.length === 0) return;
+    setPinning(true);
+    try {
+      const results = await pinImages([...new Set(from.drafts.map((d) => d.image))]);
+      if (id !== seq.current) return;
+      setPinErrors(applyPinResults(from, results).errors);
+      setForm((prev) => applyPinResults(prev, results).form);
+    } catch (e) {
+      if (id !== seq.current) return;
+      const status = (e as { status?: number } | null)?.status;
+      const msg =
+        status === 401 || status === 403
+          ? 'Your session expired, or your account can’t do this. Sign in again and try once more.'
+          : 'We couldn’t look up this image. The name may be misspelled or private, or the registry may be down. Try again, and if it keeps failing, check the name.';
+      setPinErrors(Object.fromEntries(from.drafts.map((d) => [d.name, msg])));
+    } finally {
+      if (id === seq.current) setPinning(false);
+    }
+  };
+
+  // `fresh`: a new paste (the "Add services" button), the only time a
+  // one-group file gets its group picked for them. A pick from the group menu
+  // is never second-guessed, "Services that aren’t in a group" included (A8a).
+  const translate = (profile: string | null, fresh = false) => {
+    const id = ++seq.current;
     setComposeError(null);
-    // applyComposeToForm REPLACES `services` with the translated set, so the
-    // form we hand it only needs to be a valid shell — the current `services`
-    // would be overwritten anyway. We lift the result's services up via onChange.
-    const result = applyComposeToForm(emptyConnectorForm(), compose);
+    setPinErrors({});
+    setPinning(false);
+    // Translating REPLACES the imported services; the mode and other fields stay.
+    const result = applyComposeToForm(form, compose, profile);
     if (!result.ok) {
-      setComposeError(result.error);
+      setComposeError(composeErrorMessage(result.error));
       setDrops([]);
       setInvalid([]);
       return;
     }
-    onChange(result.form.services);
+    // Exactly one group in the file: pick it for them.
+    if (fresh && profile === null && result.profiles.length === 1) {
+      seq.current--;
+      translate(result.profiles[0]!);
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      services: result.form.services,
+      composeProfile: result.form.composeProfile,
+      pinned: result.form.pinned,
+      drafts: result.form.drafts,
+      composeOrder: result.form.composeOrder,
+      appServices: result.form.appServices,
+      composePasted: true,
+    }));
     setDrops(result.drops);
-    setInvalid(result.invalid);
+    // Tag-only images are handled by pinning; what's left here is a real problem.
+    setInvalid(result.invalid.filter((iv) => iv.draft === undefined));
+    setProfiles(result.profiles);
+    void pinDrafts(result.form, id);
   };
 
   const updateService = (i: number, patch: Partial<ServiceDescriptor>) =>
@@ -257,25 +325,138 @@ function ServicesSection({
           />
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs text-muted-foreground">
-              We translate it — we don’t run it. Anything that can’t safely cross
-              into the sandbox gets dropped, and we’ll tell you what.
+              We read it and pick out the services. We don’t run anything. Anything that
+              can’t safely cross into the sandbox gets dropped, and we’ll tell you what.
             </p>
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={translate}
+              onClick={() => translate(form.composeProfile, true)}
               disabled={compose.trim().length === 0}
             >
-              Translate compose
+              Add services from this file
             </Button>
           </div>
         </div>
 
         {composeError && (
           <Alert variant="destructive">
+            <AlertDescription>{composeError}</AlertDescription>
+          </Alert>
+        )}
+
+        {profiles.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="connector-compose-profile" className="text-xs">
+              Which set of services should we bring in?
+            </Label>
+            <Select
+              value={form.composeProfile ?? (needsGroup ? '' : NO_PROFILE)}
+              onValueChange={(v) => translate(v === NO_PROFILE ? null : v)}
+            >
+              <SelectTrigger id="connector-compose-profile">
+                <SelectValue placeholder="Choose a group…" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PROFILE}>Services that aren’t in a group</SelectItem>
+                {profiles.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Your file puts some services into named groups (Compose calls them “profiles”). Choosing a different one replaces the list below.
+            </p>
+          </div>
+        )}
+
+        <div className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+          <div className="flex flex-col gap-0.5">
+            <Label htmlFor="connector-services-on-demand" className="text-sm">
+              Start only when needed
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Off: they start with every sandbox (up to 8). On: they start together, only when the agent asks (up to 16).
+            </p>
+          </div>
+          <Switch
+            id="connector-services-on-demand"
+            checked={form.servicesMode === 'on-demand'}
+            onCheckedChange={(on) =>
+              setForm((f) => ({ ...f, servicesMode: on ? 'on-demand' : 'always' }))
+            }
+          />
+        </div>
+
+        {needsGroup && (
+          <Alert>
+            <AlertTitle>Pick a group to bring in services</AlertTitle>
             <AlertDescription>
-              We couldn’t read that as a Compose file: {composeError}
+              Every service in your file belongs to a group, so none start by
+              default. Choose a group above and we’ll add its services.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {pinning && (
+          <p className="text-xs text-muted-foreground">Looking up exact versions…</p>
+        )}
+
+        {Object.keys(form.pinned).length > 0 && (
+          <Alert>
+            <AlertTitle>We locked these to exact versions</AlertTitle>
+            <AlertDescription>
+              <p className="mb-1">
+                A name like <span className="font-mono">redis:7</span> can change
+                over time, so we saved the exact version instead:
+              </p>
+              <ul className="list-disc pl-5">
+                {Object.entries(form.pinned).map(([tag, ref]) => (
+                  <li key={tag}>
+                    <span className="font-mono">{tag}</span> →{' '}
+                    <span className="font-mono break-all">{ref}</span>
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {form.drafts.length > 0 && !pinning && (
+          <Alert variant="destructive">
+            <AlertTitle>We couldn’t lock a few images to an exact version</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc pl-5">
+                {form.drafts.map((d) => (
+                  <li key={d.name}>
+                    <span className="font-mono">{d.name}</span> ({d.image}):{' '}
+                    {pinErrors[d.name] ?? 'we haven’t looked this one up yet'}
+                  </li>
+                ))}
+              </ul>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => void pinDrafts(form, seq.current)}
+              >
+                Try again
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {form.appServices.length > 0 && (
+          <Alert>
+            <AlertTitle>We skipped services that run your own code</AlertTitle>
+            <AlertDescription>
+              Skipped: {form.appServices.map((a) => a.service).join(', ')}. They use
+              your own code, so we didn’t save them as services. The agent can run
+              them inside its sandbox instead.
             </AlertDescription>
           </Alert>
         )}
@@ -358,7 +539,7 @@ function ServicesSection({
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={`svc-image-${i}`} className="text-xs">
-                  Image (digest-pinned)
+                  Image (exact version)
                 </Label>
                 <Input
                   id={`svc-image-${i}`}
@@ -370,7 +551,7 @@ function ServicesSection({
                 />
                 {svc.image.trim().length > 0 && !isDigestPinned(svc.image) && (
                   <p className="text-xs text-destructive">
-                    Pin this image to an immutable digest (…@sha256:&lt;64 hex&gt;) —
+                    This image needs an exact version. Pin it to an immutable digest (…@sha256:&lt;64 hex&gt;) —
                     a floating tag can change under us.
                   </p>
                 )}
@@ -620,6 +801,11 @@ export function LegacyConnectorEditDialog({
     if (busy || discoveringHosts) return;
     if (!form.name.trim()) {
       setError('Give this connector a service name first.');
+      return;
+    }
+    const servicesIssue = servicesProblem(form);
+    if (servicesIssue) {
+      setError(servicesIssue);
       return;
     }
     const connectorId = form.connectorId || connectorIdFromName(form.name);
@@ -1273,10 +1459,7 @@ export function LegacyConnectorEditDialog({
           )}
 
           {/* Services (service bundle) — independent of the mechanism choice. */}
-          <ServicesSection
-            services={form.services}
-            onChange={(services) => setForm((f) => ({ ...f, services }))}
-          />
+          <ServicesSection form={form} setForm={setForm} />
 
           {error && (
             <Alert variant="destructive">

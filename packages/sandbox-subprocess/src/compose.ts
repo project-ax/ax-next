@@ -72,6 +72,14 @@ interface ComposeServiceEntry {
   // silently respawn (and never outlive its session).
   restart: 'no';
   environment?: Record<string, string>;
+  command?: string[];
+  entrypoint?: string[];
+  deploy?: {
+    resources: {
+      limits?: { cpus?: string; memory?: string };
+      reservations?: { cpus?: string; memory?: string };
+    };
+  };
   ports?: string[];
   tmpfs?: string[];
   healthcheck?: {
@@ -109,6 +117,16 @@ export function descriptorsToComposeProject(
       throw new Error(`service '${svc.name}' image must be digest-pinned: ${svc.image}`);
     }
 
+    // These need the sandbox's own runner; the local backend can't honor them.
+    if (svc.job === true) {
+      throw new Error(`service '${svc.name}': a job is not supported by the local sandbox`);
+    }
+    if (svc.publishedPorts !== undefined && svc.publishedPorts.length > 0) {
+      throw new Error(
+        `service '${svc.name}': publishedPorts is not supported by the local sandbox`,
+      );
+    }
+
     const entry: ComposeServiceEntry = {
       image: svc.image,
       restart: 'no',
@@ -116,6 +134,26 @@ export function descriptorsToComposeProject(
 
     if (Object.keys(svc.env).length > 0) {
       entry.environment = { ...svc.env };
+    }
+
+    if (svc.command !== undefined) entry.command = [...svc.command];
+    if (svc.entrypoint !== undefined) entry.entrypoint = [...svc.entrypoint];
+
+    const cpu = svc.resources?.cpuMillis;
+    const mem = svc.resources?.memoryMiB;
+    if (cpu !== undefined || mem !== undefined) {
+      entry.deploy = {
+        resources: {
+          limits: {
+            ...(cpu !== undefined ? { cpus: String(cpu.limit / 1000) } : {}),
+            ...(mem !== undefined ? { memory: `${mem.limit}M` } : {}),
+          },
+          reservations: {
+            ...(cpu !== undefined ? { cpus: String(cpu.request / 1000) } : {}),
+            ...(mem !== undefined ? { memory: `${mem.request}M` } : {}),
+          },
+        },
+      };
     }
 
     if (svc.ports.length > 0) {
@@ -155,9 +193,38 @@ export function descriptorsToComposeProject(
       };
     }
 
-    out.services[svc.name] = entry;
+    out.services[svc.name] = escapeDollars(entry);
   }
   return out;
+}
+
+/**
+ * Compose interpolates `${VAR}` / `$VAR` from the docker process's
+ * environment, in every string of the project. A descriptor is untrusted, so
+ * every `$` becomes `$$` (compose's literal dollar) and reaches the container
+ * unchanged, never as a host variable.
+ */
+function escapeDollars<T>(value: T): T {
+  if (typeof value === 'string') return value.replaceAll('$', '$$$$') as T;
+  if (Array.isArray(value)) return value.map(escapeDollars) as T;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [escapeDollars(k), escapeDollars(v)]),
+    ) as T;
+  }
+  return value;
+}
+
+/**
+ * The environment `docker` is spawned with: PATH, HOME and DOCKER_* only, so a
+ * host secret can never be interpolated into the project.
+ */
+export function dockerSpawnEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(source)) {
+    if (v !== undefined && (k === 'PATH' || k === 'HOME' || k.startsWith('DOCKER_'))) env[k] = v;
+  }
+  return env;
 }
 
 /**
@@ -201,6 +268,7 @@ export const defaultComposeRunner: ComposeRunner = (args, opts) =>
   new Promise<ComposeRunResult>((resolve, reject) => {
     const child = spawn('docker', args, {
       shell: false,
+      env: dockerSpawnEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';

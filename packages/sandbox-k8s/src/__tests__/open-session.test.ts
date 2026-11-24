@@ -809,6 +809,66 @@ describe('sandbox:open-session (k8s)', () => {
   // TASK-151 — dev service sidecars + readiness budget threading.
   // -----------------------------------------------------------------------
 
+  // §3.5 / §6.2 — the orchestrator's runner size and timing env must survive the
+  // trip from `sandbox:open-session` into the created pod. A dropped spread here
+  // would silently run every agent at the default size and idle.
+  it('runnerSize and env on open-session reach the created runner container', async () => {
+    type Created = {
+      spec: { containers: Array<{ resources: unknown; env: Array<{ name: string; value: string }> }> };
+    };
+    const open = async (extra: Record<string, unknown>): Promise<Created['spec']['containers'][0]> => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api);
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-sized',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        proxyConfig: TEST_PROXY_CONFIG,
+        ...extra,
+      });
+      return (api.creates[0]!.body as Created).spec.containers[0]!;
+    };
+
+    const sized = await open({
+      runnerSize: {
+        cpuMillis: { request: 2000, limit: 4000 },
+        memoryMiB: { request: 6144, limit: 8192 },
+      },
+      env: { AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' },
+    });
+    expect(sized.resources).toEqual({
+      limits: { cpu: '4000m', memory: '8192Mi' },
+      requests: { cpu: '2000m', memory: '6144Mi' },
+    });
+    expect(sized.env).toEqual(
+      expect.arrayContaining([
+        { name: 'AX_INBOX_IDLE_MS', value: '2100000' },
+        { name: 'AX_TURN_LIMIT_MS', value: '7200000' },
+      ]),
+    );
+
+    // Above the chart max (default 8000m / 16384Mi): clamped, never refused.
+    const oversized = await open({
+      runnerSize: {
+        cpuMillis: { request: 64_000, limit: 128_000 },
+        memoryMiB: { request: 200_000, limit: 400_000 },
+      },
+    });
+    expect(oversized.resources).toEqual({
+      limits: { cpu: '8000m', memory: '16384Mi' },
+      requests: { cpu: '8000m', memory: '16384Mi' },
+    });
+
+    // Neither given: today's defaults, and no timing env on the pod.
+    const plain = await open({});
+    expect(plain.resources).toEqual({
+      limits: { cpu: '1', memory: '1Gi' },
+      requests: { cpu: '100m', memory: '256Mi' },
+    });
+    expect(plain.env.map((e) => e.name)).not.toContain('AX_INBOX_IDLE_MS');
+  });
+
   it('renders declared services[] as native sidecars in the created pod spec', async () => {
     const api = makeMockK8sApi();
     api.setReadResponses(readyPod());

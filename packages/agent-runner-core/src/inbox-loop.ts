@@ -66,7 +66,7 @@ export interface InboxLoopOptions {
 }
 
 export interface InboxLoopEntry {
-  type: 'user-message' | 'cancel' | 'interrupt' | 'idle-timeout' | 'decision-resolved';
+  type: 'user-message' | 'cancel' | 'interrupt' | 'idle-timeout' | 'decision-resolved' | 'host-note';
   payload?: AgentMessage;
   /**
    * AW-6. Present iff `type === 'decision-resolved'` — a call this agent held
@@ -119,6 +119,7 @@ type WireResponse =
   | { type: 'cancel'; cursor: number }
   | { type: 'interrupt'; cursor: number }
   | { type: 'timeout'; cursor: number }
+  | { type: 'host-note'; note: string; reqId: string; cursor: number }
   | {
       type: 'decision-resolved';
       decisionId: string;
@@ -189,6 +190,16 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
         // rule as every real delivery, and no payload to carry.
         cursor = resp.cursor;
         return { type: 'interrupt' };
+      }
+      if (resp.type === 'host-note') {
+        // Host-authored note opening a turn inside the same agent:invoke.
+        // `note` and `reqId` are both required on the wire.
+        cursor = resp.cursor;
+        return {
+          type: 'host-note',
+          note: resp.note,
+          reqId: resp.reqId,
+        };
       }
       if (resp.type === 'decision-resolved') {
         cursor = resp.cursor;

@@ -573,4 +573,34 @@ describe('runAgentsMigration', () => {
       { identity: 'I am Pip', soul: 'Kind', identity_changed_by_agent_at: null, soul_changed_by_agent_at: null },
     ]);
   });
+
+  it('additive migration leaves existing rows null', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    // An agents table as an earlier release left it: no sandbox-settings columns.
+    await sql`ALTER TABLE agents_v1_agents DROP COLUMN turn_limit_minutes, DROP COLUMN idle_minutes, DROP COLUMN runner_size`.execute(db);
+    await sql`
+      INSERT INTO agents_v1_agents
+        (agent_id, owner_id, owner_type, visibility, display_name, allowed_tools, mcp_config_ids, model, runner)
+      VALUES ('agt_old', 'u1', 'user', 'personal', 'Old', '[]', '[]', 'anthropic/claude-opus-4-7', 'claude-sdk')
+    `.execute(db);
+
+    await runAgentsMigration(db);
+    await runAgentsMigration(db); // re-runs are no-ops
+
+    const r = await sql<{ turn_limit_minutes: number | null; idle_minutes: number | null; runner_size: unknown }>`
+      SELECT turn_limit_minutes, idle_minutes, runner_size FROM agents_v1_agents WHERE agent_id = 'agt_old'
+    `.execute(db);
+    expect(r.rows).toEqual([{ turn_limit_minutes: null, idle_minutes: null, runner_size: null }]);
+    const t = await sql<{ column_name: string; data_type: string; is_nullable: string }>`
+      SELECT column_name, data_type, is_nullable FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents' AND column_name IN ('turn_limit_minutes','idle_minutes','runner_size')
+       ORDER BY column_name
+    `.execute(db);
+    expect(t.rows).toEqual([
+      { column_name: 'idle_minutes', data_type: 'integer', is_nullable: 'YES' },
+      { column_name: 'runner_size', data_type: 'jsonb', is_nullable: 'YES' },
+      { column_name: 'turn_limit_minutes', data_type: 'integer', is_nullable: 'YES' },
+    ]);
+  });
 });

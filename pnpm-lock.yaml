@@ -1091,9 +1091,15 @@ importers:
       '@ax/skills-parser':
         specifier: workspace:*
         version: link:../skills-parser
+      ipaddr.js:
+        specifier: 2.4.0
+        version: 2.4.0
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      undici:
+        specifier: 8.12.3
+        version: 8.12.3
       zod:
         specifier: ^3.23.8
         version: 3.25.76(patch_hash=a34e0e2a71fa717a658b0d189816a520a345f27d0f68d1bc24c8c724aa91615d)

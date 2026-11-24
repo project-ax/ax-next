@@ -339,6 +339,8 @@ describe('BUILTIN_RULES', () => {
         'routine_delete',
         'routine_fire_now',
         'routine_report',
+        'restart_with_services',
+        'stop_services',
         'web_search',
       ].sort(),
     );
@@ -357,6 +359,25 @@ describe('BUILTIN_RULES', () => {
         'Write',
       ].sort(),
     );
+  });
+
+  it('restart_with_services and stop_services default to allow', () => {
+    // Dev services on demand (spec §3.2): the restart only starts
+    // admin-approved images inside the agent's own sandbox, and the stop only
+    // turns them off, so neither is held. Resolved through the real
+    // evaluator under the real tool names.
+    expect(evaluate(BUILTIN_RULES, { name: 'restart_with_services', input: { set: 'e2e' } })).toMatchObject({
+      verdict: 'allow',
+      ruleId: 'services.restart',
+      irreversible: false,
+      effect: [],
+    });
+    expect(evaluate(BUILTIN_RULES, { name: 'stop_services', input: {} })).toMatchObject({
+      verdict: 'allow',
+      ruleId: 'services.stop',
+      irreversible: false,
+      effect: [],
+    });
   });
 
   it('a check-in report is allowed and described', () => {

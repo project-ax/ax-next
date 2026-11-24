@@ -110,6 +110,14 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS title_provisional BOOLEAN NOT NULL DEFAULT FALSE
   `.execute(db);
 
+  // Dev services on demand. Which service set the conversation's sandbox runs
+  // with. Additive and NULLABLE, no backfill: NULL reads as "no services",
+  // which is what every existing conversation already has.
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS service_set TEXT
+  `.execute(db);
+
   // AW-6 (2026-08-21). Which CHANNEL opened this conversation. Attendance —
   // whether a held tool call can expect a person to answer while the agent is
   // still warm — is a property of that channel, not of the turn.
@@ -403,6 +411,8 @@ export interface ConversationsRow {
   runner_session_id: string | null;
   last_activity_at: Date | null;
   hidden: boolean;
+  // The on-demand service set (a connector id). NULL = none; no backfill.
+  service_set: string | null;
   // AW-6 (2026-08-21). The channel that opened the conversation. NULL on every
   // row that predates the column, and on any caller that does not pass one —
   // `rowToConversation` reads that as `'web'`.

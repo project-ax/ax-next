@@ -226,6 +226,45 @@ const HealthcheckSchema = z.union([
     .strict(),
 ]);
 
+// Same rule as @ax/skills-parser's isSafeWritablePath (kept in step by hand).
+function isSafeWritablePath(p: string): boolean {
+  if (!p.startsWith('/')) return false;
+  const segs = p.split('/').slice(1);
+  const real = segs.filter((s) => s !== '');
+  if (real.length === 0) return false; // bare "/"
+  if (segs.some((s) => s === '.' || s === '..')) return false;
+  return !['proc', 'sys', 'dev'].includes(real[0]!);
+}
+
+const SERVICE_ARGV = z.array(z.string().max(4096)).max(32);
+const SERVICE_POSITIVE_INT = z.number().int().positive();
+const SERVICE_SIZE_RANGE = z
+  .object({ request: SERVICE_POSITIVE_INT, limit: SERVICE_POSITIVE_INT })
+  .strict()
+  .refine((r) => r.request <= r.limit, { message: 'request must not exceed limit' });
+
+/**
+ * The runner container's size, per agent (§3.5). Numbers on the wire: CPU in
+ * millicores, memory in MiB; the k8s backend alone writes quantity strings.
+ * Values above the chart maximum are valid here and clamped by the backend,
+ * never refused: an agent saved under a higher cap must keep opening sessions.
+ */
+export const RunnerSizeSchema = z
+  .object({ cpuMillis: SERVICE_SIZE_RANGE.optional(), memoryMiB: SERVICE_SIZE_RANGE.optional() })
+  .strict();
+export type RunnerSizeParsed = z.infer<typeof RunnerSizeSchema>;
+
+/**
+ * The only env the orchestrator may set on a runner through `sandbox:open-session`
+ * (§6.2): how long a finished turn's runner waits for the next message, and the
+ * longest one turn may run, in whole milliseconds. Not a general env dictionary
+ * (invariant 5); `bootstrap.ts` allowlists the same two names.
+ */
+const RUNNER_TIMING_MS = z.string().regex(/^[1-9][0-9]{0,14}$/, 'expected whole milliseconds');
+export const RunnerEnvSchema = z
+  .object({ AX_INBOX_IDLE_MS: RUNNER_TIMING_MS.optional(), AX_TURN_LIMIT_MS: RUNNER_TIMING_MS.optional() })
+  .strict();
+
 export const ServiceDescriptorSchema = z
   .object({
     name: z.string().regex(ID_RE, 'invalid service name shape'),
@@ -246,9 +285,21 @@ export const ServiceDescriptorSchema = z
       }),
     healthcheck: HealthcheckSchema.optional(),
     writablePaths: z
-      .array(z.string().regex(/^\//, 'writablePaths entries must be absolute').max(256))
+      .array(z.string().max(256).refine(isSafeWritablePath, 'writablePaths entries must be absolute, not / or under /proc /sys /dev, with no . or .. segments'))
       .max(16)
       .default([]),
+    command: SERVICE_ARGV.optional(),
+    entrypoint: SERVICE_ARGV.optional(),
+    job: z.boolean().optional(),
+    publishedPorts: z
+      .array(z.object({ published: SERVICE_PORT, target: SERVICE_PORT }).strict())
+      .max(16)
+      .optional(),
+    resources: z
+      .object({ cpuMillis: SERVICE_SIZE_RANGE.optional(), memoryMiB: SERVICE_SIZE_RANGE.optional() })
+      .strict()
+      .optional(),
+    storageMiB: SERVICE_POSITIVE_INT.optional(),
   })
   .strict();
 export type ServiceDescriptorParsed = z.infer<typeof ServiceDescriptorSchema>;
@@ -338,8 +389,12 @@ export const OpenSessionInputSchema = z.object({
   // TASK-150 — dev SERVICES the orchestrator folded from the agent's connector
   // capabilities. Optional + back-compat with non-orchestrator callers (tests,
   // ad-hoc CLI) that don't set it. Each entry is re-validated at the wire
-  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 8.
-  services: z.array(ServiceDescriptorSchema).max(8).optional(),
+  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 16 (the on-demand ceiling).
+  services: z.array(ServiceDescriptorSchema).max(16).optional(),
+  // §3.5 — the agent's runner size. Optional: unset means the chart defaults.
+  runnerSize: RunnerSizeSchema.optional(),
+  // §6.2 — the per-agent idle and turn limits, as the runner's env.
+  env: RunnerEnvSchema.optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;

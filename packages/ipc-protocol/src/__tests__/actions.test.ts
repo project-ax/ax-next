@@ -4,6 +4,7 @@ import {
   ToolPreCallResponseSchema,
   SessionNextMessageResponseSchema,
   SkillProposeResponseSchema,
+  HOST_NOTE_MAX,
   ArtifactPublishRequestSchema,
   ArtifactPublishResponseSchema,
   MAX_VISUAL_HTML_BYTES,
@@ -167,5 +168,30 @@ describe('artifact.publish wire', () => {
     expect(ArtifactPublishResponseSchema.parse({ ...ok, downloadUrl: 'ax://artifact/abc' })).toEqual(ok);
     expect(ArtifactPublishResponseSchema.safeParse({ ...ok, version: 0 }).success).toBe(false);
     expect(ArtifactPublishResponseSchema.safeParse({ ...ok, kind: 'video' }).success).toBe(false);
+  });
+});
+
+describe('session.next-message host-note arm', () => {
+  const parse = (v: unknown) => SessionNextMessageResponseSchema.safeParse(v);
+
+  it('next-message accepts host-note', () => {
+    expect(
+      parse({ type: 'host-note', note: 'You are now running with services.', reqId: 'req-1', cursor: 3 })
+        .success,
+    ).toBe(true);
+    // reqId is required: a host-note always runs inside an agent:invoke.
+    expect(parse({ type: 'host-note', note: 'n', cursor: 3 }).success).toBe(false);
+  });
+
+  it('caps the note at 4000 characters and refuses an empty one', () => {
+    expect(HOST_NOTE_MAX).toBe(4000);
+    expect(parse({ type: 'host-note', note: 'x'.repeat(4000), reqId: 'r', cursor: 0 }).success).toBe(true);
+    expect(parse({ type: 'host-note', note: 'x'.repeat(4001), reqId: 'r', cursor: 0 }).success).toBe(false);
+    expect(parse({ type: 'host-note', note: '', reqId: 'r', cursor: 0 }).success).toBe(false);
+  });
+
+  it('refuses a host-note with a junk reqId or no cursor', () => {
+    expect(parse({ type: 'host-note', note: 'n', reqId: '', cursor: 0 }).success).toBe(false);
+    expect(parse({ type: 'host-note', note: 'n' }).success).toBe(false);
   });
 });

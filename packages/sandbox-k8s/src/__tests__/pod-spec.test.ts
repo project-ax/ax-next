@@ -860,6 +860,14 @@ describe('buildPodSpec', () => {
       healthcheck?:
         | { kind: 'tcp'; port: number }
         | { kind: 'exec'; command: string[] };
+      command?: string[];
+      entrypoint?: string[];
+      job?: boolean;
+      resources?: {
+        cpuMillis?: { request: number; limit: number };
+        memoryMiB?: { request: number; limit: number };
+      };
+      storageMiB?: number;
     };
     const svc = (over: Partial<Svc> = {}): Svc => ({
       name: 'postgres',
@@ -956,7 +964,7 @@ describe('buildPodSpec', () => {
       expect(volNames).toContain('svc-mongo-0');
       expect(volNames).toContain('svc-mongo-1');
       for (const n of ['svc-mongo-0', 'svc-mongo-1']) {
-        expect(spec.volumes.find((v) => v.name === n)!.emptyDir).toEqual({});
+        expect(spec.volumes.find((v) => v.name === n)!.emptyDir).toEqual({ sizeLimit: '2048Mi' });
       }
     });
 
@@ -1004,6 +1012,124 @@ describe('buildPodSpec', () => {
         exec: { command: ['mongosh', '--eval', 'db.runCommand("ping")'] },
       });
       expect((sidecar.startupProbe as { tcpSocket?: unknown }).tcpSocket).toBeUndefined();
+    });
+
+    it('a job renders as a plain init container in order', () => {
+      const spec = podOf([
+        svc({ name: 'db' }),
+        svc({ name: 'db-init', job: true, healthcheck: undefined }),
+        svc({ name: 'api', healthcheck: undefined }),
+      ]);
+      const own = spec.initContainers.filter((c) => c.name.startsWith('svc-'));
+      expect(own.map((c) => [c.name, c.restartPolicy ?? null])).toEqual([
+        ['svc-db', 'Always'],
+        ['svc-db-init', null],
+        ['svc-api', 'Always'],
+      ]);
+      expect(own[1]!.startupProbe).toBeUndefined();
+    });
+
+    it('a job with a healthcheck still renders no startup probe', () => {
+      const spec = podOf([svc({ name: 'j', job: true })]);
+      expect(spec.initContainers.find((c) => c.name === 'svc-j')!.startupProbe).toBeUndefined();
+    });
+
+    it('command and entrypoint map to command/args', () => {
+      const spec = podOf([
+        svc({ name: 'a', command: ['--x'] }),
+        svc({ name: 'b', entrypoint: ['/e'], command: ['--y'] }),
+        svc({ name: 'c', entrypoint: ['/e2'] }),
+        svc({ name: 'd' }),
+      ]);
+      const get = (n: string) =>
+        spec.initContainers.find((c) => c.name === n) as unknown as Record<string, unknown>;
+      expect(get('svc-a').args).toEqual(['--x']);
+      expect(get('svc-a').command).toBeUndefined();
+      expect(get('svc-b').command).toEqual(['/e']);
+      expect(get('svc-b').args).toEqual(['--y']);
+      expect(get('svc-c').command).toEqual(['/e2']);
+      expect(get('svc-c').args).toBeUndefined();
+      expect(get('svc-d').command).toBeUndefined();
+      expect(get('svc-d').args).toBeUndefined();
+    });
+
+    it('writable paths get sizeLimit from storageMiB or the default', () => {
+      const spec = podOf([
+        svc({ name: 'a', storageMiB: 512 }),
+        svc({ name: 'b' }),
+      ]);
+      const vol = (n: string) => spec.volumes.find((v) => v.name.startsWith(n))!;
+      expect(vol('svc-a').emptyDir).toEqual({ sizeLimit: '512Mi' });
+      expect(vol('svc-b').emptyDir).toEqual({ sizeLimit: '2048Mi' });
+    });
+
+    it('service resources render from numbers and clamp to the configured maximum', () => {
+      const spec = podOf([
+        svc({
+          name: 'big',
+          resources: {
+            cpuMillis: { request: 500, limit: 99_000 },
+            memoryMiB: { request: 99_999, limit: 99_999 },
+          },
+        }),
+        svc({ name: 'small', resources: { memoryMiB: { request: 1024, limit: 2048 } } }),
+      ]);
+      const res = (n: string) =>
+        (spec.initContainers.find((c) => c.name === n) as unknown as { resources: unknown })
+          .resources;
+      expect(res('svc-big')).toEqual({
+        limits: { cpu: '4000m', memory: '4096Mi' },
+        requests: { cpu: '500m', memory: '4096Mi' },
+      });
+      expect(res('svc-small')).toEqual({
+        limits: { cpu: '1', memory: '2048Mi' },
+        requests: { cpu: '100m', memory: '1024Mi' },
+      });
+    });
+
+    it('hostAliases lists every service name on 127.0.0.1', () => {
+      const spec = podOf([svc({ name: 'a' }), svc({ name: 'b' })]) as unknown as {
+        hostAliases?: unknown;
+      };
+      expect(spec.hostAliases).toEqual([{ ip: '127.0.0.1', hostnames: ['a', 'b'] }]);
+    });
+
+    it('publishedPorts become AX_SERVICE_FORWARDS on the runner', () => {
+      const spec = buildPodSpec(
+        'pod-fwd',
+        {
+          ...baseInput,
+          services: [
+            svc({ name: 'mongo', publishedPorts: [{ published: 47017, target: 27017 }] }),
+            svc({ name: 'kafka', publishedPorts: [{ published: 9294, target: 9094 }] }),
+          ],
+        },
+        baseResolved(),
+      ).spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      const e = spec.containers[0]!.env.filter((x) => x.name === 'AX_SERVICE_FORWARDS');
+      expect(e).toHaveLength(1);
+      expect(JSON.parse(e[0]!.value)).toEqual([
+        { published: 47017, target: 27017 },
+        { published: 9294, target: 9094 },
+      ]);
+    });
+
+    it('throws host-side on a map the runner would reject (>64, or a target equal to a published port)', () => {
+      const build = (services: Svc[]) => () => buildPodSpec('pod-bad', { ...baseInput, services }, baseResolved());
+      const many = Array.from({ length: 5 }, (_, i) =>
+        svc({ name: `s${i}`, publishedPorts: Array.from({ length: 13 }, (_, j) => ({ published: 10000 + i * 13 + j, target: 5432 })) }));
+      expect(build(many)).toThrow(/not forwardable/);
+      expect(build([svc({ name: 'a', publishedPorts: [{ published: 9000, target: 9000 }] })])).toThrow(/not forwardable/);
+    });
+
+    it('no publishedPorts → no AX_SERVICE_FORWARDS', () => {
+      const spec = podOf([svc({ name: 'a' })]) as unknown as { containers: Array<{ env: Array<{ name: string }> }> };
+      expect(spec.containers[0]!.env.some((x) => x.name === 'AX_SERVICE_FORWARDS')).toBe(false);
+    });
+
+    it('no services → no hostAliases', () => {
+      const spec = buildPodSpec('pod-none', baseInput, baseResolved()).spec as Record<string, unknown>;
+      expect('hostAliases' in spec).toBe(false);
     });
 
     it('omits startupProbe when the descriptor declares no healthcheck', () => {
@@ -1652,5 +1778,81 @@ describe('buildPodSpec', () => {
         ),
       ).not.toThrow();
     });
+  });
+});
+
+describe('buildPodSpec runnerSize (TASK 2.3)', () => {
+  type Res = { limits: Record<string, string>; requests: Record<string, string> };
+  const runnerRes = (spec: unknown): Res =>
+    (spec as { containers: Array<{ name: string; resources: Res }> }).containers.find((c) => c.name === 'runner')!.resources;
+  const size = {
+    cpuMillis: { request: 2000, limit: 4000 },
+    memoryMiB: { request: 6144, limit: 8192 },
+  };
+
+  it('runnerSize renders on the runner container in both renderers', () => {
+    // One buildPodSpec feeds both the plain pod and the agent-sandbox podTemplate.
+    for (const backend of ['pod', 'agent-sandbox'] as const) {
+      const cfg = resolveConfig({
+        hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80',
+        backend,
+        ...(backend === 'agent-sandbox' ? { proxyEndpoint: 'http://proxy:8888' } : {}),
+      });
+      const spec = buildPodSpec('pod-sized', { ...baseInput, runnerSize: size }, cfg).spec;
+      expect(runnerRes(spec)).toEqual({
+        limits: { cpu: '4000m', memory: '8192Mi' },
+        requests: { cpu: '2000m', memory: '6144Mi' },
+      });
+    }
+  });
+
+  it('unset runnerSize or unset halves keep today defaults', () => {
+    expect(runnerRes(buildPodSpec('p', baseInput, baseResolved()).spec)).toEqual({
+      limits: { cpu: '1', memory: '1Gi' },
+      requests: { cpu: '100m', memory: '256Mi' },
+    });
+    expect(
+      runnerRes(buildPodSpec('p', { ...baseInput, runnerSize: { memoryMiB: size.memoryMiB } }, baseResolved()).spec),
+    ).toEqual({
+      limits: { cpu: '1', memory: '8192Mi' },
+      requests: { cpu: '100m', memory: '6144Mi' },
+    });
+  });
+
+  it('runnerSize clamps to the configured max', () => {
+    const cfg = resolveConfig({
+      hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80',
+      runnerCpuLimitMaxMillis: 3000,
+      runnerMemoryLimitMaxMiB: 4096,
+    });
+    const spec = buildPodSpec(
+      'p',
+      { ...baseInput, runnerSize: { cpuMillis: { request: 3500, limit: 99_000 }, memoryMiB: { request: 2048, limit: 99_999 } } },
+      cfg,
+    ).spec;
+    // request is clamped too, so request <= limit holds after clamping.
+    expect(runnerRes(spec)).toEqual({
+      limits: { cpu: '3000m', memory: '4096Mi' },
+      requests: { cpu: '3000m', memory: '2048Mi' },
+    });
+  });
+
+  it('the scaffold init container keeps the chart defaults', () => {
+    const spec = buildPodSpec('p', { ...baseInput, runnerSize: size }, baseResolved()).spec as {
+      initContainers: Array<{ name: string; resources: Res }>;
+    };
+    expect(spec.initContainers.find((c) => c.name === 'sdk-scaffold')!.resources.limits).toEqual({ cpu: '1', memory: '1Gi' });
+  });
+
+  it('extraEnv carries AX_INBOX_IDLE_MS and AX_TURN_LIMIT_MS onto the runner', () => {
+    const spec = buildPodSpec(
+      'p',
+      { ...baseInput, extraEnv: { AX_INBOX_IDLE_MS: '2100000', AX_TURN_LIMIT_MS: '7200000' } },
+      baseResolved(),
+    ).spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+    expect(spec.containers[0]!.env).toEqual(expect.arrayContaining([
+      { name: 'AX_INBOX_IDLE_MS', value: '2100000' },
+      { name: 'AX_TURN_LIMIT_MS', value: '7200000' },
+    ]));
   });
 });

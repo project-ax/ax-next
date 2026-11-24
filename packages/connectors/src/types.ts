@@ -230,7 +230,21 @@ function makeCapabilitiesSchema(
     packages: PackagesSpecSchema,
     // Optional on ingress (legacy rows + existing callers omit it); the schema
     // defaults it to `[]` so a parsed Capabilities always carries `services`.
-    services: z.array(ServiceDescriptorSchema).max(8).default([]),
+    services: z.array(ServiceDescriptorSchema).max(SERVICES_MAX).default([]),
+    // Absent means 'always'. Only 'on-demand' may carry more than
+    // ALWAYS_ON_SERVICES_MAX services.
+    servicesMode: z.enum(['always', 'on-demand']).optional(),
+  }).superRefine((caps, ctx) => {
+    if (caps.servicesMode !== 'on-demand' && caps.services.length > ALWAYS_ON_SERVICES_MAX) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.too_big,
+        type: 'array',
+        maximum: ALWAYS_ON_SERVICES_MAX,
+        inclusive: true,
+        path: ['services'],
+        message: `at most ${ALWAYS_ON_SERVICES_MAX} always-on services (got ${caps.services.length})`,
+      });
+    }
   }) as unknown as ZodType<Capabilities>;
 }
 
@@ -251,6 +265,21 @@ const HealthcheckSchema = z.union([
     })
     .strict(),
 ]);
+const ServiceArgvSchema = z.array(z.string().max(4096)).max(32);
+const ServicePositiveInt = z.number().int().positive();
+// Same rule as @ax/skills-parser's isSafeWritablePath (kept in step by hand).
+function isSafeWritablePath(p: string): boolean {
+  if (!p.startsWith('/')) return false;
+  const segs = p.split('/').slice(1);
+  const real = segs.filter((s) => s !== '');
+  if (real.length === 0) return false; // bare "/"
+  if (segs.some((s) => s === '.' || s === '..')) return false;
+  return !['proc', 'sys', 'dev'].includes(real[0]!);
+}
+const ServiceSizeRangeSchema = z
+  .object({ request: ServicePositiveInt, limit: ServicePositiveInt })
+  .strict()
+  .refine((r) => r.request <= r.limit, { message: 'request must not exceed limit' });
 const ServiceDescriptorSchema = z
   .object({
     name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
@@ -265,11 +294,39 @@ const ServiceDescriptorSchema = z
       }
     }),
     healthcheck: HealthcheckSchema.optional(),
-    writablePaths: z.array(z.string().regex(/^\//).max(256)).max(16).default([]),
+    writablePaths: z
+      .array(z.string().max(256).refine(isSafeWritablePath, 'writablePaths entries must be absolute, not / or under /proc /sys /dev, with no . or .. segments'))
+      .max(16)
+      .default([]),
+    command: ServiceArgvSchema.optional(),
+    entrypoint: ServiceArgvSchema.optional(),
+    job: z.boolean().optional(),
+    publishedPorts: z
+      .array(z.object({ published: ServicePortSchema, target: ServicePortSchema }).strict())
+      .max(16)
+      .optional(),
+    resources: z
+      .object({
+        cpuMillis: ServiceSizeRangeSchema.optional(),
+        memoryMiB: ServiceSizeRangeSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    storageMiB: ServicePositiveInt.optional(),
   })
   .strict();
 
-/** Reads and return schemas: never bounded, so every stored row parses. */
+/** The store's copy of the descriptor grammar, exported for the A6 drift test
+ *  (service-descriptor-drift.test.ts); not part of any hook payload. */
+export const ConnectorServiceDescriptorSchema = ServiceDescriptorSchema;
+
+/** Mirrors SERVICES_MAX / ALWAYS_ON_SERVICES_MAX in @ax/skills-parser. */
+const SERVICES_MAX = 16;
+const ALWAYS_ON_SERVICES_MAX = 8;
+
+/** Reads and return schemas: the CAPABILITY_WRITE_LIMITS list bounds don't
+ *  apply, so every stored row parses. `services` keeps its own caps here too
+ *  (16, and 8 unless on-demand), as it always has on read. */
 export const CapabilitiesSchema = makeCapabilitiesSchema({});
 /** The write funnels only: the same shape, every untrusted list bounded. */
 export const CapabilitiesWriteSchema = makeCapabilitiesSchema(CAPABILITY_WRITE_LIMITS);

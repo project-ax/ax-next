@@ -55,6 +55,7 @@ import { createStepSummariesPlugin } from '@ax/step-summaries';
 import { createMemoryFactsPostgresPlugin } from '@ax/memory-facts-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createRetireStrataIndexPlugin } from './retire-strata-index.js';
+import { checkNodeFit, checkTurnCaps, LARGEST_SERVICE_SET_MIB } from './turn-caps.js';
 import { parseContentOrigin, type ParsedContentOrigin } from './content-origin.js';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createChannelSlackPlugin } from '@ax/channel-slack';
@@ -307,6 +308,15 @@ export interface K8sPresetConfig {
     cpuRequest?: string;
     memoryRequest?: string;
     activeDeadlineSeconds?: number;
+    /** Chart caps for service sidecars (sandbox.serviceMax, serviceStorageDefaultMiB). */
+    serviceCpuLimitMaxMillis?: number;
+    serviceMemoryLimitMaxMiB?: number;
+    serviceStorageDefaultMiB?: number;
+    /** sandbox.runnerMax.memoryMiB and sandbox.nodeAllocatableMiB, for the boot-time fit check. */
+    runnerMaxMemoryMiB?: number;
+    /** sandbox.runnerMax.cpuMillis: the ceiling for an agent's runner CPU. */
+    runnerMaxCpuMillis?: number;
+    nodeAllocatableMiB?: number;
     readinessPollMs?: number;
     readinessTimeoutMs?: number;
     /**
@@ -366,6 +376,15 @@ export interface K8sPresetConfig {
   chat?: {
     runnerBinaries?: Record<string, string>;
     chatTimeoutMs?: number;
+    /**
+     * chat.maxTurnMinutes, checked at boot against the pod deadline. The
+     * orchestrator clamps an agent's own turn limit to it.
+     */
+    maxTurnMinutes?: number;
+    /** chat.maxIdleMinutes: the orchestrator clamps an agent's own idle time to it. */
+    maxIdleMinutes?: number;
+    /** chat.maxServiceSandboxesPerAgent: live sandboxes with a service set one agent may hold. */
+    maxServiceSandboxesPerAgent?: number;
     oneShot?: boolean;
   };
   /**
@@ -632,6 +651,24 @@ export interface K8sPresetConfig {
  * store (admin-seeded via /admin/credentials, Phase 9.5) and are resolved
  * by the credential-proxy at proxy:open-session time, not at plugin init.
  */
+// sandbox-k8s's own default for activeDeadlineSeconds (config.ts): 6 h.
+const DEFAULT_POD_DEADLINE_SECONDS = 21600;
+
+/**
+ * channel-web's stream-buffer sizing hint (B1): the chat timeout and, when the
+ * chart caps turns, that cap in ms — a per-agent turn limit can reach it. One
+ * helper so every preset that loads channel-web (k8s, and memory, which
+ * re-adds its own) passes the same thing.
+ */
+export function channelWebTurnSizing(
+  chat: { chatTimeoutMs?: number; maxTurnMinutes?: number } | undefined,
+): { chatTimeoutMs: number; maxTurnMs?: number } {
+  return {
+    chatTimeoutMs: chat?.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+    ...(chat?.maxTurnMinutes !== undefined ? { maxTurnMs: chat.maxTurnMinutes * 60_000 } : {}),
+  };
+}
+
 export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const plugins: Plugin[] = [];
 
@@ -948,6 +985,21 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     ...(config.sandbox?.activeDeadlineSeconds !== undefined
       ? { activeDeadlineSeconds: config.sandbox.activeDeadlineSeconds }
       : {}),
+    ...(config.sandbox?.runnerMaxCpuMillis !== undefined
+      ? { runnerCpuLimitMaxMillis: config.sandbox.runnerMaxCpuMillis }
+      : {}),
+    ...(config.sandbox?.runnerMaxMemoryMiB !== undefined
+      ? { runnerMemoryLimitMaxMiB: config.sandbox.runnerMaxMemoryMiB }
+      : {}),
+    ...(config.sandbox?.serviceCpuLimitMaxMillis !== undefined
+      ? { serviceCpuLimitMaxMillis: config.sandbox.serviceCpuLimitMaxMillis }
+      : {}),
+    ...(config.sandbox?.serviceMemoryLimitMaxMiB !== undefined
+      ? { serviceMemoryLimitMaxMiB: config.sandbox.serviceMemoryLimitMaxMiB }
+      : {}),
+    ...(config.sandbox?.serviceStorageDefaultMiB !== undefined
+      ? { serviceStorageDefaultMiB: config.sandbox.serviceStorageDefaultMiB }
+      : {}),
     ...(config.sandbox?.readinessPollMs !== undefined
       ? { readinessPollMs: config.sandbox.readinessPollMs }
       : {}),
@@ -966,6 +1018,24 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   };
   plugins.push(createSandboxK8sPlugin(sandboxOpts));
 
+  // Boot checks on the chart's caps. The turn cap must sit well inside the pod
+  // deadline (throws); the biggest runner plus a service set should fit a node
+  // (warns, because a node's size is often unknown).
+  if (config.chat?.maxTurnMinutes !== undefined) {
+    checkTurnCaps({
+      maxTurnMinutes: config.chat.maxTurnMinutes,
+      activeDeadlineSeconds: config.sandbox?.activeDeadlineSeconds ?? DEFAULT_POD_DEADLINE_SECONDS,
+    });
+  }
+  if (config.sandbox?.runnerMaxMemoryMiB !== undefined) {
+    const warning = checkNodeFit({
+      runnerMaxMiB: config.sandbox.runnerMaxMemoryMiB,
+      largestServiceSetMiB: LARGEST_SERVICE_SET_MIB,
+      nodeAllocatableMiB: config.sandbox.nodeAllocatableMiB,
+    });
+    if (warning !== null) process.stderr.write(`[ax] warning: ${warning}\n`);
+  }
+
   plugins.push(
     createIpcHttpPlugin({
       host: config.ipc.host ?? '0.0.0.0',
@@ -979,8 +1049,31 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     // Keepalive: the channel-web chat UI is multi-turn. Leave the runner warm
     // between turns so a follow-up reuses it (skips pod-create + workspace
     // re-materialize). Idle windows use orchestrator defaults (5 min / 10 s
-    // grace); the pod ceiling is sandbox-k8s activeDeadlineSeconds (6 h).
+    // grace) unless the agent sets its own; the pod ceiling is sandbox-k8s
+    // activeDeadlineSeconds (6 h).
     keepAlive: true,
+    // §6.4(5) — the same ceiling, so a warm pod too old for the agent's turn
+    // limit is retired instead of reused. Every sandbox-k8s backend counts it
+    // from (about) the open: the pod's activeDeadlineSeconds, or the claim's
+    // shutdownTime.
+    sandboxMaxLifetimeMs:
+      (config.sandbox?.activeDeadlineSeconds ?? DEFAULT_POD_DEADLINE_SECONDS) * 1000,
+  };
+  // §6.2 — the chart's caps on the agents' own turn limit and idle time.
+  // Unset, the orchestrator keeps its own (120 / 60 minutes).
+  if (config.chat?.maxTurnMinutes !== undefined) {
+    orchestratorCfg.maxTurnMinutes = config.chat.maxTurnMinutes;
+  }
+  if (config.chat?.maxIdleMinutes !== undefined) {
+    orchestratorCfg.maxIdleMinutes = config.chat.maxIdleMinutes;
+  }
+  // Dev services on demand: this preset's sandbox backend runs service sets,
+  // so they are on; the chart's cap, when set, replaces the orchestrator's 10.
+  orchestratorCfg.onDemandServices = {
+    enabled: true,
+    ...(config.chat?.maxServiceSandboxesPerAgent !== undefined
+      ? { maxPerAgent: config.chat.maxServiceSandboxesPerAgent }
+      : {}),
   };
   if (config.chat?.oneShot !== undefined) {
     orchestratorCfg.oneShot = config.chat.oneShot;
@@ -1526,11 +1619,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   //
   // The agent workspace (TASK-230) always mounts: it is the web interface,
   // and TASK-360 retired the switch that could turn it off.
-  plugins.push(
-    createChannelWebServerPlugin({
-      chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
-    }),
-  );
+  plugins.push(createChannelWebServerPlugin(channelWebTurnSizing(config.chat)));
 
   // ----- 10b. channel-slack (TASK-1093) -----------------------------------
   // Admin > Slack connects a workspace (`/admin/slack*`), and Slack delivers
@@ -1778,6 +1867,24 @@ export function loadK8sConfigFromEnv(
     }
     sandbox.agentSandboxApiVersion = env.K8S_AGENT_SANDBOX_API_VERSION;
   }
+  const positiveInt = (name: string, raw: string | undefined): number | undefined => {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n <= 0) throw new Error(`invalid ${name}=${raw}; expected a positive integer`);
+    return n;
+  };
+  const serviceCpuMax = positiveInt('K8S_SERVICE_MAX_CPU_MILLIS', env.K8S_SERVICE_MAX_CPU_MILLIS);
+  if (serviceCpuMax !== undefined) sandbox.serviceCpuLimitMaxMillis = serviceCpuMax;
+  const serviceMemMax = positiveInt('K8S_SERVICE_MAX_MEMORY_MIB', env.K8S_SERVICE_MAX_MEMORY_MIB);
+  if (serviceMemMax !== undefined) sandbox.serviceMemoryLimitMaxMiB = serviceMemMax;
+  const serviceStorage = positiveInt('K8S_SERVICE_STORAGE_DEFAULT_MIB', env.K8S_SERVICE_STORAGE_DEFAULT_MIB);
+  if (serviceStorage !== undefined) sandbox.serviceStorageDefaultMiB = serviceStorage;
+  const runnerMaxMem = positiveInt('K8S_RUNNER_MAX_MEMORY_MIB', env.K8S_RUNNER_MAX_MEMORY_MIB);
+  if (runnerMaxMem !== undefined) sandbox.runnerMaxMemoryMiB = runnerMaxMem;
+  const runnerMaxCpu = positiveInt('K8S_RUNNER_MAX_CPU_MILLIS', env.K8S_RUNNER_MAX_CPU_MILLIS);
+  if (runnerMaxCpu !== undefined) sandbox.runnerMaxCpuMillis = runnerMaxCpu;
+  const nodeAlloc = positiveInt('K8S_NODE_ALLOCATABLE_MIB', env.K8S_NODE_ALLOCATABLE_MIB);
+  if (nodeAlloc !== undefined) sandbox.nodeAllocatableMiB = nodeAlloc;
   if (env.K8S_NAMESPACE !== undefined && env.K8S_NAMESPACE !== '') {
     sandbox.namespace = env.K8S_NAMESPACE;
   }
@@ -1895,6 +2002,15 @@ export function loadK8sConfigFromEnv(
     }
     chat.chatTimeoutMs = n;
   }
+  const maxTurnMinutes = positiveInt('AX_CHAT_MAX_TURN_MINUTES', env.AX_CHAT_MAX_TURN_MINUTES);
+  if (maxTurnMinutes !== undefined) chat.maxTurnMinutes = maxTurnMinutes;
+  const maxIdleMinutes = positiveInt('AX_CHAT_MAX_IDLE_MINUTES', env.AX_CHAT_MAX_IDLE_MINUTES);
+  if (maxIdleMinutes !== undefined) chat.maxIdleMinutes = maxIdleMinutes;
+  const maxServiceSandboxes = positiveInt(
+    'AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT',
+    env.AX_CHAT_MAX_SERVICE_SANDBOXES_PER_AGENT,
+  );
+  if (maxServiceSandboxes !== undefined) chat.maxServiceSandboxesPerAgent = maxServiceSandboxes;
 
   // ---- agent workspace (the web interface) ----------------------------
   // Always on; there is no switch. `AX_AGENT_WORKSPACE` (and the older

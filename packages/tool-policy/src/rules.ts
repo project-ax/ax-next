@@ -521,4 +521,16 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     id: 'routines.report', match: { tool: 'routine_report' }, providedBy: 'host',
     verdict: 'allow', capability: 'report on a task', subject: 'agent', provenance: 'rule',
   },
+  // Dev services on demand (spec §3.2), registered by @ax/chat-orchestrator.
+  // Allowed outright: the restart only starts images an admin approved, inside
+  // the agent's own sandbox, bounded by the per-agent cap; the agent picks when
+  // and which set, never what runs. The stop only turns them off.
+  {
+    id: 'services.restart', match: { tool: 'restart_with_services' }, providedBy: 'host',
+    verdict: 'allow', capability: 'restart its sandbox with dev services', subject: 'agent', provenance: 'rule',
+  },
+  {
+    id: 'services.stop', match: { tool: 'stop_services' }, providedBy: 'host',
+    verdict: 'allow', capability: 'turn off its dev services', subject: 'agent', provenance: 'rule',
+  },
 ];

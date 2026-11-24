@@ -71,11 +71,20 @@ const NOTE_MAX_CODE_POINTS = 2000;
  */
 export const SYSTEM_PREFIX = 'System message (not from the user):';
 
-export function sanitizeDecisionNote(note: string): string {
+/**
+ * Flatten a host-authored note to one safe line and cap it at `maxCodePoints`.
+ * One function for every host-authored turn (decision-resolved, host-note), so
+ * the control/bidi/zero-width handling cannot drift between them.
+ */
+export function sanitizeHostAuthoredNote(note: string, maxCodePoints: number): string {
   const flat = replaceSurfaceRewriters(note).replace(/\s+/g, ' ').trim();
   const points = [...flat];
-  if (points.length <= NOTE_MAX_CODE_POINTS) return flat;
-  return `${points.slice(0, NOTE_MAX_CODE_POINTS - 1).join('').trimEnd()}…`;
+  if (points.length <= maxCodePoints) return flat;
+  return `${points.slice(0, maxCodePoints - 1).join('').trimEnd()}…`;
+}
+
+export function sanitizeDecisionNote(note: string): string {
+  return sanitizeHostAuthoredNote(note, NOTE_MAX_CODE_POINTS);
 }
 
 /**

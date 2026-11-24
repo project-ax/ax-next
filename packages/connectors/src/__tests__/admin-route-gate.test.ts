@@ -286,6 +286,15 @@ const ADMIN_ROUTES: RouteCase[] = [
   },
   // TASK-1100 — directory search (no directory plugin in this harness: 200 off body).
   { label: 'GET /admin/connectors/directory', method: 'GET', path: '/admin/connectors/directory', opts: () => ({}), adminStatus: 200 },
+  // Dev services import — resolves image tags to digests. An empty list makes no
+  // registry call, so the admin case stays offline.
+  {
+    label: 'POST /admin/connectors/pin-images',
+    method: 'POST',
+    path: '/admin/connectors/pin-images',
+    opts: () => ({ body: { images: [] } }),
+    adminStatus: 200,
+  },
   {
     label: 'POST /admin/connectors',
     method: 'POST',

@@ -1,0 +1,110 @@
+{
+  "note": "Shared by sandbox-protocol's parseServiceForwards and agent-runner-core's parseServiceForwardsEnv. Both must give the same verdict on every vector.",
+  "vectors": [
+    {
+      "desc": "one pair",
+      "value": "[{\"published\":47017,\"target\":27017}]",
+      "expect": "accept"
+    },
+    {
+      "desc": "empty array",
+      "value": "[]",
+      "expect": "accept"
+    },
+    {
+      "desc": "exactly 64 pairs",
+      "value": "[{\"published\": 10000, \"target\": 5432}, {\"published\": 10001, \"target\": 5432}, {\"published\": 10002, \"target\": 5432}, {\"published\": 10003, \"target\": 5432}, {\"published\": 10004, \"target\": 5432}, {\"published\": 10005, \"target\": 5432}, {\"published\": 10006, \"target\": 5432}, {\"published\": 10007, \"target\": 5432}, {\"published\": 10008, \"target\": 5432}, {\"published\": 10009, \"target\": 5432}, {\"published\": 10010, \"target\": 5432}, {\"published\": 10011, \"target\": 5432}, {\"published\": 10012, \"target\": 5432}, {\"published\": 10013, \"target\": 5432}, {\"published\": 10014, \"target\": 5432}, {\"published\": 10015, \"target\": 5432}, {\"published\": 10016, \"target\": 5432}, {\"published\": 10017, \"target\": 5432}, {\"published\": 10018, \"target\": 5432}, {\"published\": 10019, \"target\": 5432}, {\"published\": 10020, \"target\": 5432}, {\"published\": 10021, \"target\": 5432}, {\"published\": 10022, \"target\": 5432}, {\"published\": 10023, \"target\": 5432}, {\"published\": 10024, \"target\": 5432}, {\"published\": 10025, \"target\": 5432}, {\"published\": 10026, \"target\": 5432}, {\"published\": 10027, \"target\": 5432}, {\"published\": 10028, \"target\": 5432}, {\"published\": 10029, \"target\": 5432}, {\"published\": 10030, \"target\": 5432}, {\"published\": 10031, \"target\": 5432}, {\"published\": 10032, \"target\": 5432}, {\"published\": 10033, \"target\": 5432}, {\"published\": 10034, \"target\": 5432}, {\"published\": 10035, \"target\": 5432}, {\"published\": 10036, \"target\": 5432}, {\"published\": 10037, \"target\": 5432}, {\"published\": 10038, \"target\": 5432}, {\"published\": 10039, \"target\": 5432}, {\"published\": 10040, \"target\": 5432}, {\"published\": 10041, \"target\": 5432}, {\"published\": 10042, \"target\": 5432}, {\"published\": 10043, \"target\": 5432}, {\"published\": 10044, \"target\": 5432}, {\"published\": 10045, \"target\": 5432}, {\"published\": 10046, \"target\": 5432}, {\"published\": 10047, \"target\": 5432}, {\"published\": 10048, \"target\": 5432}, {\"published\": 10049, \"target\": 5432}, {\"published\": 10050, \"target\": 5432}, {\"published\": 10051, \"target\": 5432}, {\"published\": 10052, \"target\": 5432}, {\"published\": 10053, \"target\": 5432}, {\"published\": 10054, \"target\": 5432}, {\"published\": 10055, \"target\": 5432}, {\"published\": 10056, \"target\": 5432}, {\"published\": 10057, \"target\": 5432}, {\"published\": 10058, \"target\": 5432}, {\"published\": 10059, \"target\": 5432}, {\"published\": 10060, \"target\": 5432}, {\"published\": 10061, \"target\": 5432}, {\"published\": 10062, \"target\": 5432}, {\"published\": 10063, \"target\": 5432}]",
+      "expect": "accept"
+    },
+    {
+      "desc": "65 pairs (pair cap)",
+      "value": "[{\"published\": 10000, \"target\": 9}, {\"published\": 10001, \"target\": 9}, {\"published\": 10002, \"target\": 9}, {\"published\": 10003, \"target\": 9}, {\"published\": 10004, \"target\": 9}, {\"published\": 10005, \"target\": 9}, {\"published\": 10006, \"target\": 9}, {\"published\": 10007, \"target\": 9}, {\"published\": 10008, \"target\": 9}, {\"published\": 10009, \"target\": 9}, {\"published\": 10010, \"target\": 9}, {\"published\": 10011, \"target\": 9}, {\"published\": 10012, \"target\": 9}, {\"published\": 10013, \"target\": 9}, {\"published\": 10014, \"target\": 9}, {\"published\": 10015, \"target\": 9}, {\"published\": 10016, \"target\": 9}, {\"published\": 10017, \"target\": 9}, {\"published\": 10018, \"target\": 9}, {\"published\": 10019, \"target\": 9}, {\"published\": 10020, \"target\": 9}, {\"published\": 10021, \"target\": 9}, {\"published\": 10022, \"target\": 9}, {\"published\": 10023, \"target\": 9}, {\"published\": 10024, \"target\": 9}, {\"published\": 10025, \"target\": 9}, {\"published\": 10026, \"target\": 9}, {\"published\": 10027, \"target\": 9}, {\"published\": 10028, \"target\": 9}, {\"published\": 10029, \"target\": 9}, {\"published\": 10030, \"target\": 9}, {\"published\": 10031, \"target\": 9}, {\"published\": 10032, \"target\": 9}, {\"published\": 10033, \"target\": 9}, {\"published\": 10034, \"target\": 9}, {\"published\": 10035, \"target\": 9}, {\"published\": 10036, \"target\": 9}, {\"published\": 10037, \"target\": 9}, {\"published\": 10038, \"target\": 9}, {\"published\": 10039, \"target\": 9}, {\"published\": 10040, \"target\": 9}, {\"published\": 10041, \"target\": 9}, {\"published\": 10042, \"target\": 9}, {\"published\": 10043, \"target\": 9}, {\"published\": 10044, \"target\": 9}, {\"published\": 10045, \"target\": 9}, {\"published\": 10046, \"target\": 9}, {\"published\": 10047, \"target\": 9}, {\"published\": 10048, \"target\": 9}, {\"published\": 10049, \"target\": 9}, {\"published\": 10050, \"target\": 9}, {\"published\": 10051, \"target\": 9}, {\"published\": 10052, \"target\": 9}, {\"published\": 10053, \"target\": 9}, {\"published\": 10054, \"target\": 9}, {\"published\": 10055, \"target\": 9}, {\"published\": 10056, \"target\": 9}, {\"published\": 10057, \"target\": 9}, {\"published\": 10058, \"target\": 9}, {\"published\": 10059, \"target\": 9}, {\"published\": 10060, \"target\": 9}, {\"published\": 10061, \"target\": 9}, {\"published\": 10062, \"target\": 9}, {\"published\": 10063, \"target\": 9}, {\"published\": 10064, \"target\": 9}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "4096 chars exactly",
+      "value": "[                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              ]",
+      "expect": "accept"
+    },
+    {
+      "desc": "4097 chars (length cap)",
+      "value": "[                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               ]",
+      "expect": "reject"
+    },
+    {
+      "desc": "a self-forward",
+      "value": "[{\"published\":9000,\"target\":9000}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "a cycle",
+      "value": "[{\"published\":9000,\"target\":9001},{\"published\":9001,\"target\":9000}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "a chain (target is another published port)",
+      "value": "[{\"published\":9000,\"target\":9001},{\"published\":9001,\"target\":9002}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "two publishes to one target",
+      "value": "[{\"published\":9000,\"target\":5432},{\"published\":9001,\"target\":5432}]",
+      "expect": "accept"
+    },
+    {
+      "desc": "not json",
+      "value": "nope",
+      "expect": "reject"
+    },
+    {
+      "desc": "an object",
+      "value": "{\"published\":1,\"target\":2}",
+      "expect": "reject"
+    },
+    {
+      "desc": "a string port",
+      "value": "[{\"published\":\"1\",\"target\":2}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "a float",
+      "value": "[{\"published\":1.5,\"target\":2}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "port 0",
+      "value": "[{\"published\":0,\"target\":2}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "port 65536",
+      "value": "[{\"published\":1,\"target\":65536}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "port 65535",
+      "value": "[{\"published\":65535,\"target\":1}]",
+      "expect": "accept"
+    },
+    {
+      "desc": "an extra key",
+      "value": "[{\"published\":1,\"target\":2,\"host\":\"evil\"}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "a missing key",
+      "value": "[{\"published\":1}]",
+      "expect": "reject"
+    },
+    {
+      "desc": "a bare number",
+      "value": "[1]",
+      "expect": "reject"
+    },
+    {
+      "desc": "an array item",
+      "value": "[[1,2]]",
+      "expect": "reject"
+    }
+  ]
+}

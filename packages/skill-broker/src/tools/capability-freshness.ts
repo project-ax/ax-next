@@ -232,6 +232,10 @@ interface ConnectorHealthcheck {
   port?: number;
   command?: string[];
 }
+interface ConnectorSizeRange {
+  request?: number;
+  limit?: number;
+}
 interface ConnectorService {
   name?: string;
   image?: string;
@@ -239,6 +243,12 @@ interface ConnectorService {
   env?: Record<string, string>;
   healthcheck?: ConnectorHealthcheck;
   writablePaths?: string[];
+  command?: string[];
+  entrypoint?: string[];
+  job?: boolean;
+  publishedPorts?: Array<{ published?: number; target?: number }>;
+  resources?: { cpuMillis?: ConnectorSizeRange; memoryMiB?: ConnectorSizeRange };
+  storageMiB?: number;
 }
 interface ConnectorsResolveOutput {
   id?: string;
@@ -249,6 +259,7 @@ interface ConnectorsResolveOutput {
     mcpServers?: ConnectorMcpServer[];
     packages?: { npm?: string[]; pypi?: string[] };
     services?: ConnectorService[];
+    servicesMode?: string;
   };
 }
 
@@ -406,9 +417,58 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
         env: envPairs(s.env),
         healthcheck: healthcheckShape(s.healthcheck),
         writablePaths: asSet(s.writablePaths),
+        ...onDemandServiceShape(s),
       })),
     ),
+    // A5 — whether the connector's set waits to be asked for. Only when it
+    // isn't the default ('always', or absent, which means the same), so a
+    // connector that never set it keeps the digest an approval already holds.
+    ...(typeof caps.servicesMode === 'string' && caps.servicesMode !== 'always'
+      ? { servicesMode: caps.servicesMode }
+      : {}),
   };
+}
+
+/** A size pair reduced to numbers (`null` for a missing or non-number side). */
+function sizeRangeShape(range: ConnectorSizeRange | undefined): unknown {
+  if (range === undefined || range === null || typeof range !== 'object') return null;
+  return {
+    request: typeof range.request === 'number' ? range.request : null,
+    limit: typeof range.limit === 'number' ? range.limit : null,
+  };
+}
+
+/**
+ * A5 — the dev-service fields added for services on demand, each ONLY when
+ * present: a descriptor without them keeps its pre-A5 digest, so no in-flight
+ * approval re-asks on the deploy. All of them are reach: `command` and
+ * `entrypoint` are what the container runs (argv: ORDER kept, like an MCP
+ * server's `args`), `job` changes whether it runs to completion,
+ * `publishedPorts` is what is opened to the agent on localhost (a set of
+ * pairs: order-insensitive), and `resources` / `storageMiB` are how much of
+ * the node it may take.
+ */
+function onDemandServiceShape(s: ConnectorService): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (s.command !== undefined) out.command = Array.isArray(s.command) ? [...s.command] : [];
+  if (s.entrypoint !== undefined) out.entrypoint = Array.isArray(s.entrypoint) ? [...s.entrypoint] : [];
+  if (s.job !== undefined) out.job = s.job === true;
+  if (s.publishedPorts !== undefined) {
+    out.publishedPorts = sortByShape(
+      (Array.isArray(s.publishedPorts) ? s.publishedPorts : []).map((p) => ({
+        published: typeof p?.published === 'number' ? p.published : null,
+        target: typeof p?.target === 'number' ? p.target : null,
+      })),
+    );
+  }
+  if (s.resources !== undefined) {
+    out.resources = {
+      cpuMillis: sizeRangeShape(s.resources?.cpuMillis),
+      memoryMiB: sizeRangeShape(s.resources?.memoryMiB),
+    };
+  }
+  if (s.storageMiB !== undefined) out.storageMiB = typeof s.storageMiB === 'number' ? s.storageMiB : null;
+  return out;
 }
 
 /**

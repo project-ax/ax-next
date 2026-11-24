@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
-import { translateComposeToServices } from '../index.js';
+import { translateComposeToServices, sortByDependsOn, unescapeComposeDollars } from '../index.js';
 
 // A digest-pinned image we reuse — postgres pinned to an (illustrative) sha256.
 const PINNED = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
@@ -208,5 +210,399 @@ services:
     // Either way it must RETURN (not hang / overflow). The self-ref is an unknown
     // key → dropped; the service still maps.
     expect(r.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 1.4 — profiles, commands, order, jobs, ports, storage (synthetic stack)
+// ---------------------------------------------------------------------------
+describe('translateComposeToServices: sharded stack', () => {
+  const stack = readFileSync(
+    fileURLToPath(new URL('./fixtures/sharded-stack.compose.yml', import.meta.url)),
+    'utf8',
+  );
+  // Tag-only images live in `invalid[].draft` until the editor pins them
+  // (Task 1.5); `all()` joins the drafts back in so the whole translation can
+  // be asserted.
+  const e2e = () => {
+    const r = translateComposeToServices(stack, { profile: 'e2e' });
+    if (!r.ok) throw new Error(r.error);
+    return r;
+  };
+  const all = () => {
+    const r = e2e();
+    return [
+      ...r.services,
+      ...r.invalid.flatMap((i) => (i.draft ? [i.draft] : [])),
+    ];
+  };
+  const byName = (n: string) => {
+    const s = all().find((x) => x.name === n);
+    if (!s) throw new Error(`no ${n}`);
+    return s;
+  };
+
+  it('imports only the chosen profile and lists all profiles', () => {
+    const r = e2e();
+    expect(r.profiles.sort()).toEqual(['dev', 'e2e', 'test']);
+    const names = all().map((s) => s.name);
+    expect(names).toContain('emulator');
+    expect(names).not.toContain('app');
+    const dev = translateComposeToServices(stack, { profile: 'dev' });
+    if (!dev.ok) throw new Error(dev.error);
+    const devNames = [...dev.services, ...dev.invalid.flatMap((i) => (i.draft ? [i.draft] : []))].map(
+      (s) => s.name,
+    );
+    expect(devNames).toEqual(['redis']);
+  });
+
+  it('keeps command and entrypoint and unescapes $$', () => {
+    const init = byName('configsvr-init');
+    expect(init.entrypoint).toEqual(['/bin/bash', '-c']);
+    expect(init.command?.at(-1)).toContain('mongo --host ${CONFIGSVR_HOST}:27019');
+    expect(init.command?.at(-1)).not.toContain('$$');
+    // a string command is split without a shell
+    expect(byName('shard0').command).toEqual([
+      'mongod', '--shardsvr', '--replSet', 'shard0', '--port', '27018', '--bind_ip_all',
+    ]);
+  });
+
+  it('orders by depends_on: config → init → shard → init → mongos → init → rest', () => {
+    const r = e2e();
+    expect(r.order).toEqual([
+      'configsvr', 'configsvr-init', 'shard0', 'shard-init', 'mongos', 'mongo-init',
+      'kafka', 'redis', 'emulator',
+    ]);
+  });
+
+  it('restart "no" becomes a job', () => {
+    expect(byName('configsvr-init').job).toBe(true);
+    expect(byName('shard-init').job).toBe(true);
+    expect(byName('mongo-init').job).toBe(true);
+    expect(byName('mongos').job).toBeUndefined();
+    expect(byName('configsvr-init').publishedPorts).toBeUndefined();
+  });
+
+  it('keeps published and target ports', () => {
+    expect(byName('mongos').publishedPorts).toEqual([{ published: 47017, target: 27017 }]);
+    expect(byName('kafka').publishedPorts).toEqual([{ published: 9294, target: 9094 }]);
+    expect(byName('kafka').ports).toEqual([9092, 9094]);
+    // same-number ports need no forward
+    expect(byName('emulator').publishedPorts).toBeUndefined();
+  });
+
+  it('tmpfs and named volumes become writable paths, plus /tmp', () => {
+    expect(byName('redis').writablePaths).toEqual(['/data', '/tmp']);
+    expect(byName('shard0').writablePaths).toEqual(['/data/db', '/tmp']);
+    expect(byName('configsvr').writablePaths).toEqual(['/data/configdb', '/tmp']);
+    expect(byName('emulator').writablePaths).toEqual(['/tmp']);
+  });
+
+  it('a service with no health check gets a TCP check on its first port', () => {
+    expect(byName('emulator').healthcheck).toEqual({ kind: 'tcp', port: 8085 });
+    expect(byName('redis').healthcheck).toEqual({ kind: 'tcp', port: 6379 });
+    expect(byName('configsvr-init').healthcheck).toBeUndefined();
+  });
+
+  it('a source bind mount lands in appServices with reason mounts-source', () => {
+    const r = translateComposeToServices(stack, { profile: 'e2e' });
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([{ service: 'app', reason: 'mounts-source' }]);
+    expect(r.drops.some((d) => d.service === 'app' && d.field === 'volumes')).toBe(true);
+  });
+
+  it('exposes an unpinned-image service as a draft, valid except for the pin', () => {
+    const r = e2e();
+    const inv = r.invalid.find((i) => i.name === 'redis');
+    expect(inv?.image).toBe('redis:7');
+    expect(inv?.draft?.image).toBe('redis:7');
+    expect(inv?.draft?.ports).toEqual([6379]);
+  });
+
+  it('refuses a depends_on cycle naming both services', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on: [b]
+  b:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on: [a]
+  c:
+    image: x@sha256:${'a'.repeat(64)}
+`);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/cycle/i);
+    expect(r.error).toContain('a, b');
+    expect(r.error).not.toMatch(/\bc\b/);
+  });
+
+  it('refuses an unknown depends_on condition', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+  b:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on:
+      a:
+        condition: service_sleepy
+`);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toMatch(/Refused: b:/);
+    expect(r.error).toContain('service_sleepy');
+    expect(r.error).toContain('"a"');
+  });
+
+  it('unescapes $$ in environment values (list and map forms)', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    environment:
+      - FOO=$$x
+      - BAR=\${KEEP}
+  b:
+    image: x@sha256:${'a'.repeat(64)}
+    environment:
+      BAZ: "$$y"
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.services[0]!.env).toEqual({ FOO: '$x', BAR: '${KEEP}' });
+    expect(r.services[1]!.env).toEqual({ BAZ: '$y' });
+  });
+
+  it('all three init jobs use $${VAR} and reach the argv as ${VAR}', () => {
+    for (const n of ['configsvr-init', 'shard-init', 'mongo-init']) {
+      expect(stack).toMatch(new RegExp(`${n}:[\\s\\S]*?\\$\\$\\{`));
+      expect(byName(n).command?.at(-1)).toMatch(/\$\{[A-Z_]+\}/);
+      expect(byName(n).command?.at(-1)).not.toContain('$$');
+    }
+  });
+
+  it('refuses a depends_on on a name not defined in the chosen profile', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on: [dtaabase]
+`);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('a depends_on "dtaabase"');
+  });
+
+  it('removes a depends_on on an app service from the ordering and reports it', () => {
+    const r = translateComposeToServices(`
+services:
+  worker:
+    image: node:20
+    volumes: ["./src:/app"]
+  db:
+    image: x@sha256:${'a'.repeat(64)}
+    depends_on: [worker]
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([{ service: 'worker', reason: 'mounts-source' }]);
+    expect(r.services.map((s) => s.name)).toEqual(['db']);
+    expect(r.drops).toContainEqual({ service: 'db', field: 'depends_on', value: 'worker' });
+  });
+
+  it('returns (never throws) on nested-alias bombs in command, entrypoint, env and volumes', () => {
+    const anchors = ['a'];
+    let y = 'x-a: &a [x, x, x, x, x, x, x, x, x, x]\n';
+    for (let i = 1; i < 10; i++) {
+      const prev = String.fromCharCode(96 + i);
+      const cur = String.fromCharCode(97 + i);
+      anchors.push(cur);
+      y += `x-${cur}: &${cur} [${Array(10).fill('*' + prev).join(', ')}]\n`;
+    }
+    const svc = (extra: string) => `${y}services:\n  s:\n    image: x@sha256:${'a'.repeat(64)}\n${extra}\n`;
+    for (const extra of [
+      '    command: [*j]',
+      '    entrypoint: [*j]',
+      '    environment: { K: *j }',
+      '    volumes: [*j]',
+      '    privileged: *j',
+    ]) {
+      const r = translateComposeToServices(svc(extra));
+      expect(typeof r.ok).toBe('boolean');
+    }
+    const r = translateComposeToServices(svc('    command: [*j]'));
+    if (!r.ok) throw new Error(r.error);
+    expect(r.invalid[0]!.name).toBe('s');
+  });
+
+  it('refuses unsafe writable paths from untrusted mounts', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    volumes: ["v:/", "w:/../etc"]
+    tmpfs: /proc
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.services).toEqual([]);
+    expect(r.invalid[0]!.name).toBe('a');
+    expect(r.invalid[0]!.reason).toContain('writablePaths');
+  });
+
+  it('never imports host bind mounts as writable paths', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: x@sha256:${'a'.repeat(64)}
+    volumes:
+      - /abs:/y
+      - \${HOME}/z:/z
+      - ~/q:/q
+      - ./conf:/conf:ro
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.services[0]!.writablePaths).toEqual(['/tmp']);
+    expect(r.appServices).toEqual([]);
+    expect(r.drops.some((d) => d.field === 'volumes')).toBe(true);
+  });
+});
+
+describe('sortByDependsOn / unescapeComposeDollars', () => {
+  it('keeps declaration order as the tie-break', () => {
+    expect(
+      sortByDependsOn([
+        { name: 'z', dependsOn: [] },
+        { name: 'a', dependsOn: ['z'] },
+        { name: 'm', dependsOn: [] },
+      ]),
+    ).toEqual({ order: ['z', 'a', 'm'] });
+  });
+  it('unescapes $$ only', () => {
+    expect(unescapeComposeDollars('$${A} $$$$ ${B}')).toBe('${A} $$ ${B}');
+  });
+});
+
+describe('translateComposeToServices: one shared network (A1, spec §4.2)', () => {
+  it('refuses two services on the same container port, naming both', () => {
+    const r = translateComposeToServices(`
+services:
+  db-main:
+    image: ${PINNED}
+    ports: ["5432"]
+  db-test:
+    image: ${PINNED}
+    ports: ["5433:5432"]
+`);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('"db-main"');
+    expect(r.error).toContain('"db-test"');
+    expect(r.error).toContain('5432');
+  });
+
+  it('checks a draft whose image is not pinned yet too', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: postgres:16
+    ports: ["5432"]
+  b:
+    image: ${PINNED}
+    ports: ["5432"]
+`);
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('translateComposeToServices: a dependency that could not be imported (A2)', () => {
+  const withDep = (dep: string) => `
+services:
+  api-db:
+    image: ${PINNED}
+    ports: ["5432"]
+    depends_on: [${dep}]
+${dep === 'db_main' ? `  db_main:
+    image: ${PINNED_REDIS}
+    ports: ["6379"]` : ''}${dep === 'noimage' ? `  noimage:
+    ports: ["6379"]` : ''}${dep === 'cache' ? `  cache:
+    image: redis:7
+    ports: ["6379"]` : ''}
+`;
+
+  it('refuses the whole import when the dependency has a bad name, naming both and why', () => {
+    const r = translateComposeToServices(withDep('db_main'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('api-db');
+    expect(r.error).toContain('db_main');
+    expect(r.error).toMatch(/invalid service name shape/);
+  });
+
+  it('refuses the whole import when the dependency has no image', () => {
+    const r = translateComposeToServices(withDep('noimage'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('api-db');
+    expect(r.error).toContain('noimage');
+    expect(r.error).toMatch(/no "image"/);
+  });
+
+  it('a dependency whose image only needs pinning is fine (it is a draft, not invalid)', () => {
+    const r = translateComposeToServices(withDep('cache'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.order).toEqual(['cache', 'api-db']);
+    expect(r.invalid.map((i) => i.name)).toEqual(['cache']);
+    expect(r.invalid[0]!.draft).toBeDefined();
+  });
+});
+
+describe('translateComposeToServices: which service is the person\'s own app (A3)', () => {
+  it('a config FILE bind (./init.sql, ./nginx.conf) is dropped and reported; the service imports', () => {
+    const r = translateComposeToServices(`
+services:
+  db:
+    image: ${PINNED}
+    ports: ["5432"]
+    volumes: ["./init.sql:/docker-entrypoint-initdb.d/init.sql"]
+  web:
+    image: ${PINNED_REDIS}
+    ports: ["80"]
+    volumes:
+      - type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/nginx.conf
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([]);
+    expect(r.services.map((s) => s.name).sort()).toEqual(['db', 'web']);
+    expect(r.drops.filter((d) => d.field === 'volumes').map((d) => d.service).sort()).toEqual(['db', 'web']);
+  });
+
+  it('a source DIRECTORY bind (no extension, or a trailing slash, or ".") marks the app', () => {
+    for (const source of ['./src', './data/', '.', '../shared']) {
+      const r = translateComposeToServices(`
+services:
+  app:
+    image: ${PINNED}
+    volumes: ["${source}:/app"]
+`);
+      if (!r.ok) throw new Error(r.error);
+      expect(r.appServices).toEqual([{ service: 'app', reason: 'mounts-source' }]);
+    }
+  });
+
+  it('a service with build: is the app even without a bind mount', () => {
+    const r = translateComposeToServices(`
+services:
+  api:
+    build: .
+    image: ${PINNED}
+  db:
+    image: ${PINNED_REDIS}
+`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.appServices).toEqual([{ service: 'api', reason: 'builds-image' }]);
+    expect(r.services.map((s) => s.name)).toEqual(['db']);
   });
 });
