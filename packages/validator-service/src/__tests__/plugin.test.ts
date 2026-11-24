@@ -146,9 +146,11 @@ describe('validateServices (pure)', () => {
     const many = (n: number) => {
       const out: Array<Record<string, unknown>> = [];
       for (let i = 0; i < n; i += 16) {
+        // Each service on its own container port: one network namespace (A1).
+        const port = 5432 + i / 16;
         out.push({
-          ...wellFormed(), name: `s${i / 16}`,
-          publishedPorts: Array.from({ length: Math.min(16, n - i) }, (_, j) => ({ published: 10000 + i + j, target: 5432 })),
+          ...wellFormed(), name: `s${i / 16}`, ports: [port], healthcheck: { kind: 'tcp', port },
+          publishedPorts: Array.from({ length: Math.min(16, n - i) }, (_, j) => ({ published: 10000 + i + j, target: port })),
         });
       }
       return out;
@@ -169,6 +171,17 @@ describe('validateServices (pure)', () => {
       expect(r.reason).toContain('"a"');
       expect(r.reason).toContain('"b"');
     }
+  });
+
+  it('two services on the same container port are invalid, naming both (A1)', () => {
+    const r = validateServices([
+      { ...wellFormed(), name: 'a' },
+      { ...wellFormed(), name: 'b' },
+    ]);
+    expect(r).toEqual({
+      verdict: 'invalid',
+      reason: 'container port 5432 is used by both "a" and "b" (all services share one network namespace)',
+    });
   });
 
   it('the e2e-shaped fixture is clean', () => {

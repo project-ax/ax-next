@@ -480,3 +480,35 @@ describe('sortByDependsOn / unescapeComposeDollars', () => {
     expect(unescapeComposeDollars('$${A} $$$$ ${B}')).toBe('${A} $$ ${B}');
   });
 });
+
+describe('translateComposeToServices: one shared network (A1, spec §4.2)', () => {
+  it('refuses two services on the same container port, naming both', () => {
+    const r = translateComposeToServices(`
+services:
+  db-main:
+    image: ${PINNED}
+    ports: ["5432"]
+  db-test:
+    image: ${PINNED}
+    ports: ["5433:5432"]
+`);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('"db-main"');
+    expect(r.error).toContain('"db-test"');
+    expect(r.error).toContain('5432');
+  });
+
+  it('checks a draft whose image is not pinned yet too', () => {
+    const r = translateComposeToServices(`
+services:
+  a:
+    image: postgres:16
+    ports: ["5432"]
+  b:
+    image: ${PINNED}
+    ports: ["5432"]
+`);
+    expect(r.ok).toBe(false);
+  });
+});

@@ -29,7 +29,7 @@
 // ---------------------------------------------------------------------------
 
 import type { Plugin } from '@ax/core';
-import { ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';
+import { checkServiceSetClashes, ServiceDescriptorSchema, type ServiceDescriptor } from '@ax/skills-parser';
 import { findForbiddenVocab } from './forbidden-vocab.js';
 
 const PLUGIN_NAME = '@ax/validator-service';
@@ -39,9 +39,6 @@ const PLUGIN_NAME = '@ax/validator-service';
  *  @ax/sandbox-protocol wire cap. The tighter always-on cap (8) is per connector
  *  mode, which this validator never sees, so it lives in the connectors schema. */
 const SERVICES_MAX = 16;
-
-/** The runner forwards at most this many published ports (its env parser refuses more). */
-const PUBLISHED_PORTS_MAX = 64;
 
 /** Input: the (untrusted) service descriptor list to validate. */
 export interface ServicesValidateInput {
@@ -54,45 +51,14 @@ export type ServicesValidateOutput =
   | { verdict: 'invalid'; reason: string };
 
 /**
- * Cross-service port check over already-parsed descriptors. A published
- * (host-visible) port must not equal another published port, nor a container
- * port of ANY service, its own included (one shared network namespace).
+ * Cross-service checks over already-parsed descriptors: the shared
+ * @ax/skills-parser rules (one network namespace — a published port is no
+ * other published port and no service's container port; a target is one of
+ * its own ports; no two services on one container port; ≤64 published).
  * Returns a reason naming the services involved, or null.
  */
 export function checkPortClashes(services: ServiceDescriptor[]): string | null {
-  const totalPublished = services.reduce((n, s) => n + (s.publishedPorts?.length ?? 0), 0);
-  if (totalPublished > PUBLISHED_PORTS_MAX) {
-    return `at most ${PUBLISHED_PORTS_MAX} published ports are allowed across all services, got ${totalPublished}`;
-  }
-  for (const svc of services) {
-    for (const { target } of svc.publishedPorts ?? []) {
-      if (!svc.ports.includes(target)) {
-        return `published port target ${target} of "${svc.name}" is not one of the service's own ports`;
-      }
-    }
-  }
-  const publishedBy = new Map<number, string>();
-  for (const svc of services) {
-    for (const { published } of svc.publishedPorts ?? []) {
-      const other = publishedBy.get(published);
-      if (other !== undefined) {
-        return `published port ${published} is used by both "${other}" and "${svc.name}"`;
-      }
-      publishedBy.set(published, svc.name);
-    }
-  }
-  for (const svc of services) {
-    for (const { published } of svc.publishedPorts ?? []) {
-      for (const owner of services) {
-        if (!owner.ports.includes(published)) continue;
-        if (owner === svc) {
-          return `published port ${published} of "${svc.name}" is the service's own container port (all services share one network namespace, so it must differ)`;
-        }
-        return `published port ${published} of "${svc.name}" clashes with a container port of "${owner.name}"`;
-      }
-    }
-  }
-  return null;
+  return checkServiceSetClashes(services);
 }
 
 /**

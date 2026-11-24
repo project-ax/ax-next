@@ -677,6 +677,19 @@ services:
     expect(servicesProblem(emptyConnectorForm())).toBeNull();
   });
 
+  it('two services on the same port block saving, in plain words (A1)', () => {
+    const form = {
+      ...emptyConnectorForm(),
+      services: [
+        { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+        { name: 'db-test', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+      ],
+    };
+    expect(servicesProblem(form)).toBe(
+      '“db” and “db-test” both use port 5432. Here they share one network, so change the port on one of them.',
+    );
+  });
+
   it('more than 8 services needs on-demand', () => {
     const many = Array.from({ length: 9 }, (_, i) => ({
       name: `s${i}`, image: PINNED, ports: [], env: {}, writablePaths: [],

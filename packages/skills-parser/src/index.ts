@@ -31,3 +31,10 @@ export type {
   ComposeInvalid,
   ComposeTranslateResult,
 } from './compose-translate.js';
+export {
+  checkServiceSetClashes,
+  describeServiceSetClash,
+  findServiceSetClash,
+  PUBLISHED_PORTS_MAX,
+} from './service-set-checks.js';
+export type { ServiceSetCheckInput, ServiceSetClash } from './service-set-checks.js';

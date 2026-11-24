@@ -31,8 +31,10 @@
  * beyond-first entries untouched.
  */
 import {
+  findServiceSetClash,
   translateComposeToServices,
   type ComposeAppService,
+  type ServiceSetClash,
   type ComposeDrop,
   type ComposeInvalid,
 } from '@ax/skills-parser';
@@ -746,7 +748,30 @@ export function servicesProblem(form: ConnectorFormState): string | null {
   if (n > ALWAYS_ON_SERVICES_LIMIT && form.servicesMode !== 'on-demand') {
     return `That’s ${n} services. Without “Start only when needed”, we can keep up to ${ALWAYS_ON_SERVICES_LIMIT} running. Turn on “Start only when needed” to start them only when they’re needed (up to ${ON_DEMAND_SERVICES_LIMIT}), or remove some.`;
   }
-  return null;
+  // The same cross-service rules the server applies at save (spec §4.2).
+  const clash = findServiceSetClash(form.services);
+  return clash === null ? null : serviceClashCopy(clash);
+}
+
+/** A port clash between services, in plain words. */
+function serviceClashCopy(clash: ServiceSetClash): string {
+  const [a, b] = clash.services;
+  switch (clash.kind) {
+    case 'container-port-shared':
+      return `“${a}” and “${b}” both use port ${clash.port}. Here they share one network, so change the port on one of them.`;
+    case 'published-twice':
+      return `“${a}” and “${b}” both open port ${clash.port} to the agent. Change it on one of them.`;
+    case 'published-is-own-port':
+      return `“${a}” opens port ${clash.port} to the agent, but it already uses that port inside. Pick a different outside port.`;
+    case 'published-is-container-port':
+      return `“${a}” opens port ${clash.port} to the agent, but “${b}” already uses that port. Pick a different outside port.`;
+    case 'target-not-own':
+      return `“${a}” opens port ${clash.port} to the agent, but doesn’t listen on it. Add ${clash.port} to its ports, or remove it.`;
+    case 'job-published':
+      return `“${a}” runs once and stops, so it can’t open a port to the agent. Remove its outside ports.`;
+    case 'too-many-published':
+      return `That’s ${clash.total} ports opened to the agent. We can open up to ${clash.max}.`;
+  }
 }
 
 /** Map a summary into the subset of form fields it carries (edit fallback). */

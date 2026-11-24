@@ -1,5 +1,6 @@
 import { load as yamlLoad, YAMLException } from 'js-yaml';
 import { ServiceDescriptorSchema, type ServiceDescriptor } from './service-descriptor.js';
+import { checkServiceSetClashes } from './service-set-checks.js';
 
 // ---------------------------------------------------------------------------
 // Curated docker-compose.yml → ServiceDescriptor translation (I10 / I8).
@@ -618,6 +619,11 @@ export function translateComposeToServices(
       error: `Refused: depends_on cycle between ${sorted.cycle.join(', ')}`,
     };
   }
+  // One network namespace for the whole set (spec §4.2): a port clash between
+  // imported services (drafts included) would fail every sandbox start, so
+  // the whole import is refused, naming them.
+  const clash = checkServiceSetClashes(kept.map((e) => e.desc));
+  if (clash !== null) return { ok: false, error: `Refused: ${clash}` };
   const rank = new Map(order.map((n, i) => [n, i]));
   kept.sort((a, b) => rank.get(a.desc.name)! - rank.get(b.desc.name)!);
 
