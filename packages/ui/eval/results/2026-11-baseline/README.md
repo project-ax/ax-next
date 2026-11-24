@@ -1,8 +1,8 @@
 # Baseline, 2026-11 (before the theme swap)
 
 Captured against the local kind cluster (`kind-ax-next-dev`, real data) through channel-web's Vite proxy at
-`http://localhost:5173`, at commit `300302192` (the parent of the commit that added this set), signed in as the
-existing admin (a throwaway session row, deleted afterwards; the cluster was only read). 28 routes x light/dark x
+`http://localhost:5173`, at base commit `5e8fd3a76`, signed in as the existing admin. The cluster was read-only
+except one throwaway session row inserted for auth and deleted afterwards. 28 routes x light/dark x
 1440x900/390x844 = 112 full-page PNGs, about 6.8 MB (local, see below).
 
 ## Where the images are

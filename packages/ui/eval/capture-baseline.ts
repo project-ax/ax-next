@@ -4,25 +4,29 @@
  *
  * Two modes:
  *
- *  --kind (the real baseline): channel-web's Vite dev server in proxy mode in front of a
- *    backend, signed in as an existing admin. Read-only: it only navigates and GETs.
+ *  --kind (the real baseline): a production build of channel-web served by `vite preview`, which
+ *    proxies /api and /auth to a backend, signed in as an existing admin. The script itself only
+ *    navigates and GETs.
  *      kubectl --context kind-ax-next-dev -n ax-next port-forward svc/ax-next-host 19090:9090
- *      pnpm --filter @ax/channel-web exec vite build && \
- *        AX_BACKEND_URL=http://localhost:19090 pnpm --filter @ax/channel-web exec vite preview --port 5173 --strictPort
- *    (A production build behind `vite preview`, not `vite dev`: dev's dependency optimizer cannot
- *    serve the chat-visuals `ax-vendor/*?raw` imports, so the agent page crashes under `dev`.
- *    Preview reuses the same proxy config, so the browser still talks to http://localhost:5173.)
+ *      pnpm --filter @ax/channel-web exec vite build
+ *      AX_BACKEND_URL=http://localhost:19090 pnpm --filter @ax/channel-web exec vite preview --port 5173 --strictPort
  *      AX_SESSION_TOKEN=<live session token> AX_HTTP_COOKIE_KEY=<64 hex> \
- *        pnpm --filter @project-ax/ui exec tsx eval/capture-baseline.ts <outDir> --kind
- *    The token and key come from the environment only; the cookie is signed in memory with
- *    the real `signCookieValue` and is never written or logged.
+ *        pnpm --filter @project-ax/ui exec tsx eval/capture-baseline.ts [<outDir>] --kind
+ *    Why `vite preview` and not `vite dev`: dev's dependency optimizer cannot serve the chat-visuals
+ *    `ax-vendor/*?raw` imports, so the agent page crashes under `dev`. Preview reuses the same proxy
+ *    config, so the browser still talks to http://localhost:5173.
+ *    The token and key come from the environment only. The `ax_auth_session` cookie is signed in
+ *    memory by the local `signSessionCookie` below (it mirrors http-server's `signCookieValue`) and is
+ *    never written or logged.
  *
- *  default (mock): the dev server's mock backend (AX_BACKEND_URL unset); reaches only the
- *    sign-in page and error states. Kept for offline use.
+ *  default (mock): channel-web's dev server with its mock backend (AX_BACKEND_URL unset); reaches
+ *    only the sign-in page and error states. Kept for offline use.
  *
- * Output: <outDir>/<route>-<width>-<theme>.png, <outDir>/axe.json (raw, local only) and
- * <outDir>/axe-summary.json (sanitized: rule, impact, node count; safe to commit) (serious+critical
- * violation nodes per route, light theme at 1440 only).
+ * Output: <outDir>/<route>-<width>-<theme>.png; <outDir>/axe.json (raw, local only); and
+ * <outDir>/axe-summary.json (rule, impact and node count only, safe to commit). Axe counts
+ * serious + critical violation nodes per route, light theme at 1440 wide only.
+ *
+ * Exits non-zero if any shot failed.
  *
  * Never use waitUntil 'networkidle': the app holds an SSE stream open.
  */
@@ -92,6 +96,13 @@ const SETTINGS_ADMIN_TABS = [
 const AGENT_SETTINGS = ['instructions', 'model', 'connectors', 'slack', 'apps', 'memory', 'skills', 'routines'];
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
+/** The first agent the signed-in user can see; the agent routes are shot on it. */
+async function firstAgent(ctx: BrowserContext): Promise<{ agentId: string }> {
+  const [a] = await getJson<{ agentId: string }[]>(ctx, '/api/chat/agents');
+  if (!a) throw new Error('no agents on this backend');
+  return a;
+}
+
 function kindRoutes(): Route[] {
   const r: Route[] = [
     { name: 'sign-in', signedIn: false, expect: 'Sign in with Google', go: (p) => nav(p, '/') },
@@ -100,14 +111,14 @@ function kindRoutes(): Route[] {
       // The agent's page opens on its most recent existing conversation. Nothing is sent.
       name: 'agent-conversation', signedIn: true, expect: 'Conversation',
       go: async (p, c) => {
-        const [a] = await getJson<{ agentId: string }[]>(c, '/api/chat/agents');
+        const a = await firstAgent(c);
         await nav(p, `/workspace/agents/${encodeURIComponent(a.agentId)}`);
       },
     },
     {
       name: 'agent-files', signedIn: true, expect: 'Files',
       go: async (p, c) => {
-        const [a] = await getJson<{ agentId: string }[]>(c, '/api/chat/agents');
+        const a = await firstAgent(c);
         await nav(p, `/workspace/agents/${encodeURIComponent(a.agentId)}`);
         await p.getByRole('radio', { name: 'Files' }).click();
       },
@@ -127,7 +138,7 @@ function kindRoutes(): Route[] {
     r.push({
       name: `agent-settings-${s}`, signedIn: true, expect: /./,
       go: async (p, c) => {
-        const [a] = await getJson<{ agentId: string }[]>(c, '/api/chat/agents');
+        const a = await firstAgent(c);
         await nav(p, `/workspace/agents/${encodeURIComponent(a.agentId)}/settings/${s}`);
       },
     });
@@ -157,11 +168,6 @@ const mockRoutes: Route[] = [
 const ROUTES: Route[] = (kind ? kindRoutes() : mockRoutes).filter((r) => !only || only.has(r.name));
 const VIEWPORTS = [{ w: 1440, h: 900 }, { w: 390, h: 844 }];
 const THEMES = ['light', 'dark'] as const;
-
-async function signedContext(browser: import('playwright').Browser, vp: { w: number; h: number }) {
-  const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } });
-  return ctx;
-}
 
 /**
  * The `ax_auth_session` wire value: `<base64url(token)>.<base64url(HMAC-SHA256(key, token))>`, key =
@@ -194,7 +200,7 @@ const failed: string[] = [];
 for (const route of ROUTES) {
   for (const vp of VIEWPORTS) {
     for (const theme of THEMES) {
-      const ctx = await signedContext(browser, vp);
+      const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h } });
       try {
         if (kind && route.signedIn) await addSession(ctx);
         const page = await ctx.newPage();
@@ -236,4 +242,7 @@ const summary = Object.fromEntries(
 );
 writeFileSync(`${outDir}/axe-summary.json`, JSON.stringify(summary, null, 2) + '\n');
 console.log(JSON.stringify(summary, null, 2));
-if (failed.length > 0) console.log(`failed: ${failed.join(', ')}`);
+if (failed.length > 0) {
+  console.log(`failed: ${failed.join(', ')}`);
+  process.exitCode = 1;
+}
