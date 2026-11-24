@@ -16,6 +16,12 @@ describe('chunk buffer shell max age', () => {
     expect(chunkBufferOptsFor({ chatTimeoutMs: 10 * MIN })).toEqual({ shellMaxAgeMs: 10 * MIN + SLACK });
   });
 
+  it('a turn cap below the chat timeout never shrinks the ceiling under the timeout', () => {
+    expect(chunkBufferOptsFor({ chatTimeoutMs: 30 * MIN, maxTurnMs: 20 * MIN })).toEqual({
+      shellMaxAgeMs: 30 * MIN + SLACK,
+    });
+  });
+
   it('with neither, the buffer keeps its own default', () => {
     expect(chunkBufferOptsFor({})).toEqual({});
   });

@@ -136,8 +136,8 @@ export interface ChannelWebServerConfig {
   /**
    * The longest any one turn may run (ms): the chart's turn cap. A per-agent
    * turn limit can reach it, so the cursor-shell reap ceiling sizes from it
-   * rather than from the 10 min default timeout. Wins over `chatTimeoutMs`
-   * when set; sizing hint only.
+   * rather than from the 10 min default timeout. The ceiling sizes from the
+   * larger of this and `chatTimeoutMs`; sizing hint only.
    */
   maxTurnMs?: number;
 }
@@ -152,8 +152,12 @@ export function chunkBufferOptsFor(config: {
   chatTimeoutMs?: number;
   maxTurnMs?: number;
 }): { shellMaxAgeMs?: number } {
-  const turnMs = config.maxTurnMs ?? config.chatTimeoutMs;
-  return turnMs !== undefined && turnMs > 0 ? { shellMaxAgeMs: turnMs + SHELL_AGE_SLACK_MS } : {};
+  // The longer of the two: a turn cap below the default timeout must not reap
+  // a shell while a default-length turn still streams.
+  const sizes = [config.maxTurnMs, config.chatTimeoutMs].filter(
+    (n): n is number => n !== undefined && n > 0,
+  );
+  return sizes.length > 0 ? { shellMaxAgeMs: Math.max(...sizes) + SHELL_AGE_SLACK_MS } : {};
 }
 
 export function createChannelWebServerPlugin(

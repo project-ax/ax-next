@@ -654,6 +654,21 @@ export interface K8sPresetConfig {
 // sandbox-k8s's own default for activeDeadlineSeconds (config.ts): 6 h.
 const DEFAULT_POD_DEADLINE_SECONDS = 21600;
 
+/**
+ * channel-web's stream-buffer sizing hint (B1): the chat timeout and, when the
+ * chart caps turns, that cap in ms — a per-agent turn limit can reach it. One
+ * helper so every preset that loads channel-web (k8s, and memory, which
+ * re-adds its own) passes the same thing.
+ */
+export function channelWebTurnSizing(
+  chat: { chatTimeoutMs?: number; maxTurnMinutes?: number } | undefined,
+): { chatTimeoutMs: number; maxTurnMs?: number } {
+  return {
+    chatTimeoutMs: chat?.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+    ...(chat?.maxTurnMinutes !== undefined ? { maxTurnMs: chat.maxTurnMinutes * 60_000 } : {}),
+  };
+}
+
 export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const plugins: Plugin[] = [];
 
@@ -1604,15 +1619,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   //
   // The agent workspace (TASK-230) always mounts: it is the web interface,
   // and TASK-360 retired the switch that could turn it off.
-  plugins.push(
-    createChannelWebServerPlugin({
-      chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
-      // A per-agent turn limit can reach the chart cap; size the stream buffer from it.
-      ...(config.chat?.maxTurnMinutes !== undefined
-        ? { maxTurnMs: config.chat.maxTurnMinutes * 60_000 }
-        : {}),
-    }),
-  );
+  plugins.push(createChannelWebServerPlugin(channelWebTurnSizing(config.chat)));
 
   // ----- 10b. channel-slack (TASK-1093) -----------------------------------
   // Admin > Slack connects a workspace (`/admin/slack*`), and Slack delivers
