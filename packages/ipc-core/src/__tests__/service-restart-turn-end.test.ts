@@ -108,6 +108,8 @@ async function setup() {
     plugins: [createChatOrchestratorPlugin({
       runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 60_000,
       keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      // Off unless a preset turns them on (C3).
+      onDemandServices: { enabled: true },
     })],
   });
   h.bus.subscribe<unknown>('chat:start', 'test/activity', async (c) => {
