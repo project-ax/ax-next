@@ -52,3 +52,6 @@ worktrees/
 # Wildcard so new run-state files (progress helper, owner lock, …) are covered too;
 # the committed skill lives under .claude/skills/auto-ship/ and is NOT matched by this.
 .claude/auto-ship-*
+
+# Design-system task marker (see scripts/hooks/guard-ds-writes.mjs)
+.ax-ds-task

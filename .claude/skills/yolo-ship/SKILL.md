@@ -117,6 +117,7 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
   - **Guard before the first commit:** `git rev-parse --show-toplevel` MUST NOT be the
     primary checkout root. If it is, STOP and make the worktree — never `git checkout -b`,
     commit, or `git switch` in the main checkout under any circumstance.
+  - **`(ds)` cards:** if the card title contains `(ds)`, `touch .ax-ds-task` in the worktree root before editing.
 - **REQUIRED:** Use claude-memory — read `.claude/memory/`, both the root archives and the
   `<kind>/` shards (the shards hold everything recent), so prior decisions/mistakes/patterns
   inform the work. Write new rows as shards, and commit memory updates to YOUR
