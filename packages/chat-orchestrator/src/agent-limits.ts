@@ -11,8 +11,12 @@ export const INBOX_IDLE_FLOOR_MS = 15 * MIN;
 export const INBOX_IDLE_MARGIN_MS = 5 * MIN;
 /** The continuation reap hold never drops below Slack's 30-minute reply cap (§6.5). */
 export const REAP_HOLD_FLOOR_MS = 30 * MIN;
-/** How often a running turn's sign-ins are rotated (§6.4). */
-export const MID_TURN_ROTATION_MS = 30 * MIN;
+/**
+ * How often a running turn's sign-ins are rotated (§6.4, R37). @ax/mcp-oauth
+ * refreshes a token only once it has under 5 minutes left, so a slower beat
+ * leaves an expired token in use for up to (interval − 5) minutes.
+ */
+export const MID_TURN_ROTATION_MS = 5 * MIN;
 /** A warm sandbox needs this much more than the turn limit left before its ceiling (§6.4). */
 export const WARM_LIFETIME_MARGIN_MS = 10 * MIN;
 /** The chart's caps, used when the host passes none. */

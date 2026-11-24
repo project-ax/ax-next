@@ -2101,7 +2101,9 @@ describe('per-agent turn limit, idle time and runner size', () => {
     }
   });
 
-  it('rotation fires every 30 min during a turn and stops at turn end', async () => {
+  // B2 / R37 — every 5 minutes: @ax/mcp-oauth refreshes a token only once it
+  // has under 5 minutes left, so a slower beat leaves an expired token in use.
+  it('rotation fires every 5 min during a turn and stops at turn end', async () => {
     vi.useFakeTimers();
     try {
       const intervals = trackIntervals();
@@ -2112,9 +2114,11 @@ describe('per-agent turn limit, idle time and runner size', () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(t.rotates).toEqual([]);
       expect(intervals.live.size).toBe(1);
-      await vi.advanceTimersByTimeAsync(30 * MIN);
+      await vi.advanceTimersByTimeAsync(5 * MIN - 1);
+      expect(t.rotates).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
       expect(t.rotates).toEqual(['s-1']);
-      await vi.advanceTimersByTimeAsync(30 * MIN);
+      await vi.advanceTimersByTimeAsync(5 * MIN);
       expect(t.rotates).toEqual(['s-1', 's-1']);
       fireTurnEnd(t.h.bus, 's-1', 'req-1');
       await vi.advanceTimersByTimeAsync(0);
@@ -2139,11 +2143,11 @@ describe('per-agent turn limit, idle time and runner size', () => {
         const intervals = trackIntervals();
         const t = await limitsSetup({ agent: { ...OAUTH, turnLimitMinutes: 45 } });
         const p = t.invoke('s-1', 'req-1');
-        await vi.advanceTimersByTimeAsync(30 * MIN);
+        await vi.advanceTimersByTimeAsync(5 * MIN);
         expect(t.rotates).toEqual(['s-1']);
         expect(intervals.live.size).toBe(1);
         if (how === 'timeout') {
-          await vi.advanceTimersByTimeAsync(15 * MIN);
+          await vi.advanceTimersByTimeAsync(40 * MIN);
         } else if (how === 'runner-exit') {
           t.handles[0]!.forceExit();
         } else {
@@ -2155,8 +2159,9 @@ describe('per-agent turn limit, idle time and runner size', () => {
         await vi.advanceTimersByTimeAsync(0);
         expect((await p).kind).toBe('terminated');
         expect(intervals.live.size).toBe(0);
+        const atEnd = t.rotates.length;
         await vi.advanceTimersByTimeAsync(120 * MIN);
-        expect(t.rotates).toEqual(['s-1']);
+        expect(t.rotates).toHaveLength(atEnd);
         intervals.restore();
         for (const hk of t.handles) hk.forceExit();
       } finally {
@@ -2227,7 +2232,7 @@ describe('per-agent turn limit, idle time and runner size', () => {
 
   // R21 — in keepalive every turn after the first is ROUTED into the warm
   // sandbox; that path has its own turn timer and its own `finally`.
-  it('routed: rotation fires every 30 min during the turn and stops at its end', async () => {
+  it('routed: rotation fires every 5 min during the turn and stops at its end', async () => {
     vi.useFakeTimers();
     try {
       const intervals = trackIntervals();
@@ -2240,7 +2245,7 @@ describe('per-agent turn limit, idle time and runner size', () => {
       expect(t.opens).toHaveLength(1);
       expect(intervals.live.size).toBe(1);
       const atStart = t.rotates.length; // turn 1's end + the routing re-resolve (TASK-860)
-      await vi.advanceTimersByTimeAsync(30 * MIN);
+      await vi.advanceTimersByTimeAsync(5 * MIN);
       expect(t.rotates).toHaveLength(atStart + 1);
       fireTurnEnd(t.h.bus, 's-1', 'req-2');
       await vi.advanceTimersByTimeAsync(0);

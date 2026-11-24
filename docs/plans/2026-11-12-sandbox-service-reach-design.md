@@ -342,7 +342,7 @@ call, and one long tool call (a 10-minute e2e run, `npm install`).
 | SSE keepalive | 25 s heartbeat | `channel-web/src/server/sse.ts:47` | no | no | none |
 | Stream buffer | turn timeout + slack | `channel-web/src/server/plugin.ts:797-800`; preset `index.ts:1529` | after 10 min | same | size from the chart's turn cap (§6.4) |
 | GKE load balancer | 3,600 s on the whole streamed response | `gke-values.yaml:208`, `templates/host/backendconfig.yaml:22` | **fires** at 60 min | same | 7,500 plus a template check (§6.4) |
-| OAuth tokens | about 1 h; rotated only at turn end | `orchestrator.ts:5222` | after ~60 min | same | rotate every 30 min mid-turn (§6.4) |
+| OAuth tokens | about 1 h; rotated only at turn end | `orchestrator.ts:5222` | after ~60 min | same | rotate every 5 min mid-turn (§6.4) |
 | Slack turn cap | 15 min per reply | `channel-slack/src/limits.ts:217`, armed `turn.ts:820` | **fires** | **fires** | **30 min** (§6.5) |
 | Continuation reap hold | 15 min, "the cap channel-slack puts on one reply" | `orchestrator.ts:2248`, doc at `:252-263` | fires on a long woken continuation | same | moves with the Slack cap (§6.5) |
 | Routine dispatch lease | 120 s, renewed by a 10 s heartbeat | `routines/src/store.ts:1219`, `repeat-limits.ts` | no: it tracks the host, not the turn | no | none |
@@ -402,7 +402,9 @@ A Bash command may run as long as the turn allows. *Our call.*
    (`sandbox-protocol/src/bootstrap.ts:20`) and parsed in `agent-runner-core`.
 2. **Sign-ins go stale mid-turn.** `proxy:rotate-session` runs at turn end
    (`orchestrator.ts:5222`). While a turn runs, sessions that need it also
-   rotate every 30 minutes, through the same hook.
+   rotate every 5 minutes, through the same hook. (Five, not thirty: the
+   OAuth plugin refreshes a token only once it has under 5 minutes left, so
+   a 30-minute beat could leave an expired token in use for ~25 minutes.)
 3. **The stream buffer** sizes from the global timeout
    (`channel-web/src/server/plugin.ts:797-800`). It must size from
    `maxTurnMinutes`.
