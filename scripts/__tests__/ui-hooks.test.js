@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -166,5 +166,82 @@ describe('lint hook: worktree of the edited file', () => {
     });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('ax-ui/no-style-prop');
+  }, 60_000);
+});
+
+describe('lint hook: says how many violations are new', () => {
+  // A self-contained worktree with its OWN minimal eslint config and
+  // suppressions file (node_modules borrowed from this repo), so the counts
+  // are under the test's control and the real eslint-suppressions.json is
+  // never touched.
+  function worktreeWithSuppressions(suppressions) {
+    const wt = realpathSync(mkdtempSync(path.join(tmpdir(), 'ax-wt-')));
+    cleanup.push(wt);
+    writeFileSync(path.join(wt, '.git'), 'gitdir: /elsewhere\n');
+    writeFileSync(path.join(wt, 'package.json'), '{"name":"wt","private":true,"type":"module"}\n');
+    symlinkSync(path.join(REPO, 'node_modules'), path.join(wt, 'node_modules'), 'dir');
+    writeFileSync(
+      path.join(wt, 'eslint.config.mjs'),
+      [
+        "import tseslint from 'typescript-eslint';",
+        "import axUi from '@project-ax/eslint-plugin-ui';",
+        'export default [{',
+        "  files: ['packages/channel-web/src/**/*.tsx'],",
+        '  languageOptions: { parser: tseslint.parser, parserOptions: { ecmaFeatures: { jsx: true } } },',
+        "  plugins: { 'ax-ui': axUi },",
+        "  rules: { 'ax-ui/no-arbitrary-values': 'error', 'ax-ui/no-style-prop': 'error' },",
+        '}];',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(path.join(wt, 'eslint-suppressions.json'), JSON.stringify(suppressions, null, 2));
+    mkdirSync(path.join(wt, 'packages/channel-web/src/components'), { recursive: true });
+    return wt;
+  }
+  const REL = 'packages/channel-web/src/components/Frozen.tsx';
+
+  it('names frozen vs current counts per rule for a file with suppressions', () => {
+    const wt = worktreeWithSuppressions({ [REL]: { 'ax-ui/no-arbitrary-values': { count: 1 } } });
+    const file = path.join(wt, REL);
+    writeFileSync(
+      file,
+      // no-arbitrary-values reports once per class string, so three strings = 3.
+      'export const A = () => (\n' +
+        '  <>\n' +
+        '    <div className="p-[1px]" />\n' +
+        '    <div className="m-[2px]" />\n' +
+        '    <div className="gap-[3px]" style={{ margin: 0 }} />\n' +
+        '  </>\n' +
+        ');\n',
+    );
+    const r = run(LINT, edit(file));
+    expect(r.status).toBe(2);
+    const lines = r.stderr.split('\n');
+    expect(lines[0]).toBe(
+      'ax-ui/no-arbitrary-values: 1 frozen in eslint-suppressions.json, file now has 3 — remove the 2 you added.',
+    );
+    // No frozen entry for no-style-prop in this file: no summary line for it.
+    expect(r.stderr).not.toMatch(/no-style-prop: \d+ frozen/);
+    expect(r.stderr).toContain(`${REL}:5 ax-ui/no-style-prop`);
+    expect(r.stderr).toContain(`${REL}:3 ax-ui/no-arbitrary-values`);
+  }, 60_000);
+
+  it('a file without suppressions gets no summary line', () => {
+    const wt = worktreeWithSuppressions({});
+    const file = path.join(wt, REL);
+    writeFileSync(file, 'export const A = () => <div className="p-[1px]" />;\n');
+    const r = run(LINT, edit(file));
+    expect(r.status).toBe(2);
+    expect(r.stderr).not.toContain('frozen in eslint-suppressions.json');
+    expect(r.stderr).toContain(`${REL}:1 ax-ui/no-arbitrary-values`);
+  }, 60_000);
+
+  it('stays quiet while the file is within its frozen count', () => {
+    const wt = worktreeWithSuppressions({ [REL]: { 'ax-ui/no-arbitrary-values': { count: 2 } } });
+    const file = path.join(wt, REL);
+    writeFileSync(file, 'export const A = () => <><div className="p-[1px]" /><p className="m-[2px]" /></>;\n');
+    const r = run(LINT, edit(file));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
   }, 60_000);
 });
