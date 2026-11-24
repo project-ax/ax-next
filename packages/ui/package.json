@@ -19,6 +19,7 @@
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.test.json",
     "gen": "tsx scripts/gen-theme.ts"
   },
   "devDependencies": {
