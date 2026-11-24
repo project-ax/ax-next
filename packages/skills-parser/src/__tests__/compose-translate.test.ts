@@ -512,3 +512,46 @@ services:
     expect(r.ok).toBe(false);
   });
 });
+
+describe('translateComposeToServices: a dependency that could not be imported (A2)', () => {
+  const withDep = (dep: string) => `
+services:
+  api-db:
+    image: ${PINNED}
+    ports: ["5432"]
+    depends_on: [${dep}]
+${dep === 'db_main' ? `  db_main:
+    image: ${PINNED_REDIS}
+    ports: ["6379"]` : ''}${dep === 'noimage' ? `  noimage:
+    ports: ["6379"]` : ''}${dep === 'cache' ? `  cache:
+    image: redis:7
+    ports: ["6379"]` : ''}
+`;
+
+  it('refuses the whole import when the dependency has a bad name, naming both and why', () => {
+    const r = translateComposeToServices(withDep('db_main'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('api-db');
+    expect(r.error).toContain('db_main');
+    expect(r.error).toMatch(/invalid service name shape/);
+  });
+
+  it('refuses the whole import when the dependency has no image', () => {
+    const r = translateComposeToServices(withDep('noimage'));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain('api-db');
+    expect(r.error).toContain('noimage');
+    expect(r.error).toMatch(/no "image"/);
+  });
+
+  it('a dependency whose image only needs pinning is fine (it is a draft, not invalid)', () => {
+    const r = translateComposeToServices(withDep('cache'));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.order).toEqual(['cache', 'api-db']);
+    expect(r.invalid.map((i) => i.name)).toEqual(['cache']);
+    expect(r.invalid[0]!.draft).toBeDefined();
+  });
+});

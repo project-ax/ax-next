@@ -592,12 +592,24 @@ export function translateComposeToServices(
   // A dependency must be defined in the chosen profile (compose refuses an
   // undefined one too). One exception: the app runs in the sandbox, so a
   // dependency on it is removed from the ordering and reported.
+  // A2 — a dependency that is defined but couldn't be imported (a bad name,
+  // no image, a schema refusal) refuses the whole import too, like an
+  // undefined one (R14): its dependent would start without it. An image that
+  // only needs pinning is a draft in `entries`, not here, and is fine.
   const appNames = new Set(appServices.map((a) => a.service));
+  const importedNames = new Set(entries.map((e) => e.desc.name));
+  const invalidReason = new Map(invalid.map((i) => [i.name, i.reason]));
   for (const e of entries) {
     const kept: string[] = [];
     for (const d of e.deps) {
       if (appNames.has(d)) {
         drops.push({ service: e.desc.name, field: 'depends_on', value: d });
+      } else if (selectedNames.has(d) && !importedNames.has(d)) {
+        const why = invalidReason.get(d) ?? 'it could not be imported';
+        return {
+          ok: false,
+          error: `Refused: ${e.desc.name} depends_on ${echoValue(d) ?? '""'}, which can't be imported (${why})`,
+        };
       } else if (!selectedNames.has(d)) {
         return { ok: false, error: `Refused: ${e.desc.name} depends_on "${d}", which is not defined in this profile` };
       } else kept.push(d);
