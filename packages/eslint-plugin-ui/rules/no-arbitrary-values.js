@@ -36,9 +36,15 @@ export default {
           visit(node.alternate);
           break;
         case 'LogicalExpression':
-        case 'BinaryExpression':
           visit(node.left);
           visit(node.right);
+          break;
+        case 'BinaryExpression':
+          // Only `+` concatenates strings; comparison operands are not classes.
+          if (node.operator === '+') {
+            visit(node.left);
+            visit(node.right);
+          }
           break;
         case 'JSXExpressionContainer':
           visit(node.expression);

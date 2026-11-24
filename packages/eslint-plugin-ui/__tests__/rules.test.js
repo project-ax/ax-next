@@ -93,6 +93,7 @@ tester.run('no-arbitrary-values', plugin.rules['no-arbitrary-values'], {
     { code: 'const a = <X title="w-[3px]" />;' },
     { code: "const a = cn('text-sm', cond && 'p-2');" },
     { code: "const a = other('max-w-[660px]');" },
+    { code: "const a = cn(variant === 'tab[0]' && 'p-2');" },
     { code: 'const a = <X className="text-sm" />;', languageOptions: tsLanguageOptions, filename: 'a.tsx' },
   ],
   invalid: [
@@ -100,6 +101,7 @@ tester.run('no-arbitrary-values', plugin.rules['no-arbitrary-values'], {
     { code: 'const a = <X class="w-[3px]" />;', errors: [{ messageId: 'noArbitrary' }] },
     { code: 'const a = <X className={`gap-[3px] ${x}`} />;', errors: [{ messageId: 'noArbitrary' }] },
     { code: "const a = cn('max-w-[660px]');", errors: [{ messageId: 'noArbitrary' }] },
+    { code: "const a = cn('a ' + 'b-[1px]');", errors: [{ messageId: 'noArbitrary' }] },
     { code: "const a = clsx(['p-2', ok ? 'h-[2px]' : 'h-2']);", errors: [{ messageId: 'noArbitrary' }] },
     { code: "const a = cva('base', { variants: { a: { b: 'w-[1px]' } } });", errors: [{ messageId: 'noArbitrary' }] },
     {
