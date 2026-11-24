@@ -860,16 +860,26 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
 
       const turnEndReqIds: string[] = [];
       const segmentEndReqIds: string[] = [];
+      // The runner's own outcome, from chat:end. keepAlive resolves
+      // agent:invoke on whichever of turn-end (a synthesized empty outcome)
+      // and the runner's chat:end lands first, so outcome.messages only
+      // carries the reply when chat:end wins: a race CI loses under load.
+      const chatEndMessages: Array<{ role: string; content: unknown }> = [];
       const observer: Plugin = {
         manifest: {
           name: '@ax/preset-k8s/test/on-demand-observer', version: '0.0.0', registers: ['tool:execute:test-idle'], calls: [],
-          subscribes: ['chat:turn-end', CHAT_TURN_SEGMENT_END_HOOK],
+          subscribes: ['chat:turn-end', 'chat:end', CHAT_TURN_SEGMENT_END_HOOK],
         },
         init({ bus }) {
           const N = '@ax/preset-k8s/test/on-demand-observer';
           bus.registerService('tool:execute:test-idle', N, () => new Promise<never>(() => {}));
           bus.subscribe('chat:turn-end', N, async (_c: AgentContext, p: unknown) => {
             turnEndReqIds.push((p as { reqId: string }).reqId);
+            return undefined;
+          });
+          bus.subscribe('chat:end', N, async (_c: AgentContext, p: unknown) => {
+            const outcome = (p as { outcome?: AgentOutcome }).outcome;
+            if (outcome?.kind === 'complete') chatEndMessages.push(...outcome.messages);
             return undefined;
           });
           bus.subscribe(CHAT_TURN_SEGMENT_END_HOOK, N, async (_c: AgentContext, p: unknown) => {
@@ -931,9 +941,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(opens[1]!.sessionId).not.toBe(opens[0]!.sessionId);
         // The turn ended in the continuation, and exactly once.
         expect(outcome.kind).toBe('complete');
-        if (outcome.kind === 'complete') {
-          expect([...outcome.messages].reverse().find((m) => m.role === 'assistant')?.content).toContain(CANARY_TEXT);
-        }
+        // The continuation's reply reached the host.
+        await vi.waitFor(() => {
+          expect([...chatEndMessages].reverse().find((m) => m.role === 'assistant')?.content).toContain(CANARY_TEXT);
+        }, { timeout: 10_000 });
         await handle.shutdown();
         expect(turnEndReqIds.filter((r) => r === reqId)).toHaveLength(1);
         expect(segmentEndReqIds.filter((r) => r === reqId).length).toBeGreaterThanOrEqual(1);
