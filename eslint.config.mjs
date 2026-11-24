@@ -301,19 +301,28 @@ export default tseslint.config(
   {
     // Project AX UI rules: channel-web app code composes @project-ax/ui rather
     // than styling raw elements. Existing violations are frozen in
-    // eslint-suppressions.json (ESLint bulk suppressions) and can only go down:
-    // `pnpm lint:ui:prune` after fixing some. shadcn internals and tests are
-    // exempt. The import ban lives in the plugin (not core no-restricted-imports)
-    // so it can't replace the invariant-2 entry above.
+    // eslint-suppressions.json (ESLint bulk suppressions) and can only go down
+    // (CI: scripts/ui-suppressions-ratchet.mjs); run `pnpm lint:ui:prune` after
+    // fixing some. shadcn internals and tests are exempt. The import ban lives
+    // in the plugin (not core no-restricted-imports) so it can't replace the
+    // invariant-2 entry above.
+    //
+    // Rules switch on as their replacements ship (ruling R15, 2026-11-24) —
+    // until then there is nothing to comply with. Step 1 (S1): arbitrary values
+    // and `style`. S2a turns on no-classname + no-raw-elements (with Text/Stack/
+    // ...); no-internal-imports turns on per area as S3–S6 replace each shadcn
+    // primitive. Each switch-on adds its rule to the root `lint:ui:suppress`
+    // script and regenerates eslint-suppressions.json. See
+    // docs/superpowers/plans/2026-11-24-project-ax-ui-roadmap.md.
     files: ['packages/channel-web/src/**/*.tsx'],
     ignores: ['packages/channel-web/src/components/ui/**', '**/__tests__/**', '**/*.test.tsx'],
     plugins: { 'ax-ui': axUi },
     rules: {
-      'ax-ui/no-classname': 'error',
-      'ax-ui/no-style-prop': 'error',
-      'ax-ui/no-raw-elements': 'error',
       'ax-ui/no-arbitrary-values': 'error',
-      'ax-ui/no-internal-imports': 'error',
+      'ax-ui/no-style-prop': 'error',
+      'ax-ui/no-classname': 'off', // S2a
+      'ax-ui/no-raw-elements': 'off', // S2a
+      'ax-ui/no-internal-imports': 'off', // S3–S6, per area
     },
   },
 );

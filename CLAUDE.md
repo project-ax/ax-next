@@ -153,11 +153,11 @@ reading more memory before editing.
 
 6. **One UI design language: shadcn primitives + semantic tokens.** Every user-facing surface (chat, admin, settings, onboarding wizard, error pages) shares the shadcn install in `packages/channel-web` — that's the source of truth. New components compose existing shadcn primitives (`Button`, `Input`, `FieldGroup`/`Field`, `Card`, `Alert`, etc.) with the project's semantic color tokens (`bg-background`, `text-muted-foreground`, `border-border`, …); they don't reinvent styled `<div>`s, hand-roll forms, or use raw color values like `bg-blue-500` or `#000`.
 
-   **Migration in progress (2026-11):** the shared design system is moving to `@project-ax/ui` (`packages/ui`). New or edited channel-web screens must pass `@project-ax/eslint-plugin-ui` (no `className`, raw layout elements, arbitrary values or `@/components/ui` imports in new code); existing violations are frozen in `eslint-suppressions.json` and may only go down. Design: `docs/superpowers/specs/2026-11-24-agent-first-ui-design.md`.
-
    If a needed primitive isn't installed yet, add it via the shadcn CLI (`pnpm dlx shadcn@latest add <name> -c packages/channel-web`) — don't hand-write a one-off. If a new SPA surface needs UI, host it inside `channel-web` rather than spinning up a separate Vite build with its own design system. The whole point of standardizing on shadcn was that we stop having three different versions of "what does a button look like."
 
    When building or modifying any UI, invoke the `shadcn` skill — it loads the installed-component list, the rule files, and the monorepo workspace flag (`-c packages/channel-web`).
+
+   **Migration in progress (2026-11):** the design system is moving to `@project-ax/ui` (`packages/ui`; design: `docs/superpowers/specs/2026-11-24-agent-first-ui-design.md`). Today shadcn primitives in channel-web are still fine, but `pnpm lint` bans arbitrary Tailwind values (`p-[3px]`) and the `style` prop in channel-web. Existing violations are frozen in `eslint-suppressions.json` and may only go down — CI's `scripts/ui-suppressions-ratchet.mjs` fails a PR that raises a rule's total. After removing violations, run `pnpm lint:ui:prune`, or lint fails with "There are suppressions left that do not occur anymore". Each remaining rule (`className`, raw elements, `@/components/ui` imports) switches on when the step that ships its replacement lands — see `docs/superpowers/plans/2026-11-24-project-ax-ui-roadmap.md`.
 
 ## Boundary review (required for new hooks)
 

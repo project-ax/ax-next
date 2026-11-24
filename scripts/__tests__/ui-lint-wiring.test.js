@@ -2,8 +2,8 @@
 // for packages/channel-web, with today's violations frozen in
 // eslint-suppressions.json (ESLint bulk suppressions).
 //
-// The Node API (`ESLint#lintText`) does NOT apply suppressions, so the first
-// three tests lint NEW file paths and see the raw rule behaviour. The last one
+// The Node API (`ESLint#lintText`) does NOT apply suppressions, so the
+// lintText tests lint NEW file paths and see the raw rule behaviour. The last one
 // drives the real CLI, which is where suppressions (and the "unused
 // suppression" failure that keeps the ratchet one-way) live.
 
@@ -29,14 +29,40 @@ describe('ui lint wiring', () => {
     return res.messages;
   }
 
-  it('new channel-web file with a div errors', async () => {
+  it('new channel-web file with an arbitrary value errors', async () => {
     const messages = await lint(
-      'export const X = () => <div/>;',
+      'export const X = () => <div className="p-[3px]" />;',
       'packages/channel-web/src/components/NewThing.tsx',
     );
-    const hit = messages.find((m) => m.ruleId === 'ax-ui/no-raw-elements');
+    const hit = messages.find((m) => m.ruleId === 'ax-ui/no-arbitrary-values');
     expect(hit).toBeDefined();
     expect(hit.severity).toBe(2);
+  });
+
+  it('new channel-web file with a style prop errors', async () => {
+    const messages = await lint(
+      'export const X = () => <p style={{ margin: 0 }} />;',
+      'packages/channel-web/src/components/NewThing.tsx',
+    );
+    const hit = messages.find((m) => m.ruleId === 'ax-ui/no-style-prop');
+    expect(hit).toBeDefined();
+    expect(hit.severity).toBe(2);
+  });
+
+  // Ruling R15 (2026-11-24): @project-ax/ui exports only tokens in step 1, so
+  // there is nothing to comply with yet for className, raw elements or shadcn
+  // imports. Those rules stay in the plugin but are OFF until their
+  // replacements ship (S2a: className + raw elements; S3-S6: imports per area).
+  it('className, raw elements and shadcn imports are not enforced yet (R15)', async () => {
+    const messages = await lint(
+      "import { Button } from '@/components/ui/button';\n" +
+        'export const X = () => <div className="flex gap-2"><Button /></div>;',
+      'packages/channel-web/src/components/NewThing.tsx',
+    );
+    const ruleIds = messages.map((m) => m.ruleId);
+    expect(ruleIds).not.toContain('ax-ui/no-classname');
+    expect(ruleIds).not.toContain('ax-ui/no-raw-elements');
+    expect(ruleIds).not.toContain('ax-ui/no-internal-imports');
   });
 
   it('shadcn internals are exempt', async () => {
@@ -64,7 +90,7 @@ describe('ui lint wiring', () => {
     const loc = join(dir, 'eslint-suppressions.json');
     // A real channel-web file with no ax-ui violations, so the suppression can never occur.
     const file = 'packages/channel-web/src/main.tsx';
-    writeFileSync(loc, JSON.stringify({ [file]: { 'ax-ui/no-classname': { count: 1 } } }));
+    writeFileSync(loc, JSON.stringify({ [file]: { 'ax-ui/no-arbitrary-values': { count: 1 } } }));
     const r = spawnSync(
       'pnpm',
       ['exec', 'eslint', file, '--suppressions-location', loc],

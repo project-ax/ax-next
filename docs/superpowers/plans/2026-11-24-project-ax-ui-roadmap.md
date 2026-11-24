@@ -14,6 +14,10 @@
 - A component lands **in the same PR as its first channel-web callers** (no half-wired exports).
 - Migrated files: removed from `eslint-suppressions.json` with `pnpm lint:ui:prune`; the suppression count only
   goes down.
+- UI lint rules switch on as their replacements ship (ruling R15: S1 = `no-arbitrary-values` + `no-style-prop`;
+  S2a = `no-classname` + `no-raw-elements`; S3–S6 = `no-internal-imports`, per area). Each switch-on adds its rule
+  to the root `lint:ui:suppress` script and regenerates `eslint-suppressions.json` — the CI ratchet
+  (`scripts/ui-suppressions-ratchet.mjs`) lets a rule's total rise only in the PR that adds it to that script.
 - Tests on a migrated screen move from `querySelector`/`toHaveClass` to role/label queries in the same PR.
 - A PR that applies a §6.3 rule visible to users (rules 2, 3, 4, 5, 9) attaches before/after screenshots
   (light + dark, 1440 + 390).
@@ -27,8 +31,8 @@
 
 | Card | Scope | Depends on | Done when |
 |---|---|---|---|
-| **S1 Foundation** | `@project-ax/ui` scaffold, tokens, generated `theme.css`, contrast test, channel-web consumes `theme.css` through legacy aliases, `@project-ax/eslint-plugin-ui` (className/style/raw-elements/arbitrary/imports) with ESLint bulk suppressions on channel-web, write guard hook + lint hook, CODEOWNERS | — | Step-1 plan's tasks pass; channel-web renders identically; a new `<div>` in channel-web fails `pnpm lint` |
-| **S2a Build + stories infra** | Restricted Tailwind preset (`prefix: 'ax-'`, token scales only), generated `base.css` + `ui.css`, Storybook (react-vite) + axe + Playwright story screenshots in CI. Ships with `Text`, `Heading`, `Stack`, `Inline`, `Grid`, `Divider` and their stories | S1 | Stories pass axe; screenshot baseline committed; preset test proves `p-4` is not generated |
+| **S1 Foundation** | `@project-ax/ui` scaffold, tokens, generated `theme.css`, contrast test, channel-web consumes `theme.css` through legacy aliases, `@project-ax/eslint-plugin-ui` (className/style/raw-elements/arbitrary/imports) with ESLint bulk suppressions on channel-web, write guard hook + lint hook, CODEOWNERS | — | Step-1 plan's tasks pass; channel-web renders identically; a new arbitrary value or `style` in channel-web fails `pnpm lint` |
+| **S2a Build + stories infra** | Restricted Tailwind preset (`prefix: 'ax-'`, token scales only), generated `base.css` + `ui.css`, Storybook (react-vite) + axe + Playwright story screenshots in CI. Ships with `Text`, `Heading`, `Stack`, `Inline`, `Grid`, `Divider` and their stories; switch on `ax-ui/no-classname` + `ax-ui/no-raw-elements` (regenerate suppressions) | S1 | Stories pass axe; screenshot baseline committed; preset test proves `p-4` is not generated |
 | **S2b Text + layout migration** | Replace the 15 most-repeated class strings app-wide (`text-sm text-muted-foreground` ×87, `flex flex-col gap-2` ×52, …) with `Text`/`Stack`/`Inline` | S2a | Suppression count drops by the migrated occurrences; no visual diff beyond the §5.1 type-scale collapse (screenshots) |
 | **S3 States + feedback** | `AsyncState`, `EmptyState`, `Notice`, `Toast`, `Button` (`intent`, `size`, `busy`), `IconButton`, `ConfirmAction`. Migrate every loading/error/empty/confirm site; delete PaneStatus, ReadFailure, ReadError×2, LoadingRows×2, Note×2, SectionNote, the 3 LoadFailures, the 3 `Busy` copies, private ConfirmDialog. Add confirms to Revoke and site Remove (rule 5) | S2a | §6.3 rules 5 + 7 hold app-wide; retry copy is "Try again" everywhere |
 | **S4 Rows + status** | `List`, `ListRow`, `KeyValueList`, `StatusBadge`, `StatusMark`, `Timestamp`, `Avatar`, `FileTile`, `Timeline`, `InsetBlock`, `Card`. Migrate ~20 row impls, all badges/dots/pills, 7 time helpers; delete dead `ProviderRow`, `KeyForm`, `StatusDot`, `AgentStateLabel` | S2a (S3 for row menus' confirms) | Rules 8, 10, 11 hold; one divider method; no nested cards |

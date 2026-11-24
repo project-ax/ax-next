@@ -425,7 +425,9 @@ Order (each step = one or a few PRs; each is a `(ds)` card):
 **Other UI work during the rewrite (decided): no freeze; new code complies now.** From step 1, the UI lint rules
 are *errors* for new files in channel-web, and for each area as soon as that area is migrated; only
 not-yet-migrated files stay at *warn*. The violation count can only go down. Feature cards that touch an
-unmigrated file may leave its existing violations alone but must not add new ones.
+unmigrated file may leave its existing violations alone but must not add new ones. Rules switch on as their
+replacements ship (S1: arbitrary values and style; S2a: className and raw elements; S3–S6: internal shadcn imports,
+per area) — there is nothing to comply with before then (ruling 2026-11-24).
 
 Steps 3–7 can split by surface (admin/settings/routines vs workspace/today/tasks) to run in parallel through
 auto-ship; the component lands with whichever surface PR gets there first, and the other rebases onto it.

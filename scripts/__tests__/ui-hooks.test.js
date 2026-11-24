@@ -73,11 +73,15 @@ describe('lint-ui-file', () => {
   const tmpFile = path.join(REPO, `packages/channel-web/src/components/__HookTmp-${process.pid}-${Date.now()}.tsx`);
   afterEach(() => rmSync(tmpFile, { force: true }));
 
-  it('reports new div', () => {
-    writeFileSync(tmpFile, 'export const A = () => <div />;\n');
+  it('reports a new arbitrary value', () => {
+    writeFileSync(tmpFile, 'export const A = () => <div className="p-[3px]" />;\n');
     const r = run(LINT, edit(tmpFile));
     expect(r.status).toBe(2);
-    expect(r.stderr).toContain('ax-ui/no-raw-elements');
+    expect(r.stderr).toContain('ax-ui/no-arbitrary-values');
+  }, 60_000);
+  it('does not report className or raw elements yet (R15)', () => {
+    writeFileSync(tmpFile, 'export const A = () => <div className="flex gap-2" />;\n');
+    expect(run(LINT, edit(tmpFile)).status).toBe(0);
   }, 60_000);
   it('passes a clean file', () => {
     writeFileSync(tmpFile, 'export const A = () => null;\n');
