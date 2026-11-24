@@ -17,9 +17,11 @@
 //     it anyway gets an `InputValidationError`;
 //   - a command past its timeout is killed (exit 143) instead of moved;
 //   - no unprompted turn happens.
-// A model that needs a long command can pass a longer `timeout` (up to 10
-// minutes), or start it with a shell `&` and Read its output later. Neither
-// wakes the model.
+// A model that needs a long command can pass a longer `timeout` (up to the
+// agent's turn limit when the host sent one — main.ts sets
+// BASH_MAX_TIMEOUT_MS from it; the CLI's own 10-minute cap otherwise), or
+// start it with a shell `&` and Read its output later. Neither wakes the
+// model.
 //
 // Interrupts are unaffected: Bash has no interrupt→background path in 2.1.119
 // (only explicitly asked for, and moved at timeout).

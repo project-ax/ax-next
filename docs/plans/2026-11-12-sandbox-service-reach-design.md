@@ -392,7 +392,11 @@ A Bash command may run as long as the turn allows. *Our call.*
 - **claude-sdk runner:** the runner sets `BASH_MAX_TIMEOUT_MS` to the turn
   limit and `API_TIMEOUT_MS` to 30 minutes in the SDK's environment.
 - The tool descriptions and the coding agent's instructions say: give e2e runs
-  and `npm install` an explicit timeout, or run them in the background and poll.
+  and `npm install` an explicit timeout, or start them with a shell `&`
+  (output redirected to a file) and check that file in a later call. There is
+  no background-task mode to lean on: the claude-sdk runner switches the
+  CLI's off (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`, TASK-1217), so its Bash
+  tool has no `run_in_background`, and the aisdk Bash tool never had one.
 
 ### 6.4 What a long turn breaks, and the fixes
 

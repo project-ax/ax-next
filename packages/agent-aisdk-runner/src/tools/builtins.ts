@@ -187,7 +187,8 @@ export function buildBuiltinTools(
         'Glob and Grep over cat/find/grep, which return better-shaped results. ' +
         `A command may run up to ${bashMaxMinutes} minutes if you set \`timeout\`; ` +
         'the default is 2 minutes, so give e2e runs and installs an explicit ' +
-        'timeout, or run them in the background and poll.',
+        'timeout, or start them with a shell `&` (output redirected to a file) ' +
+        'and check that file in a later call.',
       inputSchema: jsonSchema({
         type: 'object',
         properties: {
