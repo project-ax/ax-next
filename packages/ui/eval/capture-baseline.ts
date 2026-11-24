@@ -29,6 +29,7 @@
 import { chromium, type BrowserContext, type Page } from 'playwright';
 import AxeBuilder from '@axe-core/playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHmac } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -54,10 +55,10 @@ interface Route {
 const SETTLE_MS = 1200;
 const nav = (page: Page, path: string) => page.goto(`${baseUrl}${path}`, { waitUntil: 'load' });
 
-async function getJson(ctx: BrowserContext, path: string): Promise<any> {
+async function getJson<T>(ctx: BrowserContext, path: string): Promise<T> {
   const r = await ctx.request.get(`${baseUrl}${path}`);
   if (!r.ok()) throw new Error(`GET ${path} -> ${r.status()}`);
-  return r.json();
+  return (await r.json()) as T;
 }
 
 const openSettings = async (page: Page) => {
@@ -99,14 +100,14 @@ function kindRoutes(): Route[] {
       // The agent's page opens on its most recent existing conversation. Nothing is sent.
       name: 'agent-conversation', signedIn: true, expect: 'Conversation',
       go: async (p, c) => {
-        const [a] = await getJson(c, '/api/chat/agents');
+        const [a] = await getJson<{ agentId: string }[]>(c, '/api/chat/agents');
         await nav(p, `/workspace/agents/${encodeURIComponent(a.agentId)}`);
       },
     },
     {
       name: 'agent-files', signedIn: true, expect: 'Files',
       go: async (p, c) => {
-        const [a] = await getJson(c, '/api/chat/agents');
+        const [a] = await getJson<{ agentId: string }[]>(c, '/api/chat/agents');
         await nav(p, `/workspace/agents/${encodeURIComponent(a.agentId)}`);
         await p.getByRole('radio', { name: 'Files' }).click();
       },
@@ -115,7 +116,7 @@ function kindRoutes(): Route[] {
     {
       name: 'task', signedIn: true, expect: /./,
       go: async (p, c) => {
-        const { tasks } = await getJson(c, '/api/workspace/tasks');
+        const { tasks } = await getJson<{ tasks: { agentId: string; routineId: string }[] }>(c, '/api/workspace/tasks');
         const t = tasks[0];
         if (!t) throw new Error('no tasks on this backend');
         await nav(p, `/workspace/tasks/${encodeURIComponent(t.agentId)}/${encodeURIComponent(t.routineId)}`);
@@ -126,7 +127,7 @@ function kindRoutes(): Route[] {
     r.push({
       name: `agent-settings-${s}`, signedIn: true, expect: /./,
       go: async (p, c) => {
-        const [a] = await getJson(c, '/api/chat/agents');
+        const [a] = await getJson<{ agentId: string }[]>(c, '/api/chat/agents');
         await nav(p, `/workspace/agents/${encodeURIComponent(a.agentId)}/settings/${s}`);
       },
     });
@@ -144,7 +145,7 @@ const mockRoutes: Route[] = [
   { name: 'apps-approve-load-error', path: '/apps/approve/slack/app1/c0123456789', signedIn: true, expect: "We couldn't load this" },
 ].map((m) => ({
   name: m.name, signedIn: m.signedIn, expect: m.expect,
-  go: async (p: Page, c: BrowserContext) => {
+  go: async (p: Page) => {
     if (m.signedIn) {
       await nav(p, '/auth/sign-in/google');
       await p.waitForTimeout(1500);
@@ -162,16 +163,26 @@ async function signedContext(browser: import('playwright').Browser, vp: { w: num
   return ctx;
 }
 
+/**
+ * The `ax_auth_session` wire value: `<base64url(token)>.<base64url(HMAC-SHA256(key, token))>`, key =
+ * the 32 bytes behind AX_HTTP_COOKIE_KEY (64 hex chars). Source of truth for the format:
+ * packages/http-server/src/cookies.ts (`signCookieValue`). Kept local so this script does not reach
+ * into another package's dist.
+ */
+function signSessionCookie(keyHex: string, token: string): string {
+  if (!/^[0-9a-fA-F]{64}$/.test(keyHex)) throw new Error('AX_HTTP_COOKIE_KEY must be 64 hex characters (32 bytes)');
+  const payload = Buffer.from(token, 'utf8');
+  const sig = createHmac('sha256', Buffer.from(keyHex, 'hex')).update(payload).digest();
+  return `${payload.toString('base64url')}.${sig.toString('base64url')}`;
+}
+
 async function addSession(ctx: BrowserContext) {
   const token = process.env.AX_SESSION_TOKEN;
   const keyHex = process.env.AX_HTTP_COOKIE_KEY;
   if (!token || !keyHex) throw new Error('--kind needs AX_SESSION_TOKEN and AX_HTTP_COOKIE_KEY in the environment');
-  // The real signer, from the built http-server package (pnpm --filter @ax/http-server build).
-  const { signCookieValue } = (await import('../../http-server/dist/cookies.js')) as {
-    signCookieValue: (k: Buffer, v: string) => string;
-  };
+  const wire = signSessionCookie(keyHex, token);
   await ctx.addCookies([{
-    name: 'ax_auth_session', value: signCookieValue(Buffer.from(keyHex, 'hex'), token),
+    name: 'ax_auth_session', value: wire,
     domain: 'localhost', path: '/', httpOnly: true, secure: false, sameSite: 'Lax',
   }]);
 }
