@@ -43,6 +43,7 @@ version together.
 | D7 | How far channel-web moves | **Full rewrite** onto `@project-ax/ui` — and the rewrite's goal is **consolidation**: collapse duplicate components into a minimal set and unify UX patterns and information hierarchy (§6). |
 | D8 | Visual self-review for app agents | **Yes** — a `render` tool on the deploy connector (§8). |
 | D9 | Build order | 1 → 2 now; 3, 4, 5 later. |
+| D10 | Tailwind in apps | **Only inside composites**, through a token-only preset. Pages use components only. `CustomSection` (with `reason`) wraps exactly one composite, so the harvester gets named, typed components. |
 
 Dropped from the source spec: the Canopy Protect source screens and archetypes (`ResourceListPage` from asset
 list, `DashboardPage` from alerts), the Protect domain patterns, Mantine as a fallback (shadcn/Radix is already in
@@ -73,7 +74,8 @@ production here), and the `ResourceListPage`/`DetailPage` names (renamed to fit 
 - A component set that's a 1:1 port of today's 180 components. That's a move, not a consolidation.
 - Components so generic they're useless (`<Box>` with 30 props). Variation is small enums, never style props.
 - Agents patching `packages/ui` to make one page work.
-- A "temporary" escape hatch that becomes the main road.
+- A "temporary" escape hatch that becomes the main road. In channel-web specifically, `src/composites/` is for
+  AX-only pieces; a generic duplicate parked there to dodge consolidation is a failed migration, not a composite.
 
 ## 4. Architecture
 
@@ -106,10 +108,13 @@ derived package changes look by shipping its own `theme.css` — same names, dif
 themeable. That's deliberate: if Canopy later needs a different *shape* (not just values), we add a named theme
 slot to the base package on purpose, not a `className` escape.
 
-**Consumers don't need Tailwind.** Tailwind is the package's internal authoring tool. The package publishes
-**precompiled CSS**; app code has no `className`, so the app has nothing for Tailwind to scan. channel-web drops
-its Tailwind config at the end of workstream 2, and canopy-apps never install it. *(My call — it's what makes the
-"no className" rule cheap to enforce and keeps canopy-apps builds tiny.)*
+**Tailwind in two places, nowhere else.** The package is authored in Tailwind and publishes **precompiled
+CSS** (`ui.css`) for everything it exports. Apps may also use Tailwind, but **only inside their composites
+folder** (§5.4 "Escape hatch"), and only through the package's **restricted preset**
+(`@project-ax/ui/tailwind-preset`): token scales only (`gap-md`, `text-meta`, `bg-surface`), no default scales, no
+arbitrary values. An app's Tailwind build scans only `src/composites/**` and emits a small `composites.css`.
+Pages and screens have no `className` at all. *(Decided 2026-11-24: Tailwind where agents need freedom, components
+where we need uniformity.)*
 
 **SSR- and CSP-safe from day one** (needed by workstream 3, constrains workstream 1):
 
@@ -222,16 +227,45 @@ components and 30 primitives.** Anything not on this list needs a design-system 
 `components/Markdown.tsx` renderer and its sanitization), plus `Frame` (sandboxed iframe with auto-height; takes
 an already-prepared `srcdoc`), `Chart` (chart.js with token colors), `Image` (token-sized, for operator logos and
 art) and `Progress`. They are **not** built on assistant-ui — the team rejected it (2026-09-12, TASK-405); they
-wrap channel-web's own frame parser and renderer. *(My call: channel-web can't use `className`, so every visual
-must come from the package; and canopy-apps that want chat, charts or embedded frames get them for free.)*
+wrap channel-web's own frame parser and renderer. *(My call: these are generic, and canopy-apps that want chat,
+charts or embedded frames should get them for free rather than each writing a composite.)*
 
 **AX-specific composites stay in channel-web**, in `packages/channel-web/src/composites/` — `ApprovalCard`,
-`GrantRow`, decision blocks, `ArtifactCard`, `MemoryUsedChip`, the visual-frame wiring. They follow the same
-rules as the rest of app code (public API only, no `className`, no raw elements), so they are ordinary app code
-that happens to be reused. This is the same shape as canopy-apps' `src/ui/composites/` (§9), and the first
-candidates for promotion if something turns out to be generic. The frame-guard transform stays server-side in
-`@ax/frame-guard`; the package's `Frame` only renders the sandboxed result. `CustomSection` never permits raw
-elements or `className` — if something can't be built from the public API, it's a `(ds)` card.
+`GrantRow`, decision blocks, `ArtifactCard`, `MemoryUsedChip`, the visual-frame wiring. Same folder, same rules
+as any app's composites (below), and the first candidates for promotion if something turns out to be generic.
+The frame-guard transform stays server-side in `@ax/frame-guard`; the package's `Frame` only renders the
+sandboxed result.
+
+**Escape hatch: `CustomSection` + composites** (changes the source spec, which banned Tailwind inside
+`CustomSection`):
+
+```tsx
+// a page: no className, ever
+<CustomSection reason="No pattern for a week-by-staff coverage grid">
+  <CoverageGrid weeks={weeks} staff={staff} />
+</CustomSection>
+
+// src/composites/CoverageGrid.tsx: restricted Tailwind allowed here
+export const CoverageGrid = defineComposite({
+  name: 'CoverageGrid',
+  purpose: 'Week × staff shift coverage',
+  render: ({ weeks, staff }: CoverageGridProps) => (
+    <Grid columns={{ base: 1, md: 7 }} gap="sm">…</Grid>
+  ),
+})
+```
+
+- **`CustomSection`** is the only escape hatch. `reason` (one sentence) is required. Its child must be exactly
+  one element whose component is a composite imported from `src/composites/` — no inline markup.
+- **Composites** (`src/composites/*.tsx`) are defined with `defineComposite({ name, purpose, render })`, take typed
+  props, and may use layout primitives, every public export, raw elements, and the restricted Tailwind preset.
+  Still banned there: `style`, arbitrary values, non-token colors, `@radix-ui/*` and package internals.
+- A composite may be used without `CustomSection` from another composite or from a page when it's an
+  established piece of the app (e.g. channel-web's `ApprovalCard`); `CustomSection` marks the places where a
+  *page* needed something the system doesn't cover. Both are reported on the PR.
+- Why a separate component rather than Tailwind inline in the page: inline JSX is tangled with the page's state
+  and handlers, so it can't be lifted cleanly. A composite has a name, a purpose and typed props — exactly what
+  the harvester (§9) needs, and the `reason`s pointing at it say why the system fell short.
 
 **Archetypes (5)** — extracted from the page shapes the inventory found recurring:
 
@@ -243,22 +277,24 @@ elements or `className` — if something can't be built from the public API, it'
 | `FocusPage` | Login, setup wizard (`step`), onboarding, Apps approve, Boot, error pages (today five framings: 360/448/460px, canvas vs background, brand vs none) |
 | `WorkspacePage` | Agent conversation + rail, Today |
 
-Plus `BasePage` (shell + title + one primary action) and `CustomSection` (`reason` required) as the one escape
-hatch, per the source spec. Catalog/browse (Skills store, Connector directory) is a second-pass candidate: build
+Plus `BasePage` (shell + title + one primary action) for pages no archetype fits, filled with `Section`s and
+`CustomSection`s. Catalog/browse (Skills store, Connector directory) is a second-pass candidate: build
 it as `ListPage` first and promote only if it doesn't fit.
 
 ### 5.5 Enforcement in ax-next
 
 | Rule | Mechanism | Blocks |
 |---|---|---|
-| Tokens only | union types; package Tailwind without default scales | yes |
-| No `className`/`style`/arbitrary values in app code | `@project-ax/eslint-plugin-ui` | yes |
-| No raw layout elements (`div`, `span`, `section`, `p`) in app TSX | same plugin; message names the component to use | yes |
+| Tokens only | union types; restricted Tailwind preset (no default scales) for the package and for composites | yes |
+| No `className`/raw elements in pages | `@project-ax/eslint-plugin-ui`; message names the component to use | yes |
+| No `style`/arbitrary values anywhere in app code (composites included) | same plugin + preset | yes |
+| `CustomSection` has a `reason` and exactly one composite child | same plugin | yes |
+| Composites use `defineComposite` and live in `src/composites/` | same plugin | yes |
 | Public API only | `no-restricted-imports` for `@radix-ui/*`, `@/components/ui`, `@project-ax/ui/internal` | yes |
 | Required labels / state contracts / one primary action | TypeScript | yes |
 | a11y | axe on every story and on the channel-web Playwright pages | yes (serious, critical) |
 | Visual regressions | Playwright screenshots of every story | yes, for `packages/ui` |
-| `CustomSection` use | lint report posted on the PR | no (human review) |
+| New `CustomSection`s and composites | lint report posted on the PR (name, purpose, reason) | no (human review) |
 
 **Agent hooks** (`.claude/settings.json`): PreToolUse blocks writes to `packages/ui/**` unless `AX_DS_TASK=1`;
 PostToolUse runs the UI eslint rules on an edited `*.tsx`; Stop runs `tsc --noEmit` + lint on touched packages.
@@ -381,7 +417,8 @@ Order (each step = one or a few PRs; each is a `(ds)` card):
    and table (rules 4, 6).
 7. **Chat + media:** `Thread`, `Message`, `Composer`, `Markdown`, `Frame`, `Chart`, `Image`; move AX chat
    composites into `src/composites/`. `Frame` and `Markdown` render untrusted content — `security-checklist`.
-8. **Finish:** delete `src/components/ui/` and channel-web's Tailwind config; lint rules flip to *error*;
+8. **Finish:** delete `src/components/ui/`; channel-web's Tailwind config shrinks to the restricted preset
+   scanning only `src/composites/**`; lint rules flip to *error*;
    CLAUDE.md, shadcn skill, DESIGN.md updated; `ax-ui` skill + `build-skill.ts` + drift check land.
    Exit = zero violations in channel-web, every story axe-clean, every surface walked.
 
@@ -413,9 +450,10 @@ auto-ship; the component lands with whichever surface PR gets there first, and t
   that repo; the template seeds a scoped `.npmrc` (`@canopy:registry=…`) and the build uses the service
   account token it already holds. No new secret in the build or the app.
 - **Template:** `express-starter` gains server-rendered React: routes return `renderToString(<Page/>)` inside the
-  existing `page()` shell; `gcp-build` runs `tsc`, `@project-ax/eslint-plugin-ui`, and an esbuild bundle of the
-  client islands (dialogs, menus) served from `/static/` under the existing CSP. The package's CSS is served the
-  same way.
+  existing `page()` shell; `gcp-build` runs `tsc`, `@project-ax/eslint-plugin-ui`, the Tailwind CLI with the
+  restricted preset over `src/composites/**`, and an esbuild bundle of the client islands (dialogs, menus). JS,
+  the package's `ui.css`/`theme.css` and the app's `composites.css` are served from `/static/` under the existing
+  CSP.
 - **Enforcement moves into the build:** app agents work through the deploy connector (`read_files`, `deploy`,
   `get_logs`), not a local checkout, so Claude Code hooks don't apply. A lint or type error fails the deploy as
   `build_failed`; the agent reads the errors with `get_logs`.
@@ -436,11 +474,12 @@ surface; it must be confined to the app's own origin).
 
 ## 9. Workstream 5 — harvester and labs *(designed, not built now)*
 
-- **In apps:** new composites live only in `src/ui/composites/`, wrapped in
-  `defineComposite({ name, purpose, props })`. Lint keeps them to the public API, so they're portable by
-  construction. `CustomSection` uses are reported the same way.
-- **Harvester:** a scheduled platform job reads only that folder (and `CustomSection` reasons) across app repos,
-  groups composites by name and structure, and files a design-system card when ≥3 apps share a shape. App code
+- **In apps:** composites live only in `src/composites/`, defined with `defineComposite` (§5.4 "Escape hatch").
+  They use only public exports, tokens and the restricted preset, so they're portable by construction: the same
+  preset ships with `@canopy/ui`.
+- **Harvester:** a scheduled platform job reads only `src/composites/**` plus every `CustomSection reason` across
+  app repos, groups composites by name, purpose and structure, and files a design-system card when ≥3 apps share
+  a shape. The card quotes the reasons, which say what the system was missing. App code
   is agent-written and untrusted: the harvester never executes it, and nothing it finds is merged automatically.
 - **Promotion:** a maintainer agent generalizes the shape into `@canopy/ui/labs` with stories, type tests and
   axe; the design owner approves. Labs exports may change between minors. A labs component that several apps use
