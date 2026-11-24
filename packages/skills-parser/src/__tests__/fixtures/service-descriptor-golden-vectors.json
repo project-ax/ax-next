@@ -1,0 +1,1053 @@
+{
+  "note": "ARCH-11-style drift guard for the dev-service descriptor (A6). The canonical grammar is @ax/skills-parser's ServiceDescriptorSchema; @ax/connectors and @ax/sandbox-protocol re-declare it (type-only stance / wire re-validation) and @ax/skill-broker digests it. Every copy asserts this key list and gives the same verdict on every vector. `full` carries every key; `alternates` gives each key a different valid value (skill-broker: each must move the digest). Add a field: add it to `keys`, `full` and `alternates`, then every copy fails until it learns it.",
+  "keys": [
+    "name",
+    "image",
+    "ports",
+    "env",
+    "healthcheck",
+    "writablePaths",
+    "command",
+    "entrypoint",
+    "job",
+    "publishedPorts",
+    "resources",
+    "storageMiB"
+  ],
+  "full": {
+    "name": "db",
+    "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "ports": [
+      5432
+    ],
+    "env": {
+      "A": "b"
+    },
+    "healthcheck": {
+      "kind": "tcp",
+      "port": 5432
+    },
+    "writablePaths": [
+      "/var/lib/data",
+      "/tmp"
+    ],
+    "command": [
+      "postgres",
+      "-c",
+      "fsync=off"
+    ],
+    "entrypoint": [
+      "/bin/sh",
+      "-c"
+    ],
+    "job": false,
+    "publishedPorts": [
+      {
+        "published": 15432,
+        "target": 5432
+      }
+    ],
+    "resources": {
+      "cpuMillis": {
+        "request": 100,
+        "limit": 500
+      },
+      "memoryMiB": {
+        "request": 256,
+        "limit": 512
+      }
+    },
+    "storageMiB": 1024
+  },
+  "alternates": {
+    "name": "db2",
+    "image": "docker.io/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ports": [
+      5433
+    ],
+    "env": {
+      "A": "c"
+    },
+    "healthcheck": {
+      "kind": "tcp",
+      "port": 5433
+    },
+    "writablePaths": [
+      "/var/lib/other"
+    ],
+    "command": [
+      "postgres",
+      "-c",
+      "fsync=on"
+    ],
+    "entrypoint": [
+      "/bin/bash",
+      "-c"
+    ],
+    "job": true,
+    "publishedPorts": [
+      {
+        "published": 25432,
+        "target": 5432
+      }
+    ],
+    "resources": {
+      "cpuMillis": {
+        "request": 100,
+        "limit": 4000
+      }
+    },
+    "storageMiB": 4096
+  },
+  "vectors": [
+    {
+      "desc": "minimal",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "every field",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "healthcheck": {
+          "kind": "tcp",
+          "port": 5432
+        },
+        "writablePaths": [
+          "/var/lib/data",
+          "/tmp"
+        ],
+        "command": [
+          "postgres",
+          "-c",
+          "fsync=off"
+        ],
+        "entrypoint": [
+          "/bin/sh",
+          "-c"
+        ],
+        "job": false,
+        "publishedPorts": [
+          {
+            "published": 15432,
+            "target": 5432
+          }
+        ],
+        "resources": {
+          "cpuMillis": {
+            "request": 100,
+            "limit": 500
+          },
+          "memoryMiB": {
+            "request": 256,
+            "limit": 512
+          }
+        },
+        "storageMiB": 1024
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "exec healthcheck",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "healthcheck": {
+          "kind": "exec",
+          "command": [
+            "pg_isready"
+          ]
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "no ports",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "16 ports",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          1000,
+          1001,
+          1002,
+          1003,
+          1004,
+          1005,
+          1006,
+          1007,
+          1008,
+          1009,
+          1010,
+          1011,
+          1012,
+          1013,
+          1014,
+          1015
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "17 ports",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          1000,
+          1001,
+          1002,
+          1003,
+          1004,
+          1005,
+          1006,
+          1007,
+          1008,
+          1009,
+          1010,
+          1011,
+          1012,
+          1013,
+          1014,
+          1015,
+          1016
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "port 0",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          0
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "port 65536",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          65536
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "name with underscore",
+      "value": {
+        "name": "db_main",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "name starting with a digit",
+      "value": {
+        "name": "1db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "name upper case",
+      "value": {
+        "name": "DB",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "name 64 chars",
+      "value": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "name 65 chars",
+      "value": {
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "floating tag image",
+      "value": {
+        "name": "db",
+        "image": "postgres:16",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "short digest",
+      "value": {
+        "name": "db",
+        "image": "postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "missing image",
+      "value": {
+        "name": "db",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "missing env",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "32 env entries",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "K0": "v",
+          "K1": "v",
+          "K2": "v",
+          "K3": "v",
+          "K4": "v",
+          "K5": "v",
+          "K6": "v",
+          "K7": "v",
+          "K8": "v",
+          "K9": "v",
+          "K10": "v",
+          "K11": "v",
+          "K12": "v",
+          "K13": "v",
+          "K14": "v",
+          "K15": "v",
+          "K16": "v",
+          "K17": "v",
+          "K18": "v",
+          "K19": "v",
+          "K20": "v",
+          "K21": "v",
+          "K22": "v",
+          "K23": "v",
+          "K24": "v",
+          "K25": "v",
+          "K26": "v",
+          "K27": "v",
+          "K28": "v",
+          "K29": "v",
+          "K30": "v",
+          "K31": "v"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "33 env entries",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "K0": "v",
+          "K1": "v",
+          "K2": "v",
+          "K3": "v",
+          "K4": "v",
+          "K5": "v",
+          "K6": "v",
+          "K7": "v",
+          "K8": "v",
+          "K9": "v",
+          "K10": "v",
+          "K11": "v",
+          "K12": "v",
+          "K13": "v",
+          "K14": "v",
+          "K15": "v",
+          "K16": "v",
+          "K17": "v",
+          "K18": "v",
+          "K19": "v",
+          "K20": "v",
+          "K21": "v",
+          "K22": "v",
+          "K23": "v",
+          "K24": "v",
+          "K25": "v",
+          "K26": "v",
+          "K27": "v",
+          "K28": "v",
+          "K29": "v",
+          "K30": "v",
+          "K31": "v",
+          "K32": "v"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "env value 2048 chars",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "K": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+        }
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "env value 2049 chars",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "K": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "unknown top-level key",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "securityContext": {}
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "relative writable path",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "writablePaths": [
+          "data"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "writable path /",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "writablePaths": [
+          "/"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "writable path under /proc",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "writablePaths": [
+          "/proc/x"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "writable path with ..",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "writablePaths": [
+          "/a/../b"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "17 writable paths",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "writablePaths": [
+          "/p0",
+          "/p1",
+          "/p2",
+          "/p3",
+          "/p4",
+          "/p5",
+          "/p6",
+          "/p7",
+          "/p8",
+          "/p9",
+          "/p10",
+          "/p11",
+          "/p12",
+          "/p13",
+          "/p14",
+          "/p15",
+          "/p16"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "command 32 args",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "command": [
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x"
+        ]
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "command 33 args",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "command": [
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x",
+          "x"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "command arg 4097 chars",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "command": [
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "entrypoint not an array",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "entrypoint": "/bin/sh"
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "job true",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "job": true
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "job not boolean",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "job": "yes"
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "published port",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "publishedPorts": [
+          {
+            "published": 15432,
+            "target": 5432
+          }
+        ]
+      },
+      "expect": "accept"
+    },
+    {
+      "desc": "published port extra key",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "publishedPorts": [
+          {
+            "published": 15432,
+            "target": 5432,
+            "host": "0.0.0.0"
+          }
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "17 published ports",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "publishedPorts": [
+          {
+            "published": 20000,
+            "target": 5432
+          },
+          {
+            "published": 20001,
+            "target": 5432
+          },
+          {
+            "published": 20002,
+            "target": 5432
+          },
+          {
+            "published": 20003,
+            "target": 5432
+          },
+          {
+            "published": 20004,
+            "target": 5432
+          },
+          {
+            "published": 20005,
+            "target": 5432
+          },
+          {
+            "published": 20006,
+            "target": 5432
+          },
+          {
+            "published": 20007,
+            "target": 5432
+          },
+          {
+            "published": 20008,
+            "target": 5432
+          },
+          {
+            "published": 20009,
+            "target": 5432
+          },
+          {
+            "published": 20010,
+            "target": 5432
+          },
+          {
+            "published": 20011,
+            "target": 5432
+          },
+          {
+            "published": 20012,
+            "target": 5432
+          },
+          {
+            "published": 20013,
+            "target": 5432
+          },
+          {
+            "published": 20014,
+            "target": 5432
+          },
+          {
+            "published": 20015,
+            "target": 5432
+          },
+          {
+            "published": 20016,
+            "target": 5432
+          }
+        ]
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "resources request above limit",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "resources": {
+          "cpuMillis": {
+            "request": 600,
+            "limit": 500
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "resources unknown key",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "resources": {
+          "gpu": {
+            "request": 1,
+            "limit": 1
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "resources a quantity string",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "resources": {
+          "memoryMiB": {
+            "request": "256Mi",
+            "limit": "512Mi"
+          }
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "storage zero",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "storageMiB": 0
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "storage fractional",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "storageMiB": 1.5
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "healthcheck exec empty",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "healthcheck": {
+          "kind": "exec",
+          "command": []
+        }
+      },
+      "expect": "reject"
+    },
+    {
+      "desc": "healthcheck unknown kind",
+      "value": {
+        "name": "db",
+        "image": "docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ports": [
+          5432
+        ],
+        "env": {
+          "A": "b"
+        },
+        "healthcheck": {
+          "kind": "http",
+          "port": 80
+        }
+      },
+      "expect": "reject"
+    }
+  ]
+}

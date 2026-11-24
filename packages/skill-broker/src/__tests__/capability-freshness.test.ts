@@ -7,6 +7,9 @@
  * no producer at all — it stales every decision forever.
  */
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin } from '../plugin.js';
@@ -756,5 +759,31 @@ describe('@ax/skill-broker — the freshness predicate sees the on-demand servic
     const { predicate } = await capture(bus, 'linear');
     catalog.registry = { linear: withSvc({ ports: [5432, 5433], publishedPorts: [b, a] }) };
     expect((await check(bus, predicate)).value).toBe((predicate as { value: string }).value);
+  });
+});
+
+// A6 — drift guard, digest side. Every key of the canonical dev-service
+// descriptor (the shared fixture, with the grammar in @ax/skills-parser) is
+// reach: changing any one of them must move the digest. A field added to the
+// descriptor without teaching this fold fails here.
+describe('@ax/skill-broker — the digest reads every descriptor key (A6 golden vectors)', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const fixture = JSON.parse(
+    readFileSync(
+      path.join(here, '..', '..', '..', 'skills-parser', 'src', '__tests__', 'fixtures', 'service-descriptor-golden-vectors.json'),
+      'utf-8',
+    ),
+  ) as { keys: string[]; full: Record<string, unknown>; alternates: Record<string, unknown> };
+  const withService = (svc: Record<string, unknown>): StubResolve => ({
+    capabilities: { allowedHosts: [], credentials: [], packages: { npm: [], pypi: [] }, services: [svc] },
+  });
+
+  it.each(fixture.keys.map((k) => [k] as const))('changing %s moves the digest', async (key) => {
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: withService(fixture.full) } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+    catalog.registry = { linear: withService({ ...fixture.full, [key]: fixture.alternates[key] }) };
+    const out = await check(bus, predicate);
+    expect(out.value).not.toBe((predicate as { value: string }).value);
   });
 });

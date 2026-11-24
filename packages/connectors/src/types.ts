@@ -316,6 +316,10 @@ const ServiceDescriptorSchema = z
   })
   .strict();
 
+/** The store's copy of the descriptor grammar, exported for the A6 drift test
+ *  (service-descriptor-drift.test.ts); not part of any hook payload. */
+export const ConnectorServiceDescriptorSchema = ServiceDescriptorSchema;
+
 /** Mirrors SERVICES_MAX / ALWAYS_ON_SERVICES_MAX in @ax/skills-parser. */
 const SERVICES_MAX = 16;
 const ALWAYS_ON_SERVICES_MAX = 8;
