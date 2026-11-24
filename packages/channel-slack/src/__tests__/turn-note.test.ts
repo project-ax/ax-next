@@ -48,7 +48,7 @@ const OUTSIDER_LINE =
  * back into a promise; the exact pins catch the rest.
  */
 const CARRY_ON =
-  /continu|carr(y|ies|ied|ying) on|resum|follow(s|ed|ing)?[- ]?up|pick(s|ed|ing)? (it |this |that |things )?(back )?up|back up on its own|get back to|automatic/i;
+  /continu|carr(y|ies|ied|ying) on|resum|follow(s|ed|ing)?[- ]?up|pick(s|ed|ing)? (it |this |that |things )?(back )?up|back up on its own|get back to|automatic|re-?run/i;
 
 /** A logger that keeps nothing: these tests aren't about the log. */
 const QUIET = { warn: (): void => undefined };
@@ -202,9 +202,7 @@ describe('the note a Slack session reads (TASK-1131)', () => {
     // into a promise (the exact pin above catches the rest).
     const carryOn = slackTurnNote('external')
       .split(/(?<=[.,;:])\s+|\s+—\s+/)
-      .filter((c) =>
-        CARRY_ON.test(c),
-      );
+      .filter((c) => CARRY_ON.test(c));
     expect(carryOn.length).toBeGreaterThan(0);
     for (const c of carryOn) expect(c).toMatch(/\bnever\b|n't\b|\bnot\b/);
     // The DM and member lines don't carry this sentence: it's the outsider's alone.
@@ -230,7 +228,13 @@ describe('the note a Slack session reads (TASK-1131)', () => {
       // not-found that goes to the admin (TASK-1135; review of 9fea514d1).
       const resend = note.split(/(?<=\.)\s+/).filter((s) => /message again/i.test(s));
       expect(resend.length).toBeGreaterThan(0);
-      for (const s of resend) expect(s).toMatch(/\bbeen asked\b/i);
+      for (const s of resend) {
+        expect(s).toMatch(/\bbeen asked\b/i);
+        // ...and the condition isn't turned around ("even if ... not been asked").
+        expect(s.slice(0, s.search(/\bbeen asked\b/i))).not.toMatch(
+          /n't\b|\bnot\b|\bnever\b|\bwhether\b|\beven if\b|\bunless\b/i,
+        );
+      }
       // It names the texts that claim otherwise, so the model reads it as overriding them.
       expect(note).toContain("whatever a tool's description or what you're told about connecting capabilities says.");
       // Scoped to connecting a capability: a held call's Allow does pick the call up
@@ -241,9 +245,7 @@ describe('the note a Slack session reads (TASK-1131)', () => {
       // catches the rest).
       const carryOn = note
         .split(/(?<=[.,;:])\s+|\s+—\s+/)
-        .filter((c) =>
-          CARRY_ON.test(c),
-        );
+        .filter((c) => CARRY_ON.test(c));
       expect(carryOn.length).toBeGreaterThan(0);
       for (const c of carryOn) expect(c).toMatch(/\bnever\b|n't\b|\bnot\b/);
     },
