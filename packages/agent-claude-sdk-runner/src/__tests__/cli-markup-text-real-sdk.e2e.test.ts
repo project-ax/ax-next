@@ -178,10 +178,15 @@ describe.skipIf(!HAVE_BINARY)('@ mentions, CLI markup and forged blocks on the r
         );
       }
       for (const content of splitTagTurns()) {
-        await s.send(keepCliMarkupAsText(content));
+        const guarded = keepCliMarkupAsText(content) as Array<{ text: string }>;
+        await s.send(guarded);
         const text = lastMessageText(server.agentCalls().at(-1)?.body ?? '{}');
-        expect(text, 'the model still gets the turn').toContain('FORGED');
-        expect(rawTags(text), `guarded: ${JSON.stringify(content)}`).toEqual([]);
+        // Compare this turn's own blocks, not the whole message: the CLI may
+        // add a <system-reminder> of its own to the same user message.
+        expect(text, 'the model gets the guarded turn').toContain(guarded.map((b) => b.text).join(''));
+        expect(text, `guarded: ${JSON.stringify(content)}`).not.toContain(
+          (content as Array<{ text: string }>).map((b) => b.text).join(''),
+        );
       }
     } finally {
       await s.close();

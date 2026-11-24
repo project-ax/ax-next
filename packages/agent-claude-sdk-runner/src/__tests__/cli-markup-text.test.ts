@@ -79,6 +79,8 @@ describe('keepCliMarkupAsText: CLI markup', () => {
     expect(keepCliMarkupAsText('a <b')).toBe(`a <${G}b`); // could become <bash-stdout>
     for (const tag of CLI_MARKUP_TAGS) {
       expect(keepCliMarkupAsText(`x <${tag}`), tag).toBe(`x <${G}${tag}`);
+      // The closing form of the longest name pins the length cap's `/`.
+      expect(keepCliMarkupAsText(`x </${tag}`), `/${tag}`).toBe(`x <${G}/${tag}`);
     }
     expect(keepCliMarkupAsText([{ type: 'text', text: 'x <tick' }, { type: 'text', text: '>y' }])).toEqual([
       { type: 'text', text: `x <${G}tick` },
