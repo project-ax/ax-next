@@ -80,6 +80,18 @@ jobs:
         with:
           node-version: '24'
           cache: 'pnpm'
+      # Frozen `ax-ui/*` lint violations (eslint-suppressions.json) may only go
+      # down. ESLint itself lets `pnpm lint:ui:suppress` raise a count and never
+      # looks at entries for deleted files; this compares per-rule totals with
+      # the merge-base, the same base the memory guard above uses. Needs only
+      # node + git, so it runs before `pnpm install` and fails in seconds.
+      - name: UI lint suppressions only go down
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet --no-tags origin "$BASE_REF"
+          node scripts/ui-suppressions-ratchet.mjs FETCH_HEAD
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       # Repo-wide checks run once: on the PR job, or on main's `rest` shard.
