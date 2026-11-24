@@ -31,8 +31,10 @@ if (
 const r = spawnSync(
   'pnpm',
   ['exec', 'eslint', '--format', 'json', '--pass-on-unpruned-suppressions', resolved],
-  { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+  { cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 45_000 },
 );
+
+if (r.error || r.signal || r.status === null || typeof r.stdout !== 'string') process.exit(0);
 
 let results;
 try {
@@ -40,6 +42,7 @@ try {
 } catch {
   process.exit(0); // eslint itself failed to run; don't nag
 }
+if (!Array.isArray(results)) process.exit(0);
 
 const lines = [];
 for (const file of results) {

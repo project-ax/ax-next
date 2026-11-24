@@ -77,20 +77,30 @@ describe('lint-ui-file', () => {
     const r = run(LINT, edit(tmpFile));
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('ax-ui/no-raw-elements');
-  });
+  }, 60_000);
   it('passes a clean file', () => {
     writeFileSync(tmpFile, 'export const A = () => null;\n');
     expect(run(LINT, edit(tmpFile)).status).toBe(0);
-  });
+  }, 60_000);
   it('ignores frozen violations', () => {
     const f = path.join(REPO, 'packages/channel-web/src/components/Toast.tsx');
     expect(run(LINT, edit(f)).status).toBe(0);
-  });
+  }, 60_000);
   it('ignores non-channel-web files', () => {
     expect(run(LINT, edit(path.join(REPO, 'README.md'))).status).toBe(0);
-  });
+  }, 60_000);
   it('fails open on malformed input', () => {
     expect(run(LINT, 'garbage').status).toBe(0);
     expect(run(LINT, '{"tool_input":{}}').status).toBe(0);
-  });
+  }, 60_000);
+  it('fails open when eslint cannot be spawned', () => {
+    const r = spawnSync(process.execPath, [LINT], {
+      input: JSON.stringify(edit(path.join(REPO, 'packages/channel-web/src/components/Toast.tsx'))),
+      encoding: 'utf8',
+      cwd: REPO,
+      env: { PATH: '' },
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  }, 60_000);
 });
