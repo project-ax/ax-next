@@ -941,3 +941,30 @@ describe('restart_with_services: a message during the restart open (C1)', () => 
     expect(t.row('conv-1').serviceSet).toBeNull();
   });
 });
+
+// ---- Final review C2: a set whose fold fails is cleared, not stuck ----
+describe('restart_with_services: a set that no longer folds (C2)', () => {
+  it('a re-spawn whose set collides with an always-on service clears the set; the next turn opens', async () => {
+    const t = await setup({ rows: { 'conv-1': { serviceSet: 'e2e' } }, alwaysOnCollision: true });
+    const o1 = await t.invoke('s-1', 'conv-1', 'req-1');
+    expect(o1).toMatchObject({ kind: 'terminated', reason: 'connector-services-invalid' });
+    expect(t.opens).toHaveLength(0);
+    expect(t.row('conv-1').serviceSet).toBeNull();
+    expect(t.setServiceSetCalls).toEqual([{ conversationId: 'conv-1', userId: AGENT.ownerId, serviceSet: null }]);
+
+    // The next turn is not stuck: it opens, with only the always-on service.
+    const p2 = t.invoke('s-2', 'conv-1', 'req-2');
+    await waitFor(() => t.queued.some((q) => q.entry.reqId === 'req-2'), 'req-2 queued');
+    expect(t.opens).toHaveLength(1);
+    expect(t.opens[0]!.services?.map((s) => s.name)).toEqual(['mongo']);
+    await t.emitTurnEnd('s-2', 'conv-1', 'req-2', 'assistant');
+    expect(await p2).toEqual({ kind: 'complete', messages: [] });
+  });
+
+  it('a fold failure with no set on leaves the conversation alone', async () => {
+    const t = await setup({ alwaysOnCollision: true, connectorMode: 'always' });
+    const o1 = await t.invoke('s-1', 'conv-1', 'req-1');
+    expect(o1).toMatchObject({ kind: 'terminated', reason: 'connector-services-invalid' });
+    expect(t.setServiceSetCalls).toEqual([]);
+  });
+});

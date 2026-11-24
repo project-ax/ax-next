@@ -5366,6 +5366,14 @@ export function createOrchestrator(
         reason,
         error: err instanceof Error ? err.message : String(err),
       });
+      // C2 — the conversation's set is part of what failed to fold (a name
+      // clash with an always-on service, a port clash, too many services
+      // together). It goes off, like a failed open (R32): otherwise every
+      // later turn fails the same way, with no sandbox to call stop_services
+      // from. The next turn opens without it; the agent can ask again.
+      if (serviceSet !== null && ctx.conversationId !== undefined) {
+        await setConversationServiceSet(ctx, ctx.conversationId, ctx.userId, null, 'fold-failed');
+      }
       const outcome: AgentOutcome = {
         kind: 'terminated',
         reason,
