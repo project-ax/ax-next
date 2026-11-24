@@ -324,7 +324,9 @@ export const ConnectorServiceDescriptorSchema = ServiceDescriptorSchema;
 const SERVICES_MAX = 16;
 const ALWAYS_ON_SERVICES_MAX = 8;
 
-/** Reads and return schemas: never bounded, so every stored row parses. */
+/** Reads and return schemas: the CAPABILITY_WRITE_LIMITS list bounds don't
+ *  apply, so every stored row parses. `services` keeps its own caps here too
+ *  (16, and 8 unless on-demand), as it always has on read. */
 export const CapabilitiesSchema = makeCapabilitiesSchema({});
 /** The write funnels only: the same shape, every untrusted list bounded. */
 export const CapabilitiesWriteSchema = makeCapabilitiesSchema(CAPABILITY_WRITE_LIMITS);

@@ -302,33 +302,6 @@ function serviceNameBase(serviceName: string): string {
   return `${head}-${hash}`;
 }
 
-/**
- * TASK-151 — render each declared service descriptor as a NATIVE k8s sidecar.
- *
- * The load-bearing distinction (I1): a service is a long-running process (a DB,
- * a broker). Rendered as a plain `containers[]` entry under the pod's
- * `restartPolicy: Never`, the pod NEVER reaches `Succeeded`/`Failed` (those
- * phases require ALL containers to terminate), so `watchPodExit`
- * (lifecycle.ts:192) loops until the 6h `activeDeadlineSeconds` — a pod leak.
- * Native sidecars (`initContainers` with `restartPolicy: Always`) do NOT count
- * toward pod completion: the pod completes when the runner (`containers[0]`)
- * exits, and the kubelet tears the sidecars down. So services MUST render here,
- * NOT in `containers[]`.
- *
- * Each sidecar gets:
- *  - the same locked `CONTAINER_SECURITY` as the runner (I5) — third-party,
- *    untrusted-adjacent, so no looser posture;
- *  - ONLY the descriptor's own `env` (I5/I1) — no AX_* / proxy / git env leak
- *    onto a third-party image; the egress lock (I4) is enforced at the NetworkPolicy
- *    layer, not via env, and the descriptor never encodes a bind address;
- *  - `ports` → `containerPort`s;
- *  - per-`writablePaths` `emptyDir` mounts (rootfs stays read-only, I5);
- *  - an optional `startupProbe` from the descriptor's `healthcheck` (I6) — under
- *    native-sidecar semantics the kubelet starts the main container once the
- *    sidecars' startup probes pass.
- *  - per-service resourcing from config (NOT a descriptor field — keeps the
- *    descriptor backend-agnostic, I1).
- */
 /** `command` → args when no `entrypoint`; else `entrypoint` → command, `command` → args. */
 function renderServiceCommand(service: ServiceDescriptorParsed): Record<string, string[]> {
   if (service.entrypoint !== undefined) {
@@ -400,6 +373,39 @@ function renderRunnerResources(
   };
 }
 
+/**
+ * TASK-151 — render each declared service descriptor as a NATIVE k8s sidecar.
+ *
+ * The load-bearing distinction (I1): a service is a long-running process (a DB,
+ * a broker). Rendered as a plain `containers[]` entry under the pod's
+ * `restartPolicy: Never`, the pod NEVER reaches `Succeeded`/`Failed` (those
+ * phases require ALL containers to terminate), so `watchPodExit`
+ * (lifecycle.ts:192) loops until the 6h `activeDeadlineSeconds` — a pod leak.
+ * Native sidecars (`initContainers` with `restartPolicy: Always`) do NOT count
+ * toward pod completion: the pod completes when the runner (`containers[0]`)
+ * exits, and the kubelet tears the sidecars down. So services MUST render here,
+ * NOT in `containers[]`.
+ *
+ * Each sidecar gets:
+ *  - the same locked `CONTAINER_SECURITY` as the runner (I5) — third-party,
+ *    untrusted-adjacent, so no looser posture;
+ *  - ONLY the descriptor's own `env` (I5/I1) — no AX_* / proxy / git env leak
+ *    onto a third-party image; the egress lock (I4) is enforced at the NetworkPolicy
+ *    layer, not via env, and the descriptor never encodes a bind address;
+ *  - `ports` → `containerPort`s;
+ *  - per-`writablePaths` `emptyDir` mounts (rootfs stays read-only, I5);
+ *  - an optional `startupProbe` from the descriptor's `healthcheck` (I6) — under
+ *    native-sidecar semantics the kubelet starts the main container once the
+ *    sidecars' startup probes pass.
+ *  - `command` / `entrypoint` as the container's args / command
+ *    (renderServiceCommand), and a `job` as a plain init container that runs
+ *    to exit 0 instead of a sidecar;
+ *  - resources from the descriptor's own `resources` (numbers: millicores,
+ *    MiB) clamped to the config maximums, or the config defaults when unset
+ *    (renderServiceResources: the only place quantity strings are written,
+ *    keeping the descriptor backend-agnostic, I1); each writable path's
+ *    `emptyDir` is sized from `storageMiB` or the config default.
+ */
 function renderServiceSidecars(
   services: ServiceDescriptorParsed[],
   config: ResolvedSandboxK8sConfig,

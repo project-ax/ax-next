@@ -124,13 +124,13 @@ interface AuthoredProposalView {
 
 const PLUGIN_NAME = '@ax/connectors';
 
+/** Most images one pin-images request may name. */
+const PIN_IMAGES_MAX = 32;
+
 /** 64 KiB cap on request bodies. Mirrors @ax/mcp-client / @ax/agents — wide
  *  enough for a full connector with its capabilities spec but smaller than the
  *  http-server's 1 MiB cap so the admin API doesn't accept blobs the storage
  *  layer can't sanely hold. */
-/** Most images one pin-images request may name. */
-const PIN_IMAGES_MAX = 32;
-
 export const ADMIN_BODY_MAX_BYTES = 64 * 1024;
 
 // --- duck-typed request/response (mirrors @ax/http-server's HttpRequest /
@@ -1205,7 +1205,7 @@ export function createConnectorRouteHandlers(
         images.length > PIN_IMAGES_MAX ||
         !images.every((i) => typeof i === 'string')
       ) {
-        res.status(400).json({ error: 'images must be an array of at most 32 strings' });
+        res.status(400).json({ error: `images must be an array of at most ${PIN_IMAGES_MAX} strings` });
         return;
       }
       const doFetch: typeof fetch =

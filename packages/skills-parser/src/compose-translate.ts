@@ -14,9 +14,10 @@ import { checkServiceSetClashes } from './service-set-checks.js';
 //
 // SECURITY POSTURE:
 //   - ALLOW-LIST mapping — only `{ image, environment, ports, healthcheck }`
-//     cross. Everything else is ignored, so a field we've never heard of can't
-//     leak through by default. The dangerous fields below are additionally
-//     REPORTED so the author sees what we removed.
+//     plus the fields Task 1.4 adds (below) cross. Everything else is ignored,
+//     so a field we've never heard of can't leak through by default. The
+//     dangerous fields below are additionally REPORTED so the author sees
+//     what we removed.
 //   - I10 — host bind mounts (incl. the docker socket), `privileged`, `cap_add`,
 //     `network_mode: host`, and the sibling escape hatches (`devices`, `pid`,
 //     `ipc`, `userns_mode`, `security_opt`) are DROPPED and reported. None of
@@ -87,7 +88,8 @@ export interface ComposeService {
 export type ComposeTranslateResult =
   | {
       ok: true;
-      /** Descriptors that translated AND validated — these populate the form. */
+      /** Descriptors that translated AND validated, digest-pinned, in start
+       *  order — these populate the form. Tag-only images are `invalid[].draft`s. */
       services: ServiceDescriptor[];
       /** Dangerous fields we removed (I10), per service. */
       drops: ComposeDrop[];
@@ -95,7 +97,7 @@ export type ComposeTranslateResult =
       invalid: ComposeInvalid[];
       /** Every profile named anywhere in the file. */
       profiles: string[];
-      /** Services bind-mounting source: not imported. */
+      /** The person's own app (a `build:`, or a source-directory bind): not imported. */
       appServices: ComposeAppService[];
       /** Start order of every imported service (`services` plus unpinned
        *  `invalid[].draft`s). `services` is already in this order too. */
@@ -644,18 +646,11 @@ export function translateComposeToServices(
 
   // Start order. A cycle refuses the whole import.
   const kept = entries;
-  let order: string[] = [];
-  for (;;) {
-    const sorted = sortByDependsOn(kept.map((e) => ({ name: e.desc.name, dependsOn: e.deps })));
-    if ('order' in sorted) {
-      order = sorted.order;
-      break;
-    }
-    return {
-      ok: false,
-      error: `Refused: depends_on cycle between ${sorted.cycle.join(', ')}`,
-    };
+  const sorted = sortByDependsOn(kept.map((e) => ({ name: e.desc.name, dependsOn: e.deps })));
+  if ('cycle' in sorted) {
+    return { ok: false, error: `Refused: depends_on cycle between ${sorted.cycle.join(', ')}` };
   }
+  const order = sorted.order;
   // One network namespace for the whole set (spec §4.2): a port clash between
   // imported services (drafts included) would fail every sandbox start, so
   // the whole import is refused, naming them.

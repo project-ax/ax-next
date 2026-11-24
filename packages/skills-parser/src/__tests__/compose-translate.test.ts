@@ -221,8 +221,9 @@ describe('translateComposeToServices: sharded stack', () => {
     fileURLToPath(new URL('./fixtures/sharded-stack.compose.yml', import.meta.url)),
     'utf8',
   );
-  // Tag-only images live in `invalid.draft` until pinned (Task 1.5); pin them
-  // here with a placeholder digest so the full pipeline can be asserted.
+  // Tag-only images live in `invalid[].draft` until the editor pins them
+  // (Task 1.5); `all()` joins the drafts back in so the whole translation can
+  // be asserted.
   const e2e = () => {
     const r = translateComposeToServices(stack, { profile: 'e2e' });
     if (!r.ok) throw new Error(r.error);
