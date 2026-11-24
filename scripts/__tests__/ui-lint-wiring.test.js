@@ -62,13 +62,12 @@ describe('ui lint wiring', () => {
   it('unpruned suppressions fail lint', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ui-suppress-'));
     const loc = join(dir, 'eslint-suppressions.json');
-    const data = JSON.parse(readFileSync(join(REPO_ROOT, 'eslint-suppressions.json'), 'utf8'));
-    // A file that exists and is clean, so the suppression can never occur.
-    data['scripts/vitest.config.mjs'] = { 'ax-ui/no-classname': { count: 1 } };
-    writeFileSync(loc, JSON.stringify(data));
+    // A real channel-web file with no ax-ui violations, so the suppression can never occur.
+    const file = 'packages/channel-web/src/main.tsx';
+    writeFileSync(loc, JSON.stringify({ [file]: { 'ax-ui/no-classname': { count: 1 } } }));
     const r = spawnSync(
       'pnpm',
-      ['exec', 'eslint', 'scripts/vitest.config.mjs', 'packages/channel-web/src', '--suppressions-location', loc],
+      ['exec', 'eslint', file, '--suppressions-location', loc],
       { cwd: REPO_ROOT, encoding: 'utf8' },
     );
     expect(r.status).not.toBe(0);

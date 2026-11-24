@@ -69,7 +69,7 @@ describe('guard-ds-writes', () => {
 });
 
 describe('lint-ui-file', () => {
-  const tmpFile = path.join(REPO, 'packages/channel-web/src/components/__HookTmp.tsx');
+  const tmpFile = path.join(REPO, `packages/channel-web/src/components/__HookTmp-${process.pid}-${Date.now()}.tsx`);
   afterEach(() => rmSync(tmpFile, { force: true }));
 
   it('reports new div', () => {
