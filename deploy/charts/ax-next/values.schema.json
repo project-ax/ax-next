@@ -145,7 +145,7 @@
         "maxIdleMinutes": {
           "type": "integer",
           "minimum": 1,
-          "description": "Longest silent stretch inside a turn, in minutes. Agents' own idle settings clamp to it."
+          "description": "How long a sandbox stays warm between turns (minutes). Agents' own idle settings clamp to it."
         },
         "maxServiceSandboxesPerAgent": {
           "type": "integer",
@@ -199,6 +199,8 @@
             "integer",
             "string"
           ],
+          "minimum": 1,
+          "pattern": "^$|^[1-9][0-9]*$",
           "description": "Allocatable memory of one sandbox node, in MiB. Empty means unknown; the boot-time fit check is skipped."
         },
         "devServices": {

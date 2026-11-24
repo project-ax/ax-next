@@ -2369,6 +2369,30 @@ describeIfHelm('ax-next chart: turn cap vs load balancer timeout', () => {
     expect(env.find((e) => e.name === name)?.value).toBe('4');
   });
 
+  // B3 — a bad string here crash-loops the host at boot (the preset parses it
+  // as a number), so the chart refuses it at render instead.
+  it('sandbox.nodeAllocatableMiB accepts whole MiB (number or string) and empty; refuses anything else', () => {
+    const name = 'K8S_NODE_ALLOCATABLE_MIB';
+    expect(findHostEnv(helmTemplate([])).find((e) => e.name === name)).toBeUndefined();
+    expect(findHostEnv(helmTemplate(['--set', 'sandbox.nodeAllocatableMiB=16384'])).find((e) => e.name === name)?.value)
+      .toBe('16384');
+    expect(findHostEnv(helmTemplate(['--set-string', 'sandbox.nodeAllocatableMiB=16384'])).find((e) => e.name === name)?.value)
+      .toBe('16384');
+    for (const bad of ['16Gi', '16384MiB', '0', '-1', '1.5', ' 16384']) {
+      const r = helmTemplateExpectFailure(['--set-string', `sandbox.nodeAllocatableMiB=${bad}`]);
+      expect(r.status, bad).not.toBe(0);
+      expect(r.stderr, bad).toMatch(/nodeAllocatableMiB/);
+    }
+  });
+
+  it('the maxIdleMinutes description says what it is: how long a sandbox stays warm between turns', () => {
+    const schema = JSON.parse(readFileSync(join(chartDir, 'values.schema.json'), 'utf8')) as {
+      properties: { chat: { properties: { maxIdleMinutes: { description: string } } } };
+    };
+    expect(schema.properties.chat.properties.maxIdleMinutes.description)
+      .toBe('How long a sandbox stays warm between turns (minutes). Agents\' own idle settings clamp to it.');
+  });
+
   it('gke values render timeoutSec 7500', () => {
     const docs = helmTemplate(['-f', GKE_VALUES, '-f', CONTENT_ORIGIN_FIXTURE, '--set', 'sandbox.filestore.server=10.9.8.7']);
     const bc = docs.find((d) => d.kind === 'BackendConfig');
