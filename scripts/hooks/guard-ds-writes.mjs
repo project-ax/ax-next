@@ -4,6 +4,7 @@
 // Fails open (exit 0) on malformed input so a broken hook never blocks edits.
 import fs from 'node:fs';
 import path from 'node:path';
+import { locateInWorktree } from './worktree-root.mjs';
 
 let filePath;
 try {
@@ -13,15 +14,9 @@ try {
 }
 if (typeof filePath !== 'string' || filePath === '') process.exit(0);
 
-const resolved = path.resolve(filePath);
-
-let root = path.dirname(resolved);
-for (;;) {
-  if (fs.existsSync(path.join(root, '.git'))) break;
-  const parent = path.dirname(root);
-  if (parent === root) process.exit(0); // no worktree found
-  root = parent;
-}
+const located = locateInWorktree(filePath);
+if (located === null) process.exit(0); // no worktree found
+const { root, resolved } = located;
 
 const inside = (dir) => {
   const rel = path.relative(path.join(root, dir), resolved);

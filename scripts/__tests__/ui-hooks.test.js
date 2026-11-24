@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUARD = path.join(REPO, 'scripts/hooks/guard-ds-writes.mjs');
 const LINT = path.join(REPO, 'scripts/hooks/lint-ui-file.mjs');
+const { locateInWorktree } = await import(path.join(REPO, 'scripts/hooks/worktree-root.mjs'));
 
 function run(script, stdin) {
   return spawnSync('node', [script], {
@@ -102,5 +103,64 @@ describe('lint-ui-file', () => {
     });
     expect(r.status).toBe(0);
     expect(r.stderr).toBe('');
+  }, 60_000);
+});
+
+describe('lint hook: worktree of the edited file', () => {
+  // A linked worktree nested inside a "main" checkout, the shape auto-ship
+  // builders use: <main>/.claude/worktrees/agent-x with a `.git` FILE.
+  function nestedWorktree() {
+    const main = realpathSync(mkdtempSync(path.join(tmpdir(), 'ax-main-')));
+    cleanup.push(main);
+    mkdirSync(path.join(main, '.git'));
+    const wt = path.join(main, '.claude/worktrees/agent-x');
+    mkdirSync(path.join(wt, 'packages/channel-web/src/components'), { recursive: true });
+    writeFileSync(path.join(wt, '.git'), 'gitdir: /elsewhere\n');
+    const file = path.join(wt, 'packages/channel-web/src/components/X.tsx');
+    writeFileSync(file, 'export const X = () => <div style={{ padding: 3 }} />;\n');
+    return { main, wt, file };
+  }
+
+  it('root and rel path come from the edited file, not the hook script', () => {
+    const { wt, file } = nestedWorktree();
+    expect(locateInWorktree(file)).toEqual({
+      root: wt,
+      resolved: file,
+      rel: 'packages/channel-web/src/components/X.tsx',
+    });
+    expect(locateInWorktree(path.join(wt, 'packages/../packages/channel-web/src/components/X.tsx')).rel).toBe(
+      'packages/channel-web/src/components/X.tsx',
+    );
+  });
+
+  it('fails open when that worktree has no eslint installed', () => {
+    const { file } = nestedWorktree();
+    const r = run(LINT, edit(file));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+  }, 60_000);
+
+  it('lints a file in another worktree than the hook copy lives in', () => {
+    // Simulate $CLAUDE_PROJECT_DIR being a different checkout: run a COPY of
+    // the hook from a temp dir against a new violating file in this repo.
+    const elsewhere = realpathSync(mkdtempSync(path.join(tmpdir(), 'ax-hookcopy-')));
+    cleanup.push(elsewhere);
+    mkdirSync(path.join(elsewhere, 'scripts/hooks'), { recursive: true });
+    for (const f of ['lint-ui-file.mjs', 'worktree-root.mjs']) {
+      copyFileSync(path.join(REPO, 'scripts/hooks', f), path.join(elsewhere, 'scripts/hooks', f));
+    }
+    const file = path.join(
+      REPO,
+      `packages/channel-web/src/components/__HookWt-${process.pid}-${Date.now()}.tsx`,
+    );
+    cleanup.push(file);
+    writeFileSync(file, 'export const A = () => <p style={{ margin: 0 }} />;\n');
+    const r = spawnSync('node', [path.join(elsewhere, 'scripts/hooks/lint-ui-file.mjs')], {
+      input: JSON.stringify(edit(file)),
+      encoding: 'utf8',
+      cwd: elsewhere,
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('ax-ui/no-style-prop');
   }, 60_000);
 });

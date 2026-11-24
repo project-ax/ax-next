@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // PostToolUse hook: lint an edited channel-web .tsx with the ax-ui/* rules.
 // Uses the ESLint CLI (bulk suppressions only apply there) so frozen legacy
-// violations stay quiet. Fails open on malformed input.
+// violations stay quiet. ESLint runs in the EDITED FILE's worktree, so that
+// worktree's own eslint.config.mjs and eslint-suppressions.json apply (the
+// hook copy itself may live in a different checkout). Fails open on malformed
+// input, a file outside any worktree, or a worktree without eslint installed.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { locateInWorktree } from './worktree-root.mjs';
 
 let filePath;
 try {
@@ -15,15 +18,16 @@ try {
 }
 if (typeof filePath !== 'string' || filePath === '') process.exit(0);
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const resolved = path.resolve(filePath);
-const rel = path.relative(root, resolved).split(path.sep).join('/');
+const located = locateInWorktree(filePath);
+if (located === null) process.exit(0);
+const { root, resolved, rel } = located;
 
 if (
   !/^packages\/channel-web\/src\/.+\.tsx$/.test(rel) ||
   rel.startsWith('packages/channel-web/src/components/ui/') ||
   /\.(test|spec)\.tsx$/.test(rel) ||
-  !fs.existsSync(resolved)
+  !fs.existsSync(resolved) ||
+  !fs.existsSync(path.join(root, 'node_modules', '.bin', 'eslint'))
 ) {
   process.exit(0);
 }
