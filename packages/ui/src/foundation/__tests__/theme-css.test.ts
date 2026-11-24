@@ -37,6 +37,17 @@ describe('renderThemeCss', () => {
     expect(css).toContain('--ax-text-body-size: 15px;');
   });
 
+  it('reduced motion zeroes the timed motion tokens', () => {
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s+:root \{/);
+    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+    const decls = block('@media (prefers-reduced-motion: reduce) {\n  :root {');
+    expect(decls).toContain('--ax-motion-fast: 0ms;');
+    expect(decls).toContain('--ax-motion-base: 0ms;');
+    expect(decls).not.toContain('--ax-motion-ease');
+    // Last in the file, so it wins over the same-specificity :root declarations above.
+    expect(css.indexOf('--ax-motion-fast: 120ms;')).toBeLessThan(css.length - reduced.length);
+  });
+
   it('committed file is current', () => {
     const file = readFileSync(fileURLToPath(new URL('../../../theme.css', import.meta.url)), 'utf8');
     expect(file, 'run pnpm --filter @project-ax/ui gen').toBe(css);

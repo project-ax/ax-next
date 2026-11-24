@@ -10,7 +10,7 @@ describe('contrastRatio', () => {
 });
 
 const themes = ['light', 'dark'] as const;
-const surfaces = ['canvas', 'surface', 'surface-raised', 'muted'] as const;
+const surfaces = ['canvas', 'surface', 'surface-raised', 'overlay', 'muted'] as const;
 
 describe.each(themes)('contrast (%s)', (t) => {
   const check = (name: string, a: string, b: string, min: number) => {
