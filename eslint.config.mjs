@@ -108,6 +108,7 @@
 //                                     dirs (e.g. a nested server/__tests__/).
 
 import tseslint from 'typescript-eslint';
+import axUi from '@project-ax/eslint-plugin-ui';
 
 import noBareTenantTables from './eslint-rules/no-bare-tenant-tables.js';
 
@@ -295,6 +296,24 @@ export default tseslint.config(
           ],
         },
       ],
+    },
+  },
+  {
+    // Project AX UI rules: channel-web app code composes @project-ax/ui rather
+    // than styling raw elements. Existing violations are frozen in
+    // eslint-suppressions.json (ESLint bulk suppressions) and can only go down:
+    // `pnpm lint:ui:prune` after fixing some. shadcn internals and tests are
+    // exempt. The import ban lives in the plugin (not core no-restricted-imports)
+    // so it can't replace the invariant-2 entry above.
+    files: ['packages/channel-web/src/**/*.tsx'],
+    ignores: ['packages/channel-web/src/components/ui/**', '**/__tests__/**', '**/*.test.tsx'],
+    plugins: { 'ax-ui': axUi },
+    rules: {
+      'ax-ui/no-classname': 'error',
+      'ax-ui/no-style-prop': 'error',
+      'ax-ui/no-raw-elements': 'error',
+      'ax-ui/no-arbitrary-values': 'error',
+      'ax-ui/no-internal-imports': 'error',
     },
   },
 );
