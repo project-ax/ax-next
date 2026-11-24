@@ -89,8 +89,11 @@ describe('ui lint wiring', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ui-suppress-'));
     const loc = join(dir, 'eslint-suppressions.json');
     // A real channel-web file with no ax-ui violations, so the suppression can never occur.
+    // The count is absurdly high on purpose: a future real violation in main.tsx (or
+    // several) must not be able to "use up" the fake entry and turn this test green
+    // for the wrong reason.
     const file = 'packages/channel-web/src/main.tsx';
-    writeFileSync(loc, JSON.stringify({ [file]: { 'ax-ui/no-arbitrary-values': { count: 1 } } }));
+    writeFileSync(loc, JSON.stringify({ [file]: { 'ax-ui/no-arbitrary-values': { count: 100000 } } }));
     const r = spawnSync(
       'pnpm',
       ['exec', 'eslint', file, '--suppressions-location', loc],
