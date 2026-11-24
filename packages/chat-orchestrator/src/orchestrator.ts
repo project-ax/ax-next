@@ -3268,6 +3268,9 @@ export function createOrchestrator(
   //      sees a turn end. onTurnSegmentEnd settles the segment's waiter.
   //   3. continueAfterServiceRestart (the agent:invoke wrapper) rebinds the
   //      conversation to a new session id FIRST, then closes the old sandbox.
+  //      Until the new sandbox's note is queued, that id is "opening"
+  //      (openingSessions): a turn routed to the conversation waits for it
+  //      and then routes in behind the note (C1).
   //      This request's waiter is already settled and unregistered there.
   //      Any OTHER request still waiting on the old sandbox (routed in while
   //      this one ran) is detached first (R30, MovableWait), so the close
@@ -3314,6 +3317,14 @@ export function createOrchestrator(
     end(reason: string): void;
   }
   const movableWaits = new Map<string, MovableWait>();
+  // C1 — the sandbox a restart is opening, by its new session id, from the
+  // moment the conversation is rebound to it until its note (and the moved
+  // messages) are in its inbox, or the restart fails. A turn routed to the
+  // conversation meanwhile finds that id on the row; it must neither retire
+  // it (it isn't warm on this host yet) nor spawn a second sandbox beside it
+  // (it isn't alive yet). It waits for this promise, which always resolves,
+  // then reads the row again (routeCandidateAfterOpening).
+  const openingSessions = new Map<string, Promise<void>>();
 
   function turnTimeLeftMs(reqId: string, turnMs: number): number {
     const now = performance.now();
@@ -3602,6 +3613,16 @@ export function createOrchestrator(
         }
       }
     };
+    // C1 — opening from here (before the rebind below names it on the row)
+    // until the note and the moved messages are queued, or the restart ends.
+    const opening = newDeferred<void>();
+    openingSessions.set(restartCtx.sessionId, opening.promise);
+    const openingDone = (): void => {
+      if (openingSessions.get(restartCtx.sessionId) === opening.promise) {
+        openingSessions.delete(restartCtx.sessionId);
+      }
+      opening.resolve();
+    };
     // A Stop clicked during the swap waits behind the note (afterUserMessageQueued).
     pendingMessageReqIds.add(ctx.reqId);
     // R19 — rebind FIRST: closing the old sandbox makes @ax/conversations
@@ -3621,7 +3642,13 @@ export function createOrchestrator(
       await closeSandboxForServiceRestart(ctx, pending.sessionId);
       restarted = await runAgentInvokeTurn(restartCtx, input, {
         serviceSet: pending.set,
-        afterNoteQueued: moveWaits,
+        afterNoteQueued: async (sessionId) => {
+          try {
+            await moveWaits(sessionId);
+          } finally {
+            openingDone();
+          }
+        },
       });
     } finally {
       // Every detached wait ends or settles exactly once, even if the line
@@ -3639,6 +3666,9 @@ export function createOrchestrator(
       if (failed !== null && conversationId !== undefined) {
         await setConversationServiceSet(ctx, conversationId, ctx.userId, null, 'restart-failed');
       }
+      // Last, so a turn waiting on the open reads the row as this left it
+      // (the set cleared on a failure).
+      openingDone();
     }
     return restarted;
   }
@@ -3953,13 +3983,26 @@ export function createOrchestrator(
       // already runs at request entry, so a not-found here is unusual but
       // not load-bearing for the orchestrator's logic.
       try {
-        const conv = await bus.call<
-          ConversationsGetInput,
-          ConversationsGetOutput
-        >('conversations:get', ctx, {
-          conversationId: ctx.conversationId,
-          userId: ctx.userId,
-        });
+        const readConversation = (): Promise<ConversationsGetOutput> =>
+          bus.call<ConversationsGetInput, ConversationsGetOutput>('conversations:get', ctx, {
+            conversationId: ctx.conversationId!,
+            userId: ctx.userId,
+          });
+        let conv = await readConversation();
+        // C1 — the row names a sandbox a service restart is still opening:
+        // wait for it (its note goes in first), then read the row again, so
+        // this turn routes in behind the note, or, if the restart failed,
+        // opens fresh from the row as the failure left it. Bounded: a row
+        // that keeps naming a newer opening sandbox is followed a few times.
+        for (let hops = 0; hops < 4; hops++) {
+          const opening = openingSessions.get(conv.conversation.activeSessionId ?? '');
+          if (opening === undefined) break;
+          ctx.logger.info('route_waits_for_opening_sandbox', {
+            sessionId: conv.conversation.activeSessionId,
+          });
+          await opening;
+          conv = await readConversation();
+        }
         const lastActivityAt = conv.conversation.lastActivityAt;
         priorActivityAt = typeof lastActivityAt === 'string' ? lastActivityAt : null;
         conversationServiceSet = onDemandServicesEnabled ? (conv.conversation.serviceSet ?? null) : null;
@@ -5838,7 +5881,11 @@ export function createOrchestrator(
     //
     //    Only attempted when @ax/conversations is loaded (channel-web
     //    preset) — see the routing-decision comment above.
-    if (ctx.conversationId !== undefined && conversationsLoaded) {
+    //    Not for a restart: continueAfterServiceRestart bound the row to this
+    //    session and request before the open, and a request that arrived
+    //    since (channel-web binds it at POST) is newer; binding here would
+    //    take the row back from it (C1).
+    if (restart === undefined && ctx.conversationId !== undefined && conversationsLoaded) {
       try {
         await bus.call<
           ConversationsBindSessionInput,

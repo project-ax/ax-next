@@ -82,6 +82,12 @@ async function setup(opts: {
   /** The invoking request's logger throws on a line containing this. */
   throwOnLog?: string;
   openSessionThrowsOn?: number;
+  /** The gated open's session is alive while it opens (k8s: session:create runs inside the open). */
+  aliveWhileOpening?: boolean;
+  /** Hold the host-note's session:queue-work until this resolves (it lands in the inbox after). */
+  noteGate?: Promise<void>;
+  /** Also attach an always-on connector carrying this service (a fold collision with the set). */
+  alwaysOnCollision?: boolean;
 } = {}) {
   const rows: Record<string, Row> = {};
   for (const [id, r] of Object.entries(opts.rows ?? {})) {
@@ -111,10 +117,19 @@ async function setup(opts: {
           servicesMode: opts.connectorMode ?? 'on-demand',
           services: [MONGO],
         },
-      }],
+      }, ...(opts.alwaysOnCollision === true ? [{
+        summary: { id: 'always-db' },
+        source: 'attached',
+        capabilities: {
+          allowedHosts: [], credentials: [], mcpServers: [], servicesMode: 'always',
+          services: [{ ...MONGO, publishedPorts: [] }],
+        },
+      }] : [])],
     }),
     'session:queue-work': async (_c, input: unknown) => {
-      queued.push(input as (typeof queued)[number]);
+      const q = input as (typeof queued)[number];
+      if (q.entry.type === 'host-note' && opts.noteGate !== undefined) await opts.noteGate;
+      queued.push(q);
       return { cursor: queued.length };
     },
     'session:terminate': async (c, input: unknown) => {
@@ -155,7 +170,10 @@ async function setup(opts: {
     'sandbox:open-session': async (_c, input: unknown) => {
       const i = input as { sessionId: string; services?: Array<{ name: string }> };
       opens.push({ sessionId: i.sessionId, ...(i.services !== undefined ? { services: i.services } : {}) });
-      if (opts.openGate !== undefined && opts.openGate.on === opens.length) await opts.openGate.until;
+      if (opts.openGate !== undefined && opts.openGate.on === opens.length) {
+        if (opts.aliveWhileOpening === true) live.add(i.sessionId);
+        await opts.openGate.until;
+      }
       if (opts.openSessionThrowsOn === opens.length) {
         throw new PluginError({
           code: 'service-sidecar-failed', plugin: '@ax/sandbox-k8s', hookName: 'sandbox:open-session',
@@ -813,5 +831,113 @@ describe('restart_with_services (dev services on demand)', () => {
     // Let req-1 end too (its own path watches the handle).
     await t.handles.get(fresh)!.handle.kill();
     await p1;
+  });
+});
+
+// ---- Final review C1: a message that arrives while the restart's sandbox opens ----
+describe('restart_with_services: a message during the restart open (C1)', () => {
+  /** Restart req-1 on s-1 up to the gated open of its new sandbox; returns that sandbox's id. */
+  async function restartUpToOpen(t: Awaited<ReturnType<typeof setup>>) {
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.some((q) => q.entry.type === 'user-message'), 'the first message');
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    await t.endSegment('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.opens.length === 2, 'the restart open started');
+    return { p1, restartSid: t.opens[1]!.sessionId };
+  }
+  /** channel-web's POST: bind the request to the row's live session, then dispatch. */
+  function postMessage(t: Awaited<ReturnType<typeof setup>>, reqId: string) {
+    t.row('conv-1').activeReqId = reqId;
+    return t.invoke(`placeholder-${reqId}`, 'conv-1', reqId);
+  }
+  function track(p: Promise<AgentOutcome>) {
+    const seen: AgentOutcome[] = [];
+    void p.then((o) => { seen.push(o); });
+    return seen;
+  }
+  /** Long enough for a routed turn to route, retire or spawn if it were going to. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 50; i++) await flush();
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  for (const aliveWhileOpening of [true, false]) {
+    it(`waits for the opening sandbox (${aliveWhileOpening ? 'already alive' : 'not alive yet'}): no retire, no third sandbox, queued behind the note`, async () => {
+      let release!: () => void;
+      const until = new Promise<void>((r) => { release = r; });
+      const t = await setup({ openGate: { on: 2, until }, aliveWhileOpening });
+      const { p1, restartSid } = await restartUpToOpen(t);
+
+      const p2 = postMessage(t, 'req-2');
+      const out2 = track(p2);
+      await settle();
+      expect(t.terminated).not.toContain(restartSid);
+      expect(t.opens).toHaveLength(2);
+      expect(out2).toEqual([]);
+
+      release();
+      await waitFor(() => t.queued.some((q) => q.entry.reqId === 'req-2'), 'req-2 queued');
+      const noteAt = t.queued.findIndex((q) => q.entry.type === 'host-note');
+      const msgAt = t.queued.findIndex((q) => q.entry.type === 'user-message' && q.entry.reqId === 'req-2');
+      expect(noteAt).toBeGreaterThanOrEqual(0);
+      expect(msgAt).toBeGreaterThan(noteAt);
+      expect(t.queued[msgAt]!.sessionId).toBe(restartSid);
+      expect(t.opens).toHaveLength(2);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: restartSid, activeReqId: 'req-2', serviceSet: 'e2e' });
+
+      await t.emitTurnEnd(restartSid, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.row('conv-1').activeReqId).toBe('req-2');
+      await t.emitTurnEnd(restartSid, 'conv-1', 'req-2', 'assistant');
+      expect(await p2).toEqual({ kind: 'complete', messages: [] });
+      expect(t.terminated).toEqual(['s-1']);
+      expect(t.turnErrors).toEqual([]);
+    });
+  }
+
+  it('a message arriving after the open but before the note lands behind the note', async () => {
+    let releaseNote!: () => void;
+    const noteGate = new Promise<void>((r) => { releaseNote = r; });
+    const t = await setup({ noteGate });
+    const { p1, restartSid } = await restartUpToOpen(t);
+    // The new sandbox is open (warm on this host); its note isn't in the inbox yet.
+    const p2 = postMessage(t, 'req-2');
+    await settle();
+    expect(t.queued.some((q) => q.entry.reqId === 'req-2')).toBe(false);
+    // The fresh path does not rebind the row over the newer request (step 7).
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: restartSid, activeReqId: 'req-2' });
+
+    releaseNote();
+    await waitFor(() => t.queued.some((q) => q.entry.reqId === 'req-2'), 'req-2 queued');
+    const noteAt = t.queued.findIndex((q) => q.entry.type === 'host-note');
+    const msgAt = t.queued.findIndex((q) => q.entry.type === 'user-message' && q.entry.reqId === 'req-2');
+    expect(msgAt).toBeGreaterThan(noteAt);
+    await t.emitTurnEnd(restartSid, 'conv-1', 'req-1', 'assistant');
+    await p1;
+    await t.emitTurnEnd(restartSid, 'conv-1', 'req-2', 'assistant');
+    expect(await p2).toEqual({ kind: 'complete', messages: [] });
+    expect(t.opens).toHaveLength(2);
+    expect(t.turnErrors).toEqual([]);
+  });
+
+  it('a restart open that fails: the waiting message opens a fresh sandbox without the set', async () => {
+    let release!: () => void;
+    const until = new Promise<void>((r) => { release = r; });
+    const t = await setup({ openGate: { on: 2, until }, openSessionThrowsOn: 2 });
+    const { p1 } = await restartUpToOpen(t);
+    const p2 = postMessage(t, 'req-2');
+    await settle();
+    expect(t.opens).toHaveLength(2);
+
+    release();
+    expect(await p1).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+    await waitFor(() => t.opens.length === 3, 'req-2 spawns fresh');
+    expect(t.opens[2]!.services).toBeUndefined();
+    const third = t.opens[2]!.sessionId;
+    await waitFor(() => t.queued.some((q) => q.entry.reqId === 'req-2'), 'req-2 queued');
+    await t.emitTurnEnd(third, 'conv-1', 'req-2', 'assistant');
+    expect(await p2).toEqual({ kind: 'complete', messages: [] });
+    expect(t.turnErrors.map((e) => e.reqId)).toEqual(['req-1']);
+    expect(t.row('conv-1').serviceSet).toBeNull();
   });
 });
