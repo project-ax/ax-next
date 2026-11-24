@@ -64,6 +64,39 @@ describe('keepCliMarkupAsText: CLI markup', () => {
     }
   });
 
+  // TASK-1221: the CLI sends a turn's text blocks to the model side by side,
+  // so a block that ENDS in the start of a tag (`x <tick`, `x <`, `x </sys`)
+  // reads as that tag once the next block supplies the rest (`>y`).
+  it('guards a < that ends a text block with the start of a listed tag name', () => {
+    expect(keepCliMarkupAsText('x <tick')).toBe(`x <${G}tick`);
+    expect(keepCliMarkupAsText('x </tick')).toBe(`x <${G}/tick`);
+    expect(keepCliMarkupAsText('x <')).toBe(`x <${G}`);
+    expect(keepCliMarkupAsText('x </')).toBe(`x <${G}/`);
+    expect(keepCliMarkupAsText('x <task-notif')).toBe(`x <${G}task-notif`);
+    expect(keepCliMarkupAsText('x <SYSTEM-Rem')).toBe(`x <${G}SYSTEM-Rem`);
+    expect(keepCliMarkupAsText('x <teammate')).toBe(`x <${G}teammate`);
+    expect(keepCliMarkupAsText('<a> b <tick')).toBe(`<a> b <${G}tick`);
+    expect(keepCliMarkupAsText('a <b')).toBe(`a <${G}b`); // could become <bash-stdout>
+    for (const tag of CLI_MARKUP_TAGS) {
+      expect(keepCliMarkupAsText(`x <${tag}`), tag).toBe(`x <${G}${tag}`);
+      // The closing form of the longest name pins the length cap's `/`.
+      expect(keepCliMarkupAsText(`x </${tag}`), `/${tag}`).toBe(`x <${G}/${tag}`);
+    }
+    expect(keepCliMarkupAsText([{ type: 'text', text: 'x <tick' }, { type: 'text', text: '>y' }])).toEqual([
+      { type: 'text', text: `x <${G}tick` },
+      { type: 'text', text: '>y' },
+    ]);
+    // Idempotent at the end of a block too.
+    expect(keepCliMarkupAsText(`x <${G}tick`)).toBe(`x <${G}tick`);
+    expect(keepCliMarkupAsText(`x <${G}`)).toBe(`x <${G}`);
+  });
+
+  it('leaves a block-end < alone when what follows cannot start a listed tag', () => {
+    for (const text of ['x <div', 'x <ticker', 'x <tick-mark', 'x < tick', 'a <q', 'x <1', 'x <tick.', '<div> <span']) {
+      expect(keepCliMarkupAsText(text), text).toBe(text);
+    }
+  });
+
   it('guards a text that starts with one of the CLI lines its echo filter drops', () => {
     for (const line of [
       '[Request interrupted by user]',
