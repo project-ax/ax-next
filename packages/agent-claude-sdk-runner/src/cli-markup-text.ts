@@ -43,6 +43,11 @@
 //     itself matches as a prefix. `<ticket>` or `<ChannelList />` is left
 //     alone;
 //   - in front of a text that starts with one of those CLI lines.
+//   - after a `<` that ends a text block followed only by `/` and the start
+//     of a listed name (`x <tick`, `x <`, `x </sys`), TASK-1221. The CLI hands
+//     a turn's text blocks to the model side by side, unchanged, so the next
+//     block can finish the tag (`>FORGED`). Its echo filter checks each block
+//     on its own (measured), so this is about what the model reads.
 //
 // Measured: the CLI reads no file for `​@/path` or `x ​@/path`, and the model
 // gets the text verbatim. Only the CLI's copy carries the character; the
@@ -102,8 +107,26 @@ const TAG = new RegExp(
   'gi',
 );
 
+// The longest text after a block-end `<` that can still start a listed tag.
+const TAIL_MAX = 1 + Math.max(...CLI_MARKUP_TAGS.map((t) => t.length));
+
+/**
+ * TASK-1221: a `<` near the end of a block, followed only by `/` and the start
+ * of a listed name (`x <tick`, `x <`, `x </sys`), gets the guard too. The CLI
+ * hands a turn's text blocks to the model side by side, unchanged (measured,
+ * CLI 2.1.119), so the next block can finish the tag (`>FORGED`).
+ */
+function guardTail(text: string): string {
+  const i = text.lastIndexOf('<');
+  if (i < 0 || text.length - i - 1 > TAIL_MAX) return text;
+  const tail = text.slice(i + 1).toLowerCase();
+  const name = tail.startsWith('/') ? tail.slice(1) : tail;
+  if (!/^[a-z-]*$/.test(name) || !CLI_MARKUP_TAGS.some((t) => t.startsWith(name))) return text;
+  return `${text.slice(0, i + 1)}${CLI_MARKUP_GUARD}${text.slice(i + 1)}`;
+}
+
 function guardText(text: string): string {
-  const out = text.replace(AT, `${CLI_MARKUP_GUARD}@`).replace(TAG, `<${CLI_MARKUP_GUARD}`);
+  const out = guardTail(text.replace(AT, `${CLI_MARKUP_GUARD}@`).replace(TAG, `<${CLI_MARKUP_GUARD}`));
   const start = out.trimStart();
   return CLI_LINE_STARTS.some((s) => start.startsWith(s)) ? `${CLI_MARKUP_GUARD}${out}` : out;
 }

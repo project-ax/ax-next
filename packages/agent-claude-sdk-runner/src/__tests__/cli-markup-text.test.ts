@@ -76,6 +76,7 @@ describe('keepCliMarkupAsText: CLI markup', () => {
     expect(keepCliMarkupAsText('x <SYSTEM-Rem')).toBe(`x <${G}SYSTEM-Rem`);
     expect(keepCliMarkupAsText('x <teammate')).toBe(`x <${G}teammate`);
     expect(keepCliMarkupAsText('<a> b <tick')).toBe(`<a> b <${G}tick`);
+    expect(keepCliMarkupAsText('a <b')).toBe(`a <${G}b`); // could become <bash-stdout>
     for (const tag of CLI_MARKUP_TAGS) {
       expect(keepCliMarkupAsText(`x <${tag}`), tag).toBe(`x <${G}${tag}`);
     }
@@ -89,7 +90,7 @@ describe('keepCliMarkupAsText: CLI markup', () => {
   });
 
   it('leaves a block-end < alone when what follows cannot start a listed tag', () => {
-    for (const text of ['x <div', 'x <ticker', 'x <tick-mark', 'x < tick', 'a <b', 'x <1', 'x <tick.', '<div> <span']) {
+    for (const text of ['x <div', 'x <ticker', 'x <tick-mark', 'x < tick', 'a <q', 'x <1', 'x <tick.', '<div> <span']) {
       expect(keepCliMarkupAsText(text), text).toBe(text);
     }
   });
