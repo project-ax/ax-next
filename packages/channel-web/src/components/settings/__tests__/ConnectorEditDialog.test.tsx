@@ -582,6 +582,48 @@ describe('ConnectorEditDialog', () => {
     expect(screen.queryByText(/pick a group to bring in services/i)).toBeNull();
   });
 
+  // ---- Final review A8 ----------------------------------------------------
+
+  it('A8a: picking "Services that aren’t in a group" on a one-group file sticks (auto-pick is for a fresh paste only)', async () => {
+    const OTHER = `postgres@sha256:${'e'.repeat(64)}`;
+    await openAndPaste(`services:\n  a:\n    image: ${PINNED}\n    profiles: [only]\n  b:\n    image: ${OTHER}\n`);
+    await screen.findByDisplayValue(PINNED); // auto-picked "only": a and b
+    fireEvent.click(document.getElementById('connector-compose-profile')!);
+    fireEvent.click(await screen.findByRole('option', { name: /services that aren.t in a group/i }));
+    await waitFor(() => expect(screen.queryByDisplayValue(PINNED)).toBeNull());
+    expect(screen.getByDisplayValue(OTHER)).toBeInTheDocument();
+  });
+
+  it('A8b: the on-demand switch never overwrites a pin result that landed before it re-rendered', async () => {
+    let finish!: (r: Array<{ image: string; pinned: string }>) => void;
+    vi.spyOn(connectorsLib, 'pinImages').mockReturnValue(new Promise((res) => { finish = res; }));
+    await openAndPaste(`services:\n  cache:\n    image: redis:7\n`);
+    await screen.findByText(/looking up exact versions/i);
+    const toggle = screen.getByRole('switch', { name: /start only when needed/i });
+    await act(async () => {
+      finish([{ image: 'redis:7', pinned: `redis@sha256:${'d'.repeat(64)}` }]);
+      for (let i = 0; i < 5; i++) await Promise.resolve(); // the pin's update is queued, not rendered
+      toggle.click(); // a handler from the render before it
+    });
+    expect(screen.getByRole('switch', { name: /start only when needed/i })).toBeChecked();
+    expect(screen.getByDisplayValue(`redis@sha256:${'d'.repeat(64)}`)).toBeInTheDocument();
+  });
+
+  it('A8d: the on-demand switch explains both settings in plain words', async () => {
+    render(<ConnectorEditDialog target="new" open onOpenChange={() => {}} onSaved={() => {}} />);
+    await screen.findByLabelText(/service name/i);
+    expect(
+      screen.getByText('Off: they start with every sandbox (up to 8). On: they start together, only when the agent asks (up to 16).'),
+    ).toBeInTheDocument();
+  });
+
+  it('A8e: an import refusal reads plainly, not as a file we could not read', async () => {
+    await openAndPaste(`services:\n  a:\n    image: ${PINNED}\n    depends_on: [b]\n  b:\n    image: ${PINNED}\n    depends_on: [a]\n`);
+    await screen.findByText(/we can.t import this file: depends_on cycle between a, b/i);
+    expect(screen.queryByText(/couldn.?t read that as a compose file/i)).toBeNull();
+    expect(screen.queryByText(/refused:/i)).toBeNull();
+  });
+
   it('a pin request that fails with 401 blames the session, not the registry', async () => {
     vi.spyOn(connectorsLib, 'pinImages').mockRejectedValue(
       Object.assign(new Error('pin images: 401'), { status: 401 }),

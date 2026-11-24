@@ -65,6 +65,7 @@ import {
   endpointChangedServers,
   pointsSomewhereNew,
   applyComposeToForm,
+  composeErrorMessage,
   applyPinResults,
   servicesProblem,
   summaryToForm,
@@ -254,7 +255,10 @@ function ServicesSection({
     }
   };
 
-  const translate = (profile: string | null) => {
+  // `fresh`: a new paste (the "Add services" button), the only time a
+  // one-group file gets its group picked for them. A pick from the group menu
+  // is never second-guessed, "Services that aren’t in a group" included (A8a).
+  const translate = (profile: string | null, fresh = false) => {
     const id = ++seq.current;
     setComposeError(null);
     setPinErrors({});
@@ -262,13 +266,13 @@ function ServicesSection({
     // Translating REPLACES the imported services; the mode and other fields stay.
     const result = applyComposeToForm(form, compose, profile);
     if (!result.ok) {
-      setComposeError(result.error);
+      setComposeError(composeErrorMessage(result.error));
       setDrops([]);
       setInvalid([]);
       return;
     }
     // Exactly one group in the file: pick it for them.
-    if (profile === null && result.profiles.length === 1) {
+    if (fresh && profile === null && result.profiles.length === 1) {
       seq.current--;
       translate(result.profiles[0]!);
       return;
@@ -328,7 +332,7 @@ function ServicesSection({
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => translate(form.composeProfile)}
+              onClick={() => translate(form.composeProfile, true)}
               disabled={compose.trim().length === 0}
             >
               Add services from this file
@@ -338,9 +342,7 @@ function ServicesSection({
 
         {composeError && (
           <Alert variant="destructive">
-            <AlertDescription>
-              We couldn’t read that as a Compose file: {composeError}
-            </AlertDescription>
+            <AlertDescription>{composeError}</AlertDescription>
           </Alert>
         )}
 
@@ -377,14 +379,14 @@ function ServicesSection({
               Start only when needed
             </Label>
             <p className="text-xs text-muted-foreground">
-              Off: all services start with the sandbox, up to 8. On: each one starts only when the agent asks for it, up to 16.
+              Off: they start with every sandbox (up to 8). On: they start together, only when the agent asks (up to 16).
             </p>
           </div>
           <Switch
             id="connector-services-on-demand"
             checked={form.servicesMode === 'on-demand'}
             onCheckedChange={(on) =>
-              setForm({ ...form, servicesMode: on ? 'on-demand' : 'always' })
+              setForm((f) => ({ ...f, servicesMode: on ? 'on-demand' : 'always' }))
             }
           />
         </div>

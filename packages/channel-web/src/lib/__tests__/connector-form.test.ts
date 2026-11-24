@@ -690,6 +690,15 @@ services:
     );
   });
 
+  it('A8c: a file whose services are all the person’s own app says so, with no group to pick', () => {
+    const r = applyComposeToForm(emptyConnectorForm(), `services:\n  app:\n    build: .\n    image: ${PINNED}\n`);
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.form.services).toEqual([]);
+    const msg = servicesProblem(r.form);
+    expect(msg).toBe('Everything in your file runs your own code, so no services came in. The agent runs that in its sandbox. Add a database or cache by hand if it needs one.');
+    expect(msg).not.toMatch(/group/i);
+  });
+
   it('more than 8 services needs on-demand', () => {
     const many = Array.from({ length: 9 }, (_, i) => ({
       name: `s${i}`, image: PINNED, ports: [], env: {}, writablePaths: [],

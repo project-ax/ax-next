@@ -735,6 +735,11 @@ export const ON_DEMAND_SERVICES_LIMIT = 16;
 /** Plain-language reason the services can't be saved yet, or null when they can. */
 export function servicesProblem(form: ConnectorFormState): string | null {
   if (form.composePasted && form.services.length === 0 && form.drafts.length === 0) {
+    // A8c — no group menu to point at when the file's services are all the
+    // person's own app.
+    if (form.appServices.length > 0) {
+      return 'Everything in your file runs your own code, so no services came in. The agent runs that in its sandbox. Add a database or cache by hand if it needs one.';
+    }
     return 'No services came in from your file yet. Pick a group above, or add a service by hand.';
   }
   if (form.drafts.length > 0) {
@@ -772,6 +777,19 @@ function serviceClashCopy(clash: ServiceSetClash): string {
     case 'too-many-published':
       return `That’s ${clash.total} ports opened to the agent. We can open up to ${clash.max}.`;
   }
+}
+
+/**
+ * A8e — what the editor says when a pasted file doesn't import. The importer
+ * refuses a file it read fine but can't take as a whole (a start-order cycle,
+ * a missing dependency, a port clash) with a `Refused: <reason>` error; that
+ * is said plainly. Anything else means the text wasn't a Compose file.
+ */
+export function composeErrorMessage(error: string): string {
+  const REFUSED = 'Refused: ';
+  return error.startsWith(REFUSED)
+    ? `We can’t import this file: ${error.slice(REFUSED.length)}`
+    : `We couldn’t read that as a Compose file: ${error}`;
 }
 
 /** Map a summary into the subset of form fields it carries (edit fallback). */
