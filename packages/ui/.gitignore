@@ -1,0 +1,3 @@
+# Eval captures hold real data from a dev cluster and stay local (see eval/results/*/README.md).
+eval/results/**/*.png
+eval/results/**/axe.json
