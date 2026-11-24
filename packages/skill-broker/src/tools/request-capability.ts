@@ -56,7 +56,9 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
 // message, because the no-card branch asks nobody: a skill with nothing to
 // gate (TASK-1137 owns that branch), or one whose connectors all failed to
 // resolve (not live, not approved, deleted, or an error). The model must not
-// say it asked.
+// say it asked. channel-slack's turn note (SLACK_NOTE_CAPABILITY_RESEND,
+// TASK-1195) keys on this message's "has been asked to approve": keep the two
+// in step if either is reworded.
 export const REQUESTED_MESSAGE: string =
   "Not connected yet. The user has been asked to approve this skill, and it can't be used until they do. " +
   "Tell them in one short sentence that you've asked, then end your turn. " +

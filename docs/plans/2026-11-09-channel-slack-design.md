@@ -123,7 +123,10 @@ so the agent says it needs its owner's OK and never sends them looking for a
 card or a button, and it still checks with them before it acts. The owner's
 answer never comes back to that thread, so the agent never promises the
 conversation will carry on once it's approved (TASK-1148), whatever the generic
-connect-a-capability texts say. The note is fixed text
+connect-a-capability texts say. In a DM or a member's thread, a skill card's
+Allow connects the skill but doesn't rerun the message, so once the person has
+been asked to approve one, the agent tells them to send their message again
+(TASK-1195), whatever those same texts say. The note is fixed text
 chosen by the turn's mode. Nothing from the message, the name or the channel
 goes into it.
 
