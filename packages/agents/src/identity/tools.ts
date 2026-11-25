@@ -29,7 +29,10 @@ import {
 // present, and an external turn (TASK-1091), where the person present has no
 // access to the agent and so doesn't get to change who it is. The
 // orchestrator also keeps them out of such a session's catalog, so this is
-// defence in depth.
+// defence in depth. TASK-1248: on a personal agent the hooks also refuse
+// (`forbidden`) a turn whose person is not one of its owners, so someone it
+// is only shared with can't change who it is through it either; the
+// orchestrator leaves both tools out of their turn's catalog too.
 //
 // They call the `agents:identity:*` hooks on the bus — the same registered
 // surface, checks and `returns` schemas a person's editor goes through — so
@@ -234,7 +237,8 @@ function errorFields(err: unknown): { name: string; code?: string } {
 /**
  * The identity hooks throw only for a call that can never succeed from this
  * session — malformed input, an agent that is gone, or a user who cannot
- * reach it. Anything else (a timeout, a database error) is worth a retry.
+ * reach it or (TASK-1248) may not change it. Anything else (a timeout, a
+ * database error) is worth a retry.
  */
 const NOT_ALLOWED_CODES = new Set(['forbidden', 'not-found', 'invalid-payload']);
 

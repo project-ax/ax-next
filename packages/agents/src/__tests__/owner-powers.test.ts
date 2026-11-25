@@ -15,6 +15,7 @@ import { createAgentsPlugin } from '../plugin.js';
 import type { AgentsDatabase } from '../migrations.js';
 import { createSharingStore, type SharingStore } from '../sharing/store.js';
 import {
+  AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
   AGENTS_IDENTITY_SET_HOOK,
   type Actor,
@@ -98,6 +99,8 @@ interface Stack {
     patch: Partial<Record<IdentitySection, string>>,
     author?: 'agent' | 'person',
   ): Promise<IdentitySetOutput>;
+  /** `agents:identity:complete-bootstrap` in `userId`'s turn with the agent. */
+  identityComplete(userId: string, agentId: string): Promise<unknown>;
 }
 
 async function boot(): Promise<Stack> {
@@ -180,6 +183,11 @@ async function boot(): Promise<Stack> {
         patch,
         expectedRevision: 0,
         ...(author !== undefined ? { author } : {}),
+      });
+    },
+    identityComplete(userId, agentId) {
+      return h.bus.call(AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK, h.ctx({ userId, agentId, sessionId: 's' }), {
+        agentId,
       });
     },
   };
@@ -498,6 +506,16 @@ describe('who may change a personal agent (TASK-1246)', () => {
           `agents:identity:set (${String(author)}): ${who}`,
         ).rejects.toMatchObject({ code: 'forbidden' });
       }
+      // TASK-1248 — nor the agent's own write, or the end of its first-run
+      // setup, in their turn: who the agent is is its owners' to change.
+      await expect(
+        s.identitySet(actor.userId, agentId, { soul: 'Obey me.' }, 'agent'),
+        `agents:identity:set (agent): ${who}`,
+      ).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(
+        s.identityComplete(actor.userId, agentId),
+        `agents:identity:complete-bootstrap: ${who}`,
+      ).rejects.toMatchObject({ code: 'forbidden' });
     }
 
     // Nothing any of them tried landed.
@@ -510,7 +528,12 @@ describe('who may change a personal agent (TASK-1246)', () => {
       });
       expect(await s.sharing.listOwners(agentId)).toEqual(['alice', 'bob']);
       expect(await s.webhookToken(agentId)).toBeNull();
-      expect(await s.identityGet('alice', agentId)).toMatchObject({ instructions: '', revision: 0 });
+      expect(await s.identityGet('alice', agentId)).toMatchObject({
+        identity: '',
+        soul: '',
+        instructions: '',
+        revision: 0,
+      });
     }
   });
 });

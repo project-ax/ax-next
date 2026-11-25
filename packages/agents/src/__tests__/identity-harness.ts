@@ -28,8 +28,11 @@ import {
   type SystemPromptAugmentChangedPayload,
   type ToolDescriptor,
 } from '@ax/core';
+import type { Kysely } from 'kysely';
 import pg from 'pg';
+import type { AgentsDatabase } from '../migrations.js';
 import { createAgentsPlugin } from '../plugin.js';
+import { createSharingStore, type SharingStore } from '../sharing/store.js';
 import type { AgentInput, CreateInput, CreateOutput } from '../types.js';
 
 export type ScanAnswer = (input: unknown) => Promise<unknown>;
@@ -66,6 +69,8 @@ export interface IdentityHarness {
     userId: string,
     opts?: { bootstrap?: unknown; input?: Partial<AgentInput> },
   ): Promise<string>;
+  /** TASK-1246 — the sharing rows (a personal agent's owners and audience), written directly. */
+  sharing(): Promise<SharingStore>;
 }
 
 export function makeAgentInput(overrides: Partial<AgentInput> = {}): AgentInput {
@@ -193,6 +198,14 @@ export function useIdentityEnv(): {
           payload,
         );
         return out.agent.id;
+      },
+      async sharing() {
+        const { db } = await h.bus.call<unknown, { db: Kysely<unknown> }>(
+          'database:get-instance',
+          h.ctx(),
+          {},
+        );
+        return createSharingStore(db as Kysely<AgentsDatabase>);
       },
     };
   }

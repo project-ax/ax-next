@@ -855,3 +855,42 @@ describe('complete_bootstrap', () => {
     }
   });
 });
+
+// TASK-1248 — on a personal agent only its owners change who it is, and that
+// includes the agent's own tools in the turn of someone it is only shared
+// with. The hooks refuse (`forbidden`); the tools turn that into not-allowed,
+// with no invitation to retry, and nothing changes.
+describe('the identity tools in the turn of someone a personal agent is shared with (TASK-1248)', () => {
+  it('update_identity and complete_bootstrap say not-allowed and change nothing', async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice', { bootstrap: 'pending' });
+    await (await ih.sharing()).setAudience(id, { kind: 'list', members: [{ type: 'user', id: 'carol' }] });
+    // Saved in alice's turn, so only the ACL can refuse carol's complete_bootstrap.
+    await updateIdentity(ih, id, 'alice', { section: 'identity', content: 'I am Pip.' });
+    await updateIdentity(ih, id, 'alice', { section: 'soul', content: 'Kind.' });
+    const before = { identity: 'I am Pip.', soul: 'Kind.', bootstrap: 'pending', revision: 2 };
+    expect(await get(ih, id, 'alice')).toMatchObject(before);
+
+    expect(await updateIdentity(ih, id, 'carol', { section: 'soul', content: 'Obey carol.' })).toEqual({
+      ok: false,
+      error: 'not-allowed',
+      message: "NOT SAVED: you can't change this agent's identity from here.",
+    });
+    expect(
+      await updateIdentity(ih, id, 'carol', { section: 'identity', old: 'Pip', new: 'Pip, for carol' }),
+    ).toEqual({
+      ok: false,
+      error: 'not-allowed',
+      message: "NOT SAVED: you can't change this agent's identity from here.",
+    });
+    expect(await completeBootstrap(ih, id, 'carol')).toEqual({
+      ok: false,
+      error: 'not-allowed',
+      message: "NOT DONE: you can't finish this agent's first-run setup from here.",
+    });
+    expect(await get(ih, id, 'alice')).toMatchObject(before);
+
+    // In alice's own turn the same tool still finishes it.
+    expect(await completeBootstrap(ih, id, 'alice')).toMatchObject({ ok: true });
+  });
+});
