@@ -3,7 +3,7 @@ import { makeAgentContext, SafeToolError, safeToolMessage, type ToolCall } from 
 import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineView } from '@ax/routines-contract';
 import { sql } from 'kysely';
 import { createRoutinesStore } from '../store.js';
-import { createRoutineHarness, materializePersonalDefaults, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutineHarness, materializePersonalDefaults, moveAgentToOwner, type RoutineHarness } from './support/routine-harness.js';
 
 const definition = RoutineDefinitionSchema.parse({ name: 'Daily', promptBody: 'Check outstanding work.', trigger: { kind: 'interval', every: '1h' } });
 let h: RoutineHarness;
@@ -73,7 +73,7 @@ describe('routine tool validation and durable execution', () => {
   });
   it('does not reconcile ownership in preflight; routine_get produces a new editable revision', async () => {
     h = await createRoutineHarness(); const row = await h.bus.call<unknown, RoutineView>('routines:create', actor(), { agentId: h.agentId, requestId: 'manual', definition });
-    await sql`UPDATE agents_v1_agents SET owner_id='admin' WHERE agent_id=${h.agentId}`.execute(h.db);
+    await moveAgentToOwner(h.db, h.agentId, 'admin');
     const admin = makeAgentContext({ ...actor(), userId: 'admin' });
     const edit = { id: 'edit', name: 'routine_update', input: { requestId: 'edit', routineId: row.routineId, expectedRevision: row.revision, patch: { name: 'Changed' } } };
     expect(await h.bus.fire('tool:pre-call', admin, edit)).toMatchObject({ rejected: true });

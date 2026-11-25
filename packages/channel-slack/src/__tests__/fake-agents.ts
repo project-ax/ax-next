@@ -33,7 +33,9 @@ const STAMP = new Date('2026-10-01T00:00:00.000Z');
  *   list-for-user  the user's own personal agents and every agent owned by a
  *                  team in `teamIds`, newest first. Like the real one it takes
  *                  `teamIds` on trust: the caller asks @ax/teams for them
- *                  (`teamsOf` is that answer).
+ *                  (`teamsOf` is that answer). A personal agent `shareWith`
+ *                  names the user for is listed too, `isOwner` false, and
+ *                  `resolve` admits them.
  *
  * `workspaceAdminsMayManage` models a later agents rule that WOULD let a
  * workspace admin set a team agent's shared credential (as
@@ -51,10 +53,14 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
   const faults = new Map<string, unknown>();
   const answers = new Map<string, unknown>();
 
+  /** A personal agent's audience beyond its owner (TASK-1246): agent id → user ids it is shared with. */
+  const sharedWith = new Map<string, Set<string>>();
+  const isSharedWith = (agent: FakeAgent, userId: string): boolean => sharedWith.get(agent.id)?.has(userId) === true;
+
   const roleOf = (teamId: string, userId: string): Role | undefined => teams.get(teamId)?.get(userId);
   const canSee = (agent: FakeAgent, userId: string): boolean =>
     agent.visibility === 'personal'
-      ? agent.ownerType === 'user' && agent.ownerId === userId
+      ? agent.ownerType === 'user' && (agent.ownerId === userId || isSharedWith(agent, userId))
       : agent.ownerType === 'team' && roleOf(agent.ownerId, userId) !== undefined;
   const notFound = (hookName: string, agentId: string): PluginError =>
     new PluginError({ code: 'not-found', plugin: PLUGIN, hookName, message: `agent '${agentId}' not found` });
@@ -97,11 +103,16 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
   bus.registerService('agents:list-for-user', PLUGIN, async (_ctx, raw) => {
     enter('agents:list-for-user', raw);
     const { userId, teamIds = [] } = raw as { userId: string; teamIds?: string[] };
+    // TASK-1246: a personal agent merely shared with the user is listed too, with `isOwner` false.
     const listed = [...agents.values()].filter((a) =>
-      a.ownerType === 'user' ? a.ownerId === userId : teamIds.includes(a.ownerId),
+      a.ownerType === 'user' ? a.ownerId === userId || isSharedWith(a, userId) : teamIds.includes(a.ownerId),
     );
     // Added in age order, so the newest is last.
-    return { agents: listed.reverse().map(record) };
+    return {
+      agents: listed
+        .reverse()
+        .map((a) => ({ ...record(a), isOwner: a.ownerType === 'user' && a.ownerId === userId })),
+    };
   });
 
   bus.registerService('agents:can-set-shared-credential', PLUGIN, async (_ctx, raw) => {
@@ -132,6 +143,12 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     answers,
     addAgent(agent: FakeAgent): void {
       agents.set(agent.id, agent);
+    },
+    /** Share a personal agent with `userId`: `resolve` admits them and `list-for-user` lists it, `isOwner` false. */
+    shareWith(agentId: string, userId: string): void {
+      const audience = sharedWith.get(agentId) ?? new Set<string>();
+      sharedWith.set(agentId, audience);
+      audience.add(userId);
     },
     /** Put `userId` on the team with `role`, or (null) take them off it. */
     setRole(teamId: string, userId: string, role: Role | null): void {

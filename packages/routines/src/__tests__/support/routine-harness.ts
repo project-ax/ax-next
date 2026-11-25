@@ -7,7 +7,7 @@ import { createDecisionsPlugin } from '@ax/decisions';
 import { createAgentsPlugin } from '@ax/agents';
 import { registerBlobPutFacade, bootstrap, makeAgentContext, type AgentContext, type HookBus, type ToolDescriptor, PluginError } from '@ax/core';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { HttpRegisterRouteInput } from '@ax/http-server';
 import { createRoutinesPlugin } from '../../plugin.js';
 import { createRoutinesStore } from '../../store.js';
@@ -53,6 +53,18 @@ export async function materializePersonalDefaults(harness: RoutineHarness): Prom
     'agents:list-personal-owners', harness.owner, {},
   );
   await createRoutinesStore(harness.db).materializeMissing({ agents, now: new Date('2026-10-09T12:00:00Z') });
+}
+
+/**
+ * Give a personal agent a new owner. @ax/agents has no hook that does that, so its rows change here, both
+ * of them since TASK-1246: `owner_id` (whose the agent's routines are) and its owner rows, which
+ * `agents:resolve` reads to let a person in. Changing `owner_id` alone would leave the earlier owner able
+ * to use the agent and the new one unable to.
+ */
+export async function moveAgentToOwner(db: Kysely<RoutinesDatabase>, agentId: string, userId: string): Promise<void> {
+  await sql`UPDATE agents_v1_agents SET owner_id = ${userId} WHERE agent_id = ${agentId}`.execute(db);
+  await sql`DELETE FROM agents_v1_owners WHERE agent_id = ${agentId}`.execute(db);
+  await sql`INSERT INTO agents_v1_owners (agent_id, user_id) VALUES (${agentId}, ${userId})`.execute(db);
 }
 
 export async function createRoutineHarness(options: { clock?: Clock; authenticatedUserId?: string; shutdownTimeoutMs?: number; onShutdownError?: (name: string, error: unknown) => void; credentialTimeoutMs?: number; invokeTimeoutMs?: number; dispatch?: boolean;

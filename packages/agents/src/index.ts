@@ -75,6 +75,8 @@ export type {
   CanManageRoutinesOutput,
   CanManageConnectorsInput,
   CanManageConnectorsOutput,
+  CanManageWebhookTokenInput,
+  CanManageWebhookTokenOutput,
   CanSetSharedCredentialInput,
   CanSetSharedCredentialOutput,
   DetachConnectorInput,

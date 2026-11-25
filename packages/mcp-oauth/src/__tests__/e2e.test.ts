@@ -633,9 +633,10 @@ describe('@ax/mcp-oauth e2e canary — two agents of one owner keep two separate
     let redemptions = 0;
     const attaches: unknown[] = [];
     const services = captureRouteServices(routes);
-    // bob's own PERSONAL agents: resolve hands back whichever agent was asked for.
+    // bob's own PERSONAL agents: resolve hands back whichever agent was asked for,
+    // with bob as its owner (TASK-1246: only an owner signs in on a personal agent).
     services['agents:resolve'] = (async (_c, input) => ({
-      agent: { id: (input as { agentId: string }).agentId, visibility: 'personal', ownerId: 'bob' },
+      agent: { id: (input as { agentId: string }).agentId, visibility: 'personal', ownerId: 'bob', isOwner: true },
     })) as ServiceHandler;
     const recordAttach = services['agents:attach-connector']!;
     services['agents:attach-connector'] = (async (c, input) => {

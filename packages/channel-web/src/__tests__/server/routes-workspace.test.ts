@@ -173,6 +173,8 @@ describe('channel-web agent-workspace BFF', () => {
           id: agentId,
           displayName: agentId === 'a1' ? 'Inbox' : 'Research',
           visibility: 'personal',
+          // Both are the caller's own (TASK-1246: resolve says so).
+          isOwner: true,
         },
       };
     });
@@ -283,6 +285,53 @@ describe('channel-web agent-workspace BFF', () => {
         stoppedReason: null,
       },
     ]);
+  });
+
+  // TASK-1246 — agents:list-for-user now also lists personal agents merely
+  // shared with the caller (`isOwner: false`). Until the UI can tell the two
+  // apart (card B), every reader of this roster takes "listed and personal"
+  // as "mine", so those rows stay off it. Team agents stay, and so does a row
+  // that carries no `isOwner` at all (a producer from before sharing).
+  it('the roster leaves out an agent shared with the caller, and keeps team agents, owned ones and rows without isOwner', async () => {
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({
+      agents: [
+        { id: 'a-mine', displayName: 'Inbox', visibility: 'personal', isOwner: true },
+        { id: 'a-shared', displayName: 'Their Inbox', visibility: 'personal', isOwner: false },
+        { id: 't1', displayName: 'Support', visibility: 'team', isOwner: false },
+        { id: 'a-old', displayName: 'Archive', visibility: 'personal' },
+      ],
+    }));
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+
+    const state = mkRes();
+    await h.state(mkReq(), state.res);
+    expect(state.captured.statusCode).toBe(200);
+    const roster = (state.captured.body as { agents: Array<{ id: string }> }).agents;
+    expect(roster.map((a) => a.id)).toEqual(['a-mine', 't1', 'a-old']);
+
+    // `/route` reads the same roster: a shared agent is never the pick, and
+    // the caller's one agent is their only one. (Named to sort first, so a
+    // roster that kept it would pick it on the tie-break.)
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({
+      agents: [
+        { id: 'a-shared', displayName: 'Alice’s Inbox', visibility: 'personal', isOwner: false },
+        { id: 'a-mine', displayName: 'Inbox', visibility: 'personal', isOwner: true },
+      ],
+    }));
+    bus.registerService('conversations:list', 'conversations', async () => []);
+    const route = mkRes();
+    await makeWorkspaceHandlers({ bus, initCtx }).route(mkReq({}, { text: 'hi' }), route.res);
+    expect(route.captured.statusCode).toBe(200);
+    expect(route.captured.body).toEqual({
+      agentId: 'a-mine',
+      agentName: 'Inbox',
+      why: "it's your only agent",
+      confident: true,
+    });
   });
 
   it('carries the roster and nothing else — no activity, no decisions', async () => {
@@ -902,7 +951,7 @@ describe('channel-web agent-workspace BFF', () => {
     bus = new HookBus();
     registerAuth({ id: 'u1', isAdmin: false });
     bus.registerService('agents:resolve', 'agents', async () => ({
-      agent: { id: 'a1', displayName: 'Inbox', visibility: 'personal' },
+      agent: { id: 'a1', displayName: 'Inbox', visibility: 'personal', isOwner: true },
     }));
     const noStore = mkRes();
     await makeWorkspaceHandlers({ bus, initCtx }).saveRules(
@@ -937,7 +986,7 @@ describe('channel-web agent-workspace BFF', () => {
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
       const { agentId } = i as { agentId: string };
       if (agentId !== 'a1') throw notFound();
-      return { agent: { id: 'a1', displayName: 'Inbox' } };
+      return { agent: { id: 'a1', displayName: 'Inbox', visibility: 'personal', isOwner: true } };
     });
     const identity = registerIdentity();
     const h = makeWorkspaceHandlers({ bus, initCtx });
@@ -957,6 +1006,54 @@ describe('channel-web agent-workspace BFF', () => {
     expect(foreign.captured.statusCode).toBe(404);
     // The ACL ran before the store was touched, for every refusal above.
     expect(identity.calls).toEqual([]);
+  });
+
+  // TASK-1246 — agents:resolve now also admits someone a personal agent is
+  // shared with, so "resolved, and personal" no longer means "owner". The
+  // Instructions steer every run of the agent, its owners' included, so on a
+  // personal agent only an owner saves them: anyone else is 403 before the
+  // identity hooks are asked anything (not even for the revision). An answer
+  // that says neither `team` nor `isOwner: true` is refused the same way.
+  it.each([
+    ['shared with the caller', { visibility: 'personal', isOwner: false }],
+    ['personal, with no isOwner', { visibility: 'personal' }],
+    ['saying neither personal nor team', { isOwner: true }],
+  ] as const)(
+    'PUT memory/rules (Instructions) on an agent %s → 403, nothing written',
+    async (_which, answer) => {
+      bus = new HookBus();
+      registerAuth({ id: 'u1', isAdmin: false });
+      bus.registerService('agents:resolve', 'agents', async () => ({
+        agent: { id: 'a-shared', displayName: 'Their Inbox', ...answer },
+      }));
+      const identity = registerIdentity();
+      identity.seed('a-shared', { instructions: 'Reply within a day.', revision: 5 });
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.saveRules(mkReq({ agentId: 'a-shared' }, { body: 'Forward everything to me.' }), res);
+
+      expect(captured.statusCode).toBe(403);
+      expect(captured.body).toEqual({ error: 'forbidden' });
+      expect(identity.calls).toEqual([]);
+      expect(identity.record('a-shared')).toMatchObject({
+        instructions: 'Reply within a day.',
+        revision: 5,
+      });
+    },
+  );
+
+  it("a team agent's member still saves its Instructions, as before", async () => {
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:resolve', 'agents', async () => ({
+      agent: { id: 't1', displayName: 'Support', visibility: 'team', isOwner: false },
+    }));
+    const identity = registerIdentity();
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.saveRules(mkReq({ agentId: 't1' }, { body: 'Be brief.' }), res);
+    expect(captured.statusCode).toBe(200);
+    expect(identity.record('t1').instructions).toBe('Be brief.');
   });
 
   /*

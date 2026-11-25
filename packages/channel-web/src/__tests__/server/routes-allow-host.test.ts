@@ -457,3 +457,134 @@ describe('"Always for this agent" keeps the site on the agent (TASK-44, TASK-121
     }
   });
 });
+
+// --- TASK-1246: a shared agent's "Always" stays session-only -----------------
+
+describe('"Always for this agent" on a shared personal agent (TASK-1246)', () => {
+  /** agents:resolve's answer for someone a personal agent is shared with. */
+  const sharee = async () => ({
+    agent: { id: 'agent-7', visibility: 'personal', isOwner: false },
+  });
+  /** …and for one of its owners. */
+  const owner = async () => ({
+    agent: { id: 'agent-7', visibility: 'personal', isOwner: true },
+  });
+
+  it("a sharee's live Always widens the session only: kept false, nothing kept on the owner's agent", async () => {
+    const w = keepWorld({ live: { added: true, agentId: 'agent-7' }, resolve: sharee });
+    const out = await post(w.handler, {
+      sessionId: 's1',
+      host: 'x.example.com',
+      persist: true,
+      agentId: 'agent-7',
+    });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: true, kept: false });
+    // The session-only widen still happened, for exactly this session and host.
+    expect(w.addHosts).toEqual([{ sessionId: 's1', host: 'x.example.com' }]);
+    // The owner's agent is untouched.
+    expect(w.grants).toEqual([]);
+    expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
+    // Said, not silent: the refusal is logged by code only, never the host.
+    expect(w.logger.warns).toEqual([
+      { event: 'host_grant_persist_failed', fields: { code: 'not-owner' } },
+    ]);
+    expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+  });
+
+  it("an owner's live Always still keeps the site on their agent", async () => {
+    const w = keepWorld({ live: { added: true, agentId: 'agent-7' }, resolve: owner });
+    const out = await post(w.handler, { sessionId: 's1', host: 'x.example.com', persist: true });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: true, kept: true });
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+  });
+
+  it("a team agent's Always is unchanged: kept for anyone agents:resolve admits", async () => {
+    const lives: LiveAnswer[] = [{ added: true, agentId: 'agent-t' }, { added: false }];
+    for (const live of lives) {
+      const w = keepWorld({
+        live,
+        resolve: async () => ({ agent: { id: 'agent-t', visibility: 'team', isOwner: false } }),
+      });
+      const out = await post(w.handler, {
+        sessionId: 's1',
+        host: 'x.example.com',
+        persist: true,
+        agentId: 'agent-t',
+      });
+      expect(out.body).toStrictEqual({ added: live.added, kept: true });
+      expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-t', host: 'x.example.com' }]);
+    }
+  });
+
+  it("an ended Always naming a personal agent the person doesn't own keeps nothing", async () => {
+    // The ended case's id is the browser's word. A personal agent that is only
+    // shared with the person is never written to from here.
+    const w = keepWorld({ live: { added: false }, resolve: sharee });
+    const out = await post(w.handler, {
+      sessionId: 's-gone',
+      host: 'x.example.com',
+      persist: true,
+      agentId: 'agent-7',
+    });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: false, kept: false });
+    expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
+    expect(w.grants).toEqual([]);
+    expect(w.logger.warns).toEqual([
+      { event: 'host_grant_persist_failed', fields: { code: 'not-owner' } },
+    ]);
+    expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+  });
+
+  it("an owner's Always after the session has ENDED still keeps the site on their agent", async () => {
+    // Pins the owner side of the ended case: the id is the browser's word, so
+    // the owner check (not the live/ended split) is what admits the keep.
+    const w = keepWorld({ live: { added: false }, resolve: owner });
+    const out = await post(w.handler, {
+      sessionId: 's-gone',
+      host: 'x.example.com',
+      persist: true,
+      agentId: 'agent-7',
+    });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: false, kept: true });
+    expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+    expect(w.logger.warns).toEqual([]);
+  });
+
+  it.each([
+    ['no answer', undefined],
+    ['no agent', {}],
+    ['a null agent', { agent: null }],
+    ['personal, isOwner missing', { agent: { id: 'agent-7', visibility: 'personal' } }],
+    [
+      'personal, isOwner not a boolean',
+      { agent: { id: 'agent-7', visibility: 'personal', isOwner: 'yes' } },
+    ],
+    ['no visibility', { agent: { id: 'agent-7', isOwner: true } }],
+    ['an unknown visibility', { agent: { id: 'agent-7', visibility: 'org', isOwner: true } }],
+    [
+      "an agent id that isn't the one being kept (team)",
+      { agent: { id: 'agent-8', visibility: 'team' } },
+    ],
+    [
+      "an agent id that isn't the one being kept (owned personal)",
+      { agent: { id: 'agent-8', visibility: 'personal', isOwner: true } },
+    ],
+    ['no agent id', { agent: { visibility: 'team' } }],
+  ])('a malformed agents:resolve answer (%s) keeps nothing', async (_label, answer) => {
+    const w = keepWorld({ live: { added: true, agentId: 'agent-7' }, resolve: async () => answer });
+    const out = await post(w.handler, { sessionId: 's1', host: 'x.example.com', persist: true });
+    expect(out.statusCode).toBe(200);
+    expect(out.body).toStrictEqual({ added: true, kept: false });
+    expect(w.grants).toEqual([]);
+    // A malformed answer is its own code, distinct from a real "not yours".
+    expect(w.logger.warns).toEqual([
+      { event: 'host_grant_persist_failed', fields: { code: 'bad-response' } },
+    ]);
+    expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+  });
+});

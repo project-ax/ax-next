@@ -3,8 +3,16 @@ import { isModelRef, parseModelRef, PluginError } from '@ax/core';
 import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
-import { scopedAgents, type AgentScope } from './scope.js';
-import type { Agent, AgentInput, RunnerId, RunnerSize, SkillAttachment } from './types.js';
+import { reachableAgents, type ReachableScope } from './scope.js';
+import {
+  AUDIENCE_KINDS,
+  type Agent,
+  type AgentInput,
+  type AudienceKind,
+  type RunnerId,
+  type RunnerSize,
+  type SkillAttachment,
+} from './types.js';
 
 const PLUGIN_NAME = '@ax/agents';
 
@@ -556,6 +564,24 @@ function rowToAgent(row: AgentsRow): Agent {
       message: `agents_v1_agents.${row.agent_id} has invalid runner '${row.runner}'`,
     });
   }
+  // TASK-1246 — who can use a personal agent besides its owners. Same posture
+  // as `runner`: a value outside AUDIENCE_KINDS (or none, from a RETURNING list
+  // that forgot the column) is a corrupt row, never a new audience. Failing
+  // loudly here is what keeps an unknown audience from admitting anyone. A team
+  // agent has no audience (its column keeps the unread default): its members
+  // use it, so it is always shared.
+  let sharing: { audience?: AudienceKind; shared: boolean } = { shared: true };
+  if (row.owner_type === 'user') {
+    if (!(AUDIENCE_KINDS as readonly string[]).includes(row.audience)) {
+      throw new PluginError({
+        code: 'corrupt-row',
+        plugin: PLUGIN_NAME,
+        message: `agents_v1_agents.${row.agent_id} has invalid audience '${String(row.audience)}'`,
+      });
+    }
+    const audience = row.audience as AudienceKind;
+    sharing = { audience, shared: audience !== 'just-me' };
+  }
   const skillAttachmentsRaw = row.skill_attachments;
   if (
     !Array.isArray(skillAttachmentsRaw) ||
@@ -623,6 +649,7 @@ function rowToAgent(row: AgentsRow): Agent {
     ownerId: row.owner_id,
     ownerType: row.owner_type,
     visibility: row.visibility,
+    ...sharing,
     // Fenced on read for rows that predate the TASK-558 write door.
     displayName: fenceStoredDisplayName(row.display_name),
     allowedTools,
@@ -641,6 +668,11 @@ function rowToAgent(row: AgentsRow): Agent {
 }
 
 export interface AgentStoreCreateArgs {
+  /**
+   * The creator (a personal agent) or the team. TASK-1246: a personal agent's
+   * creator is also written as its first owner, on the same executor as the
+   * agent row (the caller's `tx`, else a transaction of our own).
+   */
   ownerId: string;
   ownerType: 'user' | 'team';
   validated: ValidatedAgentInput;
@@ -667,7 +699,12 @@ export interface AgentStore {
    */
   countByModel(models: readonly string[]): Promise<Array<{ model: string; agentCount: number }>>;
   getById(agentId: string): Promise<Agent | null>;
-  listScoped(scope: AgentScope): Promise<Agent[]>;
+  /**
+   * TASK-1246 — the agents `scope.userId` can use (`reachableAgents`, the SQL
+   * mirror of `checkAccess`), newest first, each with `isOwner` for that user
+   * (always false on a team agent).
+   */
+  listReachable(scope: ReachableScope): Promise<Agent[]>;
   create(args: AgentStoreCreateArgs): Promise<Agent>;
   /**
    * Apply a validated patch. Returns the updated row. Caller MUST have
@@ -676,8 +713,8 @@ export interface AgentStore {
   update(agentId: string, patch: Partial<ValidatedAgentInput>): Promise<Agent>;
   /**
    * Idempotent — no row → returns false. ONE transaction: the agent row is
-   * locked first, then its identity row (TASK-989) and the agent row are
-   * deleted together.
+   * locked first, then its sharing rows (owners and list members, TASK-1246),
+   * its identity row (TASK-989) and the agent row are deleted together.
    */
   deleteById(agentId: string): Promise<boolean>;
   /**
@@ -754,7 +791,7 @@ export interface AgentStore {
    * iterate the agent set without paying for full row hydration — e.g.,
    * the @ax/routines tick loop's lazy materialization of default rows. No
    * ACL filtering: the caller is a trusted background loop, not a user
-   * request. Visibility / ownership filtering belongs in listScoped.
+   * request. Visibility / ownership filtering belongs in listReachable.
    */
   listAllIds(): Promise<string[]>;
   /**
@@ -821,6 +858,7 @@ async function insertAgentRow(
       'turn_limit_minutes',
       'idle_minutes',
       'runner_size',
+      'audience',
       'created_at',
       'updated_at',
     ])
@@ -839,11 +877,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return row === undefined ? null : rowToAgent(row);
     },
 
-    async listScoped(scope) {
-      const rows = await scopedAgents(db, scope)
-        .orderBy('created_at', 'desc')
+    async listReachable(scope) {
+      const rows = await reachableAgents(db, scope)
+        .orderBy('agents_v1_agents.created_at', 'desc')
         .execute();
-      return rows.map(rowToAgent);
+      return rows.map((row) => {
+        const agent = rowToAgent(row);
+        // An owner is a personal agent's idea: a team agent has none.
+        return { ...agent, isOwner: agent.ownerType === 'user' && row.is_owner === true };
+      });
     },
 
     async create({ ownerId, ownerType, validated, tx, bootstrap }) {
@@ -851,6 +893,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       const now = new Date();
       const insert = async (exec: Kysely<AgentsDatabase>): Promise<Agent> => {
         const agent = await insertAgentRow(exec, id, now, ownerId, ownerType, validated);
+        // TASK-1246 — a personal agent's creator is its first owner, written
+        // with the agent row so the agent never exists without one. A team
+        // agent has no owner rows in phase 1.
+        if (ownerType === 'user') {
+          await exec
+            .insertInto('agents_v1_owners')
+            .values({ agent_id: id, user_id: ownerId })
+            .execute();
+        }
         if (bootstrap === 'pending') {
           await exec
             .insertInto('agents_v1_identity')
@@ -860,8 +911,11 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         return agent;
       };
       if (tx !== undefined) return insert(tx as unknown as Kysely<AgentsDatabase>);
-      // Two rows must land together; one row needs no transaction of its own.
-      if (bootstrap === 'pending') return db.transaction().execute((trx) => insert(trx));
+      // Rows that must land together get a transaction of their own; a lone
+      // team agent row needs none. A personal agent is always two rows.
+      if (ownerType === 'user' || bootstrap === 'pending') {
+        return db.transaction().execute((trx) => insert(trx));
+      }
       return insert(db);
     },
 
@@ -905,6 +959,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'turn_limit_minutes',
           'idle_minutes',
           'runner_size',
+          'audience',
           'created_at',
           'updated_at',
         ])
@@ -931,6 +986,13 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           .where('agent_id', '=', agentId)
           .forUpdate()
           .execute();
+        // TASK-1246 — its sharing rows go with it. The sharing writes take the
+        // same lock first (sharing/store.ts), so none can land after this.
+        await trx
+          .deleteFrom('agents_v1_audience_members')
+          .where('agent_id', '=', agentId)
+          .execute();
+        await trx.deleteFrom('agents_v1_owners').where('agent_id', '=', agentId).execute();
         await trx.deleteFrom('agents_v1_identity').where('agent_id', '=', agentId).execute();
         const result = await trx
           .deleteFrom('agents_v1_agents')
@@ -1078,6 +1140,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'turn_limit_minutes',
           'idle_minutes',
           'runner_size',
+          'audience',
           'created_at',
           'updated_at',
         ])

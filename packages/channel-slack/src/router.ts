@@ -255,7 +255,13 @@ function agentsOf(answer: unknown) {
   });
 }
 
-/** The agents AX lists as `userId`'s own: their personal agents, and no team's (`teamIds` empty). */
+/**
+ * The personal agents `agents:list-for-user` returns for `userId`, and no
+ * team's (`teamIds` empty). Since TASK-1246 that list also holds personal
+ * agents only SHARED with them (another person's, as owner or audience); every
+ * caller narrows it with turn.ts `pickPersonalAgent`, which keeps only
+ * `ownerId === userId`, so a DM never reaches an agent that is merely shared.
+ */
 async function ownAgents(bus: HookBus, ctx: AgentContext, userId: string) {
   const listed = await bus.call<{ userId: string; teamIds: string[] }, unknown>('agents:list-for-user', ctx, {
     userId,

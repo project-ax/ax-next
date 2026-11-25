@@ -415,8 +415,15 @@ async function boot(opts: { visibility: 'team' | 'personal'; asOpts?: Partial<As
     'auth:require-user': (async (_c, input) => ({
       user: { id: (input as { req: { headers: Record<string, string> } }).req.headers['x-user'], isAdmin: false },
     })) as ServiceHandler,
+    // Every personal-agent signer here signs in on their own agent, so is its
+    // owner (TASK-1246); @ax/agents answers isOwner false on a team agent.
     'agents:resolve': (async (_c, input) => ({
-      agent: { id: (input as { agentId: string }).agentId, visibility: opts.visibility, ownerId: 'alice' },
+      agent: {
+        id: (input as { agentId: string }).agentId,
+        visibility: opts.visibility,
+        ownerId: 'alice',
+        isOwner: opts.visibility === 'personal',
+      },
     })) as ServiceHandler,
     // An Add's callback attaches the connector once the sign-in is stored.
     'agents:attach-connector': (async (_c, input) => {

@@ -14,6 +14,9 @@ import { sql, type Generated, type Kysely } from 'kysely';
  *                         Instructions and its onboarding state (TASK-989),
  *                         and when the agent itself last changed its identity
  *                         or its soul (TASK-990).
+ *   agents_v1_owners    — a personal agent's owners, creator first (TASK-1246).
+ *   agents_v1_audience_members
+ *                       — the people a `list` audience names (TASK-1246).
  *
  * No FK to auth_better_v1_users / teams_v1_teams. Cross-plugin FKs would
  * require shared schema migrations, which violates I4 (no shared rows).
@@ -237,6 +240,83 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE agents_v1_identity
       ADD COLUMN IF NOT EXISTS soul_changed_by_agent_at TIMESTAMPTZ
   `.execute(db);
+
+  // TASK-1246 (sharing phase 1A): who can use a personal agent besides its
+  // owners. `just-me` is today's personal agent, the default, and what every
+  // existing row reads as. `everyone` is every AX account. `list` is the people
+  // in agents_v1_audience_members below. A team agent's row keeps the default
+  // and nothing reads it: a team agent's members use it.
+  //
+  // A domain enum CHECKed in SQL, like owner_type and visibility, so a logic bug
+  // can't store an audience nothing knows how to check. store.ts refuses an
+  // unknown value on read too: an audience fails closed. The named CHECK rides
+  // on ADD COLUMN IF NOT EXISTS, so a later boot that finds the column skips
+  // the whole clause, constraint included (the run-twice test pins this).
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS audience TEXT NOT NULL DEFAULT 'just-me'
+      CONSTRAINT agents_v1_audience_check CHECK (audience IN ('just-me', 'everyone', 'list'))
+  `.execute(db);
+
+  // TASK-1246: a personal agent's owners, the people who may change it and who
+  // can use it. The creator (`owner_id`) is the first one, so `owner_id` keeps
+  // naming the creator, and phase 1 never removes the creator. Team agents have
+  // no rows here in phase 1.
+  //
+  // Indexed on user_id for "the agents this person owns". No FOREIGN KEY to
+  // agents_v1_agents, for the same teardown reason as agents_v1_identity:
+  // `deleteById` purges these rows in the agent's own transaction, and
+  // `bootstrap:reset-cleanup` truncates them.
+  await sql`
+    CREATE TABLE IF NOT EXISTS agents_v1_owners (
+      agent_id   TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (agent_id, user_id)
+    )
+  `.execute(db);
+  await sql`
+    CREATE INDEX IF NOT EXISTS agents_v1_owners_user ON agents_v1_owners (user_id)
+  `.execute(db);
+
+  // TASK-1246: the people a `list` audience names. Rows exist only while the
+  // agent's audience is `list`: every audience write deletes them all, in the
+  // same transaction, before it inserts a new list. A row that outlived its
+  // list must never grant anything.
+  //
+  // `member_type` allows 'group' as well as 'user', although nothing writes or
+  // reads a group yet. That leaves room for phase 2's groups without a
+  // constraint migration, and a rollback from phase 2 then leaves no row this
+  // CHECK refuses. Indexed on (member_type, member_id) for "the agents that
+  // list this person". No FOREIGN KEY, for the reason above.
+  await sql`
+    CREATE TABLE IF NOT EXISTS agents_v1_audience_members (
+      agent_id    TEXT NOT NULL,
+      member_type TEXT NOT NULL,
+      member_id   TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (agent_id, member_type, member_id),
+      CONSTRAINT agents_v1_audience_member_type_check CHECK (member_type IN ('user', 'group'))
+    )
+  `.execute(db);
+  await sql`
+    CREATE INDEX IF NOT EXISTS agents_v1_audience_members_member
+      ON agents_v1_audience_members (member_type, member_id)
+  `.execute(db);
+
+  // TASK-1246: every personal agent made before owners existed gets its
+  // creator as its first owner. Runs on every boot and is idempotent: it only
+  // touches an agent with NO owner row at all, not one whose creator row is
+  // missing, so a later phase that lets the creator step down can't have this
+  // add them back. ON CONFLICT covers the gap between the NOT EXISTS and the
+  // insert. Team agents get no owner rows in phase 1.
+  await sql`
+    INSERT INTO agents_v1_owners (agent_id, user_id)
+    SELECT a.agent_id, a.owner_id FROM agents_v1_agents a
+     WHERE a.owner_type = 'user'
+       AND NOT EXISTS (SELECT 1 FROM agents_v1_owners o WHERE o.agent_id = a.agent_id)
+    ON CONFLICT DO NOTHING
+  `.execute(db);
 }
 
 /**
@@ -261,6 +341,11 @@ export interface AgentsRow {
   turn_limit_minutes: number | null;
   idle_minutes: number | null;
   runner_size: unknown; // JSONB | null; validated by store
+  /**
+   * TASK-1246: who can use a personal agent besides its owners. CHECKed to
+   * 'just-me' | 'everyone' | 'list'; store.ts narrows it on read.
+   */
+  audience: string;
   created_at: Date;
   updated_at: Date;
 }
@@ -284,7 +369,28 @@ export interface AgentsIdentityRow {
   soul_changed_by_agent_at: Generated<Date | null>;
 }
 
+/** `agents_v1_owners` row (TASK-1246): one per (agent, owner). */
+export interface AgentsOwnerRow {
+  agent_id: string;
+  user_id: string;
+  created_at: Generated<Date>;
+}
+
+/**
+ * `agents_v1_audience_members` row (TASK-1246): one per (agent, member).
+ * `member_type` is CHECKed to 'user' | 'group'; phase 1 writes and reads only
+ * 'user'.
+ */
+export interface AgentsAudienceMemberRow {
+  agent_id: string;
+  member_type: string;
+  member_id: string;
+  created_at: Generated<Date>;
+}
+
 export interface AgentsDatabase {
   agents_v1_agents: AgentsRow;
   agents_v1_identity: AgentsIdentityRow;
+  agents_v1_owners: AgentsOwnerRow;
+  agents_v1_audience_members: AgentsAudienceMemberRow;
 }

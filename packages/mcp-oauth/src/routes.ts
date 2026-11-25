@@ -36,11 +36,13 @@ import {
 //   1. CSRF binding. `state` is server-generated, single-use, TTL'd, and bound
 //      to the initiating user at `begin`. `callback` re-checks `pending.userId`
 //      against the authenticated session user before storing anything.
-//   2. Agent-ownership authz. Binding a token to an agent is gated by
-//      `agents:resolve`, whose ACL only resolves a personal agent for its owner
-//      and a team agent for members — a successful resolve IS the authorization
-//      (plus, on a team agent, the team-admin check). `callback` asks both again
-//      before it writes anything: the agent may be gone, or the signer demoted.
+//   2. Agent-ownership authz. Binding a token to an agent needs `agents:resolve`
+//      to let the signer use it (a personal agent's owners and the people it is
+//      shared with; a team agent's members) AND the "may choose its sign-in"
+//      check on top: on a personal agent the answer must say `isOwner: true`
+//      (TASK-1246), on a team agent the team-admin check must say yes. `callback`
+//      asks both again before it writes anything: the agent may be gone, or the
+//      signer no longer an owner, or demoted.
 //   3. The vault write only happens after 1+2 pass, with `scope: 'agent'` and a
 //      ref keyed by the connector id. An Add then attaches the connector; if the
 //      attach fails the token is deleted again (all or nothing).
@@ -526,17 +528,21 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
 
-    // Authz gate. A successful agents:resolve is the "may use this agent"
-    // check; on a team agent the team-admin check below (TASK-798, TASK-813) is
-    // the "may sign in for everyone" one. The token is always stored on the
-    // agent, whatever its visibility.
-    let agent: { visibility: 'personal' | 'team' };
+    // Authz gate. A successful agents:resolve is only the "may use this agent"
+    // check: it admits a personal agent's owners AND the people it is shared
+    // with (TASK-1246), and a team agent's members. Using an agent is not
+    // choosing its sign-in. The token is always stored ON the agent, whatever
+    // its visibility, so whoever signs in picks the account every chat on it
+    // acts as. That is an owner's call on a personal agent (`isOwner` on the
+    // answer, below) and a team admin's on a team agent (TASK-798, TASK-813).
+    // Read structurally: no @ax/agents import (invariant #2).
+    let agent: { visibility?: unknown; isOwner?: unknown } | undefined;
     try {
       const out = await bus.call<
         { agentId: string; userId: string },
-        { agent: { visibility: 'personal' | 'team' } }
+        { agent?: { visibility?: unknown; isOwner?: unknown } }
       >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
-      agent = out.agent;
+      agent = out?.agent;
     } catch (err) {
       if (isReject(err)) {
         res.status(403).json({ error: 'forbidden' });
@@ -555,7 +561,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // connector read, vault read, state write or provider redirect. Fails
     // closed: no @ax/agents answer, `allowed: false` or a rejection is a 403. A
     // crash in the hook is not an answer: a logged 500, never a "no".
-    if (agent.visibility === 'team') {
+    if (agent?.visibility === 'team') {
       let allowed: boolean;
       try {
         allowed = await maySetSharedCredential(user, agentId);
@@ -568,6 +574,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
+    } else if (agent?.isOwner !== true) {
+      // TASK-1246 — anything but a team agent is held to the owner rule (fail
+      // closed). Someone a personal agent is shared with may use it, and so
+      // spends the sign-in on it, but must not replace it. An answer that does
+      // not say exactly `isOwner: true` is a 403, before any connector read,
+      // vault read, state write or provider request. A workspace admin gets no
+      // bypass: resolve never gave one on a personal agent.
+      res.status(403).json({ error: 'forbidden' });
+      return;
     }
 
     // Resolve the connector (owner-scoped by userId).
@@ -824,9 +839,10 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   /**
    * The callback's re-check of the agent gate `begin` passed, as the same
    * signer: up to `pendingTtlMs` has gone by, and in that time the agent may
-   * have been deleted or the signer removed or demoted from its team. Answers
-   * `null` when the signer may still sign in on `agentId`, or the reason the
-   * popup reports when not. Never throws; every refusal and fault is logged.
+   * have been deleted, the signer taken off a personal agent's owners
+   * (TASK-1246), or removed or demoted from its team. Answers `null` when the
+   * signer may still sign in on `agentId`, or the reason the popup reports when
+   * not. Never throws; every refusal and fault is logged.
    */
   async function recheckAgent(
     user: { id: string; isAdmin: boolean },
@@ -834,12 +850,14 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     connectorId: string,
   ): Promise<OAuthFailureReason | null> {
     let visibility: unknown;
+    let isOwner: unknown;
     try {
       const out = await bus.call<
         { agentId: string; userId: string },
-        { agent: { visibility: 'personal' | 'team' } }
+        { agent?: { visibility?: unknown; isOwner?: unknown } }
       >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
       visibility = out?.agent?.visibility;
+      isOwner = out?.agent?.isOwner;
     } catch (err) {
       if (isReject(err)) {
         logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'resolve', ...errFields(err) });
@@ -848,20 +866,27 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
       return 'sign-in-failed';
     }
-    // Anything but a personal agent is held to the team rule (fail closed): only
-    // a team admin may choose the account every member's runs act as.
-    if (visibility !== 'personal') {
-      let allowed: boolean;
-      try {
-        allowed = await maySetSharedCredential(user, agentId);
-      } catch (err) {
-        logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
-        return 'sign-in-failed';
-      }
-      if (!allowed) {
-        logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'team-admin' });
-        return 'not-allowed';
-      }
+    // TASK-1246 — a personal agent: resolve also admits the people it is shared
+    // with, so passing it is not enough. Only one of its owners chooses the
+    // sign-in stored on it: anything but exactly `isOwner: true` is refused
+    // (fail closed), with nothing read, exchanged or written.
+    if (visibility === 'personal') {
+      if (isOwner === true) return null;
+      logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'owner' });
+      return 'not-allowed';
+    }
+    // Anything else is held to the team rule (fail closed): only a team admin
+    // may choose the account every member's runs act as.
+    let allowed: boolean;
+    try {
+      allowed = await maySetSharedCredential(user, agentId);
+    } catch (err) {
+      logger.error('mcp_oauth_callback_failed', { stage: 'agent', connectorId, ...errFields(err) });
+      return 'sign-in-failed';
+    }
+    if (!allowed) {
+      logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'team-admin' });
+      return 'not-allowed';
     }
     return null;
   }
@@ -937,7 +962,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       // connector-wide, which would let one member switch identity capture off
       // for every agent — and written only once the same agent re-check a
       // code goes through passes again (slice 5): `begin` checked this person
-      // may sign in on it, but they may have been removed or demoted since.
+      // may sign in on it, but they may have been removed, demoted or taken off
+      // its owners since.
       // A refused re-check writes no flag; the popup's reason is unchanged.
       if (
         errorCode === 'invalid_scope' &&
@@ -961,10 +987,11 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // Re-check the agent gate `begin` passed, as the same signer (the session
     // user IS `pending.userId`, checked above): up to `pendingTtlMs` has gone by,
-    // and in that time the agent may have been deleted or the signer removed or
-    // demoted from its team. A "no" writes nothing — no connector read, no token
-    // exchange, no vault write, no attach. A row with no agent can only be one
-    // begun before every sign-in belonged to an agent; it has nowhere to go.
+    // and in that time the agent may have been deleted, the signer taken off a
+    // personal agent's owners, or removed or demoted from its team. A "no"
+    // writes nothing — no connector read, no token exchange, no vault write, no
+    // attach. A row with no agent can only be one begun before every sign-in
+    // belonged to an agent; it has nowhere to go.
     if (!agentId) {
       logger.warn('mcp_oauth_callback_agent_refused', { connectorId, stage: 'no-agent' });
       fail('not-allowed');
@@ -1338,10 +1365,13 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       return;
     }
 
-    // Authz gate mirrors `begin`: agents:resolve IS the owner/member binding
-    // check. It deliberately does NOT also run `connectors:get` (unlike
-    // `begin`, which checks both). An agent-scope token belongs to the AGENT,
-    // so a team sharee who can resolve the agent but does NOT own the
+    // Authz gate: agents:resolve, the "may use this agent" check, and nothing
+    // more. Unlike `begin` it does not ask for an owner (TASK-1246) or a team
+    // admin: this probe only READS whether the agent is signed in, and anyone
+    // who may use the agent (someone it is shared with, a team member) spends
+    // that sign-in anyway. It deliberately does NOT also run `connectors:get`
+    // (unlike `begin`, which checks both). An agent-scope token belongs to the
+    // AGENT, so a team sharee who can resolve the agent but does NOT own the
     // connector must still see "connected" — adding a connector-ownership
     // check here would 404 them and regress the shared-credential UX.
     try {

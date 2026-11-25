@@ -17,6 +17,7 @@ import {
   PermissionDecisionRequest,
   PostMessageRequest,
 } from '../wire/chat.js';
+import { hideAgentsSharedWithMe } from './agent-ownership.js';
 import { quickTitle } from './quick-title.js';
 
 // ---------------------------------------------------------------------------
@@ -221,6 +222,12 @@ interface AgentsListForUserAgent {
   id: string;
   displayName: string;
   visibility: 'personal' | 'team';
+  /**
+   * TASK-1246 — is the user one of this agent's owners? `false` on a personal
+   * agent merely shared with them (and on every team agent). Read only by
+   * `hideAgentsSharedWithMe`; never put on the wire.
+   */
+  isOwner?: boolean;
 }
 interface AgentsListForUserOutput {
   agents: AgentsListForUserAgent[];
@@ -1460,11 +1467,17 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         AgentsListForUserOutput
       >('agents:list-for-user', initCtx, { userId, teamIds });
 
+      // TASK-1246 — the list also carries personal agents merely shared with
+      // the user. Every client reader of this route takes "listed and
+      // personal" as "mine" (the onboarding gate, Sites, Skills, Routines), so
+      // they stay off it until the UI can tell the two apart (card B). The
+      // user's own agents and their teams' stay, as before.
+      //
       // Filter to display-relevant fields (I5 — capabilities minimized).
       // We deliberately drop systemPrompt / allowedTools / mcpConfigIds /
       // model etc. — the chat-flow consumer doesn't need
       // them; the admin API surfaces the full record when actually needed.
-      const summarized = out.agents.map((a) => ({
+      const summarized = hideAgentsSharedWithMe(out.agents).map((a) => ({
         agentId: a.id,
         displayName: a.displayName,
         visibility: a.visibility,

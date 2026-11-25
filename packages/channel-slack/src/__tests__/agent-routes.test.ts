@@ -1859,6 +1859,24 @@ describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
     expect(w.dm.rows.size).toBe(0);
   });
 
+  it('an agent shared with the caller is a 404 and nothing is stored, even beside an agent of their own', async () => {
+    const w = world();
+    // Ada's personal agent, shared with Pat. Pat can see it (agents:resolve admits them) and AX lists it
+    // for them, `isOwner` false, but it is not Pat's: it can't be the agent their DMs reach.
+    const adas: FakeAgent = { id: 'agt_ada_own', displayName: "Ada's agent", visibility: 'personal', ownerType: 'user', ownerId: ADA.id };
+    w.people.addAgent(adas);
+    w.people.shareWith(adas.id, PAT.id);
+    expect(await w.chooseDmAgent(adas.id)).toEqual(NOT_FOUND);
+    // It got as far as the list, which did carry it: the refusal is whose it is.
+    expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: adas.id, userId: PAT.id }]);
+    expect(w.people.inputs('agents:list-for-user')).toEqual([{ userId: PAT.id, teamIds: [] }]);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+    // Pat's own agent is still theirs to choose.
+    expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 200, body: {} });
+    expect(w.dm.rows.get(PAT.id)).toBe(PATS.id);
+  });
+
   it('a team agent is never the DM agent: 403 to its members and team admins, 404 to someone outside the team', async () => {
     const w = world();
     // A plain member, team admins, and a workspace admin who is a plain member: they can all see it.

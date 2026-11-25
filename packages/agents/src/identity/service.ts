@@ -6,6 +6,7 @@ import {
   type SystemPromptAugmentChangedPayload,
 } from '@ax/core';
 import { checkAccess } from '../acl.js';
+import type { SharingStore } from '../sharing/store.js';
 import type { AgentStore } from '../store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
@@ -15,6 +16,7 @@ import {
   IDENTITY_SCAN_HOOK,
   IDENTITY_SECTIONS,
   INSTRUCTIONS_MAX_CHARS,
+  type Agent,
   type AgentIdentityRecord,
   type IdentityAuthor,
   type IdentityCompleteBootstrapOutput,
@@ -32,9 +34,11 @@ import type { IdentityStore } from './store.js';
 // save pass the same checks and the same `returns` schemas.
 //
 // Order on every hook: input shape (incl. `input.agentId === ctx.agentId`) →
-// the agent exists → `ctx.userId` reaches it (`checkAccess`). Then `set`
-// normalises, caps the Instructions, scans every non-empty section (fail
-// closed) and compare-and-sets; `saved` and `completed` announce
+// the agent exists → `ctx.userId` reaches it (`checkAccess`). TASK-1246: a
+// person's `set` (any `author` but 'agent') on any agent but a team one also
+// needs `ctx.userId` to be one of its owners. Then `set` normalises, caps the
+// Instructions, scans every non-empty section (fail closed) and
+// compare-and-sets; `saved` and `completed` announce
 // `system-prompt:augment-changed`.
 //
 // Never logged: identity, soul or Instructions text, or a scanner's reason.
@@ -72,6 +76,8 @@ export interface IdentityServiceDeps {
   bus: HookBus;
   agents: Pick<AgentStore, 'getById'>;
   identity: IdentityStore;
+  /** TASK-1246 — the owner and list rows `checkAccess` reads. */
+  sharing: Pick<SharingStore, 'callerFacts'>;
 }
 
 type ScanResult =
@@ -220,7 +226,15 @@ function loggableCategory(answer: unknown): string | undefined {
 export function createIdentityService(deps: IdentityServiceDeps): IdentityService {
   const { bus } = deps;
 
-  async function requireAccess(ctx: AgentContext, agentId: string, hookName: string): Promise<void> {
+  /**
+   * The agent, once `ctx.userId` may use it (`checkAccess`), and whether they
+   * are one of its owners (always false on a team agent).
+   */
+  async function requireAccess(
+    ctx: AgentContext,
+    agentId: string,
+    hookName: string,
+  ): Promise<{ agent: Agent; owner: boolean }> {
     const agent = await deps.agents.getById(agentId);
     if (agent === null) {
       throw new PluginError({
@@ -230,7 +244,9 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
         message: `agent '${agentId}' not found`,
       });
     }
-    const acl = await checkAccess(agent, ctx.userId, bus, ctx);
+    const acl = await checkAccess(agent, ctx.userId, bus, ctx, {
+      callerFacts: deps.sharing.callerFacts,
+    });
     if (!acl.allowed) {
       throw new PluginError({
         code: 'forbidden',
@@ -239,6 +255,7 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
         message: `agent '${agentId}' is not accessible to user '${ctx.userId}'`,
       });
     }
+    return { agent, owner: acl.owner };
   }
 
   async function scan(
@@ -295,7 +312,19 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
 
     async set(ctx, input) {
       const { agentId, patch, expectedRevision, author } = parseSetInput(ctx, input);
-      await requireAccess(ctx, agentId, AGENTS_IDENTITY_SET_HOOK);
+      const access = await requireAccess(ctx, agentId, AGENTS_IDENTITY_SET_HOOK);
+      // TASK-1246 — a person's write changes the agent's settings, so on any
+      // agent but a team one only its owners make it. Someone it is only
+      // shared with still reads it, and the agent's own write in their turn
+      // (`author: 'agent'`) still saves. Any member writes a team agent.
+      if (author !== 'agent' && access.agent.visibility !== 'team' && !access.owner) {
+        throw new PluginError({
+          code: 'forbidden',
+          plugin: PLUGIN_NAME,
+          hookName: AGENTS_IDENTITY_SET_HOOK,
+          message: `only an owner of agent '${agentId}' may change it`,
+        });
+      }
 
       // Normalise: trailing whitespace goes, so a whitespace-only section is
       // stored empty (and counts as empty for complete-bootstrap).

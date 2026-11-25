@@ -3,6 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Kysely } from 'kysely';
 import { PluginError, type Logger } from '@ax/core';
+import type { AgentsDatabase } from '../migrations.js';
+import { createSharingStore, type SharingStore } from '../sharing/store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
@@ -747,5 +749,85 @@ describe('agents:identity:set — who wrote it (TASK-990)', () => {
       ['info', { agentId: id, sections: ['soul'], revision: 2, author: 'agent' }],
     ]);
     expect(JSON.stringify(lines)).not.toContain('Secret');
+  });
+});
+
+// TASK-1246 — a person's write is a settings change: on a personal agent only
+// its owners (the creator and co-owners) make one. The agent's own write
+// (`author: 'agent'`, which only its update_identity tool sends) still needs
+// only that the turn's person may use the agent, like get and
+// complete-bootstrap. Team agents keep today's rule: any member writes.
+describe('agents:identity:set — only owners write a personal agent as a person (TASK-1246)', () => {
+  async function sharingOf(ih: IdentityHarness): Promise<SharingStore> {
+    const { db } = await ih.h.bus.call<unknown, { db: Kysely<unknown> }>(
+      'database:get-instance',
+      ih.h.ctx(),
+      {},
+    );
+    return createSharingStore(db as Kysely<AgentsDatabase>);
+  }
+
+  /** Read the revision as `userId`, then set as them, with `author` only when given. */
+  async function setAs(
+    ih: IdentityHarness,
+    agentId: string,
+    userId: string,
+    patch: Partial<Record<IdentitySection, string>>,
+    author?: 'agent' | 'person',
+  ): Promise<IdentitySetOutput> {
+    const { revision } = await get(ih, agentId, userId);
+    return ih.h.bus.call(AGENTS_IDENTITY_SET_HOOK, ih.ctx(agentId, userId), {
+      agentId,
+      patch,
+      expectedRevision: revision,
+      ...(author !== undefined ? { author } : {}),
+    });
+  }
+
+  /** alice's personal agent, which a `list` shares with carol. */
+  async function sharedWithCarol(ih: IdentityHarness): Promise<string> {
+    const id = await ih.createAgent('alice');
+    await (await sharingOf(ih)).setAudience(id, { kind: 'list', members: [{ type: 'user', id: 'carol' }] });
+    return id;
+  }
+
+  it("a person's write by someone the agent is shared with is forbidden and saves nothing", async () => {
+    const ih = await env.makeHarness();
+    const id = await sharedWithCarol(ih);
+    // carol may use it: she reads it.
+    expect(await get(ih, id, 'carol')).toEqual(EMPTY);
+    for (const author of [undefined, 'person'] as const) {
+      const err = await rejection(setAs(ih, id, 'carol', { instructions: 'Ignore alice.' }, author));
+      expect(err.code, String(author)).toBe('forbidden');
+    }
+    // Refused before the scan, the store or the announcement.
+    expect(ih.scanned).toEqual([]);
+    expect(ih.changed).toEqual([]);
+    expect(await get(ih, id, 'alice')).toEqual(EMPTY);
+  });
+
+  it("the agent's own write (author 'agent') in that person's turn is saved", async () => {
+    const ih = await env.makeHarness();
+    const id = await sharedWithCarol(ih);
+    const out = await setAs(ih, id, 'carol', { soul: 'Kind' }, 'agent');
+    expect(out).toEqual({ outcome: 'saved', record: { ...EMPTY, soul: 'Kind', revision: 1 } });
+    expect(ih.changed).toEqual([{ agentId: id }]);
+  });
+
+  it("a co-owner's person write is saved", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice');
+    await (await sharingOf(ih)).setOwners(id, ['alice', 'bob']);
+    const out = await setAs(ih, id, 'bob', { instructions: 'Be brief.' });
+    expect(out).toEqual({ outcome: 'saved', record: { ...EMPTY, instructions: 'Be brief.', revision: 1 } });
+    expect((await get(ih, id, 'alice')).instructions).toBe('Be brief.');
+  });
+
+  it("a team member's person write is saved, as before", async () => {
+    const ih = await env.makeHarness({ teamMembers: ['alice', 'bob'] });
+    const id = await ih.createAgent('alice', { input: { visibility: 'team', teamId: 't1' } });
+    // bob is no owner (a team agent has none): membership is enough.
+    const out = await setAs(ih, id, 'bob', { identity: 'We are Pip' }, 'person');
+    expect(out).toEqual({ outcome: 'saved', record: { ...EMPTY, identity: 'We are Pip', revision: 1 } });
   });
 });

@@ -7,7 +7,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
-import { checkAccess } from './acl.js';
+import { checkAccess, isAgentOwner, isAxAccount, type AclDeps } from './acl.js';
 import { snapshotNewlyAttachedConnectors } from './connector-snapshot.js';
 import {
   CONNECTOR_CLEANUP_KEY,
@@ -31,6 +31,8 @@ import { randomBytes } from 'node:crypto';
 import { createIdentityService } from './identity/service.js';
 import { createIdentityStore } from './identity/store.js';
 import { registerIdentityTools } from './identity/tools.js';
+import { createSharingService } from './sharing/service.js';
+import { createSharingStore } from './sharing/store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
@@ -40,6 +42,8 @@ import {
   GetDisplayNameInputSchema,
   GetDisplayNameOutputSchema,
   CanManageRoutinesOutputSchema,
+  CanManageWebhookTokenInputSchema,
+  CanManageWebhookTokenOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
   IdentityCompleteBootstrapOutputSchema,
   IdentityGetOutputSchema,
@@ -113,6 +117,9 @@ const PLUGIN_NAME = '@ax/agents';
 //     hard presence; declaring it would force every deployment to load
 //     @ax/teams. The team branch of `checkAccess` calls the hook via
 //     try/catch and degrades to deny when it isn't loaded.
+//   - TASK-1246: `auth:get-user` is an `optionalCalls` entry: the `everyone`
+//     audience admits AX accounts, and only the auth plugin knows them.
+//     Without it, `everyone` admits only an agent's owners (acl.ts).
 //   - We FIRE `agents:resolved` (subscriber hook). Per the auth/http-server
 //     pattern, `subscribes` lists what this plugin LISTENS to — observers
 //     subscribe at their end. We listen to nothing.
@@ -155,6 +162,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:resolve-by-webhook-token',
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
+        'agents:can-manage-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:attach-connector',
@@ -271,6 +279,17 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           degradation:
             "GET /admin/agents/tools answers 503, so the agent form can't offer tools to pick and leaves each agent's tool list as it is; while it's missing, Settings can't create a new agent with tools or change an agent's tool list",
         },
+        {
+          // TASK-1246 — an agent shared with 'everyone' admits every AX
+          // account, and only the auth plugin can say an id is one (acl.ts
+          // `isAxAccount`). Optional, not `calls`: many harnesses boot this
+          // plugin with only auth:require-user stubbed. @ax/auth-better calls
+          // only the database, http-server and credentials, so no cycle; the
+          // k8s preset test pins that it is loaded in production.
+          hook: 'auth:get-user',
+          degradation:
+            "the 'everyone' audience admits only an agent's owners, and sharing writes that name a person answer 503 (nothing can check the person is an AX account)",
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
     },
@@ -292,18 +311,23 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       await runAgentsMigration(db);
       const localStore = createAgentStore(db);
       _store = localStore;
+      // TASK-1246 — the owner and list-member rows `checkAccess` reads, and
+      // the owner check every settings write makes (`isAgentOwner`).
+      const sharing = createSharingStore(db);
+      const callerFacts = sharing.callerFacts;
+      const aclDeps: AclDeps = { callerFacts };
 
       bus.registerService<ResolveInput, ResolveOutput>(
         'agents:resolve',
         PLUGIN_NAME,
-        async (ctx, input) => resolveAgent(localStore, bus, ctx, input, bootPolicy),
+        async (ctx, input) => resolveAgent(localStore, bus, ctx, input, bootPolicy, aclDeps),
         { returns: ResolveOutputSchema },
       );
 
       bus.registerService<ListForUserInput, ListForUserOutput>(
         'agents:list-for-user',
         PLUGIN_NAME,
-        async (_ctx, input) => listForUser(localStore, input),
+        async (ctx, input) => listForUser(localStore, bus, ctx, input),
       );
 
       bus.registerService<CreateInput, CreateOutput>(
@@ -317,7 +341,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:update',
         PLUGIN_NAME,
         async (ctx, input) =>
-          updateAgent(localStore, bus, ctx, input, { policy: await loadPolicy(bus, ctx, bootPolicy) }),
+          updateAgent(localStore, bus, ctx, input, {
+            policy: await loadPolicy(bus, ctx, bootPolicy),
+            callerFacts,
+          }),
       );
 
       bus.registerService<DeleteInput, DeleteOutput>(
@@ -353,10 +380,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               message: `agent '${input.agentId}' not found`,
             });
           }
-          // ACL: personal owner, team admin, or the existing explicit workspace admin.
-          const isOwner = existing.ownerType === 'user'
-            && existing.ownerId === input.actor.userId;
-          if (!isOwner && !input.actor.isAdmin && !(await connectorsManageAllowed(existing, bus, ctx, { userId: input.actor.userId, isAdmin: false }))) {
+          if (!(await webhookTokenAllowed(existing, bus, ctx, input.actor, callerFacts))) {
             throw new PluginError({
               code: 'forbidden',
               plugin: PLUGIN_NAME,
@@ -389,10 +413,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               message: `agent '${input.agentId}' not found`,
             });
           }
-          // Same owner/team-admin/workspace-admin authority as token rotation.
-          const isOwner = existing.ownerType === 'user'
-            && existing.ownerId === input.actor.userId;
-          if (!isOwner && !input.actor.isAdmin && !(await connectorsManageAllowed(existing, bus, ctx, { userId: input.actor.userId, isAdmin: false }))) {
+          // Same authority as token rotation: ensure is also the token's READ path.
+          if (!(await webhookTokenAllowed(existing, bus, ctx, input.actor, callerFacts))) {
             throw new PluginError({
               code: 'forbidden',
               plugin: PLUGIN_NAME,
@@ -409,6 +431,29 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           await localStore.setWebhookToken(input.agentId, token);
           return { token };
         },
+      );
+
+      // TASK-1246 — the predicate the two token hooks above enforce
+      // ({@link webhookTokenAllowed}), exposed so the routine receiver's access
+      // read answers exactly what `ensure` will do. Not
+      // agents:can-manage-connectors: that one also says yes to a personal
+      // agent's co-owners, who are refused the token. `false` for anyone the
+      // token hooks refuse; a missing agent is `not-found`.
+      bus.registerService(
+        'agents:can-manage-webhook-token',
+        PLUGIN_NAME,
+        async (ctx, raw) => {
+          const input = CanManageWebhookTokenInputSchema.parse(raw);
+          const existing = await getForConnectorEdit(
+            localStore,
+            input.agentId,
+            'agents:can-manage-webhook-token',
+          );
+          return {
+            allowed: await webhookTokenAllowed(existing, bus, ctx, input.actor, callerFacts),
+          };
+        },
+        { returns: CanManageWebhookTokenOutputSchema },
       );
 
       bus.registerService<{ skillId: string }, { attached: boolean }>(
@@ -472,8 +517,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               message: `agent '${input.agentId}' not found`,
             });
           }
-          // ACL: same as agents:update — owner or admin.
-          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          // ACL: same as agents:update — one of its owners, or an admin.
+          await assertWriteAllowed(existing, bus, ctx, input.actor, callerFacts);
           const updated = await localStore.setSkillAttachments(
             input.agentId,
             input.attachments,
@@ -496,7 +541,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.agentId,
             'agents:attach-connector',
           );
-          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          await assertWriteAllowed(existing, bus, ctx, input.actor, callerFacts);
           // TASK-798 — on a team agent whatever is attached reaches every
           // member's runs, so only its owner (a team admin) or a workspace admin
           // may attach. This one check also covers TASK-765's "a member must not
@@ -507,6 +552,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             bus,
             ctx,
             input.actor,
+            callerFacts,
             'agents:attach-connector',
           );
           // TASK-827 — no keyMode guard: a shared-key (workspace) connector is
@@ -545,12 +591,13 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.agentId,
             'agents:detach-connector',
           );
-          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          await assertWriteAllowed(existing, bus, ctx, input.actor, callerFacts);
           await assertConnectorsManageAllowed(
             existing,
             bus,
             ctx,
             input.actor,
+            callerFacts,
             'agents:detach-connector',
           );
           return localStore.detachConnector(
@@ -570,7 +617,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       }, { returns: CanManageRoutinesOutputSchema });
 
       // TASK-765 / TASK-798 — may this actor change this agent's connectors
-      // (attach, detach, exclude)? Signing in ON the agent is a narrower
+      // (attach, detach, exclude)? On a personal agent: its owners (TASK-1246:
+      // the creator and co-owners). Signing in ON a team agent is a narrower
       // question since TASK-813 — agents:can-set-shared-credential, below.
       // The predicate the hooks above enforce, exposed so a caller
       // shows the affordance only to someone it will work for. An actor who
@@ -587,14 +635,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             'agents:can-manage-connectors',
           );
           try {
-            await assertWriteAllowed(existing, bus, ctx, input.actor);
+            await assertWriteAllowed(existing, bus, ctx, input.actor, callerFacts);
           } catch (err) {
             if (err instanceof PluginError && err.code === 'forbidden') {
               return { allowed: false };
             }
             throw err;
           }
-          return { allowed: await connectorsManageAllowed(existing, bus, ctx, input.actor) };
+          return {
+            allowed: await connectorsManageAllowed(existing, bus, ctx, input.actor, callerFacts),
+          };
         },
       );
 
@@ -616,7 +666,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             'agents:can-set-shared-credential',
           );
           try {
-            await assertWriteAllowed(existing, bus, ctx, input.actor);
+            await assertWriteAllowed(existing, bus, ctx, input.actor, callerFacts);
           } catch (err) {
             if (err instanceof PluginError && err.code === 'forbidden') {
               return { allowed: false };
@@ -729,6 +779,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         bus,
         agents: localStore,
         identity: createIdentityStore(db),
+        sharing,
       });
       bus.registerService<unknown, AgentIdentityRecord>(
         AGENTS_IDENTITY_GET_HOOK,
@@ -765,7 +816,15 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // calls inside their handlers reach our own services, which were
       // registered above. The unregister callbacks are tracked so a
       // re-init in tests doesn't trip duplicate-route on the http-server.
-      const unregisters = await registerAdminAgentRoutes(bus, initCtx, bootPolicy, localStore);
+      // TASK-1246 — the sharing settings behind the owners-only routes.
+      const sharingService = createSharingService({ bus, agents: localStore, sharing });
+      const unregisters = await registerAdminAgentRoutes(
+        bus,
+        initCtx,
+        bootPolicy,
+        localStore,
+        sharingService,
+      );
       unregisterRoutes.push(...unregisters);
 
       // Bootstrap-reset cleanup: when an operator runs `ax admin
@@ -773,13 +832,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // model step can re-create the default chat agent without
       // tripping any uniqueness constraints. The reset is a deliberate
       // "redo from scratch" — operator paid the I6 escape hatch. The
-      // identity rows (TASK-989) go in the same statement.
+      // identity rows (TASK-989) and the sharing rows (owners and list
+      // members, TASK-1246) go in the same statement.
       const localDb = db;
       bus.subscribe(
         'bootstrap:reset-cleanup',
         RESET_CLEANUP_KEY,
         async () => {
-          await sql`TRUNCATE agents_v1_identity, agents_v1_agents`.execute(localDb);
+          await sql`
+            TRUNCATE agents_v1_identity, agents_v1_owners, agents_v1_audience_members, agents_v1_agents
+          `.execute(localDb);
           return undefined;
         },
       );
@@ -850,6 +912,7 @@ async function resolveAgent(
   ctx: AgentContext,
   input: ResolveInput,
   boot: ModelPolicy,
+  aclDeps: AclDeps,
 ): Promise<ResolveOutput> {
   const agent = await store.getById(input.agentId);
   if (agent === null) {
@@ -860,7 +923,7 @@ async function resolveAgent(
       message: `agent '${input.agentId}' not found`,
     });
   }
-  const acl = await checkAccess(agent, input.userId, bus, ctx);
+  const acl = await checkAccess(agent, input.userId, bus, ctx, aclDeps);
   if (!acl.allowed) {
     // Deliberately the SAME error code regardless of whether the agent
     // exists-but-not-yours vs. doesn't exist. We DO surface 'not-found'
@@ -887,15 +950,25 @@ async function resolveAgent(
   await bus.fire('agents:resolved', ctx, event);
   // The swap lives only in what chats see. `agent` (the stored row) is never written back.
   const policy = await loadPolicy(bus, ctx, boot);
-  return { agent: applyPolicy(agent, policy) };
+  // TASK-1246 — whether the person asked about is one of its owners, from the
+  // same check that let them in (always false on a team agent).
+  return { agent: { ...applyPolicy(agent, policy), isOwner: acl.owner } };
 }
 
+/**
+ * `agents:list-for-user` — `checkAccess` as one list (TASK-1246). The same
+ * account check decides the `everyone` arm, once per list, so a listed agent
+ * is one `agents:resolve` lets the person use and vice versa.
+ */
 async function listForUser(
   store: AgentStore,
+  bus: HookBus,
+  ctx: AgentContext,
   input: ListForUserInput,
 ): Promise<ListForUserOutput> {
   const teamIds = input.teamIds ?? [];
-  const agents = await store.listScoped({ userId: input.userId, teamIds });
+  const everyone = await isAxAccount(bus, ctx, input.userId);
+  const agents = await store.listReachable({ userId: input.userId, teamIds, everyone });
   return { agents };
 }
 
@@ -990,7 +1063,7 @@ async function updateAgent(
   bus: HookBus,
   ctx: AgentContext,
   input: UpdateInput,
-  cfg: { policy: ModelPolicy },
+  cfg: { policy: ModelPolicy; callerFacts: AclDeps['callerFacts'] },
 ): Promise<UpdateOutput> {
   const existing = await store.getById(input.agentId);
   if (existing === null) {
@@ -1001,7 +1074,7 @@ async function updateAgent(
       message: `agent '${input.agentId}' not found`,
     });
   }
-  await assertWriteAllowed(existing, bus, ctx, input.actor);
+  await assertWriteAllowed(existing, bus, ctx, input.actor, cfg.callerFacts);
   const validated = validateUpdatePatch(input.patch, {
     allowedModels: cfg.policy.allowed,
     currentModel: existing.model,
@@ -1026,7 +1099,7 @@ async function deleteAgent(
       message: `agent '${input.agentId}' not found`,
     });
   }
-  await assertWriteAllowed(existing, bus, ctx, input.actor);
+  await assertDeleteAllowed(existing, bus, ctx, input.actor);
 
   // Credential purge is best-effort: a failure is logged and the agent row is
   // deleted anyway. Leftover agent-scope rows are unreadable (no agent) and a
@@ -1080,9 +1153,21 @@ async function deleteAgent(
 }
 
 // ---------------------------------------------------------------------------
-// Write-side authz: stricter than read-side. Owner-or-admin for personal;
-// any member for team (Task 5 acceptable scope; Task 14 may tighten to
-// team admins only once @ax/teams ships role semantics).
+// Write-side authz: stricter than read-side.
+//
+// A personal agent (TASK-1246):
+//   - its settings (update, skill attachments, connectors): any of its owners,
+//     the creator or a co-owner, as the owners table says (`isAgentOwner`), or
+//     a workspace admin. The identity a person writes: its owners only
+//     (identity/service.ts; no admin bypass there);
+//   - delete, routines and the webhook token: its creator only (`ownerId`),
+//     plus the workspace-admin bypasses that already existed (delete and the
+//     token, not routines). Routines on a personal agent run as its creator,
+//     the token fires them, and a delete can't be undone;
+//   - someone it is only shared with (its audience) may use it, never change it.
+// A team agent: any member writes (Task 5 acceptable scope; Task 14 may
+// tighten to team admins only once @ax/teams ships role semantics), and only a
+// team admin changes its connectors.
 // ---------------------------------------------------------------------------
 
 async function getForConnectorEdit(
@@ -1107,6 +1192,31 @@ async function assertWriteAllowed(
   bus: HookBus,
   ctx: AgentContext,
   actor: { userId: string; isAdmin: boolean },
+  callerFacts: AclDeps['callerFacts'],
+): Promise<void> {
+  if (actor.isAdmin) return;
+  if (agent.visibility === 'personal') {
+    if (await isAgentOwner(agent, actor.userId, callerFacts)) return;
+    throw new PluginError({
+      code: 'forbidden',
+      plugin: PLUGIN_NAME,
+      message: `agent '${agent.id}' is not owned by '${actor.userId}'`,
+    });
+  }
+  await assertTeamMemberWrite(agent, bus, ctx, actor);
+}
+
+/**
+ * TASK-1246 — `agents:delete`'s rule. On a personal agent it is stricter than
+ * {@link assertWriteAllowed}: its creator only (`ownerId`), never a co-owner,
+ * because a delete can't be undone. The workspace-admin bypass and, on a team
+ * agent, the member check are the ones every write had before.
+ */
+async function assertDeleteAllowed(
+  agent: Agent,
+  bus: HookBus,
+  ctx: AgentContext,
+  actor: Actor,
 ): Promise<void> {
   if (actor.isAdmin) return;
   if (agent.visibility === 'personal') {
@@ -1114,10 +1224,20 @@ async function assertWriteAllowed(
     throw new PluginError({
       code: 'forbidden',
       plugin: PLUGIN_NAME,
-      message: `agent '${agent.id}' is not owned by '${actor.userId}'`,
+      hookName: 'agents:delete',
+      message: `only the creator of agent '${agent.id}' or an admin can delete it`,
     });
   }
-  // team — any member can write (Task 5 scope).
+  await assertTeamMemberWrite(agent, bus, ctx, actor);
+}
+
+/** The team half of the write rules: any member of the owning team (Task 5 scope). */
+async function assertTeamMemberWrite(
+  agent: Agent,
+  bus: HookBus,
+  ctx: AgentContext,
+  actor: Actor,
+): Promise<void> {
   if (agent.ownerType !== 'team') {
     throw new PluginError({
       code: 'forbidden',
@@ -1159,7 +1279,14 @@ async function isTeamMember(
   }
 }
 
-/** TASK-969. Task authors need current membership, not authority over shared connectors. */
+/**
+ * TASK-969. Task authors need current membership, not authority over shared connectors.
+ *
+ * TASK-1246 — on a personal agent this stays its CREATOR's (`ownerId`), not
+ * every owner's: a routine on a personal agent runs as its creator
+ * (`routines/src/services.ts:332` stamps `agent.ownerId` as the routine's
+ * owner), so a co-owner's routine would act as someone else.
+ */
 async function routinesManageAllowed(agent: Agent, bus: HookBus, ctx: AgentContext): Promise<{ allowed: boolean; stopOthers: boolean }> {
   if (agent.visibility === 'personal') return {
     allowed: agent.ownerType === 'user' && agent.ownerId === ctx.userId,
@@ -1184,7 +1311,8 @@ async function routinesManageAllowed(agent: Agent, bus: HookBus, ctx: AgentConte
  * key on it is narrower still — {@link sharedCredentialSetAllowed}, TASK-813.)
  *
  *   - a workspace admin: always;
- *   - a personal agent: its owner;
+ *   - a personal agent: any of its owners, the creator or a co-owner
+ *     (TASK-1246, `isAgentOwner`), never someone it is only shared with;
  *   - a team agent: a member whose team role is `admin` (the agent's "owner":
  *     a team agent has no single owning person).
  *
@@ -1200,10 +1328,11 @@ async function connectorsManageAllowed(
   bus: HookBus,
   ctx: AgentContext,
   actor: Actor,
+  callerFacts: AclDeps['callerFacts'],
 ): Promise<boolean> {
   if (actor.isAdmin) return true;
   if (agent.visibility === 'personal') {
-    return agent.ownerType === 'user' && agent.ownerId === actor.userId;
+    return isAgentOwner(agent, actor.userId, callerFacts);
   }
   if (agent.ownerType !== 'team') return false;
   try {
@@ -1222,8 +1351,11 @@ async function connectorsManageAllowed(
  * TASK-813 — may `actor` choose the shared credential stored ON `agent` (the
  * OAuth sign-in or agent-scope key every member's runs act as)?
  *
- *   - a personal agent: never — it has no shared credential; its sign-in or
- *     key is stored on the person, outside this question;
+ *   - a personal agent: never. Its sign-in or key is stored ON THE AGENT too
+ *     (agent scope since slice 5: connectors/src/credential-plan.ts), so
+ *     everyone who can use the agent spends it, its audience included. But
+ *     choosing it there is `agents:can-manage-connectors`' question (its
+ *     owners, {@link connectorsManageAllowed}), not this one;
  *   - a team agent: a member whose team role is `admin`.
  *
  * `actor.isAdmin` is deliberately IGNORED: whose account a team's runs act as
@@ -1257,13 +1389,43 @@ async function assertConnectorsManageAllowed(
   bus: HookBus,
   ctx: AgentContext,
   actor: Actor,
+  callerFacts: AclDeps['callerFacts'],
   hookName: string,
 ): Promise<void> {
-  if (await connectorsManageAllowed(agent, bus, ctx, actor)) return;
+  if (await connectorsManageAllowed(agent, bus, ctx, actor, callerFacts)) return;
   throw new PluginError({
     code: 'forbidden',
     plugin: PLUGIN_NAME,
     hookName,
-    message: "only the agent's owner or an admin can change its connectors",
+    message: "only the agent's owners or an admin can change its connectors",
   });
+}
+
+/**
+ * May `actor` rotate or read (`ensure`) `agent`'s webhook token? The one rule
+ * behind both token hooks and `agents:can-manage-webhook-token`, the read a
+ * caller asks before showing the affordance. Whoever holds the token can fire
+ * the agent's routines, so:
+ *
+ *   - a workspace admin: always (existing);
+ *   - a personal agent: its creator only (`ownerId`), never a co-owner
+ *     (TASK-1246): its routines run as the creator
+ *     ({@link routinesManageAllowed});
+ *   - a team agent: a team admin, the team half of
+ *     {@link connectorsManageAllowed}, asked with the admin bit off. Only a
+ *     team agent reaches that call, so widening that predicate to a personal
+ *     agent's co-owners (TASK-1246) never widens this one.
+ */
+async function webhookTokenAllowed(
+  agent: Agent,
+  bus: HookBus,
+  ctx: AgentContext,
+  actor: Actor,
+  callerFacts: AclDeps['callerFacts'],
+): Promise<boolean> {
+  if (actor.isAdmin) return true;
+  if (agent.ownerType === 'user') return agent.ownerId === actor.userId;
+  if (agent.ownerType !== 'team') return false;
+  const asMember: Actor = { userId: actor.userId, isAdmin: false };
+  return connectorsManageAllowed(agent, bus, ctx, asMember, callerFacts);
 }

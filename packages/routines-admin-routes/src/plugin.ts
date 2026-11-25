@@ -35,7 +35,7 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         'http:register-route',
         'auth:require-user',
         'agents:resolve',
-        'agents:can-manage-connectors',
+        'agents:can-manage-webhook-token',
         'agents:ensure-webhook-token',
         'routines:list',
         'routines:get',

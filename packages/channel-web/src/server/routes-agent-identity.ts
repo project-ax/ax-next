@@ -7,6 +7,7 @@ import {
   type HookBus,
 } from '@ax/core';
 import { z } from 'zod';
+import { ownsPersonalAgent } from './agent-ownership.js';
 import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
 
@@ -41,10 +42,13 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     a shell, SQL, path or HTML from this route. A refusal answers 400 with
 //     the scanner's fixed reason; the text itself is never logged.
 //   - ACL: the userId is server-forced from the auth cookie; `agents:resolve`
-//     gates the agent (owner / team member → 403 otherwise), team agents are
-//     refused below, and the identity hooks check access again on the ctx,
-//     which carries the agent and the ACTING person — never a synthetic actor.
-//     CSRF is enforced by @ax/http-server on PUT.
+//     gates the agent (a personal agent's owners and the people it is shared
+//     with, a team agent's members → 403 otherwise), team agents are refused
+//     below, and a PUT on a personal agent also needs the caller to be one of
+//     its owners (`isOwner`, TASK-1246): someone it is only shared with may
+//     read who it is, never change it (403). The identity hooks check access
+//     again on the ctx, which carries the agent and the ACTING person — never
+//     a synthetic actor. CSRF is enforced by @ax/http-server on PUT.
 // ---------------------------------------------------------------------------
 
 // Per-field cap, in characters (JS string length) — the legacy admin
@@ -65,7 +69,14 @@ interface AgentsResolveInput {
   userId: string;
 }
 interface AgentsResolveOutput {
-  agent: { id: string; ownerType: 'user' | 'team' };
+  agent: {
+    id: string;
+    ownerType: 'user' | 'team';
+    /** Read only through `ownsPersonalAgent` (TASK-1246), which checks it. */
+    visibility?: 'personal' | 'team';
+    /** Is the caller one of this agent's owners? Absent is not an owner. */
+    isOwner?: boolean;
+  };
 }
 
 // PUT body: the editor's two fields, each length-bounded. Unknown fields
@@ -92,13 +103,13 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
   const { bus, initCtx } = deps;
 
   /** Authenticate, then ACL-gate the agent via `agents:resolve` under the
-   * authenticated user. Returns the agent and the acting user, or null (a
-   * response was already written). */
+   * authenticated user. Returns the agent's id, the acting user and the
+   * resolved agent, or null (a response was already written). */
   async function authorizeAgent(
     req: RouteRequest,
     res: RouteResponse,
     agentId: string | undefined,
-  ): Promise<{ agentId: string; userId: string } | null> {
+  ): Promise<{ agentId: string; userId: string; agent: AgentsResolveOutput['agent'] } | null> {
     if (agentId === undefined || agentId.length === 0) {
       res.status(400).json({ error: 'invalid-payload' });
       return null;
@@ -117,9 +128,11 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
       answerRequireUserFailure(initCtx, res, err, 'agent_identity_require_user_failed');
       return null;
     }
-    // 2) ACL — agents:resolve(agentId, userId) succeeds only for the owner /
-    //    team-member. A 'forbidden' (or any resolve failure) → 403/404 with no
-    //    oracle distinguishing "no agent" from "not yours".
+    // 2) ACL — agents:resolve(agentId, userId) succeeds for a personal agent's
+    //    owners and the people it is shared with, and a team agent's members.
+    //    A 'forbidden' (or any resolve failure) → 403/404 with no oracle
+    //    distinguishing "no agent" from "not yours". Which of those the caller
+    //    is (`isOwner`) is the save's question, not the read's.
     try {
       const out = await bus.call<AgentsResolveInput, AgentsResolveOutput>(
         'agents:resolve',
@@ -140,7 +153,7 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
         res.status(403).json({ error: 'forbidden' });
         return null;
       }
-      return { agentId, userId };
+      return { agentId, userId, agent: out.agent };
     } catch (err) {
       if (err instanceof PluginError && err.code === 'forbidden') {
         res.status(403).json({ error: 'forbidden' });
@@ -159,8 +172,9 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
   }
 
   /** The ctx the identity hooks authorize on: THIS agent, and the person
-   * acting — who `agents:resolve` just admitted (on a personal agent, its
-   * owner). Never `initCtx`, whose agent and user are channel-web's own. */
+   * acting — who `agents:resolve` just admitted (on a personal agent, one of
+   * its owners or, for a read only, someone it is shared with). Never
+   * `initCtx`, whose agent and user are channel-web's own. */
   function editorCtx(agentId: string, userId: string): AgentContext {
     return makeAgentContext({ sessionId: 'agent-identity-editor', agentId, userId });
   }
@@ -192,6 +206,16 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
     async save(req: RouteRequest, res: RouteResponse): Promise<void> {
       const auth = await authorizeAgent(req, res, req.params.id);
       if (auth === null) return;
+      // TASK-1246 — agents:resolve also admits someone a personal agent is
+      // shared with, so "resolved, and personal" no longer means "owner". Its
+      // name and persona are its owners' to change: anyone else is refused
+      // here, before the body is read or any identity hook is asked anything
+      // (`agents:identity:set` refuses them too). An answer that doesn't say
+      // `isOwner` is never taken as an owner's.
+      if (!ownsPersonalAgent(auth.agent)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
 
       // Parse + validate (length-bounded). Unknown fields stripped.
       let body: { identity: string; soul: string };

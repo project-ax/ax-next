@@ -4,7 +4,7 @@ import { sql } from 'kysely';
 import {
   RoutineDefinitionSchema, TASK_AUTO_PAUSE_AFTER_MISSES, TASK_NEEDS_YOU_AFTER_MISSES, type RoutineDuplicateOutput, type RoutineFireView, type RoutineSetStepsOutput, type RoutineView,
 } from '@ax/routines-contract';
-import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutineHarness, moveAgentToOwner, type RoutineHarness } from './support/routine-harness.js';
 import { createCheckInHarness, routineRunner, TASK_DEFINITION } from './support/check-in.js';
 import { createRoutinesStore } from '../store.js';
 import { repeatUpdateNotice } from '../task-event-content.js';
@@ -880,10 +880,10 @@ describe('replies canary (TASK-931)', () => {
     expect(first.message).toContain(`> ${EARLIER}`);
     await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
 
-    // The agent gets a new owner. @ax/agents has no hook that does that, so its row changes here. The rest
+    // The agent gets a new owner. @ax/agents has no hook that does that, so its rows change here. The rest
     // is production's own path: the new owner opens the task, agents:resolve lets them reach the agent, and
     // resolveRoutineAccess moves its routines to them (store.reconcileOwners).
-    await sql`UPDATE agents_v1_agents SET owner_id = 'new-owner' WHERE agent_id = ${h.agentId}`.execute(h.db);
+    await moveAgentToOwner(h.db, h.agentId, 'new-owner');
     const newOwner = makeAgentContext({ userId: 'new-owner', agentId: 'test', sessionId: 'test' });
     const moved = await h.bus.call<unknown, RoutineView>('routines:get', newOwner, { agentId: h.agentId, routineId: task.routineId });
     expect(moved.permissions.fire).toBe(true);
@@ -926,9 +926,9 @@ describe('owner change canary (TASK-936)', () => {
     await expect.poll(async () => (await get(h.owner)).noRecentUpdate?.inARow).toBe(1);
     expect((await get(h.owner)).task).toMatchObject({ status: 'needs-you', agentNotes: EARLIER.notes });
 
-    // The agent gets a new owner. @ax/agents has no hook that does that, so its row changes here; the rest is
+    // The agent gets a new owner. @ax/agents has no hook that does that, so its rows change here; the rest is
     // production's path: the new owner opens the task, and resolveRoutineAccess moves its routines to them.
-    await sql`UPDATE agents_v1_agents SET owner_id = 'new-owner' WHERE agent_id = ${h.agentId}`.execute(h.db);
+    await moveAgentToOwner(h.db, h.agentId, 'new-owner');
     const newOwner = makeAgentContext({ userId: 'new-owner', agentId: 'test', sessionId: 'test' });
     const moved = await get(newOwner);
     expect(moved).toMatchObject({ task: null, noRecentUpdate: null, permissions: { fire: true } });
@@ -957,7 +957,7 @@ describe('owner change canary (TASK-936)', () => {
       expect(await bus.call('tool:execute:routine_report', routineRunner(ctx), { id: 'report', name: 'routine_report', input: EARLIER })).toStrictEqual({ recorded: true });
     });
     await expect.poll(async () => (await store.recentFires(task)).length).toBe(1);
-    await sql`UPDATE agents_v1_agents SET owner_id = 'new-owner' WHERE agent_id = ${h.agentId}`.execute(h.db);
+    await moveAgentToOwner(h.db, h.agentId, 'new-owner');
     const newOwner = makeAgentContext({ userId: 'new-owner', agentId: 'test', sessionId: 'test' });
     const get = () => h.bus.call<unknown, RoutineView>('routines:get', newOwner, { agentId: h.agentId, routineId: task.routineId });
     // What the task page reads, as the transcript route reads it (its newest 200 check-ins), and the agent's feed.

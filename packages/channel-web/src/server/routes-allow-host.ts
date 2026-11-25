@@ -21,12 +21,22 @@
  *    SessionConfig names. The body's `agentId` is ignored.
  *  - The session has ended (`added: false`): the body's `agentId`.
  * Either way the site is kept only once `agents:resolve` admits the
- * AUTHENTICATED person to that agent NOW. A live session can outlive its
- * owner's access (removed from the team mid-session), and the ended case's id
- * is the browser's word. A refusal (forbidden / not-found), a missing id and a
- * fault all answer the same `kept: false`, so the answer says nothing about
- * which agents exist. The reach equals a live Allow's: anyone who may use the
- * agent could open a session and Allow any host there.
+ * AUTHENTICATED person to that agent NOW, AND its answer says the agent is a
+ * team agent or a personal agent the person OWNS (TASK-1246). A live session
+ * can outlive its owner's access (removed from the team mid-session), and the
+ * ended case's id is the browser's word. A refusal (forbidden / not-found), a
+ * missing id and a fault all answer the same `kept: false`, so the answer says
+ * nothing about which agents exist. On a team agent the reach equals a live
+ * Allow's: anyone who may use the agent could open a session and Allow any
+ * host there.
+ *
+ * Since sharing (TASK-1246), agents:resolve also admits the people a personal
+ * agent is shared with. Their "Always" widens their own live session only and
+ * answers `kept: false`: a site kept on a personal agent widens every run of
+ * it, the owner's included, and that is the owner's call (the same rule as
+ * Settings › Sites). The same gate stops an ended-session "Always" whose body
+ * names a personal agent the person doesn't own. Phase 1A on purpose; card C
+ * applies the design's shared-agent website rule.
  * The answer is `{ added }` for "Just this once" and `{ added, kept }` for
  * "Always", plus `full: true` when the agent's list of allowed sites is at its
  * cap. The keep is best-effort: it never turns the answer into a 500, and its
@@ -60,6 +70,7 @@ import {
   type HookBus,
 } from '@ax/core';
 import { z } from 'zod';
+import { ownsPersonalAgent } from './agent-ownership.js';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
 
 const BodySchema = z.object({
@@ -217,10 +228,22 @@ async function keepSite(
     // admits the authenticated person or throws, and the catch below answers
     // the same `kept: false` for a refusal and a fault alike. A live session
     // can outlive its owner's access; the ended case's id is the browser's word.
-    await deps.bus.call<AgentsResolveInput, unknown>('agents:resolve', deps.initCtx, {
-      agentId,
-      userId: args.userId,
-    });
+    const resolved = await deps.bus.call<AgentsResolveInput, unknown>(
+      'agents:resolve',
+      deps.initCtx,
+      { agentId, userId: args.userId },
+    );
+    // …and only on a team agent or a personal agent the person OWNS
+    // (TASK-1246). Someone a personal agent is only shared with keeps the
+    // widen to their live session: the agent's sites are its owners' to change.
+    // An answer that doesn't say which (no agent, no visibility, no explicit
+    // isOwner, or an agent that isn't the one being kept) keeps nothing —
+    // never assumed. Said in the log by code only: never the host, never a name.
+    const verdict = keepVerdict(resolved, agentId);
+    if (verdict !== 'ok') {
+      deps.initCtx.logger.warn('host_grant_persist_failed', { code: verdict });
+      return { kept: false };
+    }
     // `created: false` means the agent already had it — kept either way. The
     // store re-validates the host and enforces the per-agent cap.
     await deps.bus.call<HostGrantsGrantInput, { created: boolean }>('host-grants:grant', ctx, {
@@ -234,4 +257,30 @@ async function keepSite(
     deps.initCtx.logger.warn('host_grant_persist_failed', { code });
     return code === 'grant-limit' ? { kept: false, full: true } : { kept: false };
   }
+}
+
+/**
+ * May the person keep a site on `agentId`, going by this `agents:resolve`
+ * answer? A team agent: yes (agents:resolve already admitted them). A personal
+ * agent: only one of its owners ({@link ownsPersonalAgent}). Read structurally:
+ * the answer crossed the bus (I2), so its shape is checked, not trusted.
+ *
+ * - `'ok'`: keep it.
+ * - `'not-owner'`: a well-formed personal agent the person doesn't own (one
+ *   shared with them): the refusal this guard exists for.
+ * - `'bad-response'`: anything else, including an answer that names a
+ *   different agent than the one being kept (defence in depth: the grant
+ *   goes to `agentId`, so the answer must be about it).
+ */
+function keepVerdict(resolved: unknown, agentId: string): 'ok' | 'not-owner' | 'bad-response' {
+  if (typeof resolved !== 'object' || resolved === null) return 'bad-response';
+  const agent = (resolved as { agent?: unknown }).agent;
+  if (typeof agent !== 'object' || agent === null) return 'bad-response';
+  const fields = agent as { id?: unknown; visibility?: unknown; isOwner?: unknown };
+  if (fields.id !== agentId) return 'bad-response';
+  if (fields.visibility === 'team') return 'ok';
+  if (fields.visibility !== 'personal') return 'bad-response';
+  // Only an explicit boolean says which; anything else is a malformed answer.
+  if (typeof fields.isOwner !== 'boolean') return 'bad-response';
+  return ownsPersonalAgent(fields) ? 'ok' : 'not-owner';
 }

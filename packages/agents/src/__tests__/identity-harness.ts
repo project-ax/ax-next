@@ -110,6 +110,8 @@ export function useIdentityEnv(): {
       await harnesses.pop()!.close({ onError: () => {} });
     }
     await query('DROP TABLE IF EXISTS agents_v1_identity');
+    await query('DROP TABLE IF EXISTS agents_v1_owners');
+    await query('DROP TABLE IF EXISTS agents_v1_audience_members');
     await query('DROP TABLE IF EXISTS agents_v1_agents');
   });
 

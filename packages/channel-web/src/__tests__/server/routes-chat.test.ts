@@ -96,6 +96,18 @@ function authMockPlugin(args: {
   };
 }
 
+/**
+ * One `agents:list-for-user` row as the mock answers it. `isOwner` is about
+ * the asking user (TASK-1246): `false` on a personal agent merely shared with
+ * them; left out, as a producer from before sharing would.
+ */
+interface MockListedAgent {
+  id: string;
+  displayName: string;
+  visibility: 'personal' | 'team';
+  isOwner?: boolean;
+}
+
 function agentsMockPlugin(args: {
   /** Users for whom resolve allows access. */
   allowedFor: Set<string>;
@@ -104,7 +116,7 @@ function agentsMockPlugin(args: {
   /** Per-user list of PERSONAL agents the agents:list-for-user mock returns. */
   listFor?: Record<
     string,
-    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+    Array<MockListedAgent>
   >;
   /** Per-user team membership the teams:list-for-user mock returns (userId → teamIds). */
   teamsFor?: Record<string, string[]>;
@@ -113,7 +125,7 @@ function agentsMockPlugin(args: {
    *  owner_type='team' scope filter. */
   teamAgentsFor?: Record<
     string,
-    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+    Array<MockListedAgent>
   >;
 }): Plugin {
   return {
@@ -340,14 +352,14 @@ interface BootArgs {
   /** Per-user agents:list-for-user mock data. */
   listFor?: Record<
     string,
-    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+    Array<MockListedAgent>
   >;
   /** Per-user team membership (userId → teamIds) for the teams:list-for-user mock. */
   teamsFor?: Record<string, string[]>;
   /** Per-team agents (teamId → agents) surfaced when the team's id is passed. */
   teamAgentsFor?: Record<
     string,
-    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+    Array<MockListedAgent>
   >;
   /** Override allowedOrigins on the http-server. */
   allowedOrigins?: readonly string[];
@@ -2528,6 +2540,39 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
     expect(r.status).toBe(200);
     const list = (await r.json()) as Array<{ agentId: string; visibility: string }>;
     expect(list.map((a) => a.agentId)).toEqual(['agt_personal', 'agt_team']);
+  });
+
+  // TASK-1246 — agents:list-for-user now also lists personal agents merely
+  // shared with the caller (`isOwner: false`). Every client reader of this
+  // list takes "listed and personal" as "mine" (the onboarding gate, Sites,
+  // Skills, Routines), so until the UI can tell them apart (card B) they stay
+  // off it. Team agents stay, owned ones stay, and so does a row with no
+  // `isOwner` at all. The wire shape is unchanged: no `isOwner` on it.
+  it('leaves out an agent shared with the caller, and keeps team agents, owned ones and rows without isOwner', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      listFor: {
+        userA: [
+          { id: 'agt_mine', displayName: 'Mine', visibility: 'personal', isOwner: true },
+          { id: 'agt_shared', displayName: 'Shared With Me', visibility: 'personal', isOwner: false },
+          { id: 'agt_old', displayName: 'No Flag', visibility: 'personal' },
+        ],
+      },
+      teamsFor: { userA: ['team-1'] },
+      teamAgentsFor: {
+        'team-1': [{ id: 'agt_team', displayName: 'Team', visibility: 'team', isOwner: false }],
+      },
+    });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/agents`);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual([
+      { agentId: 'agt_mine', displayName: 'Mine', visibility: 'personal' },
+      { agentId: 'agt_old', displayName: 'No Flag', visibility: 'personal' },
+      { agentId: 'agt_team', displayName: 'Team', visibility: 'team' },
+    ]);
   });
 });
 

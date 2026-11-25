@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { HookBus, PluginError, makeAgentContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext, type Logger } from '@ax/core';
 import {
   createTestHarness,
   type TestHarness,
@@ -20,11 +20,13 @@ import type {
   RemoveMemberInput,
   RemoveMemberOutput,
 } from '@ax/teams';
-import { checkAccess } from '../acl.js';
+import { checkAccess, isAgentOwner, isAxAccount } from '../acl.js';
 import { createAgentsPlugin } from '../plugin.js';
 import type {
   Agent,
   AgentInput,
+  AudienceKind,
+  CallerFacts,
   CreateInput,
   CreateOutput,
   ResolveInput,
@@ -37,6 +39,8 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
     ownerId: 'u1',
     ownerType: 'user',
     visibility: 'personal',
+    audience: 'just-me',
+    shared: false,
     displayName: 'A',
     allowedTools: [],
     mcpConfigIds: [],
@@ -52,12 +56,16 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
 }
 
 function makeTeamAgent(overrides: Partial<Agent> = {}): Agent {
-  return makePersonalAgent({
+  // A team agent has no audience (its members use it), and is always shared.
+  const { audience: _none, ...personal } = makePersonalAgent();
+  return {
+    ...personal,
     ownerType: 'team',
     visibility: 'team',
     ownerId: 't1',
+    shared: true,
     ...overrides,
-  });
+  };
 }
 
 function ctx() {
@@ -68,20 +76,174 @@ function ctx() {
   });
 }
 
+/** A ctx whose logger keeps every warning, by message. */
+function recordingCtx(): { ctx: ReturnType<typeof makeAgentContext>; warned: string[] } {
+  const warned: string[] = [];
+  const logger: Logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (msg) => warned.push(msg),
+    error: () => {},
+    child: () => logger,
+  };
+  return { ctx: makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1', logger }), warned };
+}
+
+/**
+ * A fake `SharingStore.callerFacts`: fixed facts per user id (no row → both
+ * false), and every question it was asked, as `[agentId, userId]`.
+ */
+function factsOf(byUser: Record<string, Partial<CallerFacts>> = {}): {
+  callerFacts: (agentId: string, userId: string) => Promise<CallerFacts>;
+  asked: Array<[string, string]>;
+} {
+  const asked: Array<[string, string]> = [];
+  return {
+    asked,
+    callerFacts: async (agentId, userId) => {
+      asked.push([agentId, userId]);
+      return { owner: false, listed: false, ...byUser[userId] };
+    },
+  };
+}
+
+/**
+ * A bus whose `auth:get-user` answers like @ax/auth-better: a user for an id
+ * in `accounts`, null for anyone else. `asked` is every id it was asked about.
+ */
+function authBus(accounts: readonly string[]): { bus: HookBus; asked: string[] } {
+  const bus = new HookBus();
+  const asked: string[] = [];
+  bus.registerService<{ userId: string }, unknown>('auth:get-user', 'mock', async (_c, { userId }) => {
+    asked.push(userId);
+    return accounts.includes(userId)
+      ? { id: userId, email: `${userId}@example.com`, displayName: userId, isAdmin: false }
+      : null;
+  });
+  return { bus, asked };
+}
+
+const OWNER = { allowed: true, owner: true };
+const USER = { allowed: true, owner: false };
+const FORBIDDEN = { allowed: false, reason: 'forbidden' };
+
 describe('checkAccess', () => {
-  it('personal: owner matches → allowed', async () => {
-    const bus = new HookBus();
-    const result = await checkAccess(makePersonalAgent(), 'u1', bus, ctx());
-    expect(result).toEqual({ allowed: true });
+  // TASK-1246 — a personal agent: its owners, then its audience.
+
+  it('personal: an owner row → allowed, owner true', async () => {
+    // u2 is not the creator (u1) and the audience is just-me: the row alone admits them.
+    const { callerFacts, asked } = factsOf({ u2: { owner: true } });
+    const result = await checkAccess(makePersonalAgent(), 'u2', new HookBus(), ctx(), { callerFacts });
+    expect(result).toEqual(OWNER);
+    expect(asked).toEqual([['agt_x', 'u2']]);
   });
 
-  it('personal: owner mismatch → forbidden', async () => {
-    const bus = new HookBus();
-    const result = await checkAccess(makePersonalAgent(), 'someone-else', bus, ctx());
-    expect(result).toEqual({ allowed: false, reason: 'forbidden' });
+  it('personal: the creator with no owner row → forbidden', async () => {
+    // The owners table is the one source of truth: `ownerId` alone admits nobody.
+    const { callerFacts } = factsOf();
+    const result = await checkAccess(makePersonalAgent({ ownerId: 'u1' }), 'u1', new HookBus(), ctx(), {
+      callerFacts,
+    });
+    expect(result).toEqual(FORBIDDEN);
   });
 
-  it('team: teams:is-member returns true → allowed', async () => {
+  it('personal just-me: a non-owner → forbidden, and auth:get-user is never called', async () => {
+    const { bus, asked } = authBus(['u2']);
+    const { callerFacts } = factsOf();
+    const result = await checkAccess(makePersonalAgent(), 'u2', bus, ctx(), { callerFacts });
+    expect(result).toEqual(FORBIDDEN);
+    expect(asked).toEqual([]);
+  });
+
+  it('personal just-me: a listed flag without the list audience → forbidden', async () => {
+    // A member row that outlived its list (Review Focus 5) grants nothing.
+    const { callerFacts } = factsOf({ u2: { listed: true } });
+    const result = await checkAccess(makePersonalAgent({ audience: 'just-me' }), 'u2', new HookBus(), ctx(), {
+      callerFacts,
+    });
+    expect(result).toEqual(FORBIDDEN);
+  });
+
+  it('personal list: listed → allowed owner false; not listed → forbidden', async () => {
+    const agent = makePersonalAgent({ audience: 'list', shared: true });
+    const { bus, asked } = authBus(['u2', 'u3']);
+    const { callerFacts } = factsOf({ u2: { listed: true } });
+    expect(await checkAccess(agent, 'u2', bus, ctx(), { callerFacts })).toEqual(USER);
+    expect(await checkAccess(agent, 'u3', bus, ctx(), { callerFacts })).toEqual(FORBIDDEN);
+    // A list names people; it never asks whether someone is an AX account.
+    expect(asked).toEqual([]);
+  });
+
+  it("personal everyone: an AX account → allowed; auth:get-user null → forbidden; 'ownerless:s1' and '' → forbidden with no lookup; 'system' unknown to auth → forbidden", async () => {
+    const agent = makePersonalAgent({ audience: 'everyone', shared: true });
+    const { bus, asked } = authBus(['carol']);
+    const { callerFacts, asked: factsAsked } = factsOf();
+    expect(await checkAccess(agent, 'carol', bus, ctx(), { callerFacts })).toEqual(USER);
+    expect(await checkAccess(agent, 'ghost', bus, ctx(), { callerFacts })).toEqual(FORBIDDEN);
+    expect(await checkAccess(agent, 'ownerless:s1', bus, ctx(), { callerFacts })).toEqual(FORBIDDEN);
+    expect(await checkAccess(agent, '', bus, ctx(), { callerFacts })).toEqual(FORBIDDEN);
+    expect(await checkAccess(agent, 'system', bus, ctx(), { callerFacts })).toEqual(FORBIDDEN);
+    // Neither stand-in is ever looked up; the empty id isn't even checked for owner rows.
+    expect(asked).toEqual(['carol', 'ghost', 'system']);
+    expect(factsAsked.map(([, u]) => u)).toEqual(['carol', 'ghost', 'ownerless:s1', 'system']);
+  });
+
+  it('personal everyone: an owner is allowed without an account lookup', async () => {
+    const agent = makePersonalAgent({ audience: 'everyone', shared: true });
+    const { bus, asked } = authBus(['u2']);
+    const { callerFacts } = factsOf({ u2: { owner: true } });
+    expect(await checkAccess(agent, 'u2', bus, ctx(), { callerFacts })).toEqual(OWNER);
+    expect(asked).toEqual([]);
+  });
+
+  it('personal everyone: no auth:get-user → forbidden and warns once', async () => {
+    const agent = makePersonalAgent({ audience: 'everyone', shared: true });
+    const { ctx: c, warned } = recordingCtx();
+    const { callerFacts } = factsOf({ owner1: { owner: true } });
+    const accountWarnState = { warned: false };
+    const bus = new HookBus();
+    const r1 = await checkAccess(agent, 'carol', bus, c, { callerFacts, accountWarnState });
+    const r2 = await checkAccess(agent, 'dave', bus, c, { callerFacts, accountWarnState });
+    expect(r1).toEqual(FORBIDDEN);
+    expect(r2).toEqual(FORBIDDEN);
+    expect(accountWarnState.warned).toBe(true);
+    expect(warned).toEqual(['agents_acl_account_check_unavailable']);
+    // Its owners still use it.
+    expect(await checkAccess(agent, 'owner1', bus, c, { callerFacts, accountWarnState })).toEqual(OWNER);
+  });
+
+  it('personal everyone: auth:get-user throws → rejects (not forbidden)', async () => {
+    const agent = makePersonalAgent({ audience: 'everyone', shared: true });
+    const bus = new HookBus();
+    bus.registerService('auth:get-user', 'mock', async () => {
+      throw new Error('auth database unreachable');
+    });
+    const { callerFacts } = factsOf();
+    await expect(checkAccess(agent, 'carol', bus, ctx(), { callerFacts })).rejects.toThrow(
+      /auth database unreachable/,
+    );
+  });
+
+  it('an unknown audience: the owner is allowed, a non-owner is forbidden', async () => {
+    const { bus, asked } = authBus(['u2', 'u3']);
+    const { callerFacts } = factsOf({ u2: { owner: true }, u3: { listed: true } });
+    for (const bogus of ['friends', 'EVERYONE', '', undefined]) {
+      const agent = makePersonalAgent({ audience: bogus as unknown as AudienceKind });
+      expect(await checkAccess(agent, 'u2', bus, ctx(), { callerFacts }), String(bogus)).toEqual(OWNER);
+      expect(await checkAccess(agent, 'u3', bus, ctx(), { callerFacts }), String(bogus)).toEqual(FORBIDDEN);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it('personal: a malformed owner type → forbidden, even with an owner row', async () => {
+    // The DB pairing CHECK makes this row impossible; deny it if it ever exists.
+    const { callerFacts, asked } = factsOf({ u1: { owner: true } });
+    const weird = makePersonalAgent({ ownerType: 'team' });
+    expect(await checkAccess(weird, 'u1', new HookBus(), ctx(), { callerFacts })).toEqual(FORBIDDEN);
+    expect(asked).toEqual([]);
+  });
+
+  it('team: teams:is-member returns true → allowed, owner false, without reading the sharing rows', async () => {
     const bus = new HookBus();
     bus.registerService<{ teamId: string; userId: string }, { member: boolean }>(
       'teams:is-member',
@@ -92,8 +254,10 @@ describe('checkAccess', () => {
         return { member: true };
       },
     );
-    const result = await checkAccess(makeTeamAgent(), 'u1', bus, ctx());
-    expect(result).toEqual({ allowed: true });
+    const { callerFacts, asked } = factsOf({ u1: { owner: true } });
+    const result = await checkAccess(makeTeamAgent(), 'u1', bus, ctx(), { callerFacts });
+    expect(result).toEqual(USER);
+    expect(asked).toEqual([]);
   });
 
   it('team: teams:is-member returns false → forbidden', async () => {
@@ -103,31 +267,20 @@ describe('checkAccess', () => {
       'mock',
       async () => ({ member: false }),
     );
-    const result = await checkAccess(makeTeamAgent(), 'u1', bus, ctx());
-    expect(result).toEqual({ allowed: false, reason: 'forbidden' });
+    const { callerFacts } = factsOf({ u1: { owner: true, listed: true } });
+    const result = await checkAccess(makeTeamAgent(), 'u1', bus, ctx(), { callerFacts });
+    expect(result).toEqual(FORBIDDEN);
   });
 
   it('team: NO teams:is-member registered → forbidden + warns once', async () => {
     const bus = new HookBus();
-    const warned: string[] = [];
-    const c = makeAgentContext({
-      sessionId: 's',
-      agentId: 'a',
-      userId: 'u1',
-      logger: {
-        debug: () => {},
-        info: () => {},
-        warn: (msg) => warned.push(msg),
-        error: () => {},
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        child: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => undefined as any }) as any,
-      },
-    });
+    const { ctx: c, warned } = recordingCtx();
+    const { callerFacts } = factsOf();
     const warnState = { warned: false };
-    const r1 = await checkAccess(makeTeamAgent(), 'u1', bus, c, { warnState });
-    const r2 = await checkAccess(makeTeamAgent(), 'u1', bus, c, { warnState });
-    expect(r1).toEqual({ allowed: false, reason: 'forbidden' });
-    expect(r2).toEqual({ allowed: false, reason: 'forbidden' });
+    const r1 = await checkAccess(makeTeamAgent(), 'u1', bus, c, { callerFacts, warnState });
+    const r2 = await checkAccess(makeTeamAgent(), 'u1', bus, c, { callerFacts, warnState });
+    expect(r1).toEqual(FORBIDDEN);
+    expect(r2).toEqual(FORBIDDEN);
     // warnState exists to assert exactly-once warning behavior even across
     // multiple calls within the same test.
     expect(warnState.warned).toBe(true);
@@ -140,8 +293,73 @@ describe('checkAccess', () => {
     // The DB CHECK constraint should make this row impossible, but if it
     // ever reaches runtime (raw SQL bypass), we deny defensively.
     const weird = makePersonalAgent({ visibility: 'team' });
-    const result = await checkAccess(weird, 'u1', bus, ctx());
-    expect(result).toEqual({ allowed: false, reason: 'forbidden' });
+    const { callerFacts } = factsOf({ u1: { owner: true } });
+    const result = await checkAccess(weird, 'u1', bus, ctx(), { callerFacts });
+    expect(result).toEqual(FORBIDDEN);
+  });
+});
+
+describe('isAxAccount', () => {
+  it('is true only for an answer that is an object carrying the same id', async () => {
+    const bus = new HookBus();
+    const answers: Record<string, unknown> = {
+      alice: { id: 'alice', email: 'alice@example.com', displayName: 'Alice', isAdmin: false },
+      // An answer about someone else, or not an account at all, proves nothing.
+      mallory: { id: 'alice' },
+      noid: { email: 'noid@example.com' },
+      text: 'text',
+      yes: true,
+    };
+    bus.registerService<{ userId: string }, unknown>('auth:get-user', 'mock', async (_c, { userId }) =>
+      userId in answers ? answers[userId] : null,
+    );
+    expect(await isAxAccount(bus, ctx(), 'alice')).toBe(true);
+    for (const id of ['mallory', 'noid', 'text', 'yes', 'ghost']) {
+      expect(await isAxAccount(bus, ctx(), id), id).toBe(false);
+    }
+  });
+
+  it("refuses '' and an ownerless stand-in without asking", async () => {
+    const { bus, asked } = authBus(['', 'ownerless:s1']);
+    expect(await isAxAccount(bus, ctx(), '')).toBe(false);
+    expect(await isAxAccount(bus, ctx(), 'ownerless:s1')).toBe(false);
+    expect(asked).toEqual([]);
+  });
+
+  it('with no auth:get-user: false, warned once per warn state', async () => {
+    const { ctx: c, warned } = recordingCtx();
+    const warnState = { warned: false };
+    expect(await isAxAccount(new HookBus(), c, 'carol', { warnState })).toBe(false);
+    expect(await isAxAccount(new HookBus(), c, 'dave', { warnState })).toBe(false);
+    expect(warned).toEqual(['agents_acl_account_check_unavailable']);
+  });
+
+  it('a no-service fault from deeper inside auth:get-user propagates', async () => {
+    // Only auth:get-user itself being absent reads as "can't check". A broken
+    // auth plugin is an outage, not a quiet deny.
+    const bus = new HookBus();
+    bus.registerService('auth:get-user', 'mock', async () => {
+      throw new PluginError({ code: 'no-service', plugin: 'core', hookName: 'database:get-instance', message: 'gone' });
+    });
+    await expect(isAxAccount(bus, ctx(), 'carol')).rejects.toMatchObject({ code: 'no-service' });
+  });
+});
+
+describe('isAgentOwner', () => {
+  it('is true only for a personal agent with an owner row for a non-empty user id', async () => {
+    const { callerFacts, asked } = factsOf({ u2: { owner: true }, u3: { listed: true }, '': { owner: true } });
+    expect(await isAgentOwner(makePersonalAgent(), 'u2', callerFacts)).toBe(true);
+    expect(await isAgentOwner(makePersonalAgent({ audience: 'list' }), 'u3', callerFacts)).toBe(false);
+    // The creator with no owner row is not an owner.
+    expect(await isAgentOwner(makePersonalAgent(), 'u1', callerFacts)).toBe(false);
+    expect(await isAgentOwner(makePersonalAgent(), '', callerFacts)).toBe(false);
+    // Always false on a team agent, whatever the rows say.
+    expect(await isAgentOwner(makeTeamAgent(), 'u2', callerFacts)).toBe(false);
+    expect(asked).toEqual([
+      ['agt_x', 'u2'],
+      ['agt_x', 'u3'],
+      ['agt_x', 'u1'],
+    ]);
   });
 });
 

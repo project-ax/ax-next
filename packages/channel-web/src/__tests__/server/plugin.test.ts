@@ -360,6 +360,9 @@ function agentsMockPlugin(args: {
           agent: {
             id: 'agt_test',
             visibility: args.teamConnectors === undefined ? 'personal' : 'team',
+            // As @ax/agents answers (TASK-1246): the caller owns their
+            // personal agent; nobody "owns" a team agent.
+            isOwner: args.teamConnectors === undefined,
           },
         };
       });

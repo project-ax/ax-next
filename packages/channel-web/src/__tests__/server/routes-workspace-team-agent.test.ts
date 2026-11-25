@@ -174,7 +174,15 @@ describe('team-agent files and Instructions are shared per agent (TASK-257)', ()
         });
       }
       return {
-        agent: { id: TEAM_AGENT_ID, displayName: 'Team Inbox', ownerType: 'team' },
+        // As @ax/agents answers a team agent: `visibility` with the owner
+        // type, and `isOwner` always false (TASK-1246).
+        agent: {
+          id: TEAM_AGENT_ID,
+          displayName: 'Team Inbox',
+          ownerType: 'team',
+          visibility: 'team',
+          isOwner: false,
+        },
       };
     });
   }

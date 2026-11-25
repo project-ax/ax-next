@@ -1836,6 +1836,23 @@ describe('@ax/preset-k8s — validator-identity', () => {
     const agents = plugins.find((p) => p.manifest.name === '@ax/agents');
     expect((agents!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain('identity:scan');
   });
+
+  // TASK-1246 — an agent shared with 'everyone' admits every AX account, and
+  // only the auth plugin can say an id is one. @ax/agents declares the call as
+  // optional (many harnesses boot it without auth), so a preset that lost the
+  // producer would still boot, with 'everyone' quietly admitting only owners.
+  // This pins the producer in the production preset.
+  it('@ax/agents declares auth:get-user as an optional call and @ax/auth-better produces it', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const agents = plugins.find((p) => p.manifest.name === '@ax/agents');
+    expect(agents, '@ax/agents plugin').toBeDefined();
+    expect(agents!.manifest.calls).not.toContain('auth:get-user');
+    expect((agents!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain('auth:get-user');
+    const producers = plugins
+      .filter((p) => p.manifest.registers.includes('auth:get-user'))
+      .map((p) => p.manifest.name);
+    expect(producers).toEqual(['@ax/auth-better']);
+  });
 });
 
 // Defaults routines-half (2026-05-19). Closes the manifest-level
