@@ -22,6 +22,7 @@ import { SLACK_NOT_REMEMBERED_LINE } from '../turn-note.js';
 import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import {
   followContinuation,
+  pickPersonalAgent,
   PLUMBING_TOOL_NAMES,
   runTurn,
   turnContextFields,
@@ -2112,6 +2113,40 @@ function webPlumbingToolNames(): string[] {
   if (names.length === 0) throw new Error("read no names from channel-web's PLUMBING_TOOL_NAMES");
   return names;
 }
+
+describe('pickPersonalAgent: an agent only shared with the user is never theirs (TASK-1246)', () => {
+  // agents:list-for-user now also lists a personal agent merely shared with the user: ownerType
+  // 'user', visibility 'personal', but ownerId is someone else's and `isOwner` is false.
+  const shared = {
+    id: 'agt_alice_shared',
+    ownerId: 'usr_alice',
+    ownerType: 'user',
+    visibility: 'personal',
+    isOwner: false,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+  };
+  const mine = {
+    id: 'agt_bob',
+    ownerId: 'usr_bob',
+    ownerType: 'user',
+    visibility: 'personal',
+    isOwner: true,
+    createdAt: new Date('2026-09-01T00:00:00Z'),
+  };
+
+  it("never picks one, however old, and never honors a choice of it, so the user's own is picked", () => {
+    // The shared one is older, so oldest-wins would take it were the owner term gone.
+    expect(pickPersonalAgent([mine, shared], 'usr_bob')).toBe('agt_bob');
+    expect(pickPersonalAgent([shared, mine], 'usr_bob', 'agt_alice_shared')).toBe('agt_bob');
+  });
+
+  it('answers null when the only agent listed is one shared with them, chosen or not', () => {
+    expect(pickPersonalAgent([shared], 'usr_bob')).toBeNull();
+    expect(pickPersonalAgent([shared], 'usr_bob', 'agt_alice_shared')).toBeNull();
+    // Its owner still gets it.
+    expect(pickPersonalAgent([shared], 'usr_alice', 'agt_alice_shared')).toBe('agt_alice_shared');
+  });
+});
 
 describe("PLUMBING_TOOL_NAMES: channel-web's twin (TASK-1130)", () => {
   it("names exactly the calls the web's step panel hides", () => {

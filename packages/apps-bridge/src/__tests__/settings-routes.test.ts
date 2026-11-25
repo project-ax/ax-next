@@ -644,6 +644,50 @@ describe('apps settings routes', () => {
     expect(ApprovalPromptSchema.parse((await h.approvalGet({}, ADA)).body)).toMatchObject({ agents: [], approvedAgentId: null });
   });
 
+  it("an agent shared with the caller is not offered as a candidate and can't be approved (TASK-1246)", async () => {
+    // agents:list-for-user now also lists a personal agent merely shared with the viewer: ownerType
+    // 'user', ownerId someone else's, isOwner false. It has the connector, so only whose it is rules it out.
+    const SHARED = 'agt_ada_shared';
+    const h = await started({
+      handlers: {
+        'agents:list-for-user': (_ctx, input: { userId: string }) => ({
+          agents: [
+            { ...AGENTS[VIC_AGENT]!, isOwner: input.userId === VIC },
+            { ...agentRow(SHARED, ADA, 'user', [CONN]), isOwner: false },
+          ],
+        }),
+      },
+    });
+    await link(h);
+    await grant(h, 'viewer', [KEY, KEY_CREATE]);
+    const put = vi.spyOn(h.store, 'putApproval');
+
+    // The page offers Vic's own agent and not the shared one.
+    const out = await h.approvalGet({}, VIC);
+    expect(ApprovalPromptSchema.parse(out.body).agents).toEqual([{ agentId: VIC_AGENT, displayName: `Agent ${VIC_AGENT}` }]);
+    // Someone whose only listed agent is the shared one is offered nothing.
+    const noOwn = await started({
+      handlers: { 'agents:list-for-user': () => ({ agents: [{ ...agentRow(SHARED, ADA, 'user', [CONN]), isOwner: false }] }) },
+    });
+    await link(noOwn);
+    await grant(noOwn, 'viewer', [KEY, KEY_CREATE]);
+    expect(ApprovalPromptSchema.parse((await noOwn.approvalGet({}, VIC)).body).agents).toEqual([]);
+
+    // And it can't be approved, even by id.
+    const noPut = vi.spyOn(noOwn.store, 'putApproval');
+    expect(await noOwn.approvalPost({ agentId: SHARED, tools: [TOOL, 'create_issue'] }, {}, VIC)).toMatchObject({
+      status: 400,
+      body: { error: 'agent-not-eligible' },
+    });
+    expect(await h.approvalPost({ agentId: SHARED, tools: [TOOL, 'create_issue'] }, {}, VIC)).toMatchObject({
+      status: 400,
+      body: { error: 'agent-not-eligible' },
+    });
+    expect(put).not.toHaveBeenCalled();
+    expect(noPut).not.toHaveBeenCalled();
+    expect(await noOwn.store.getApproval(VIC, P, APP, CONN)).toBeNull();
+  });
+
   it("approval POST: an ineligible agent is 400 agent-not-eligible; a good choice stores the grant's tool keys", async () => {
     const h = await started();
     await link(h);
