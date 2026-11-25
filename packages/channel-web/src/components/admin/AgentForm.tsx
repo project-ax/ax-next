@@ -194,6 +194,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // identity write: blank fields written back over text we never read would
   // erase it. The rest of the form still saves.
   const [identityLoadFailed, setIdentityLoadFailed] = useState(false);
+  const [identityTick, setIdentityTick] = useState(0);
   const identityFieldsLocked =
     editing !== 'new' && (identityLoading || identityLoadFailed);
 
@@ -270,6 +271,9 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // splice one agent's identity into another's form.
   useEffect(() => {
     setIdentityLoadFailed(false);
+  }, [editing]);
+
+  useEffect(() => {
     if (editing === null || editing === 'new') return;
     const agentId = editing.id;
     let cancelled = false;
@@ -282,6 +286,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
           identity: loaded.identity,
           soul: loaded.soul,
         }));
+        setIdentityLoadFailed(false);
       })
       .catch(() => {
         // Not best-effort (TASK-989): the fields stay disabled and the save
@@ -295,7 +300,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [editing]);
+  }, [editing, identityTick]);
 
   const startNew = () => {
     editRequest.current += 1;
@@ -695,13 +700,20 @@ if (base.model !== editing.model) patch.model = base.model;
                 setForm((f) => ({ ...f, identity: e.target.value }))
               }
             />
-            <p className="text-xs text-muted-foreground">
-              {editing !== 'new' && identityLoading
-                ? 'Loading the agent’s identity…'
-                : editing !== 'new' && identityLoadFailed
-                  ? 'We couldn’t load this agent’s identity, so saving leaves it as it is.'
+            {editing !== 'new' && identityLoadFailed ? (
+              <Notice
+                tone="danger"
+                action={{ label: 'Try again', busy: identityLoading, onClick: () => setIdentityTick((n) => n + 1) }}
+              >
+                We couldn’t load this agent’s identity, so saving leaves it as it is.
+              </Notice>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {editing !== 'new' && identityLoading
+                  ? 'Loading the agent’s identity…'
                   : 'How this agent describes itself. It can update this as it grows.'}
-            </p>
+              </p>
+            )}
           </div>
 
           {/* Soul */}

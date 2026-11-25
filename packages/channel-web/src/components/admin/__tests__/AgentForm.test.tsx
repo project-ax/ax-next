@@ -332,6 +332,25 @@ describe('AgentForm — identity editor (TASK-142, TASK-989)', () => {
     expect(putAgentIdentity).not.toHaveBeenCalled();
   });
 
+  it('a failed identity read offers Try again; on success the fields enable and the notice goes', async () => {
+    vi.mocked(getAgentIdentity)
+      .mockRejectedValueOnce(new Error('get agent identity: 503'))
+      .mockResolvedValueOnce({ identity: 'I am Ada.', soul: 'Kind.' });
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await screen.findByText('We couldn’t load this agent’s identity, so saving leaves it as it is.');
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).value).toBe('I am Ada.'));
+    expect(getAgentIdentity).toHaveBeenCalledTimes(2);
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).disabled).toBe(false);
+    expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByText(/We couldn’t load this agent’s identity/)).toBeNull();
+  });
+
   it('saves identity and soul only', async () => {
     vi.mocked(getAgentIdentity).mockResolvedValue({
       identity: 'I am Ada.',
