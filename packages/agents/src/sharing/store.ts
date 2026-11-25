@@ -39,6 +39,13 @@ export interface SharingStore {
    * agent row lock: owners not named are deleted and new ones inserted. An
    * owner who stays keeps their row, and with it their place in listOwners.
    * Throws `not-found` when the agent is gone.
+   *
+   * It checks nothing about the set: an empty one, or one without the
+   * creator (`owner_id`), is written as given, and the creator then loses
+   * the agent (the owners rows are the one truth for access). Phase 1 keeps
+   * the creator an owner, so every caller acting for a person must refuse a
+   * set without them first (`creator-required`, the sharing service). No
+   * hook or route reaches this without that check.
    */
   setOwners(agentId: string, userIds: readonly string[]): Promise<void>;
 }

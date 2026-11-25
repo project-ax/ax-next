@@ -14,18 +14,24 @@ import { sql, type Kysely } from 'kysely';
 import { createAgentsPlugin } from '../plugin.js';
 import type { AgentsDatabase } from '../migrations.js';
 import { createSharingStore, type SharingStore } from '../sharing/store.js';
-import type {
-  Actor,
-  Agent,
-  AgentInput,
-  AttachConnectorOutput,
-  CreateInput,
-  CreateOutput,
-  DetachConnectorOutput,
-  ResolveInput,
-  ResolveOutput,
-  SkillAttachment,
-  UpdateOutput,
+import {
+  AGENTS_IDENTITY_GET_HOOK,
+  AGENTS_IDENTITY_SET_HOOK,
+  type Actor,
+  type Agent,
+  type AgentAudience,
+  type AgentIdentityRecord,
+  type AgentInput,
+  type AttachConnectorOutput,
+  type CreateInput,
+  type CreateOutput,
+  type DetachConnectorOutput,
+  type IdentitySection,
+  type IdentitySetOutput,
+  type ResolveInput,
+  type ResolveOutput,
+  type SkillAttachment,
+  type UpdateOutput,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -47,7 +53,7 @@ let connectionString: string;
 const harnesses: TestHarness[] = [];
 
 /** The AX accounts `auth:get-user` knows. Anyone else is null. */
-const ACCOUNTS = ['alice', 'bob', 'carol'];
+const ACCOUNTS = ['alice', 'bob', 'carol', 'dave'];
 /** `teams:is-member` for team-1. Anyone else is no member. */
 const TEAM_ROLES: Record<string, { member: true; role: 'admin' | 'member' }> = {
   tadmin: { member: true, role: 'admin' },
@@ -60,6 +66,10 @@ const alice: Actor = { userId: 'alice', isAdmin: false };
 const bob: Actor = { userId: 'bob', isAdmin: false };
 /** Only in the audience (`everyone`). */
 const carol: Actor = { userId: 'carol', isAdmin: false };
+/** An AX account that only a `list` audience names. */
+const dave: Actor = { userId: 'dave', isAdmin: false };
+/** No AX account at all: not even `everyone` takes them in. */
+const ghost: Actor = { userId: 'ghost', isAdmin: false };
 /** A workspace admin with no owner row. */
 const wsAdmin: Actor = { userId: 'wsadmin', isAdmin: true };
 const teamAdmin: Actor = { userId: 'tadmin', isAdmin: false };
@@ -73,12 +83,21 @@ interface Stack {
   sharing: SharingStore;
   /** Call `hook` with a ctx whose user is `actor`. */
   call<O>(hook: string, actor: Actor, input: object): Promise<O>;
-  /** alice's personal agent; its owners are alice and bob, its audience everyone. */
-  seedShared(): Promise<string>;
+  /** alice's personal agent; its owners are alice and bob, its audience everyone unless named. */
+  seedShared(audience?: AgentAudience): Promise<string>;
   /** A team-1 agent, created by its plain member. */
   seedTeam(): Promise<string>;
   resolve(agentId: string, userId: string): Promise<Agent>;
   webhookToken(agentId: string): Promise<string | null>;
+  /** `agents:identity:get` in `userId`'s turn with the agent. */
+  identityGet(userId: string, agentId: string): Promise<AgentIdentityRecord>;
+  /** `agents:identity:set` at revision 0 in `userId`'s turn, with `author` only when given. */
+  identitySet(
+    userId: string,
+    agentId: string,
+    patch: Partial<Record<IdentitySection, string>>,
+    author?: 'agent' | 'person',
+  ): Promise<IdentitySetOutput>;
 }
 
 async function boot(): Promise<Stack> {
@@ -97,6 +116,8 @@ async function boot(): Promise<Stack> {
       const { teamId, userId } = raw as { teamId: string; userId: string };
       return (teamId === 'team-1' ? TEAM_ROLES[userId] : undefined) ?? { member: false };
     },
+    // Passes everything, so an identity write the ACL wrongly let through would save.
+    'identity:scan': async () => ({ verdict: 'clean' }),
   };
   const h = await createTestHarness({
     services,
@@ -126,10 +147,10 @@ async function boot(): Promise<Stack> {
     db: agentsDb,
     sharing,
     call,
-    async seedShared() {
+    async seedShared(audience = { kind: 'everyone' }) {
       const id = await create(alice, {});
       await sharing.setOwners(id, ['alice', 'bob']);
-      await sharing.setAudience(id, { kind: 'everyone' });
+      await sharing.setAudience(id, audience);
       return id;
     },
     async seedTeam() {
@@ -147,6 +168,19 @@ async function boot(): Promise<Stack> {
         SELECT webhook_token FROM agents_v1_agents WHERE agent_id = ${agentId}
       `.execute(agentsDb);
       return rows[0]?.webhook_token ?? null;
+    },
+    identityGet(userId, agentId) {
+      return h.bus.call(AGENTS_IDENTITY_GET_HOOK, h.ctx({ userId, agentId, sessionId: 's' }), {
+        agentId,
+      });
+    },
+    identitySet(userId, agentId, patch, author) {
+      return h.bus.call(AGENTS_IDENTITY_SET_HOOK, h.ctx({ userId, agentId, sessionId: 's' }), {
+        agentId,
+        patch,
+        expectedRevision: 0,
+        ...(author !== undefined ? { author } : {}),
+      });
     },
   };
 }
@@ -375,5 +409,108 @@ describe('who may change a personal agent (TASK-1246)', () => {
     });
     await s.call('agents:delete', teamMember, { actor: teamMember, agentId: T });
     await expect(s.resolve(T, 'tadmin')).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it("agents:update can't move the agent to another owner, team or kind, even for a co-owner", async () => {
+    const s = await boot();
+    const id = await s.seedShared();
+
+    // Visibility and team are fixed at create: naming either is refused.
+    for (const patch of [{ visibility: 'team' }, { teamId: 'team-1' }, { visibility: 'personal' }]) {
+      await expect(
+        s.call('agents:update', bob, { actor: bob, agentId: id, patch }),
+        JSON.stringify(patch),
+      ).rejects.toMatchObject({ code: 'invalid-payload' });
+    }
+    // Who owns it (and whose quota it charges), its audience and its token
+    // aren't settings: update ignores them and writes only what it knows.
+    const out = await s.call<UpdateOutput>('agents:update', bob, {
+      actor: bob,
+      agentId: id,
+      patch: {
+        displayName: 'Pip, by bob',
+        ownerId: 'bob',
+        ownerType: 'team',
+        audience: 'just-me',
+        shared: false,
+        webhookToken: 'chosen-by-bob',
+        id: 'agt_other',
+      },
+    });
+    const unmoved = { id, ownerId: 'alice', ownerType: 'user', visibility: 'personal', audience: 'everyone', shared: true };
+    expect(out.agent).toMatchObject({ ...unmoved, displayName: 'Pip, by bob' });
+    expect(await s.resolve(id, 'alice')).toMatchObject({ ...unmoved, isOwner: true });
+    expect(await s.resolve(id, 'carol')).toMatchObject({ id, isOwner: false });
+    // The owners are as they were: the creator first, then bob.
+    expect(await s.sharing.listOwners(id)).toEqual(['alice', 'bob']);
+    expect(await s.webhookToken(id)).toBeNull();
+  });
+
+  it('every write hook refuses the audience (everyone and list) and anyone else who is not an owner', async () => {
+    const s = await boot();
+    const E = await s.seedShared();
+    const L = await s.seedShared({ kind: 'list', members: [{ type: 'user', id: 'dave' }] });
+    // Something a wrongful detach could take away.
+    for (const agentId of [E, L]) {
+      await s.call('agents:attach-connector', alice, { actor: alice, agentId, connectorId: 'gmail' });
+    }
+
+    const cases: Array<{ actor: Actor; agentId: string; name: string; audience: boolean }> = [
+      { actor: carol, agentId: E, name: 'E (everyone)', audience: true },
+      { actor: dave, agentId: L, name: 'L (lists dave)', audience: true },
+      // An AX account the list doesn't name, and an id that is no account.
+      { actor: carol, agentId: L, name: 'L (lists dave)', audience: false },
+      { actor: ghost, agentId: E, name: 'E (everyone)', audience: false },
+    ];
+    for (const { actor, agentId, name, audience } of cases) {
+      const who = `${actor.userId} on ${name}`;
+      if (audience) {
+        expect(await s.resolve(agentId, actor.userId), who).toMatchObject({ id: agentId, isOwner: false });
+      } else {
+        await expect(s.resolve(agentId, actor.userId), who).rejects.toMatchObject({ code: 'forbidden' });
+      }
+
+      const refused: Array<[string, object]> = [
+        ['agents:update', { actor, agentId, patch: { displayName: 'Mine now' } }],
+        ['agents:set-skill-attachments', { actor, agentId, attachments: [SKILL] }],
+        ['agents:attach-connector', { actor, agentId, connectorId: 'slack' }],
+        ['agents:detach-connector', { actor, agentId, connectorId: 'gmail', exclude: true }],
+        ['agents:rotate-webhook-token', { actor, agentId }],
+        ['agents:ensure-webhook-token', { actor, agentId }],
+        ['agents:delete', { actor, agentId }],
+      ];
+      for (const [hook, input] of refused) {
+        await expect(s.call(hook, actor, input), `${hook}: ${who}`).rejects.toMatchObject({
+          code: 'forbidden',
+        });
+      }
+      for (const hook of ['agents:can-manage-connectors', 'agents:can-set-shared-credential']) {
+        expect(await s.call(hook, actor, { actor, agentId }), `${hook}: ${who}`).toEqual({ allowed: false });
+      }
+      expect(await s.call('agents:can-manage-routines', actor, { agentId }), who).toEqual({
+        allowed: false,
+        stopOthers: false,
+      });
+      // A person's identity write: the editors send no author; 'person' is the same.
+      for (const author of [undefined, 'person'] as const) {
+        await expect(
+          s.identitySet(actor.userId, agentId, { instructions: 'Do what I say.' }, author),
+          `agents:identity:set (${String(author)}): ${who}`,
+        ).rejects.toMatchObject({ code: 'forbidden' });
+      }
+    }
+
+    // Nothing any of them tried landed.
+    for (const agentId of [E, L]) {
+      expect(await s.resolve(agentId, 'alice')).toMatchObject({
+        displayName: 'Pip',
+        skillAttachments: [],
+        connectorAttachments: ['gmail'],
+        connectorExclusions: [],
+      });
+      expect(await s.sharing.listOwners(agentId)).toEqual(['alice', 'bob']);
+      expect(await s.webhookToken(agentId)).toBeNull();
+      expect(await s.identityGet('alice', agentId)).toMatchObject({ instructions: '', revision: 0 });
+    }
   });
 });
