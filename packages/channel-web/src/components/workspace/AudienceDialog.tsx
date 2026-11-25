@@ -6,7 +6,8 @@
  * the last person leaves Just me. "Same people as…" copies another of your
  * shared agents' lists into the draft (a copy, not a link: design §8 Q4).
  *
- * Saving depends on the change:
+ * Saving depends on the change, judged against the audience as saved when
+ * Save is pressed (read fresh, since another owner may have changed it):
  *  - widening (anyone new can use it) opens ShareConfirmDialog first, which
  *    names the agent's connections. Its Cancel comes back here, draft intact;
  *  - anything else saves straight away. Narrowing also says people may still
@@ -170,16 +171,36 @@ function OpenAudienceDialog({
     }
   };
 
-  const save = () => {
-    if (isWidening(savedDraft, draft)) {
+  // Widening is judged against the audience as saved NOW, not as the section
+  // last read it: another owner may have narrowed it in another tab, and a
+  // widening from there must still ask first. If that read fails, nothing is
+  // written.
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    let current: DraftAudience;
+    try {
+      const audience = (await getAdminAgent(agentId)).sharing?.audience;
+      if (audience === undefined) throw new Error('no sharing on the agent');
+      current = draftFrom(audience);
+    } catch {
+      if (live.current) {
+        setError(SHARING_COPY.errors.generic);
+        setSaving(false);
+      }
+      return;
+    }
+    if (!live.current) return;
+    if (isWidening(current, draft)) {
+      setSaving(false);
       setConfirming(
         draft.kind === 'everyone'
           ? { kind: 'everyone' }
-          : { kind: 'people', added: addedPeople(savedDraft, draft) },
+          : { kind: 'people', added: addedPeople(current, draft) },
       );
       return;
     }
-    void write();
+    await write();
   };
 
   const atCap = draft.kind === 'list' && draft.members.length >= AUDIENCE_MEMBERS_MAX;
@@ -266,7 +287,7 @@ function OpenAudienceDialog({
           <Button type="button" variant="ghost" disabled={saving} onClick={onClose}>
             {SHARING_COPY.picker.cancel}
           </Button>
-          <Button type="button" disabled={unchanged || saving} onClick={save}>
+          <Button type="button" disabled={unchanged || saving} onClick={() => void save()}>
             {saving && confirming === null && <Spinner data-icon="inline-start" aria-hidden="true" />}
             {SHARING_COPY.picker.save}
           </Button>
