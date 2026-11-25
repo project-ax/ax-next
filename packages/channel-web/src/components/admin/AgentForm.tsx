@@ -52,8 +52,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ConfirmAction } from '@project-ax/ui';
+import { ConfirmAction, Notice, EmptyState } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 
@@ -471,20 +470,14 @@ if (base.model !== editing.model) patch.model = base.model;
       <div className="font-sans">
         <SettingsActions><Button data-return-focus="admin-agents" onClick={startNew}>New agent</Button></SettingsActions>
 
-        {/* (D2) Was a hand-rolled destructive div. `Alert` is installed, this
-            file already imports it, and one of the two copies had different
-            padding from the other — which is the whole argument for the
-            primitive. */}
         {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <div className="mb-4">
+            <Notice tone="danger">{error}</Notice>
+          </div>
         )}
 
         {agents.length === 0 ? (
-          <div className="text-sm text-muted-foreground">
-            No agents yet. Make one.
-          </div>
+          <EmptyState title="No agents yet." description="Make one." />
         ) : (
           <div className="flex flex-col">
             {agents.map((a) => (
@@ -636,16 +629,14 @@ if (base.model !== editing.model) patch.model = base.model;
           <div className="flex flex-col gap-2">
             <Label htmlFor="agent-model">Model</Label>
             {editing !== null && editing !== 'new' && editing.requestedModel !== undefined && (
-              <Alert><AlertDescription>{movedNotice(modelOptions.find((o) => o.id === editing.model)?.label ?? editing.model)}</AlertDescription></Alert>
+              <Notice tone="info">{movedNotice(modelOptions.find((o) => o.id === editing.model)?.label ?? editing.model)}</Notice>
             )}
             {models !== null && modelOptions.length === 0 ? (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  {modelsError === null
-                    ? 'No models are available yet. That usually means no model provider is configured — add a provider key on the Model config tab, then reopen this form.'
-                    : `We couldn’t load the model list (${modelsError}). Close and reopen this form to try again.`}
-                </AlertDescription>
-              </Alert>
+              <Notice tone="danger">
+                {modelsError === null
+                  ? 'No models are available yet. That usually means no model provider is configured — add a provider key on the Model config tab, then reopen this form.'
+                  : `We couldn’t load the model list (${modelsError}). Close and reopen this form to try again.`}
+              </Notice>
             ) : (
               <select
                 id="agent-model"
@@ -727,9 +718,7 @@ if (base.model !== editing.model) patch.model = base.model;
           />
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
 
           <div className="flex items-center gap-2">

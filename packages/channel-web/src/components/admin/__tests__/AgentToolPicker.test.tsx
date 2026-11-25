@@ -77,14 +77,14 @@ describe('AgentToolPicker', () => {
 
   it('says which saved names are not available here, without promising to remove them', () => {
     setup({ selected: ['Bash', 'routines'] });
-    expect(screen.getByRole('alert').textContent).toContain(
+    expect(screen.getByRole('status').textContent).toContain(
       '“routines” isn’t available here, so listing it does nothing right now. It may be a tool this deployment doesn’t run, or one this list doesn’t control.',
     );
   });
 
   it('lists several unknown names together', () => {
     setup({ selected: ['a', 'b'] });
-    expect(screen.getByRole('alert').textContent).toContain(
+    expect(screen.getByRole('status').textContent).toContain(
       'These aren’t available here, so listing them does nothing right now: “a”, “b”. They may be tools this deployment doesn’t run, or ones this list doesn’t control.',
     );
   });
@@ -94,7 +94,7 @@ describe('AgentToolPicker', () => {
   it('nothing is removed until the owner clicks Remove it', () => {
     const onChange = setup({ selected: ['Bash', 'routines', 'routine_get'] });
     expect(onChange).not.toHaveBeenCalled();
-    const remove = within(screen.getByRole('alert')).getByRole('button', { name: 'Remove it' });
+    const remove = within(screen.getByRole('status')).getByRole('button', { name: 'Remove it' });
     // Inside the agent form: it must not submit it.
     expect(remove.getAttribute('type')).toBe('button');
     fireEvent.click(remove);
@@ -111,7 +111,9 @@ describe('AgentToolPicker', () => {
     setup({ catalog: { status: 'failed' }, selected: ['Bash', 'routines'] });
     expect(screen.getByText(/this agent keeps the ones it has: Bash, routines/)).toBeTruthy();
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
-    expect(screen.queryByRole('alert')).toBeNull();
+    // A failed read is a danger Notice (alert); the note about unknown saved names is info (status).
+    expect(screen.getByRole('alert')).toHaveTextContent(/this agent keeps the ones it has/);
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('a failed read leaves out the tools AX adds itself when listing what the agent keeps', () => {

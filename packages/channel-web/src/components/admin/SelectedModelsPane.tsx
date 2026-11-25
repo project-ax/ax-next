@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
+import { EmptyState } from '@project-ax/ui';
 import { SettingsDetailRow } from '../settings/SettingsLayout';
 import type { CatalogProvider } from '@/lib/models-admin';
 import { selectedInfo, type Draft } from '@/lib/models-picker';
@@ -39,12 +39,7 @@ export function SelectedModelsPane({ draft, providers, onSetDefault, onRemove }:
       <h2 className="sr-only">Available to users ({draft.allowed.length})</h2>
       <div ref={listRef} tabIndex={-1} className="outline-none">
         {draft.allowed.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>{NONE_SELECTED_TITLE}</EmptyTitle>
-              <EmptyDescription>{NONE_SELECTED_BODY}</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState title={NONE_SELECTED_TITLE} description={NONE_SELECTED_BODY} />
         ) : draft.allowed.map((ref) => {
           const info = selectedInfo(ref, providers);
           const isDefault = ref === draft.default;

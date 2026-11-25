@@ -22,9 +22,8 @@
  * (see TASK-446).
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Button as AxButton } from '@project-ax/ui';
+import { Button as AxButton, Notice } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
@@ -112,21 +111,18 @@ export function SlackBotRequests() {
   if (load.kind === 'loading') return null;
   if (load.kind === 'error') {
     return (
-      <Alert variant="destructive">
-        <AlertDescription className="flex flex-col items-start gap-3">
-          <p>{COPY['loadFailed']}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setLoad({ kind: 'loading' });
-              void read();
-            }}
-          >
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <Notice
+        tone="danger"
+        action={{
+          label: 'Try again',
+          onClick: () => {
+            setLoad({ kind: 'loading' });
+            void read();
+          },
+        }}
+      >
+        {COPY['loadFailed']}
+      </Notice>
     );
   }
 
@@ -134,9 +130,7 @@ export function SlackBotRequests() {
   if (requests.length === 0) {
     // Nothing left to act on. If that's why the dialog just closed, say so.
     return changed ? (
-      <Alert>
-        <AlertDescription>{COPY['changed']}</AlertDescription>
-      </Alert>
+      <Notice tone="info">{COPY['changed']}</Notice>
     ) : null;
   }
 
@@ -151,9 +145,7 @@ export function SlackBotRequests() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {changed && (
-            <Alert>
-              <AlertDescription>{COPY['changed']}</AlertDescription>
-            </Alert>
+            <Notice tone="info">{COPY['changed']}</Notice>
           )}
           <ul className="flex flex-col gap-4">
             {requests.map((request) => (
@@ -344,9 +336,7 @@ function ApproveForm({
         </FieldGroup>
       )}
       {formError !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{formError}</Notice>
       )}
       <DialogFooter className="gap-2">
         <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>

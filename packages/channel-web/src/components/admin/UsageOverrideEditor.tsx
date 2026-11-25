@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { putUserLimits, type UsageUser } from '@/lib/usage-admin';
 import { failureMessage, personLabel } from '@/lib/usage-copy';
+import { Notice } from '@project-ax/ui';
 
 export function UsageOverrideEditor({
   user,
@@ -84,9 +84,7 @@ export function UsageOverrideEditor({
         Leave a field empty to use the workspace default. The workspace spend limit always applies.
       </FieldDescription>
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
       <div className="flex gap-2">
         <Button type="submit" disabled={busy || !dailyValid || !turnsValid}>

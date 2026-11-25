@@ -7,13 +7,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getSkillOrNull } from '@/lib/skills';
 import { humanizeId } from '@/lib/humanize';
 import { decideCatalogRequest } from '@/lib/catalog';
 import { compareBundles, reconstructSkillMd, type BundleFileEntry } from '@/lib/bundle-diff';
 import { BundleDiffView } from './BundleDiffView';
 import type { CatalogRequest } from '@ax/skills';
+import { AsyncState, Notice } from '@project-ax/ui';
 
 export interface BundleReviewDialogProps {
   request: CatalogRequest;
@@ -124,23 +124,19 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
             // (D10) This pointed at the Catalog tab, which TASK-125 REMOVED
             // from the nav — an instruction to visit a surface that no longer
             // exists. Skills → "+ Add to workspace" is where authoring lives now.
-            <Alert>
-              <AlertDescription>
-                There's nothing to review yet — this request arrived without any
-                skill files. You can write the skill yourself under Skills, with
-                “+ Add to workspace”, then reject this request to clear it.
-              </AlertDescription>
-            </Alert>
+            <Notice tone="info">
+              There's nothing to review yet — this request arrived without any
+              skill files. You can write the skill yourself under Skills, with
+              “+ Add to workspace”, then reject this request to clear it.
+            </Notice>
           ) : entries === null ? (
-            <p className="text-sm text-muted-foreground">Loading bundle…</p>
+            <AsyncState status="loading" skeleton="block" loadingLabel="Loading bundle…" />
           ) : (
             <BundleDiffView entries={entries} />
           )}
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
 
           {/* (D10) Say how far approval reaches. "Admit" gave no clue that the

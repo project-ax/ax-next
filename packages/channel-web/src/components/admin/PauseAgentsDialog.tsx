@@ -12,7 +12,6 @@
  * content whenever the dialog closes.
  */
 import { useState, type FormEvent } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -29,6 +28,7 @@ import {
   FieldLabel,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Notice } from '@project-ax/ui';
 
 /** The server keeps at most this much of a reason. */
 const NOTE_MAX_CHARS = 200;
@@ -86,9 +86,7 @@ function PauseForm({
           </Field>
         </FieldGroup>
         {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{error}</Notice>
         )}
         <DialogFooter className="gap-2 sm:gap-0">
           <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>

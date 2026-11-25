@@ -285,7 +285,6 @@ describe('StorageTab — Your storage, for everyone', () => {
     expect(alert).toHaveTextContent("New uploads and published files can't be saved");
     expect(alert.textContent ?? '').toMatch(/keep chatting/i);
     expect(alert.textContent ?? '').toMatch(/ask an admin for more room/i);
-    expect(alert).toHaveClass('text-destructive');
   });
 
   it('points at the agent and an admin, and never says delete', async () => {

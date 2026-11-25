@@ -100,7 +100,7 @@ describe('DefaultRoutinesSection', () => {
     mockList.mockReturnValueOnce(new Promise(() => {}));
     render(<DefaultRoutinesSection />);
 
-    expect(screen.getByText('Loading…')).toBeTruthy();
+    expect(screen.getByText('Loading default routines')).toBeTruthy();
   });
 
   it('shows error alert when fetch fails', async () => {

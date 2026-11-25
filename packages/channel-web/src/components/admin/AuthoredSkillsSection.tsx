@@ -19,7 +19,6 @@ import {
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -37,7 +36,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthoredSkills,
@@ -231,9 +230,7 @@ function PromoteDialog({ agentId, skill, onClose, onPromoted }: PromoteDialogPro
           </p>
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
         </div>
 
@@ -291,17 +288,15 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
         </CardHeader>
         <CardContent className="p-0">
           {loading && (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading authored skills" />
           )}
 
           {!loading && error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
 
           {!loading && !error && skills.length === 0 && (
-            <p className="text-sm text-muted-foreground">No authored skills.</p>
+            <EmptyState title="No authored skills." />
           )}
 
           {!loading && !error && skills.length > 0 && (

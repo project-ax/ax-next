@@ -1,12 +1,11 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Search } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
+import { EmptyState, Notice } from '@project-ax/ui';
 import type { CatalogProvider } from '@/lib/models-admin';
 import { countModels } from '@/lib/models-picker';
 import { cachedNote, countLine, providerNoKey, providerProblem } from '@/lib/models-copy';
@@ -78,12 +77,10 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
       </CardHeader>
       <CardContent className="max-h-[60vh] flex flex-col gap-4 overflow-y-auto">
         {filtering && shownCount === 0 && (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No models match “{query.trim()}”</EmptyTitle>
-              <EmptyDescription>Try a different word, or clear the search.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState
+            title={`No models match “${query.trim()}”`}
+            description="Try a different word, or clear the search."
+          />
         )}
         {groups.map((p) => {
           const open = filtering || !collapsed.has(p.id);
@@ -109,14 +106,12 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-2 flex flex-col gap-2">
                 {(p.status === 'fallback' || p.status === 'error') && (
-                  <Alert>
-                    <AlertDescription className="flex flex-wrap items-center gap-3">
-                      <span>{providerProblem(p.name)}</span>
-                      <Button type="button" variant="outline" size="sm" disabled={props.retrying} onClick={props.onRetry}>
-                        Try again
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
+                  <Notice
+                    tone="info"
+                    action={{ label: 'Try again', onClick: () => { if (!props.retrying) props.onRetry(); } }}
+                  >
+                    {providerProblem(p.name)}
+                  </Notice>
                 )}
                 {p.status === 'cached' && (
                   <p className="text-xs text-muted-foreground">{cachedNote(p.fetchedAt, props.nowMs)}</p>

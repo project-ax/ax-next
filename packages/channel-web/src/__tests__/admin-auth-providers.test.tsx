@@ -356,8 +356,8 @@ describe('AuthProvidersTab', () => {
     await waitFor(() =>
       expect(screen.getByText(/client_id required/)).toBeTruthy(),
     );
-    // Form still open — Retry button visible.
-    expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
+    // Form still open — Try again button visible.
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
   /**

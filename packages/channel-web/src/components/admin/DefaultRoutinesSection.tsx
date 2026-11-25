@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Pencil, Plus } from 'lucide-react';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   listDefaultRoutines,
@@ -138,16 +137,15 @@ export function DefaultRoutinesSection() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{error}</Notice>
         )}
         {defaults === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading default routines" />
         ) : defaults.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No default routines yet. Click "New default routine" to add one.
-          </p>
+          <EmptyState
+            title="No default routines yet."
+            description={'Click "New default routine" to add one.'}
+          />
         ) : (
           <Table>
             <TableHeader>
@@ -222,11 +220,9 @@ export function DefaultRoutinesSection() {
                 <DialogTitle>Edit default routine: {editingId}</DialogTitle>
               </DialogHeader>
               {editLoadError !== null ? (
-                <Alert variant="destructive">
-                  <AlertDescription>{editLoadError}</AlertDescription>
-                </Alert>
+                <Notice tone="danger">{editLoadError}</Notice>
               ) : editingInitial === null ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
+                <AsyncState status="loading" skeleton="lines" loadingLabel="Loading default routine" />
               ) : (
                 <DefaultRoutineEditor
                   onPendingChange={setEditorPending}

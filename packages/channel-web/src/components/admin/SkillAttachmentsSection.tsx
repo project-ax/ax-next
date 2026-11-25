@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Trash2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Select,
   SelectContent,
@@ -13,6 +12,7 @@ import { listSkills, listUserSkills } from '@/lib/skills';
 import { humanizeId } from '@/lib/humanize';
 import { patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary } from '@ax/skills';
+import { Notice } from '@project-ax/ui';
 
 interface Attachment {
   skillId: string;
@@ -127,9 +127,7 @@ export function SkillAttachmentsSection({
       </div>
 
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
 
       {/* (TASK-343 / audit D9) "No skills attached." states a fact and teaches

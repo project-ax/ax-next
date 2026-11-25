@@ -14,7 +14,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchCatalog, fetchPolicy, type CatalogProvider } from '@/lib/models-admin';
 import { labelFor } from '@/lib/models-picker';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice, Stack } from '@project-ax/ui';
 import { getAdminSetting, putAdminSetting } from '@/lib/admin-settings';
 import { Button } from '@/components/ui/button';
 import { Field, FieldContent, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -134,65 +134,49 @@ export function ModelConfigTab() {
     }
   };
 
-  if (loading) {
-    return <p role="status" className="text-sm text-muted-foreground">Loading enabled models…</p>;
-  }
-
-  if (loadError) {
+  if (loading || loadError) {
     // (D7) This used to be a dead end: the raw error message interpolated into
     // the banner, and no way to try again short of reloading the page.
-    // AuthProvidersTab has had an error+retry pair for a while; this matches it.
     return (
-      <Alert variant="destructive" className="mx-auto max-w-[640px]">
-        <AlertDescription className="flex items-center justify-between gap-3">
-          <span>We couldn’t load your enabled models.</span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setReloadTick((t) => t + 1)}
-          >
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <AsyncState
+        status={loading ? 'loading' : 'error'}
+        skeleton="lines"
+        loadingLabel="Loading enabled models…"
+        error={{ message: 'We couldn’t load your enabled models.', onRetry: () => setReloadTick((t) => t + 1) }}
+      />
     );
   }
 
   return (
     <div className="font-sans">
 
-      {noModels && (
-        <Alert className="mb-4">
-          <AlertDescription>Enable a model in Settings → Models, then choose it here.</AlertDescription>
-        </Alert>
-      )}
-      {selectedModel.length > 0 && !selectedEnabled && (
-        <Alert className="mb-4">
-          <AlertDescription>
+      <Stack gap="md">
+        {noModels && <Notice tone="info">Enable a model in Settings → Models, then choose it here.</Notice>}
+        {selectedModel.length > 0 && !selectedEnabled && (
+          <Notice tone="info">
             The saved helper model isn’t enabled in Settings → Models. Choose an enabled model to change it.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <FieldGroup>
-        <Field orientation="horizontal" className="min-h-16 flex-wrap py-3">
-          <FieldContent><FieldLabel>Model</FieldLabel></FieldContent>
-          <SettingsHelp title="Model">{ROLE.description}</SettingsHelp>
-          <div className="w-full md:w-[280px]">
-          <ModelCombobox
-            ariaLabel={ROLE.label}
-            groups={groups}
-            value={selectedModel}
-            valueLabel={selectedLabel}
-            onChange={setSelectedModel}
-            disabled={noModels || saving}
-            placeholder={
-              noModels ? '— Enable a model first —' : '— Select a model —'
-            }
-          />
-          </div>
-        </Field>
-      </FieldGroup>
+          </Notice>
+        )}
+        <FieldGroup>
+          <Field orientation="horizontal" className="min-h-16 flex-wrap py-3">
+            <FieldContent><FieldLabel>Model</FieldLabel></FieldContent>
+            <SettingsHelp title="Model">{ROLE.description}</SettingsHelp>
+            <div className="w-full md:w-[280px]">
+            <ModelCombobox
+              ariaLabel={ROLE.label}
+              groups={groups}
+              value={selectedModel}
+              valueLabel={selectedLabel}
+              onChange={setSelectedModel}
+              disabled={noModels || saving}
+              placeholder={
+                noModels ? '— Enable a model first —' : '— Select a model —'
+              }
+            />
+            </div>
+          </Field>
+        </FieldGroup>
+      </Stack>
       <Separator />
 
       {(selectedModel !== originalModel || savedOk || saveError) &&
@@ -214,9 +198,7 @@ export function ModelConfigTab() {
           // (D7) Was the raw thrown message — including the internal
           // "unavailable or ambiguous across configured providers" string,
           // which describes our resolver rather than anything the reader did.
-          <Alert variant="destructive">
-            <AlertDescription>We couldn’t save that. Give it another try in a moment.</AlertDescription>
-          </Alert>
+          <Notice tone="danger">We couldn’t save that. Give it another try in a moment.</Notice>
         )}
       </div>}
     </div>

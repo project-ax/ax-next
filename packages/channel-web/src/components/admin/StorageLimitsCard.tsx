@@ -11,7 +11,6 @@
  * skeletons, so the page does not jump when the numbers arrive.
  */
 import { useState, type FormEvent } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -29,7 +28,6 @@ import {
   FieldLabel,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   STORAGE_LIMIT_BOUNDS,
   putStorageLimits,
@@ -41,7 +39,7 @@ import {
   failureMessage,
   formatMb,
 } from '@/lib/storage-copy';
-import { toast } from '@project-ax/ui';
+import { AsyncState, Notice, toast } from '@project-ax/ui';
 
 const LIMIT = STORAGE_LIMIT_BOUNDS.limitMb;
 const WARN = STORAGE_LIMIT_BOUNDS.warnPercent;
@@ -140,10 +138,7 @@ export function StorageLimitsCard({ limits, onSaved }: StorageLimitsCardProps) {
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
           {limits === null ? (
-            <div className="flex flex-col gap-7" aria-hidden="true">
-              <Skeleton className="h-[72px] w-full max-w-sm" />
-              <Skeleton className="h-[72px] w-full max-w-sm" />
-            </div>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading storage limits" />
           ) : (
             <FieldGroup>
               <Field className="max-w-sm" data-invalid={limitInvalid || undefined}>
@@ -216,9 +211,7 @@ export function StorageLimitsCard({ limits, onSaved }: StorageLimitsCardProps) {
             </FieldGroup>
           )}
           {saveError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{saveError}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{saveError}</Notice>
           )}
         </CardContent>
         <CardFooter>

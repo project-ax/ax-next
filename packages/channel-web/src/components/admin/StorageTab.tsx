@@ -28,9 +28,8 @@
  * to ask an admin for more room (the sentences live in `lib/storage-copy.ts`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
-import { AsyncState } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -38,12 +37,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { Progress } from '@/components/ui/progress';
 import {
   Table,
@@ -195,20 +188,14 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
         ))}
       </dl>
       {storage.status === 'near-limit' && (
-        <Alert>
-          <AlertDescription className="flex flex-col gap-1">
-            <p className="font-medium">{NEAR_LIMIT_TITLE}</p>
-            <p>{NEAR_LIMIT_BODY}</p>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="warning" title={NEAR_LIMIT_TITLE}>
+          {NEAR_LIMIT_BODY}
+        </Notice>
       )}
       {storage.status === 'full' && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col gap-1">
-            <p className="font-medium">{FULL_TITLE}</p>
-            <p>{FULL_BODY}</p>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger" title={FULL_TITLE}>
+          {FULL_BODY}
+        </Notice>
       )}
     </div>
   );
@@ -319,14 +306,10 @@ function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
         {admin === null ? (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading everyone's storage…" />
         ) : admin.owners.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No storage used yet</EmptyTitle>
-              <EmptyDescription>
-                When people start saving files and uploads, they'll show up here.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState
+            title="No storage used yet"
+            description="When people start saving files and uploads, they'll show up here."
+          />
         ) : (
           <>
             <Table>

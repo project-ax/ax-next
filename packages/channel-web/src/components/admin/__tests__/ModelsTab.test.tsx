@@ -244,7 +244,7 @@ describe('ModelsTab — saving', () => {
     expect(await screen.findByText('Someone else just changed this list. Reload to see their version.')).toBeInTheDocument();
     pol = policy({ version: 3, allowed: [KIMI], default: KIMI });
     handler = defaultHandler;
-    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await screen.findByRole('tab', { name: 'Enabled' });
     enabledTab();
     await screen.findByRole('heading', { name: 'Available to users (1)' });

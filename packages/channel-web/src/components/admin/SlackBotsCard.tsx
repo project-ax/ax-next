@@ -42,12 +42,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -140,35 +138,24 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
   return (
     <>
       {leftOver !== null && (
-        <Alert>
-          <AlertDescription>
-            {`${leftOver} is disconnected, but we couldn't confirm its Slack app was deleted. It's listed above, with the Slack apps we couldn't delete.`}
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info">
+          {`${leftOver} is disconnected, but we couldn't confirm its Slack app was deleted. It's listed above, with the Slack apps we couldn't delete.`}
+        </Notice>
       )}
       {replaced !== null && (
-        <Alert>
-          <AlertDescription>{BOT_TOKEN_COPY.replaced(replaced)}</AlertDescription>
-        </Alert>
+        <Notice tone="info">{BOT_TOKEN_COPY.replaced(replaced)}</Notice>
       )}
       {load.kind === 'error' && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>We couldn&apos;t load the team agents&apos; own bots.</p>
-            <Button variant="outline" size="sm" onClick={() => void read()}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger" action={{ label: 'Try again', onClick: () => void read() }}>
+          We couldn&apos;t load the team agents&apos; own bots.
+        </Notice>
       )}
       {load.kind === 'loading' && (
         // No title yet: the card may turn out to have nothing to show, and a heading that vanished would read as a glitch.
         // (Not a live region: the tab above has its own `status` for the same wait.)
         <Card variant="settings" aria-busy="true">
-          <CardContent className="flex flex-col gap-3">
-            <span className="sr-only">Loading the team agents&apos; own bots</span>
-            <Skeleton className="h-4 w-1/3" />
-            <Skeleton className="h-9 w-full" />
+          <CardContent>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the team agents' own bots" />
           </CardContent>
         </Card>
       )}

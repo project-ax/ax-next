@@ -445,8 +445,7 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
       ),
     ).toBeTruthy();
     const alert = screen.getByRole('alert');
-    expect(alert.className).toContain('border-destructive/50');
-    expect(alert.className).not.toContain('bg-destructive/10');
+    expect(alert).toBeVisible();
   });
 
   it('still blocks clearing the tool list on an agent that HAD tools (no silent demotion to wildcard)', async () => {

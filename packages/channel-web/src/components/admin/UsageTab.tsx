@@ -18,14 +18,10 @@ import { UsageOverrideEditor } from './UsageOverrideEditor';
  * h1 → h2 without the `h5` that `AlertTitle` would add (see TASK-446).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { badgeVariants, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
-
-import { toast } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice, toast } from '@project-ax/ui';
 import {
   fetchUsage,
   resumeUser,
@@ -229,14 +225,12 @@ export function UsageTab() {
   if (state.kind === 'error') {
     return (
       <div className="max-w-[960px] mx-auto font-sans">
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>{state.message}</p>
-            <Button variant="outline" size="sm" onClick={() => void load('first')}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading usage…"
+          error={{ message: state.message, onRetry: () => void load('first') }}
+        />
       </div>
     );
   }
@@ -247,12 +241,10 @@ export function UsageTab() {
     <div className="flex flex-col gap-8 font-sans">
 
       {report?.fleetBlocked && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            The workspace has reached its daily spend limit. New model calls are paused for everyone
-            until usage frees up or an admin raises the limit.
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger">
+          The workspace has reached its daily spend limit. New model calls are paused for everyone
+          until usage frees up or an admin raises the limit.
+        </Notice>
       )}
       <Card variant="settings">
         <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
@@ -278,31 +270,18 @@ export function UsageTab() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {refreshError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{refreshError}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{refreshError}</Notice>
           )}
           {actionError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{actionError}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{actionError}</Notice>
           )}
           {report === null ? (
-            <div role="status" className="flex flex-col gap-3">
-              <span className="sr-only">Loading usage…</span>
-              <Skeleton className="h-10 w-full" aria-hidden="true" />
-              <Skeleton className="h-10 w-full" aria-hidden="true" />
-              <Skeleton className="h-10 w-full" aria-hidden="true" />
-            </div>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading usage…" />
           ) : report.users.length === 0 ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>No usage in the last 24 hours</EmptyTitle>
-                <EmptyDescription>
-                  When people start chatting, they'll show up here.
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <EmptyState
+              title="No usage in the last 24 hours"
+              description="When people start chatting, they'll show up here."
+            />
           ) : (
             <>
               <div role="list" aria-label="Estimated usage per person, last 24 hours" className="flex flex-col">

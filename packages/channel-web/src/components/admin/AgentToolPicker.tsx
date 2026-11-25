@@ -6,8 +6,7 @@
  * it is missing from this boot. Names are the host's own words; rendered as text.
  */
 import { useId } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Field,
@@ -62,13 +61,19 @@ export function AgentToolPicker({
         </FieldDescription>
       )}
       {catalog.status === 'loading' ? (
-        <FieldDescription>Loading the list of tools…</FieldDescription>
+        <AsyncState status="loading" skeleton="lines" loadingLabel="Loading the list of tools…" />
       ) : catalog.status === 'failed' ? (
-        <FieldDescription>
-          {kept.length > 0
-            ? `We couldn’t load the list of tools, so this agent keeps the ones it has: ${kept.join(', ')}. Close and reopen this form to try again.`
-            : 'We couldn’t load the list of tools. Close and reopen this form to try again.'}
-        </FieldDescription>
+        <AsyncState
+          status="error"
+          skeleton="lines"
+          loadingLabel="Loading the list of tools…"
+          error={{
+            message:
+              kept.length > 0
+                ? `We couldn’t load the list of tools, so this agent keeps the ones it has: ${kept.join(', ')}. Close and reopen this form to try again.`
+                : 'We couldn’t load the list of tools. Close and reopen this form to try again.',
+          }}
+        />
       ) : (
         <PickerBody
           catalog={catalog}
@@ -97,19 +102,15 @@ function PickerBody({
   return (
     <>
       {unknown.length > 0 && (
-        <Alert>
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <span>{unknownMessage(unknown)}</span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => onChange(setTools(selected, unknown, false))}
-            >
-              {unknown.length === 1 ? 'Remove it' : 'Remove them'}
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="info"
+          action={{
+            label: unknown.length === 1 ? 'Remove it' : 'Remove them',
+            onClick: () => onChange(setTools(selected, unknown, false)),
+          }}
+        >
+          {unknownMessage(unknown)}
+        </Notice>
       )}
       {areas.map((area) => {
         const picked = area.tools.filter((t) => selected.includes(t)).length;
