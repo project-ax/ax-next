@@ -237,8 +237,13 @@ async function keepSite(
     // (TASK-1246). Someone a personal agent is only shared with keeps the
     // widen to their live session: the agent's sites are its owners' to change.
     // An answer that doesn't say which (no agent, no visibility, no explicit
-    // isOwner) keeps nothing — never assumed.
-    if (!mayKeepSitesOn(resolved)) return { kept: false };
+    // isOwner, or an agent that isn't the one being kept) keeps nothing —
+    // never assumed. Said in the log by code only: never the host, never a name.
+    const verdict = keepVerdict(resolved, agentId);
+    if (verdict !== 'ok') {
+      deps.initCtx.logger.warn('host_grant_persist_failed', { code: verdict });
+      return { kept: false };
+    }
     // `created: false` means the agent already had it — kept either way. The
     // store re-validates the host and enforces the per-agent cap.
     await deps.bus.call<HostGrantsGrantInput, { created: boolean }>('host-grants:grant', ctx, {
@@ -255,16 +260,27 @@ async function keepSite(
 }
 
 /**
- * May the person keep a site on the agent this `agents:resolve` answer
- * describes? A team agent: yes (agents:resolve already admitted them). A
- * personal agent: only one of its owners ({@link ownsPersonalAgent}). Read
- * structurally: the answer crossed the bus (I2), so its shape is checked, not
- * trusted, and anything else is `false`.
+ * May the person keep a site on `agentId`, going by this `agents:resolve`
+ * answer? A team agent: yes (agents:resolve already admitted them). A personal
+ * agent: only one of its owners ({@link ownsPersonalAgent}). Read structurally:
+ * the answer crossed the bus (I2), so its shape is checked, not trusted.
+ *
+ * - `'ok'`: keep it.
+ * - `'not-owner'`: a well-formed personal agent the person doesn't own (one
+ *   shared with them): the refusal this guard exists for.
+ * - `'bad-response'`: anything else, including an answer that names a
+ *   different agent than the one being kept (defence in depth: the grant
+ *   goes to `agentId`, so the answer must be about it).
  */
-function mayKeepSitesOn(resolved: unknown): boolean {
-  if (typeof resolved !== 'object' || resolved === null) return false;
+function keepVerdict(resolved: unknown, agentId: string): 'ok' | 'not-owner' | 'bad-response' {
+  if (typeof resolved !== 'object' || resolved === null) return 'bad-response';
   const agent = (resolved as { agent?: unknown }).agent;
-  if (typeof agent !== 'object' || agent === null) return false;
-  const fields = agent as { visibility?: unknown; isOwner?: unknown };
-  return fields.visibility === 'team' || ownsPersonalAgent(fields);
+  if (typeof agent !== 'object' || agent === null) return 'bad-response';
+  const fields = agent as { id?: unknown; visibility?: unknown; isOwner?: unknown };
+  if (fields.id !== agentId) return 'bad-response';
+  if (fields.visibility === 'team') return 'ok';
+  if (fields.visibility !== 'personal') return 'bad-response';
+  // Only an explicit boolean says which; anything else is a malformed answer.
+  if (typeof fields.isOwner !== 'boolean') return 'bad-response';
+  return ownsPersonalAgent(fields) ? 'ok' : 'not-owner';
 }
