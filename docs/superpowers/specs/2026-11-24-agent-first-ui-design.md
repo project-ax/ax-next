@@ -290,16 +290,16 @@ it as `ListPage` first and promote only if it doesn't fit.
 | No `style`/arbitrary values anywhere in app code (composites included) | same plugin + preset | yes |
 | `CustomSection` has a `reason` and exactly one composite child | same plugin | yes |
 | Composites use `defineComposite` and live in `src/composites/` | same plugin | yes |
-| Public API only | `no-restricted-imports` for `@radix-ui/*`, `@/components/ui`, `@project-ax/ui/internal` | yes |
+| Public API only | `ax-ui/no-internal-imports` for `@radix-ui/*`, `@/components/ui`, `@project-ax/ui/internal` | yes |
 | Required labels / state contracts / one primary action | TypeScript | yes |
 | a11y | axe on every story and on the channel-web Playwright pages | yes (serious, critical) |
 | Visual regressions | Playwright screenshots of every story | yes, for `packages/ui` |
 | New `CustomSection`s and composites | lint report posted on the PR (name, purpose, reason) | no (human review) |
 
-**Agent hooks** (`.claude/settings.json`): PreToolUse blocks writes to `packages/ui/**` unless `AX_DS_TASK=1`;
+**Agent hooks** (`.claude/settings.json`): PreToolUse blocks writes to `packages/ui/**` unless the worktree has a `.ax-ds-task` marker file;
 PostToolUse runs the UI eslint rules on an edited `*.tsx`; Stop runs `tsc --noEmit` + lint on touched packages.
-Board cards that are design-system work carry a `(ds)` tag in the title, and `yolo-ship` sets `AX_DS_TASK=1` for
-them. Workstreams 1 and 2 are mostly `(ds)` work.
+Board cards that are design-system work carry a `(ds)` tag in the title, and `yolo-ship` creates the `.ax-ds-task`
+marker in the worktree for them. Workstreams 1 and 2 are mostly `(ds)` work.
 
 **CODEOWNERS:** `packages/ui/**` and `packages/ui/skill/**` → the design owner (open item O1).
 
@@ -404,7 +404,7 @@ Order (each step = one or a few PRs; each is a `(ds)` card). The numbering is th
 column, not this numbering, decides what runs in parallel:
 
 1. **Foundation:** scaffold `packages/ui`, tokens → `theme.css`/`ui.css`, contrast test, Storybook + axe +
-   screenshot CI, lint plugin (error for new files, warn for unmigrated ones — see below), import boundary,
+   screenshot CI, lint plugin (rules are errors, existing violations frozen — see below), import boundary,
    hooks, CODEOWNERS. channel-web
    imports `theme.css` instead of its `index.css` token block — first real consumer, no visual change.
 2. **Text + layout:** `Text`, `Heading`, `Stack`, `Inline`, `Grid`, `Divider`. Migrate the 15 most-repeated
@@ -425,8 +425,9 @@ column, not this numbering, decides what runs in parallel:
    Exit = zero violations in channel-web, every story axe-clean, every surface walked.
 
 **Other UI work during the rewrite (decided): no freeze; new code complies now.** From step 1, the UI lint rules
-are *errors* for new files in channel-web, and for each area as soon as that area is migrated; only
-not-yet-migrated files stay at *warn*. The violation count can only go down. Feature cards that touch an
+are *errors* in channel-web. Existing violations are frozen in `eslint-suppressions.json` (ESLint bulk
+suppressions), and the CI ratchet (`scripts/ui-suppressions-ratchet.mjs`) only lets them go down; a rule's frozen
+total may rise only in the PR that switches the rule on. Feature cards that touch an
 unmigrated file may leave its existing violations alone but must not add new ones. Rules switch on as their
 replacements ship (S1: arbitrary values and style; S2a: className and raw elements; S3–S6: internal shadcn imports,
 per area) — there is nothing to comply with before then (ruling 2026-11-24).

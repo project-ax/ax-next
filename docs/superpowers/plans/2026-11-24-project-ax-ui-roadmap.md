@@ -17,7 +17,8 @@
 - UI lint rules switch on as their replacements ship (ruling R15: S1 = `no-arbitrary-values` + `no-style-prop`;
   S2a = `no-classname` + `no-raw-elements`; S3–S6 = `no-internal-imports`, per area). Each switch-on adds its rule
   to the root `lint:ui:suppress` script and regenerates `eslint-suppressions.json` — the CI ratchet
-  (`scripts/ui-suppressions-ratchet.mjs`) lets a rule's total rise only in the PR that adds it to that script.
+  (`scripts/ui-suppressions-ratchet.mjs`) lets a rule's total rise only in the PR that flips its severity in
+  `eslint.config.mjs` from `off` to `error`. S1 and S2a are on; S3–S6 are still to come.
 - Tests on a migrated screen move from `querySelector`/`toHaveClass` to role/label queries in the same PR.
 - A PR that applies a §6.3 rule visible to users (rules 2, 3, 4, 5, 9) attaches before/after screenshots
   (light + dark, 1440 + 390).

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
+import { copyFileSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,9 +79,12 @@ describe('lint-ui-file', () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('ax-ui/no-arbitrary-values');
   }, 60_000);
-  it('does not report className or raw elements yet (R15)', () => {
+  it('reports className and raw elements (R15: both rules are on)', () => {
     writeFileSync(tmpFile, 'export const A = () => <div className="flex gap-2" />;\n');
-    expect(run(LINT, edit(tmpFile)).status).toBe(0);
+    const r = run(LINT, edit(tmpFile));
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('ax-ui/no-classname');
+    expect(r.stderr).toContain('ax-ui/no-raw-elements');
   }, 60_000);
   it('passes a clean file', () => {
     writeFileSync(tmpFile, 'export const A = () => null;\n');
@@ -142,6 +145,20 @@ describe('lint hook: worktree of the edited file', () => {
     const r = run(LINT, edit(file));
     expect(r.status).toBe(0);
     expect(r.stderr).toBe('');
+  }, 60_000);
+
+  it("fails open when that worktree's eslint dies, and it ran there (not in the hook's checkout)", () => {
+    // Without the ran-in-the-worktree check this passed vacuously on the
+    // original hook, which resolved the file against ITS OWN checkout, saw a
+    // path outside it, and exited 0 before ever spawning eslint.
+    const { wt, file } = nestedWorktree();
+    const bin = path.join(wt, 'node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, 'eslint'), '#!/bin/sh\npwd > "$(pwd)/eslint-ran-here"\nexit 1\n', { mode: 0o755 });
+    const r = run(LINT, edit(file));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
+    expect(readFileSync(path.join(wt, 'eslint-ran-here'), 'utf8').trim()).toBe(wt);
   }, 60_000);
 
   it('lints a file in another worktree than the hook copy lives in', () => {

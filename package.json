@@ -17,7 +17,7 @@
     "test:eslint-rules": "vitest run --root eslint-rules",
     "test:scripts": "vitest run --root scripts",
     "lint": "eslint .",
-    "lint:ui:suppress": "eslint packages/channel-web/src --suppress-rule ax-ui/no-arbitrary-values --suppress-rule ax-ui/no-style-prop",
+    "lint:ui:suppress": "eslint packages/channel-web/src --suppress-rule ax-ui/no-arbitrary-values --suppress-rule ax-ui/no-style-prop --suppress-rule ax-ui/no-classname --suppress-rule ax-ui/no-raw-elements",
     "lint:ui:prune": "eslint . --prune-suppressions",
     "typecheck": "tsc --build && pnpm -r --if-present run typecheck",
     "changeset": "changeset",

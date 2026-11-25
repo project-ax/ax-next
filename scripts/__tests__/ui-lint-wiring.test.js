@@ -49,20 +49,20 @@ describe('ui lint wiring', () => {
     expect(hit.severity).toBe(2);
   });
 
-  // Ruling R15 (2026-11-24): @project-ax/ui exports only tokens in step 1, so
-  // there is nothing to comply with yet for className, raw elements or shadcn
-  // imports. Those rules stay in the plugin but are OFF until their
-  // replacements ship (S2a: className + raw elements; S3-S6: imports per area).
-  it('className, raw elements and shadcn imports are not enforced yet (R15)', async () => {
+  // Ruling R15 (2026-11-24): className and raw elements are errors (S2a).
+  // Shadcn imports stay OFF until S3-S6 replace each primitive, per area.
+  it('new file with className and a raw element errors; shadcn imports are not enforced yet', async () => {
     const messages = await lint(
       "import { Button } from '@/components/ui/button';\n" +
         'export const X = () => <div className="flex gap-2"><Button /></div>;',
       'packages/channel-web/src/components/NewThing.tsx',
     );
-    const ruleIds = messages.map((m) => m.ruleId);
-    expect(ruleIds).not.toContain('ax-ui/no-classname');
-    expect(ruleIds).not.toContain('ax-ui/no-raw-elements');
-    expect(ruleIds).not.toContain('ax-ui/no-internal-imports');
+    for (const id of ['ax-ui/no-classname', 'ax-ui/no-raw-elements']) {
+      const hit = messages.find((m) => m.ruleId === id);
+      expect(hit, id).toBeDefined();
+      expect(hit.severity).toBe(2);
+    }
+    expect(messages.map((m) => m.ruleId)).not.toContain('ax-ui/no-internal-imports');
   });
 
   it('shadcn internals are exempt', async () => {

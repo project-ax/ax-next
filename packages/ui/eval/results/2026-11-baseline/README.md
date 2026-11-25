@@ -7,7 +7,7 @@ except one throwaway session row inserted for auth and deleted afterwards. 28 ro
 
 ## Where the images are
 
-The 112 PNGs live **outside the repo**, in `/Users/vpulim/ax-ui-eval/2026-11-baseline/` (with the raw `axe.json`).
+The 112 PNGs live **outside the repo**, in `~/ax-ui-eval/2026-11-baseline/` (with the raw `axe.json`).
 They are local-only because they show real dev-cluster data and this repo is public; `packages/ui/.gitignore`
 keeps `eval/results/**/*.png` and `axe.json` out of git. What is committed here: this README, `axe-summary.json`
 (rule id, impact and node count per route, nothing from the page) and the capture script.
