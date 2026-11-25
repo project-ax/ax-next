@@ -25,6 +25,7 @@
  * regardless of how `allowedOrigins` is configured. Same posture as
  * `lib/auth.ts`.
  */
+import type { SharingView } from '@ax/agents';
 import type { AdminTeamWire } from '@ax/teams';
 import { HttpError } from './http';
 
@@ -59,6 +60,16 @@ export interface AdminAgent {
   idleMinutes?: number | null;
   /** The runner's size. `null` = the host default. */
   runnerSize?: RunnerSize | null;
+  /** TASK-1246/1247 — does anyone but its owners use it? The one "is this
+   *  agent shared?" answer. Always sent by this server; optional so older
+   *  fixtures still type-check. */
+  shared?: boolean;
+  /** Is the signed-in person one of its owners? Only on answers asked for
+   *  the caller. */
+  isOwner?: boolean;
+  /** Who can use it and who owns it. Only on `GET /admin/agents/:id`, and
+   *  only for a personal agent's owners. */
+  sharing?: SharingView;
   createdAt: string;
   updatedAt: string;
 }
