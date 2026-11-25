@@ -470,11 +470,11 @@ export const AGENT_SLACK_DM_COPY = Object.freeze({
   goesTo: (bot: string, other: string): string => `Direct messages to ${bot} in Slack go to ${other}.`,
   /** No name came back (an older host): neutral, with no button. */
   goesElsewhere: (agent: string, bot: string): string =>
-    `${agent} is a personal agent, so it can't join channels. Direct messages to ${bot} in Slack go to another of your personal agents.`,
+    `${agent} is a personal agent, so it can't join channels, and it doesn't answer direct messages to ${bot} in Slack right now.`,
   useInstead: (self: string): string => `Use ${self} instead`,
   switching: 'Switching…',
   switched: (bot: string, self: string, from: string): string =>
-    `Done. Direct messages to ${bot} now go to ${self}. Anything already in progress finishes with ${from}. Replies in older threads go to ${self} too, and it won't see what was said there before.`,
+    `Done. Direct messages to ${bot} now go to ${self}. Anything already in progress finishes with ${from}. Replies in older threads go to ${self} too, and it won't see what another agent was told there.`,
   notSwitched: "We couldn't switch your direct messages, so nothing changed. Try again in a minute.",
   yourOther: (name: string): string => `your other ${name}`,
   thisOne: (name: string): string => `this ${name}`,

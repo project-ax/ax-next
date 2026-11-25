@@ -571,8 +571,11 @@ export function createAgentSlackRoutes(
    * since a team agent is never anyone's DM agent. The rights read anything
    * but a team agent as `personal-agent`, so the DM router's own question
    * (router.ts `isOwnPersonalAgent`) is asked before the write: a choice
-   * the next DM would ignore is never stored, and an agent deleted since
-   * the rights saw it is the same 404.
+   * the next DM would ignore is never stored, and an agent deleted before
+   * that list is read is the same 404. A delete landing between the list
+   * read and the write is not caught: it leaves a row for an agent that no
+   * longer exists, which is inert, since every DM checks the choice again
+   * and falls back to the oldest personal agent.
    */
   async function chooseDmAgent(a: Asked): Promise<Reply> {
     const rights = await checkRights(d.bus, a.ctx, a.agentId, a.userId, 'view');

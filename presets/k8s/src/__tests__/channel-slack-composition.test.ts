@@ -2255,6 +2255,10 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     } finally {
       actor = null;
       await query("DELETE FROM channel_slack_v1_dm_agents WHERE user_id = 'usr_dana'");
+      // danaNew is already gone once step 5 ran; an earlier failure leaves it behind.
+      await theBus!
+        .call('agents:delete', danaCtx(), { actor: { userId: 'usr_dana', isAdmin: false }, agentId: danaNew })
+        .catch(() => undefined);
       await theBus!.call('agents:delete', danaCtx(), { actor: { userId: 'usr_dana', isAdmin: false }, agentId: danaOld });
     }
   });

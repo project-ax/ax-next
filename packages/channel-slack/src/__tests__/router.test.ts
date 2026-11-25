@@ -1417,6 +1417,33 @@ describe('createEventRouter: the personal agent its sender chose (TASK-1238)', (
     ]);
   });
 
+  it("after a switch, a reply in the same older thread goes to the new agent; the old agent's turn finishes on the old one", async () => {
+    const w = world();
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    // The thread T1 starts with the old agent, held at the gate.
+    await w.dispatch(INSTALL, dm({ text: 'first' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes.map(wordsOf)).toEqual(['first']);
+
+    // The switch lands; she replies in that same thread while the first turn is still running.
+    w.dm.rows.set('usr_alice', 'agt_alice_new');
+    await w.dispatch(INSTALL, dm({ ts: '1763035201.000200', threadTs: TS, text: 'reply' }));
+    first.release();
+    await w.idle();
+
+    // The reply is asked of the new agent at once; the old agent's turn is untouched and ends on the old one.
+    expect(Object.fromEntries(w.invokes.map((i) => [wordsOf(i), i.ctx.agentId]))).toEqual({
+      first: 'agt_alice_old',
+      reply: 'agt_alice_new',
+    });
+    // Same Slack thread key, a conversation per agent: the new agent has none of the old one's history.
+    expect(w.conversations.map((c) => [c.input.externalKey, c.input['agentId']])).toEqual([
+      [`slack:${INSTALL_ID}:${DM_ALICE}:${TS}`, 'agt_alice_old'],
+      [`slack:${INSTALL_ID}:${DM_ALICE}:${TS}`, 'agt_alice_new'],
+    ]);
+  });
+
   it("pickPersonalAgent honors a chosen agent only when it is the user's own personal agent", () => {
     // Alice's list, and Bob's personal agent in it too: each refusal is about whose it is, not whether it was listed.
     const agents = [

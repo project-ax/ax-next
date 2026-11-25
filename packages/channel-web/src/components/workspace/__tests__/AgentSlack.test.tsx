@@ -5,7 +5,7 @@
  * ships.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentSlack } from '../AgentSlack';
 import {
   AGENT_SLACK_DM_COPY as DM,
@@ -207,16 +207,21 @@ describe('the states', () => {
       expect(slackCardWordsFound(slackCardText())).toEqual([]);
     });
 
-    it('while it switches, the button is disabled and a second click sends nothing', async () => {
+    it('while it switches, the button is disabled and two clicks before it re-renders send one request', async () => {
       const gate = deferred<void>();
       choose_dm.mockReturnValue(gate.promise);
       fetchStatus.mockResolvedValueOnce(elsewhere).mockResolvedValueOnce(here);
       render(<AgentSlack agentId="a1" agentName="Quill" />);
       const button = await screen.findByRole('button', { name: DM.useInstead('Quill') });
-      fireEvent.click(button);
+      // Two clicks before React renders the button disabled: only the in-flight ref stands between them.
+      // (Separate fireEvent calls each flush their own render, so the second would hit a disabled button.)
+      act(() => {
+        button.click();
+        button.click();
+      });
+      expect(choose_dm).toHaveBeenCalledTimes(1);
       const busy = await screen.findByRole('button', { name: DM.switching });
       expect(busy).toBeDisabled();
-      fireEvent.click(busy);
       fireEvent.click(busy);
       expect(choose_dm).toHaveBeenCalledTimes(1);
       gate.resolve();
