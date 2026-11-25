@@ -152,7 +152,7 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
       )}
       {load.kind === 'loading' && (
         // No title yet: the card may turn out to have nothing to show, and a heading that vanished would read as a glitch.
-        // (Not a live region: the tab above has its own `status` for the same wait.)
+        // (The AsyncState announces this wait itself, as a polite status; the tab's own loading above is an earlier, separate wait.)
         <Card variant="settings" aria-busy="true">
           <CardContent>
             <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the team agents' own bots" />

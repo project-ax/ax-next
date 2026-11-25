@@ -77,9 +77,6 @@ export function RoutinesList({
   const [busy, setBusy] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
-  // The last routine asked about, so the dialog's title stays put while it closes.
-  const lastDeleting = useRef<DeleteTarget | null>(null);
-  if (deleting !== null) lastDeleting.current = deleting;
   const [fireProtected, setFireProtected] = useState(false);
   const fireProtectedRef = useRef(false);
   function protectFire(pending: boolean) {
@@ -247,7 +244,7 @@ export function RoutinesList({
       {error && (
         <Notice
           tone="danger"
-          {...(fireProtected ? {} : { action: { label: 'Refresh', onClick: () => setVersion((n) => n + 1) } })}
+          action={{ label: 'Refresh', busy: fireProtected, onClick: () => setVersion((n) => n + 1) }}
         >
           {error}
         </Notice>
@@ -459,10 +456,10 @@ export function RoutinesList({
       <ConfirmAction
         open={deleting !== null}
         onOpenChange={(open) => {
-          // A change we couldn't confirm stays pending (same request id) and the page's "Retry change" resends it.
+          // A change we couldn't confirm stays pending (same request id) and the page's "Try again" resends it.
           if (!open && !flight.current) setDeleting(null);
         }}
-        title={`Delete ${(deleting ?? lastDeleting.current)?.name ?? ''}?`}
+        title={`Delete ${deleting?.name ?? ''}?`}
         description="This stops future runs. Existing Activity remains available."
         confirmLabel="Delete"
         errorMessage={(err) => (err instanceof Error ? err.message : UNCONFIRMED)}

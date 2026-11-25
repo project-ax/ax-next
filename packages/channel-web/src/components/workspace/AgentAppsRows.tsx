@@ -3,7 +3,7 @@
  * of `AgentApps.tsx`, which owns the state and the writes. App names,
  * connector names and tool names are untrusted text, rendered as text only.
  */
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Button as AxButton, ConfirmAction } from '@project-ax/ui';
 import type { AppGrant, AppLink, ViewerApproval } from '@ax/apps-bridge-contract';
@@ -32,11 +32,8 @@ export function LinkRow({
   const nameId = `app-${link.appId}-name`;
   // While the app is being unlinked, nothing else on its row can start.
   const unlinking = busy.has(link.appId);
-  // The grant whose Remove is awaiting confirmation. Held past close so the words don't blank while it animates out.
+  // The grant whose Remove is awaiting confirmation.
   const [removing, setRemoving] = useState<AppGrant | null>(null);
-  const lastRemoving = useRef<AppGrant | null>(null);
-  if (removing !== null) lastRemoving.current = removing;
-  const shown = removing ?? lastRemoving.current;
   return (
     <li aria-labelledby={nameId} className="flex flex-col gap-3 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -124,8 +121,8 @@ export function LinkRow({
         onOpenChange={(open) => {
           if (!open) setRemoving(null);
         }}
-        title={shown === null ? 'Remove this connector?' : `Remove ${shown.connectorName} from ${link.appName}?`}
-        description={`${link.appName} stops using ${shown?.connectorName ?? 'this connector'} straight away. The app stays linked and keeps any other connectors you gave it.`}
+        title={removing === null ? 'Remove this connector?' : `Remove ${removing.connectorName} from ${link.appName}?`}
+        description={`${link.appName} stops using ${removing?.connectorName ?? 'this connector'} straight away. The app stays linked and keeps any other connectors you gave it.`}
         confirmLabel="Remove connector"
         onConfirm={() => (removing !== null ? onRemove(removing) : undefined)}
       />
@@ -183,16 +180,13 @@ export function UnlinkDialog({
   /** Resolves once the write is done; a refusal is the page's to show. */
   onConfirm: (link: AppLink) => Promise<void>;
 }) {
-  // Keep the app's name on screen while the dialog animates closed.
-  const last = useRef<AppLink | null>(null);
-  if (link !== null) last.current = link;
   return (
     <ConfirmAction
       open={link !== null}
       onOpenChange={(open) => {
         if (!open) onCancel();
       }}
-      title={`Unlink ${(link ?? last.current)?.appName ?? ''}?`}
+      title={`Unlink ${link?.appName ?? ''}?`}
       description={`It stops using ${agentName} straight away, along with every connector you gave it. To use it again, link it with a new code.`}
       confirmLabel="Unlink"
       onConfirm={() => (link !== null ? onConfirm(link) : undefined)}

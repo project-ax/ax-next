@@ -188,13 +188,6 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   // in flight (its `agentId/skillId` key) — mirrors pendingDelete / adopting.
   const [pendingDismiss, setPendingDismiss] = useState<AuthoredSkillListing | null>(null);
   const [dismissing, setDismissing] = useState<string | null>(null);
-  // The last skill asked about, so each confirmation's words stay put while it closes.
-  const lastDelete = useRef(pendingDelete);
-  if (pendingDelete !== null) lastDelete.current = pendingDelete;
-  const shownDelete = pendingDelete ?? lastDelete.current;
-  const lastDismiss = useRef(pendingDismiss);
-  if (pendingDismiss !== null) lastDismiss.current = pendingDismiss;
-  const shownDismiss = pendingDismiss ?? lastDismiss.current;
 
   // ---- data loads -------------------------------------------------------
 
@@ -1041,13 +1034,13 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
         onOpenChange={(open) => {
           if (!open) setPendingDelete(null);
         }}
-        title={shownDelete?.scope === 'workspace' ? 'Remove from workspace?' : 'Delete skill?'}
+        title={pendingDelete?.scope === 'workspace' ? 'Remove from workspace?' : 'Delete skill?'}
         description={
-          shownDelete?.scope === 'workspace'
-            ? `Remove ${shownDelete.skillId} from the workspace catalog? It will no longer be available for anyone to install.`
-            : `Delete ${shownDelete?.skillId ?? ''}? This cannot be undone. If it's attached to any agent, the delete will fail and you'll need to remove it first.`
+          pendingDelete?.scope === 'workspace'
+            ? `Remove ${pendingDelete.skillId} from the workspace catalog? It will no longer be available for anyone to install.`
+            : `Delete ${pendingDelete?.skillId ?? ''}? This cannot be undone. If it's attached to any agent, the delete will fail and you'll need to remove it first.`
         }
-        confirmLabel={shownDelete?.scope === 'workspace' ? 'Remove' : 'Delete'}
+        confirmLabel={pendingDelete?.scope === 'workspace' ? 'Remove' : 'Delete'}
         errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
         onConfirm={() => (pendingDelete ? handleDelete(pendingDelete.skillId, pendingDelete.scope) : undefined)}
       />
@@ -1058,7 +1051,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
           if (!open) setPendingDismiss(null);
         }}
         title="Delete authored draft?"
-        description={`Delete the draft ${shownDismiss?.skillId ?? ''} authored by your agent? This removes the draft only — it doesn't touch any editable copy you've already adopted. If the agent authors it again later, it can re-appear here.`}
+        description={`Delete the draft ${pendingDismiss?.skillId ?? ''} authored by your agent? This removes the draft only — it doesn't touch any editable copy you've already adopted. If the agent authors it again later, it can re-appear here.`}
         confirmLabel="Delete"
         errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
         onConfirm={() => (pendingDismiss ? handleDismiss(pendingDismiss) : undefined)}

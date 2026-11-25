@@ -158,9 +158,7 @@ export function SlackBotRequests() {
                     {`Asked by ${request.requestedBy} on ${slackShortDate(request.requestedAt)}.`}
                   </p>
                   {declineFailed === request.requestId && (
-                    <p role="alert" className="text-[12.5px] text-destructive">
-                      {COPY['declineFailed']}
-                    </p>
+                    <Notice tone="danger">{COPY['declineFailed']}</Notice>
                   )}
                 </div>
                 <div className="flex gap-2">

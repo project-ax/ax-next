@@ -158,10 +158,6 @@ function ExtractionPausedNotice() {
   );
 }
 
-function EmptyMemories({ title, description }: { title: string; description?: string }) {
-  return <EmptyState title={title} {...(description !== undefined ? { description } : {})} />;
-}
-
 function ClosureNote({
   row,
   page,
@@ -424,11 +420,11 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
         {state.data.degraded.length > 0 && <DegradedNotice />}
         {rows.length === 0 ? (
           query ? (
-            <EmptyMemories title="No memories match that." description="Try a different word or phrase." />
+            <EmptyState title="No memories match that." description="Try a different word or phrase." />
           ) : extractionPaused ? (
-            <EmptyMemories title="No memories yet." />
+            <EmptyState title="No memories yet." />
           ) : (
-            <EmptyMemories
+            <EmptyState
               title="No memories yet."
               description="Notes we remember from your conversations will appear here."
             />

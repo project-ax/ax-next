@@ -6,13 +6,13 @@
  * Each mutation triggers `auth:providers-changed` server-side and the
  * better-auth handler hot-reloads — no kernel restart needed (I10).
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { SettingsActions } from '../settings/SettingsLayout';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { AsyncState, ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthProviders,
@@ -60,11 +60,6 @@ export function AuthProvidersTab() {
     null,
   );
 
-  // The last provider asked about, so the dialog's words stay put while it closes.
-  const lastDisable = useRef<AuthProviderEntry | null>(null);
-  if (pendingDisable !== null) lastDisable.current = pendingDisable;
-  const lastDelete = useRef<AuthProviderEntry | null>(null);
-  if (pendingDelete !== null) lastDelete.current = pendingDelete;
 
   const fetchProviders = async () => {
     setLoading(true);
@@ -155,7 +150,7 @@ export function AuthProvidersTab() {
       )}
 
       {actionError && (
-        <AsyncState status="error" skeleton="lines" loadingLabel="Updating sign-in methods…" error={{ message: actionError }} />
+        <Notice tone="danger">{actionError}</Notice>
       )}
 
       {!loading && !loadError && providers.length === 0 && !adding && (
@@ -243,7 +238,7 @@ export function AuthProvidersTab() {
           if (!next) setPendingDisable(null);
         }}
         title="Turn off the only way to sign in?"
-        description={`${labelFor((pendingDisable ?? lastDisable.current)?.kind ?? '')} is the only sign-in method still switched on. Turning it off will lock everyone out — including you, and including this page. Add another method first if you can.`}
+        description={`${labelFor(pendingDisable?.kind ?? '')} is the only sign-in method still switched on. Turning it off will lock everyone out — including you, and including this page. Add another method first if you can.`}
         confirmLabel="Turn it off anyway"
         onConfirm={confirmDisable}
       />
@@ -254,7 +249,7 @@ export function AuthProvidersTab() {
           if (!next) setPendingDelete(null);
         }}
         title="Remove provider?"
-        description={`Remove the ${labelFor((pendingDelete ?? lastDelete.current)?.kind ?? '')} identity provider? Users will no longer be able to sign in with it.`}
+        description={`Remove the ${labelFor(pendingDelete?.kind ?? '')} identity provider? Users will no longer be able to sign in with it.`}
         confirmLabel="Remove"
         errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
         onConfirm={confirmDelete}

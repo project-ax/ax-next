@@ -118,12 +118,6 @@ function shortDate(iso: string): string {
 
 // ── Around the states ──────────────────────────────────────────────────────
 
-function Loading() {
-  return (
-    <AsyncState status="loading" skeleton="rows" loadingLabel="Loading Slack settings…" />
-  );
-}
-
 /** `tokenKept`: a team agent's own bot still needs the configuration token, so the admin must not revoke it. */
 function DisconnectedNotice({ tokenKept }: { tokenKept: boolean }) {
   return (
@@ -917,7 +911,7 @@ export function SlackTab() {
       {notice?.kind === 'changed' && (
         <Notice tone="info">This changed while you were here, so we&apos;ve refreshed it.</Notice>
       )}
-      {load.kind === 'loading' && <Loading />}
+      {load.kind === 'loading' && <AsyncState status="loading" skeleton="rows" loadingLabel="Loading Slack settings…" />}
       {load.kind === 'error' && (
         <AsyncState
           status="error"

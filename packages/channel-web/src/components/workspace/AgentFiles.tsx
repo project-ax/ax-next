@@ -163,14 +163,6 @@ function RailRow({
   );
 }
 
-function FileListEmpty({ children }: { children: string }) {
-  return <EmptyState title={children} />;
-}
-
-function FileListLoading() {
-  return <AsyncState status="loading" skeleton="rows" loadingLabel="Loading files" />;
-}
-
 export function AgentFiles({
   agentId,
   agentName,
@@ -412,19 +404,19 @@ export function AgentFiles({
                 consulted here, since a failed listing leaves the previous
                 folder's rows in it.
               */
-              <FileListEmpty>{`${agentName} hasn’t put any files here yet.`}</FileListEmpty>
+              <EmptyState title={`${agentName} hasn’t put any files here yet.`} />
             ) : durable.loading && durable.entries.length === 0 ? (
-              <FileListLoading />
+              <AsyncState status="loading" skeleton="rows" loadingLabel="Loading files" />
             ) : durable.entries.length === 0 ? (
               /*
                 Reachable only after a listing that actually succeeded, which is
                 what makes it safe to say something about the agent here.
               */
-              <FileListEmpty>
-                {durable.dirPath === ''
+              <EmptyState
+                title={durable.dirPath === ''
                   ? `${agentName} hasn’t put any files here yet.`
                   : 'This folder is empty.'}
-              </FileListEmpty>
+              />
             ) : (
               <div className="flex flex-col gap-0.5">
                 {durable.entries.map((e) => (

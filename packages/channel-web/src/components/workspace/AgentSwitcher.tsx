@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { Check, ChevronsUpDown, EllipsisVertical, Plus, Settings, Trash2 } from 'lucide-react';
 import { ConfirmAction } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
@@ -52,9 +52,6 @@ export function AgentSwitcher({
   onNavigate,
 }: Props) {
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAgent | null>(null);
-  // The last agent asked about, so the dialog's words stay put while it closes (and the selection moves on).
-  const lastPending = useRef<WorkspaceAgent | null>(null);
-  if (pendingDelete !== null) lastPending.current = pendingDelete;
 
   const go = (act: () => void) => () => {
     act();
@@ -238,7 +235,7 @@ export function AgentSwitcher({
           if (!open) setPendingDelete(null);
         }}
         title="Delete agent?"
-        description={`Delete ${(pendingDelete ?? lastPending.current)?.name ?? ''}? We will delete its conversations, the files in them, the files it saved and its routines along with it. This cannot be undone.`}
+        description={`Delete ${pendingDelete?.name ?? ''}? We will delete its conversations, the files in them, the files it saved and its routines along with it. This cannot be undone.`}
         confirmLabel="Delete agent"
         errorMessage={() => 'We couldn’t delete this agent just now, so nothing was removed. Please try again.'}
         onConfirm={async () => {

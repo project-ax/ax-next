@@ -169,9 +169,6 @@ export function AgentConnectors({
   const addable = connectorsSupported && manageable ? onAdd : undefined;
   const isAdmin = useUser()?.role === 'admin';
   const [confirming, setConfirming] = useState<AgentConnectorRow | null>(null);
-  // The last connector asked about, so the dialog's words stay put while it closes.
-  const lastConfirming = useRef<AgentConnectorRow | null>(null);
-  if (confirming !== null) lastConfirming.current = confirming;
   const [notice, setNotice] = useState<
     { tone: 'error' | 'note'; text: ReactNode } | null
   >(null);
@@ -381,10 +378,10 @@ export function AgentConnectors({
         onOpenChange={(open) => {
           if (!open) setConfirming(null);
         }}
-        title={`Remove ${(confirming ?? lastConfirming.current)?.name ?? ''} from ${name}?`}
-        description={`This removes ${(confirming ?? lastConfirming.current)?.name ?? ''} from ${name}, including its sign-in and keys, and anything you approved for it here. The connector itself stays, and so do your other agents that use it.`}
+        title={`Remove ${confirming?.name ?? ''} from ${name}?`}
+        description={`This removes ${confirming?.name ?? ''} from ${name}, including its sign-in and keys, and anything you approved for it here. The connector itself stays, and so do your other agents that use it.`}
         confirmLabel="Remove"
-        errorMessage={() => `We couldn’t remove ${(confirming ?? lastConfirming.current)?.name ?? 'it'} just now. Nothing changed.`}
+        errorMessage={() => `We couldn’t remove ${confirming?.name ?? 'it'} just now. Nothing changed.`}
         onConfirm={() => (confirming !== null ? onRemove(confirming) : undefined)}
       />
       <Dialog

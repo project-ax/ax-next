@@ -177,6 +177,21 @@ describe('AuthProvidersTab', () => {
     expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
   });
 
+  it('a failed toggle is a plain error, not a loading state, and the rows stay', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, githubEntry] }));
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 })); // PATCH fails
+
+    render(<AuthProvidersTab />);
+    await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+    fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t change that sign-in method.');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.queryByText('Updating sign-in methods…')).toBeNull();
+    expect(screen.getByText('Google')).toBeTruthy();
+  });
+
   /**
    * TASK-342 / audit D5 — turning off the LAST enabled sign-in method locks
    * every user out of the deployment, the admin doing it included, with no way

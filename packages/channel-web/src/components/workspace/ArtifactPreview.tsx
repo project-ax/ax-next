@@ -62,21 +62,6 @@ function useLoad<T>(load: () => Promise<T>, context: string): [Load<T>, () => vo
   return [result, useCallback(() => setAttempt((n) => n + 1), [])];
 }
 
-function Loading() {
-  return <AsyncState status="loading" skeleton="block" loadingLabel="Loading preview" />;
-}
-
-function Failed({ retry }: { retry: () => void }) {
-  return (
-    <AsyncState
-      status="error"
-      skeleton="block"
-      loadingLabel="Loading preview"
-      error={{ message: 'We couldn’t open this just now. Nothing was lost.', onRetry: retry }}
-    />
-  );
-}
-
 function DownloadOnly({ title, description, onDownload }: { title: string; description: string; onDownload(): void }) {
   return (
     <div className="flex flex-1 items-center justify-center">
@@ -102,8 +87,15 @@ function FromContentOrigin({
     return token;
   }, [loadToken]);
   const [token, retry] = useLoad(load, 'artifact-view-token');
-  if (token.state === 'loading') return <Loading />;
-  if (token.state === 'failed') return <Failed retry={retry} />;
+  if (token.state === 'loading') return <AsyncState status="loading" skeleton="block" loadingLabel="Loading preview" />;
+  if (token.state === 'failed') return (
+      <AsyncState
+        status="error"
+        skeleton="block"
+        loadingLabel="Loading preview"
+        error={{ message: 'We couldn’t open this just now. Nothing was lost.', onRetry: retry }}
+      />
+    );
   if (preview === 'image') {
     return (
       <div className="flex flex-1 items-start justify-center py-2">
@@ -131,8 +123,15 @@ function AsText({
   loadText(): Promise<{ text: string; truncated: boolean }>;
 }) {
   const [text, retry] = useLoad(loadText, 'artifact-text');
-  if (text.state === 'loading') return <Loading />;
-  if (text.state === 'failed') return <Failed retry={retry} />;
+  if (text.state === 'loading') return <AsyncState status="loading" skeleton="block" loadingLabel="Loading preview" />;
+  if (text.state === 'failed') return (
+      <AsyncState
+        status="error"
+        skeleton="block"
+        loadingLabel="Loading preview"
+        error={{ message: 'We couldn’t open this just now. Nothing was lost.', onRetry: retry }}
+      />
+    );
   return (
     <div className="flex flex-col gap-2 py-2">
       {text.value.truncated && (

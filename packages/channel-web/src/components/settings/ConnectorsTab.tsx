@@ -40,7 +40,7 @@
  * never raw HTML. shadcn primitives + semantic tokens
  * only (invariant #6).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
@@ -153,11 +153,6 @@ export function ConnectorsTab() {
   // awaiting dismiss confirmation (null = dialog closed).
   const [requests, setRequests] = useState<AuthoredProposal[]>([]);
   const [dismissing, setDismissing] = useState<RequestGroup | null>(null);
-  // The last connector / request asked about, so the dialogs' words stay put while they close.
-  const lastDelete = useRef<ConnectorSummary | null>(null);
-  if (pendingDelete !== null) lastDelete.current = pendingDelete;
-  const lastDismissing = useRef<RequestGroup | null>(null);
-  if (dismissing !== null) lastDismissing.current = dismissing;
   // The requests didn't load. A preset without the connectors plugin is not a
   // failure (the lib answers an empty list for its 404); anything else is, and
   // saying so beats an empty shelf that looks like "nobody asked".
@@ -439,7 +434,7 @@ export function ConnectorsTab() {
           if (!open) setPendingDelete(null);
         }}
         title="Delete connector?"
-        description={`Delete ${(pendingDelete ?? lastDelete.current)?.name ?? ''}? This cannot be undone. Agents that rely on it will lose access.`}
+        description={`Delete ${pendingDelete?.name ?? ''}? This cannot be undone. Agents that rely on it will lose access.`}
         confirmLabel="Delete"
         errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
         onConfirm={confirmDelete}
@@ -454,7 +449,7 @@ export function ConnectorsTab() {
         }}
         title="Dismiss this request?"
         description={
-          (dismissing ?? lastDismissing.current)?.people.length === 1
+          dismissing?.people.length === 1
             ? 'The person who asked won’t be notified.'
             : 'The people who asked won’t be notified.'
         }

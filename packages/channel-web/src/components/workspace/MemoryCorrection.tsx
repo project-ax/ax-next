@@ -354,10 +354,6 @@ export function MemoryForgetDialog({
 }) {
   const land = useLandOnOutcome(outcomeScope);
   const { disarm, landNow } = land;
-  // The caller clears `target` the moment the forget lands; keep the words on screen while the dialog closes.
-  const last = useRef<FactMemoryStatement | null>(null);
-  if (target !== null) last.current = target;
-  const shown = target ?? last.current;
 
   useEffect(() => {
     if (target !== null) disarm();
@@ -380,7 +376,7 @@ export function MemoryForgetDialog({
         if (!open) onClose();
       }}
       title={MEMORY_FORGET_TITLE}
-      description={`${shown === null ? '' : `“${memoryStatementText(shown)}” — `}${memoryForgetHelper(visibility)}`}
+      description={`${target === null ? '' : `“${memoryStatementText(target)}” — `}${memoryForgetHelper(visibility)}`}
       confirmLabel={MEMORY_FORGET}
       errorMessage={() => MEMORY_FORGET_FAILED}
       onConfirm={forget}

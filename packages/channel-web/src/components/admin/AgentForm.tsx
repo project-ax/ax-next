@@ -398,7 +398,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         toolCatalog.status === 'loading'
           ? 'We’re still loading the list of tools. Give it a second and try again.'
           : toolCatalog.status === 'failed'
-            ? 'We couldn’t load the list of tools, so there’s nothing to pick yet. Close and reopen this form to try again.'
+            ? 'We couldn’t load the list of tools, so there’s nothing to pick yet. Use Try again on the tool list above, then save.'
             : 'Pick at least one tool for this agent — “Files and commands” is a safe start.',
       );
       return;
@@ -519,7 +519,7 @@ if (base.model !== editing.model) patch.model = base.model;
                     trigger={{ label: 'delete', intent: 'quiet', size: 'sm' }}
                     title="Delete agent?"
                     description={`Delete ${a.displayName}? We will delete its conversations, the files in them, the files it saved and its routines along with it. This cannot be undone.`}
-                    confirmLabel="Delete"
+                    confirmLabel="Delete agent"
                     errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
                     onConfirm={async () => {
                       await deleteAgent(a.id);

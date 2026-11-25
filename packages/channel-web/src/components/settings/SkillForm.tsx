@@ -33,7 +33,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
-import { Grid, Notice } from '@project-ax/ui';
+import { AsyncState, Grid, Notice } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -382,7 +382,7 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
   }
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
+    return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading skill" />;
   }
 
   // (TASK-343 / audit D8) The parser's `code` was prefixed onto every live

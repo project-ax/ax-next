@@ -483,7 +483,7 @@ function RoutineForm({
           Repeat's waiting app updates, and it says so by Save too. It has no kind control. */}
       {cancelsWaitingUpdates && (
         <Stack id={`${id}-save-waiting`}>
-          <Notice tone="info">Saving these changes cancels any app updates still waiting to run.</Notice>
+          <Notice tone="warning">Saving these changes cancels any app updates still waiting to run.</Notice>
         </Stack>
       )}
       {error && (

@@ -579,5 +579,5 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
 export function readFailureCopy(status: Exclude<WorkspaceReadStatus, 'ok'>, what: string): string {
   return status === 'unavailable'
     ? `This deployment doesn't keep ${what}, so there's nothing to show.`
-    : `We couldn't read ${what} just now. Treat this as unknown rather than empty, and try reloading.`;
+    : `We couldn't read ${what} just now. Treat this as unknown rather than empty.`;
 }

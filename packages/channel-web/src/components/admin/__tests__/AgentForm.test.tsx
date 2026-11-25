@@ -184,7 +184,7 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.getByText('Delete agent?')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete agent' }));
 
     await waitFor(() => {
       expect(mockDelete).toHaveBeenCalledWith('agent-1');
@@ -699,7 +699,7 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
     save();
     await waitFor(() =>
       expect(
-        screen.getByText(/couldn’t load the list of tools, so there’s nothing to pick yet/),
+        screen.getByText(/couldn’t load the list of tools, so there’s nothing to pick yet.*Try again/),
       ).toBeTruthy(),
     );
     expect(createAgent).not.toHaveBeenCalled();
