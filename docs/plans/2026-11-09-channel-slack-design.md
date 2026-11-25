@@ -71,7 +71,7 @@ the owner chose to put there.
 
 | Where | Agent | Who can use it | Turn runs as |
 |---|---|---|---|
-| 1:1 DM with the shared bot | Sender's personal agent: the one they chose in its Slack settings, else their oldest | Only its owner | Owner, **attended** (`ctx.source: 'user'`) |
+| 1:1 DM with the shared bot | Sender's "Just me" personal agent: the one they chose in its Slack settings, else their oldest (a shared personal agent never answers DMs; TASK-1248) | Only its owner | Owner, **attended** (`ctx.source: 'user'`) |
 | Public channel connected to an agent | That team agent | Any full company member | **Attended** if the sender is an AX user who passes `agents:resolve` for the agent; otherwise **external** (`ctx.source: 'external'`) |
 | Group DM, Slack Connect channel, guest, bot, other domain | — | No one | Ignored, or a short private refusal |
 
@@ -602,8 +602,9 @@ only mentions, so a channel the bot was later removed from stays on that list.
 - **Deleting an agent deletes its bot** (`agents:deleted`). AX has no team
   delete yet. One that deletes the team's agents first gets this for free.
 
-Personal agents stay on the shared app. Fifty personal bots cluttering the
-workspace would buy nothing: a personal agent only talks to one person, in a DM.
+"Just me" personal agents stay on the shared app. Fifty personal bots cluttering the
+workspace would buy nothing: a "Just me" agent only talks to one person, in a DM.
+A personal agent shared with other people gets its own bot, like a team agent (TASK-1248).
 
 **As built (TASK-1167).** The first slice is the self path only. Asking an
 AX admin to approve came next (TASK-1169, below). On this path the approver is
@@ -1090,7 +1091,7 @@ agent are unchanged (private memory, as today), and team bots have no DMs.
 
 The card's help line: **"If @fern needs your OK for something, it asks the
 person who asked. For people outside AX, it asks the team admin who set @fern
-up."** Who a turn runs as, attended vs. external, and Today's approval cards
+up."** *(As built, TASK-1248: "the person who set it up", so it reads right for a shared personal agent too.)* Who a turn runs as, attended vs. external, and Today's approval cards
 stay as built (§2, §4). People just don't have to learn the words.
 
 ### Order and cards
@@ -1123,7 +1124,7 @@ The TASK-1192 walk showed that "answer, but don't remember" can't be enforced. M
 ### The rules
 
 1. **A team agent's memory is shared with anyone who talks to it, everywhere.** What it hears in a public channel, a private channel, or a web chat with a team member can be remembered and brought up anywhere the agent works, for anyone who talks to it: its team, and anyone else in a channel it's in (TASK-1209).
-2. **Personal agents work only in DMs** (true since TASK-1186). Their memory stays private, as today.
+2. **"Just me" agents work only in DMs** (true since TASK-1186). Their memory stays private, as today. A personal agent shared with other people follows rules 1, 3, 4 and 5 (TASK-1248).
 3. **Private channels are allowed and remembered.** A team bot invited to one answers and remembers, like anywhere else. People are told (below).
 4. **Kept, for trust rather than privacy:** words from people outside the agent's team are never remembered (AX users not on the team included: §2's outsiders). Otherwise anyone in the workspace could feed the agent false team facts. Reading is open, since TASK-1209: an outsider's turn recalls what a member's does. Writing stays closed.
 5. **Kept:** Slack Connect channels are refused. "Shared with your team" shouldn't quietly take in another company's messages. Archived channels stay refused.

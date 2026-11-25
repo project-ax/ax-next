@@ -102,10 +102,35 @@ Each phase ships on its own and is reversible, up to the migration in phase 3.
 - Eight write paths took "resolved + personal" as "owner". Phase 1A guards them.
 - The creator stays an owner in phase 1.
 - Co-owners change settings. Delete, routines and webhooks stay the creator's.
-- Memory refuses non-creators until card C. Card B's shared-agent lists should follow card C.
-- Sharing also exposes files, artifacts (rename, delete, public link), the routine list, Instructions, and the agent's self-identity updates. Card B's confirmation copy should name them, or card C should restrict them.
+- Memory refuses non-creators until card C. Card B's shared-agent lists should follow card C. (Card C, TASK-1248: done. A shared agent's memory is shared with everyone who can use it.)
+- Sharing also exposes files, artifacts (rename, delete, public link), the routine list, Instructions, and the agent's self-identity updates. Card B's confirmation copy should name them, or card C should restrict them. (Card C: left as is. They follow the team rule; card B's confirmation names them. See §10.)
 - The sharing settings view carries only id and display name, no email. An unknown person is refused with a generic `unknown-person` that doesn't name the id. So the route can't be used as an account or email lookup. A people-search route for card B's picker is card B's to design.
-- The agent's own `update_identity` (author `agent`) and `complete-bootstrap` stay open to anyone who can use the agent. Someone an agent is shared with can steer its identity via chat. Card C should decide.
+- The agent's own `update_identity` (author `agent`) and `complete-bootstrap` stay open to anyone who can use the agent. Someone an agent is shared with can steer its identity via chat. Card C should decide. (Card C: decided. Identity is owners-only, even through chat. See §10.)
 - Anyone an agent is shared with sees which account its connections are signed in as (the connectors tab shows it, as it does for team agents). On an `everyone` agent that is the owner's Gmail address, company-wide. Card B's confirmation should name it.
 - The webhook receiver read now asks the same creator-only rule as the token write (`agents:can-manage-webhook-token`), so a co-owner isn't told "yes" and then refused.
-- A chat "Always for this agent" from someone the agent is shared with stays session-only in phase 1A (`kept: false`). Card C applies the shared-agent website rule on purpose.
+- A chat "Always for this agent" from someone the agent is shared with stays session-only in phase 1A (`kept: false`). Card C applies the shared-agent website rule on purpose. (Card C: done. A sharee's "Always for this agent" is kept on a shared agent.)
+
+## 10. Found while building phase 1C (TASK-1248)
+
+**The rule.** A shared personal agent (`shared: true`) follows the team-agent rules. That covers memory, its Slack bot, outsiders' turns and approvals, and website Allow.
+
+- **Memory names.** `agents:resolve` must admit the id, and the id must also take part. It is an owner, it is on a `list` audience, or it owns a row in this agent's memory (it spoke to it). Someone admitted only through `everyone` who never spoke reads "a teammate", with no name lookup. `everyone` admits every AX account, so without this a crafted `user:<id>` subject could fetch any account's display name. It is the same hole TASK-1209 closed for teams.
+- **Just me is unchanged.** Co-owners of a Just-me agent still can't chat with it, because of the per-agent `/memory` export. Open question: should a Just-me agent with co-owners share its memory among them?
+- **Narrowing.** Going back to Just me hides what others taught the agent from the creator. The rows are kept, and come back if the agent is shared again. Its Slack bot is left inert until an AX admin removes it or the agent is shared again.
+- **Outsiders' approvals** wait for the one owner who set the bot up, not for every owner. Another owner can take over.
+- **Slack DMs.** A shared agent never answers DMs. That includes its creator's.
+- **Identity is owners-only,** even through chat. `complete_bootstrap` is only offered when the person may change the agent.
+- **Files, artifacts, the routine list and Instructions** follow the team rule. Card B's confirmation should name them.
+- **Slack wording** names no team now. "A team admin" became "Someone" in the bot-request fallback. About 100 older channel-slack comments still mention teams only. There are no user-facing strings left. A comment sweep is a follow-up.
+
+**Client wording that says "team" on a shared agent (card B, by exact location).** Each line stays true for team agents. On a shared personal agent it names a team that doesn't exist.
+
+- `lib/agent-slack.ts:469` ("Channels are for team agents")
+- `lib/agent-slack.ts:492` (`teamAdminCanAdd`)
+- `lib/agent-slack.ts:519` (`outsidersUseYourAccess`)
+- `lib/agent-slack.ts:521` (`helpLine`)
+- `lib/agent-slack.ts:527-528` (needs-claim lines)
+- `AgentSlackBotLifecycle.tsx:270` (Take over description)
+- `ConnectorsTab.tsx:217` ("Granted by you and your team")
+- `ConnectorsTab.tsx:557-558` ("A team admin can remove them")
+- `memory-copy.ts:55-56`, `:92-93`, `:192-193` ("for the team", "Team members can fix or forget them")

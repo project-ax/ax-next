@@ -33,7 +33,7 @@
 | | Just me (owners only) | Shared personal (`shared: true`) | Team agent (unchanged) |
 |---|---|---|---|
 | Memory | creator only; reads scoped to the creator | everyone who can use it; speaker facts under the speaker; outsiders' words never kept; unknown source → shared rows only | same as shared |
-| Names in memory | none | `agents:resolve` admits the id → `auth:get-user` name | `teams:is-member` → name |
+| Names in memory | none | `agents:resolve` admits the id **and** the id takes part (an owner, on a `list` audience, or it owns a row in this agent's memory) → `auth:get-user` name; admitted only via `everyone` and never spoke: "a teammate", no lookup | `teams:is-member` → name |
 | Slack | DMs on the shared app (TASK-1238) | its own bot for channels; **never answers DMs** | own bot |
 | Who sets up / manages the bot | — (409 `personal-agent`) | any owner (`isOwner`) | team admins |
 | Outsiders' turns run as / their approvals wait for | — | the owner who set the bot up, while still an owner; another owner can Take over | the team admin who set it up |
