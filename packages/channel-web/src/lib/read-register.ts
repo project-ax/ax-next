@@ -260,7 +260,7 @@ export function readAlertVariant(
  * `Notice`) so the register stays one rule while the component changes.
  */
 export function readNoticeTone(kind: ReadOutcome, opts?: { retrying?: boolean }): 'info' | 'danger' {
-  return readAlertVariant(kind, opts) === 'default' ? 'info' : 'danger';
+  return registerNoticeTone(readAlertVariant(kind, opts));
 }
 
 /**

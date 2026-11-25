@@ -32,7 +32,8 @@ export const REMOVAL_WINDOW_MS = 3_000;
  * just restored) this waits, up to {@link REMOVAL_WINDOW_MS}, for that element
  * to leave the document, and parks then. It gives up the moment focus moves to
  * some other live element (the person took the keyboard) or the window ends,
- * so a failed removal that keeps its opener is never touched.
+ * so a failed removal that keeps its opener is never touched. Focus falling to `<body>` is not enough on its
+ * own: the stand-in is only focused once the opener has left the document.
  */
 export function focusAfterRemoval(...selectors: readonly string[]): void {
   afterDialogCloses(() => {
@@ -44,8 +45,12 @@ export function focusAfterRemoval(...selectors: readonly string[]): void {
     const observer = new MutationObserver(() => {
       const now = document.activeElement;
       if (!keyboardIsClaimed(document)) {
-        stop();
-        focusFirst(selectors);
+        // Focus on <body> while the opener still exists is just a blur (or the opener went disabled); parking now
+        // would pull the person somewhere they didn't ask to go. Wait for the opener to actually leave.
+        if (holder === null || !holder.isConnected) {
+          stop();
+          focusFirst(selectors);
+        }
       } else if (now !== holder) {
         stop();
       }

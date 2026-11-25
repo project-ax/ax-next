@@ -70,4 +70,20 @@ describe('focusAfterRemoval', () => {
     await settle();
     expect(document.activeElement).toBe(document.getElementById('other'));
   });
+
+  it('does not move focus when the person merely blurred to <body> while the opener still exists', async () => {
+    mount('<button id="keep">New</button><button id="opener">Delete</button>');
+    const opener = document.getElementById('opener')!;
+    opener.focus();
+    focusAfterRemoval('#keep');
+    await settle();
+    opener.blur();
+    document.body.appendChild(document.createElement('div'));
+    await settle();
+    expect(document.activeElement).toBe(document.body);
+    // Still waiting: once the opener really leaves, the stand-in gets focus.
+    opener.remove();
+    await settle();
+    expect(document.activeElement).toBe(document.getElementById('keep'));
+  });
 });

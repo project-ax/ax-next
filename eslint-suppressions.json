@@ -414,13 +414,13 @@
   },
   "packages/channel-web/src/components/admin/SlackBotRequests.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 11
+      "count": 10
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 6
     }
   },
   "packages/channel-web/src/components/admin/SlackBotsCard.tsx": {
@@ -717,10 +717,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 70
+      "count": 69
     },
     "ax-ui/no-raw-elements": {
-      "count": 66
+      "count": 65
     }
   },
   "packages/channel-web/src/components/settings/RememberedSitesPanel.tsx": {
@@ -782,10 +782,10 @@
       "count": 4
     },
     "ax-ui/no-classname": {
-      "count": 38
+      "count": 37
     },
     "ax-ui/no-raw-elements": {
-      "count": 35
+      "count": 34
     }
   },
   "packages/channel-web/src/components/settings/SkillInstallConsentDialog.tsx": {
@@ -1242,10 +1242,10 @@
   },
   "packages/channel-web/src/components/workspace/GeneratedFileChip.tsx": {
     "ax-ui/no-classname": {
-      "count": 6
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 2
     }
   },
   "packages/channel-web/src/components/workspace/GrantRow.tsx": {

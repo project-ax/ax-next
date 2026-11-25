@@ -42,7 +42,9 @@ function sources(): Array<{ file: string; src: string }> {
 }
 
 /** JSX text: `>Retry<`, `>Retry the upload<`, `>Check again<`, `>Reload app setup<`. */
-const BANNED_BUTTON_TEXT = />\s*(Retry(\s+[\w-]+)*|Check again|Reload app setup)\s*</;
+const BANNED_BUTTON_TEXT = />\s*(Retry(\s+[\w-]+)*[.…]?|Check again|Reload app setup)\s*</;
+/** A label passed as a string: `label: 'Retry'`, `label: "Retry …"`, `label="Check again"`, `label: 'Reload app setup'`. */
+const BANNED_STRING_LABEL = /\blabel\s*[:=]\s*\{?\s*['"`]\s*(Retry\b[^'"`]*|Check again|Reload app setup)['"`]/;
 const BANNED_PLUMBING = /\btoastActions\b|toast-store/;
 
 describe('state language', () => {
@@ -55,6 +57,26 @@ describe('state language', () => {
       .filter(({ src }) => BANNED_BUTTON_TEXT.test(src))
       .map(({ file }) => file);
     expect(offenders).toEqual([]);
+  });
+
+  it('offers "Try again" in string action labels too, never Retry / Check again', () => {
+    const offenders = sources()
+      .filter(({ src }) => BANNED_STRING_LABEL.test(src))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it('the patterns bite: they match the dialects they ban and spare "Try again"', () => {
+    for (const bad of ["label: 'Retry'", 'label: "Retry …"', "label: 'Retry upload'", "label: 'Check again'", 'label="Check again"', "label: 'Reload app setup'"]) {
+      expect(BANNED_STRING_LABEL.test(bad), bad).toBe(true);
+    }
+    for (const bad of ['>Retry.<', '> Retry <', '>Retry the upload<', '>Retry…<', '>Check again<']) {
+      expect(BANNED_BUTTON_TEXT.test(bad), bad).toBe(true);
+    }
+    for (const ok of ["label: 'Try again'", "label: 'Reload page'", "label: 'Refresh'"]) {
+      expect(BANNED_STRING_LABEL.test(ok), ok).toBe(false);
+    }
+    expect(BANNED_BUTTON_TEXT.test('>Try again<')).toBe(false);
   });
 
   it('has no toast-with-action plumbing', () => {

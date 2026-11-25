@@ -234,6 +234,9 @@ tester.run('no-internal-imports (uiModules)', plugin.rules['no-internal-imports'
     { code: "import { Button } from '@/components/ui/button';", options: REPLACED },
     { code: "import { Button } from '../ui/button';", options: REPLACED, filename: REL_FILE },
     { code: "import { Alert } from '@project-ax/ui';", options: REPLACED },
+    // A listed module matches a whole path segment, not a prefix: alert-dialog is a different module from alert.
+    { code: "import { AlertDialog } from '@/components/ui/alert-dialog';", options: REPLACED },
+    { code: "import { AlertDialog } from '../ui/alert-dialog';", options: REPLACED, filename: REL_FILE },
   ],
   invalid: [
     { code: "import { Alert } from '@/components/ui/alert';", options: REPLACED, errors: [{ messageId: 'noInternalImport' }] },
