@@ -37,17 +37,19 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *   2. The install's bot token, from the vault.
  *
  * Who answers what (TASK-1186; design §4b.1): the shared app answers DMs,
- * and a team agent's own bot (TASK-1167) answers mentions in the channels
- * it was invited to. A team agent is reached in a channel only through its
- * own bot. A team agent's own bot is any install whose kind isn't exactly
- * `shared` (store.ts reads anything else as a bot, the kind that can do less).
+ * and a shared agent's own bot (TASK-1167) answers mentions in the channels
+ * it was invited to. A shared agent is a team agent, or a personal agent
+ * shared with other people (TASK-1248, channels.ts), and it is reached in a
+ * channel only through its own bot. An agent's own bot is any install whose
+ * kind isn't exactly `shared` (store.ts reads anything else as a bot, the
+ * kind that can do less).
  *   - A mention of the shared bot in a channel runs no turn. It reads no
  *     binding, so a row left from before is never used, and asks nothing
  *     about an agent or the channel: an admitted sender is told privately
  *     how to reach an agent instead (`sharedBotInChannel`, answerAdmitted),
  *     anyone else gets silence, and it is logged as `slack_event_ignored`
  *     (`shared-channel`).
- *   - A DM to a team agent's own bot gets nothing, before any vault read or
+ *   - A DM to an agent's own bot gets nothing, before any vault read or
  *     Slack call: its manifest asks for none, and one its approver turns on
  *     by hand reaches nobody.
  *
@@ -75,7 +77,7 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      disconnected (or reset) while the turn waited is dropped, logged as
  *      `slack_turns_dropped`, and its agent never runs.
  *
- * A mention of a team agent's own bot (routeMention; TASK-1094, TASK-1167):
+ * A mention of a shared agent's own bot (routeMention; TASK-1094, TASK-1167):
  *   3. The sender is admitted from users.info, as for a DM ("try again" goes
  *      to them alone, as an ephemeral). A refused sender costs no other Slack
  *      call and binds nothing. An empty mention is ignored.
@@ -97,8 +99,8 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      the agent (channels.ts `managerAccess`: a team admin of a team agent's
  *      team, an owner of a shared personal agent, TASK-1248). channel-route.ts
  *      decides the tier: attended as the sender, external as the requester,
- *      silence (off-domain), or a private "a team admin needs to check my
- *      settings" (`botUnavailable`) when the agent is gone, or when the
+ *      silence (off-domain), or a private "someone who manages me needs to
+ *      check my settings" (`botUnavailable`) when the agent is gone, or when the
  *      requester can't vouch for outsiders any more: members still run as
  *      themselves.
  *   6. conversations:find-or-create for the thread, one per identity: the
@@ -134,10 +136,11 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      answering is no turn either: "try again", and the binding stays. Nor
  *      is Slack saying the bot's own token can't read any public channel
  *      (code `token-scope`): the binding stays, and since no retry fixes
- *      that, its sender is told a team admin must look (`botUnavailable`),
- *      never to try again. A Slack Connect channel seldom gets this far: step
- *      1 drops its events, so only a turn that was waiting when it was
- *      shared, or one while its share is still pending, finds it.
+ *      that, its sender is told someone who manages the agent must look
+ *      (`botUnavailable`), never to try again. A Slack Connect channel
+ *      seldom gets this far: step 1 drops its events, so only a turn that
+ *      was waiting when it was shared, or one while its share is still
+ *      pending, finds it.
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads (channel-store.ts `recordThread`), which the capture
  *      veto reads (capture-veto.ts). A new thread is recorded remembered; one
@@ -185,7 +188,7 @@ export interface RouterDeps extends TurnDeps {
   /**
    * Which agent each of a bot's channels is bound to, read when a mention
    * arrives and again when its turn starts; the thread map the capture veto
-   * reads, written just before the turn's agent runs; and the binding a team
+   * reads, written just before the turn's agent runs; and the binding an
    * agent's own bot writes at its first mention in a channel (`upsert`,
    * TASK-1167). And a binding removed when Slack says its channel can't be
    * served any more (`remove`, TASK-1184). The thread as recorded, read back
@@ -415,7 +418,7 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
     log('info', 'slack_event_ignored', { reason: screened.reason });
     return;
   }
-  // A team agent's own bot answers mentions in channels, nothing else
+  // An agent's own bot answers mentions in channels, nothing else
   // (TASK-1167): its manifest asks for no DMs, and one its approver turns on
   // by hand on api.slack.com reaches nobody. Before any vault read or Slack call.
   if (screened.kind === 'dm' && install.kind !== 'shared') {
@@ -665,7 +668,7 @@ async function routeMention(
   log: Log,
 ): Promise<void> {
   const installId = install.installId;
-  // The shared app answers in no channel (TASK-1186; design §4b.1): a team
+  // The shared app answers in no channel (TASK-1186; design §4b.1): a shared
   // agent is reached there only through its own bot. Before any binding read,
   // so a binding the shared app still has (one the boot hasn't deleted yet,
   // or an older replica wrote after it did) never runs a turn, and nothing is
@@ -751,7 +754,7 @@ async function routeMention(
   }
   if (tier.tier === 'unavailable') {
     log('warn', 'slack_channel_unavailable', { reason: tier.reason });
-    // Nobody connected a bot's channel by hand: what needs a team admin is the bot itself.
+    // Nobody connected a bot's channel by hand: what needs someone who manages the agent is the bot itself.
     await tell(COPY.botUnavailable);
     return;
   }
@@ -846,7 +849,7 @@ async function routeMention(
         case 'token-scope': {
           // The bot's own token can't read any public channel (its app lost
           // channels:read): nothing about this channel, so the binding stays. No
-          // retry fixes it, so no "try again": a team admin must look, as for a
+          // retry fixes it, so no "try again": someone who manages the agent must look, as for a
           // requester who can't vouch for outsiders (tier `unavailable`, step 5).
           log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
           await tell(COPY.botUnavailable);
@@ -1013,7 +1016,7 @@ async function admitMention(
 }
 
 /**
- * A team agent's own bot's steps 3–4 (TASK-1167). The sender first: a
+ * A shared agent's own bot's steps 3–4 (TASK-1167). The sender first: a
  * refused one costs no conversations.info and binds nothing, and a channel
  * with no binding is never "no agent here" (the bot serves its one agent
  * wherever it was invited). Then the channel's binding, or the one this
@@ -1064,7 +1067,7 @@ async function reachOwnBot(
     if (!outcome.ok) {
       const code = outcome.code !== undefined ? { code: outcome.code } : {};
       if (outcome.reason === 'token-scope') {
-        // As at the turn-start check (step 8): no retry fixes the bot's token, a team admin must.
+        // As at the turn-start check (step 8): no retry fixes the bot's token, someone who manages the agent must.
         log('error', 'slack_event_failed', { stage: 'channel-info', code: 'token-scope' });
         await say.tell(COPY.botUnavailable);
       } else if (outcome.reason === 'slack-error') {
@@ -1103,7 +1106,7 @@ type BindOutcome =
   | { ok: false; reason: 'channel-not-allowed' | 'slack-error' | 'token-scope'; code?: string };
 
 /**
- * A team agent's own bot binds a channel at its first mention there
+ * A shared agent's own bot binds a channel at its first mention there
  * (TASK-1167): Slack's own conversations.info, read with the bot's token,
  * must be about this channel and show one a bot may bind (channels.ts
  * `connectable`: live, not Slack Connect; public or private, TASK-1188, and

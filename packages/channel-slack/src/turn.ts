@@ -34,8 +34,9 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * into the Slack thread (design §5). A DM and a channel mention run the same
  * turn; its `mode` says which:
  *
- *   - `dm`: the owner, in a 1:1 DM with their own personal agent.
- *   - `attended`: a channel member who can use the channel's team agent.
+ *   - `dm`: the owner, in a 1:1 DM with their own "Just me" personal agent.
+ *   - `attended`: a channel member who can use the channel's agent (a team
+ *     agent, or a personal agent shared with other people, TASK-1248).
  *   - `external`: anyone else the channel admits, run as the bot's
  *     requester, copied into the binding at its first mention; a Claim
  *     moves it.

@@ -17,20 +17,21 @@ import type { InstallStore } from './store.js';
 import { checkUser } from './user-auth.js';
 
 /**
- * The Slack section of a team agent's settings: the agent's own Slack bot
- * (TASK-1167, bots.ts). Asking for it, picking the request back up in Slack,
- * cancelling it, and disconnecting it (TASK-1172); once it's live, the
- * channels it has answered in (`botChannels`, a binding on its install),
+ * The Slack section of a shared agent's settings (a team agent, or a
+ * personal agent shared with other people, TASK-1248): the agent's own Slack
+ * bot (TASK-1167, bots.ts). Asking for it, picking the request back up in
+ * Slack, cancelling it, and disconnecting it (TASK-1172); once it's live,
+ * the channels it has answered in (`botChannels`, a binding on its install),
  * renaming it or changing its picture (TASK-1171, bot-changes.ts), its
- * approver replacing their configuration token, and a team admin claiming it
- * once its requester is no longer one (TASK-1173). Or, for a team admin who
- * can't install Slack apps, asking an AX admin to approve it instead
- * (TASK-1169, bot-requests.ts), and taking that ask back. The shared app
- * connects no channel here (TASK-1186; design §4b.1): a team agent is reached
- * in a channel only through its own bot. A Just-me personal agent's section
- * says which of its reader's own Just-me agents answers their DMs to the
- * shared app, and its creator can make it this one (TASK-1238,
- * dm-agents.ts). A shared agent answers no DMs (TASK-1248).
+ * approver replacing their configuration token, and someone who manages the
+ * agent claiming it once its requester no longer does (TASK-1173). Or, for
+ * someone who manages it but can't install Slack apps, asking an AX admin to
+ * approve it instead (TASK-1169, bot-requests.ts), and taking that ask back.
+ * The shared app connects no channel here (TASK-1186; design §4b.1): a
+ * shared agent is reached in a channel only through its own bot. A Just-me
+ * personal agent's section says which of its reader's own Just-me agents
+ * answers their DMs to the shared app, and its creator can make it this one
+ * (TASK-1238, dm-agents.ts). A shared agent answers no DMs (TASK-1248).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -46,8 +47,8 @@ import { checkUser } from './user-auth.js';
  *   POST /settings/slack/:agentId/bot/icon    { iconPng } → {}, a live bot only (the approver's token, TASK-1171)
  *   POST /settings/slack/:agentId/bot/replace-token  { refreshToken } → {}, a live bot only, and only
  *                                             its approver (403 not-approver for anyone else, TASK-1173)
- *   POST /settings/slack/:agentId/bot/claim   { installId } → {}, a live bot whose requester is no
- *                                             longer a team admin (the domain asks the rights again,
+ *   POST /settings/slack/:agentId/bot/claim   { installId } → {}, a live bot whose requester no
+ *                                             longer manages the agent (the domain asks the rights again,
  *                                             and answers 409 not-live without a live bot and 409
  *                                             no-bot when `installId` is another bot's, TASK-1173)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
@@ -59,8 +60,9 @@ import { checkUser } from './user-auth.js';
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
  * could have (never tell someone the agent exists); then rights (channels.ts:
- * a team admin of the agent's team manages, workspace-admin status never
- * counts; anything but a team agent is `personal-agent`), all before a body
+ * a team admin of a team agent's team, or an owner of a personal agent
+ * shared with other people, manages; workspace-admin status never counts; a
+ * Just-me personal agent is `personal-agent`), all before a body
  * is read or the domain is asked anything. The DM agent route turns the
  * rights around: only a Just-me personal agent may be chosen, and only by
  * its creator, so a shared agent the person can see is 403 `forbidden`, and
@@ -92,9 +94,10 @@ import { checkUser } from './user-auth.js';
  * token (the approving AX admin brings their own) and no picture (their
  * browser draws it at Approve). Taking the ask back reads no body.
  *
- * Team members who aren't admins read the section, so a bot's approver is a
- * display name or "A teammate", never an email, and a live bot's install id
- * reaches only those who manage the agent (bots.ts). Failures log code-only.
+ * Everyone who can use the agent reads the section, managers or not, so a
+ * bot's approver is a display name or "A teammate", never an email, and a
+ * live bot's install id reaches only those who manage the agent (bots.ts).
+ * Failures log code-only.
  */
 
 /**
@@ -480,7 +483,7 @@ export function createAgentSlackRoutes(
   }
 
   /**
-   * Cancel the pending bot: any team admin who manages the agent may, naming
+   * Cancel the pending bot: anyone who manages the agent may, naming
    * it by the install id their page showed (TASK-1173).
    */
   async function cancelBot(a: Asked): Promise<Reply> {
@@ -502,7 +505,7 @@ export function createAgentSlackRoutes(
     return requests.ask({ ctx: a.ctx, actorUserId: a.userId, agentId: a.agentId, botName: body.botName });
   }
 
-  /** Take the agent's open ask back: any team admin who manages the agent may. */
+  /** Take the agent's open ask back: anyone who manages the agent may. */
   async function cancelAsk(a: Asked): Promise<Reply> {
     const rights = await manages(a);
     if (!rights.ok) return refused(rights.reason);
@@ -510,8 +513,8 @@ export function createAgentSlackRoutes(
   }
 
   /**
-   * Take the agent's own bot away, pending or live (TASK-1172): any team
-   * admin who manages the agent may, with or without the shared app, naming
+   * Take the agent's own bot away, pending or live (TASK-1172): anyone who
+   * manages the agent may, with or without the shared app, naming
    * the bot by the install id their page showed.
    */
   async function disconnectBot(a: Asked): Promise<Reply> {
@@ -524,7 +527,7 @@ export function createAgentSlackRoutes(
   }
 
   /**
-   * Rename the live bot: any team admin who manages the agent may. Who asked
+   * Rename the live bot: anyone who manages the agent may. Who asked
    * isn't handed on: the domain uses the bot's approver's token.
    */
   async function renameBot(a: Asked): Promise<Reply> {
@@ -546,7 +549,7 @@ export function createAgentSlackRoutes(
 
   /**
    * The live bot's approver replaces their own configuration token with one
-   * they pasted (TASK-1173). Only a team admin who manages the agent gets
+   * they pasted (TASK-1173). Only someone who manages the agent gets
    * this far; the domain then refuses anyone but the bot's approver (403
    * `not-approver`) inside the app lock, before the vault or Slack.
    */
@@ -559,9 +562,9 @@ export function createAgentSlackRoutes(
   }
 
   /**
-   * A team admin who manages the agent claims its live bot, named by the
-   * install id their page showed, once its requester is no longer a team
-   * admin (TASK-1173): from then on its outsiders run as the claimer.
+   * Someone who manages the agent claims its live bot, named by the
+   * install id their page showed, once its requester no longer manages it
+   * (TASK-1173): from then on its outsiders run as the claimer.
    */
   async function claimBot(a: Asked): Promise<Reply> {
     const rights = await manages(a);
@@ -652,7 +655,7 @@ export function createAgentSlackRoutes(
     route('POST', '/bot/rename', 'bot-rename', renameBot),
     // Its body is the bot's new picture: Connect's cap.
     route('POST', '/bot/icon', 'bot-icon', setBotPicture, { maxBodyBytes: ADMIN_CONNECT_BODY_MAX_BYTES }),
-    // Its approver's Replace, and a team admin's Claim (TASK-1173): a token or an id, so the plain cap.
+    // Its approver's Replace, and a manager's Claim (TASK-1173): a token or an id, so the plain cap.
     route('POST', '/bot/replace-token', 'bot-replace-token', replaceBotToken),
     route('POST', '/bot/claim', 'bot-claim', claimBot),
     // Asking an AX admin instead (TASK-1169): a name and nothing else, so the plain cap.

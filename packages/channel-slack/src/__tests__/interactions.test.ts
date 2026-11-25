@@ -223,7 +223,7 @@ const DM_MESSAGE = {
   ts: DM_TS,
   bot_id: 'B07BOTID123',
   app_id: APP_ID,
-  text: 'A team asked for its own Slack bot.',
+  text: "Someone asked for an agent's own Slack bot.",
   team: TEAM_ID,
   blocks: [
     {
@@ -626,7 +626,7 @@ describe("a click on a bot request DM's Decline (TASK-1170)", () => {
       ['channel and container naming two channels', declineClick({ channel: { ...DM_CHANNEL_REF, id: 'D07DMOTHER1' } })],
       ['no message ts anywhere', declineClick({ container: without(DM_CONTAINER, 'message_ts'), message: without(DM_MESSAGE, 'ts') })],
       ['container and message naming two messages', declineClick({ message: { ...DM_MESSAGE, ts: '1763121999.000900' } })],
-      ['a message that is not an object', declineClick({ message: 'A team asked for its own Slack bot.' })],
+      ['a message that is not an object', declineClick({ message: "Someone asked for an agent's own Slack bot." })],
       ['a thread_ts with a space', declineClick({ message: { ...DM_MESSAGE, thread_ts: '1763121720 000300' } })],
     ];
     for (const [name, payload] of cases) expect(await w.send(click(payload)), name).toStrictEqual(BAD_REQUEST);

@@ -157,6 +157,10 @@ describe('COPY: everything the bot says in Slack', () => {
     for (const [key, line] of everyLine()) expect(line, key).not.toMatch(BROADCAST);
   });
 
+  it('never names a team: a personal agent shared with other people has a bot, owners and outsiders too (TASK-1248)', () => {
+    for (const [key, line] of everyLine()) expect(line, key).not.toMatch(/\bteams?\b/i);
+  });
+
   it('the sign-in and make-an-agent lines link to the web app', () => {
     expect(COPY.notMapped(ORIGIN)).toContain(`](${ORIGIN})`);
     expect(COPY.noAgent(ORIGIN)).toContain(`](${ORIGIN})`);
@@ -417,10 +421,11 @@ describe('COPY: what a channel mention can get privately, in place of its turn o
     expect(new Set(PRIVATE.map((key) => COPY[key])).size).toBe(PRIVATE.length);
   });
 
-  it("the shared bot in a channel (TASK-1186): it doesn't answer there; your own agent is a DM away, a team agent comes in as its own bot", () => {
+  it("the shared bot in a channel (TASK-1186): it doesn't answer there; your own agent is a DM away, a shared agent comes in as its own bot", () => {
+    // "an agent", never "a team agent": a personal agent shared with other people has its own bot too (TASK-1248).
     expect(COPY.sharedBotInChannel).toBe(
       "I don't answer in channels. To talk to your own agent, send me a direct message. " +
-        'To bring a team agent into this channel, invite its own bot with /invite.',
+        'To bring an agent into this channel, invite its own bot with /invite.',
     );
     // The retired way in is never offered: no slash command of the shared app's, no connecting.
     expect(COPY.sharedBotInChannel).not.toContain('/ax');
@@ -436,12 +441,13 @@ describe('COPY: what a channel mention can get privately, in place of its turn o
     expect(COPY.channelNoLongerAllowed).toMatch(/another organization/);
     // A private channel is answered in now (TASK-1188): the line never says the bot answers public channels only.
     expect(COPY.channelNoLongerAllowed).not.toMatch(/public channels/);
-    expect(COPY.channelNoLongerAllowed).toMatch(/set me up again/);
+    // Whoever manages the agent: a team agent's team admins, a shared personal agent's owners (TASK-1248).
+    expect(COPY.channelNoLongerAllowed).toMatch(/If this is a private channel, someone who manages me may need to set me up again\.$/);
   });
 
   it("an outsider whose bot's requester can no longer vouch for them is told politely, and told nothing else (TASK-1167)", () => {
     expect(COPY.botUnavailable).toBe(
-      "I can't answer you here right now. A team admin needs to check my settings in the web app.",
+      "I can't answer you here right now. Someone who manages me needs to check my settings in the web app.",
     );
   });
 });
@@ -524,19 +530,20 @@ describe("COPY: a bot request's DMs (TASK-1170)", () => {
     expect(COPY.botRequestSubject({ requester: 'Sam', botName: 'Support Bot', agentName: 'Support' })).toBe(
       'Sam wants to add @Support Bot (Support agent).',
     );
-    expect(COPY.botRequestSubject({ requester: 'A team admin', botName: 'Support Bot', agentName: null })).toBe(
-      'A team admin wants to add @Support Bot for a team agent.',
+    expect(COPY.botRequestSubject({ requester: 'Someone', botName: 'Support Bot', agentName: null })).toBe(
+      'Someone wants to add @Support Bot for an agent.',
     );
-    expect(COPY.botRequestAsked).toBe('A team asked for its own Slack bot.');
+    expect(COPY.botRequestAsked).toBe("Someone asked for an agent's own Slack bot.");
   });
 
-  it('a person with no display name is named by their role, never an email, and the role names no product (TASK-1170)', () => {
+  it('a person with no display name is never named by an email, and the fallback names no product or team (TASK-1170, TASK-1248)', () => {
     // The requester in an admin's DM subject, and who approved or declined in its redraw.
-    expect(COPY.botRequestRequesterFallback).toBe('A team admin');
+    // Whoever asked: a team agent's team admin, or a shared personal agent's owner (TASK-1248).
+    expect(COPY.botRequestRequesterFallback).toBe('Someone');
     expect(COPY.botRequestAdminFallback).toBe('An admin');
     expect(COPY.botRequestDeclined(COPY.botRequestAdminFallback)).toBe('An admin declined this.');
     expect(COPY.botRequestSubject({ requester: COPY.botRequestRequesterFallback, botName: 'B', agentName: null })).toBe(
-      'A team admin wants to add @B for a team agent.',
+      'Someone wants to add @B for an agent.',
     );
   });
 });

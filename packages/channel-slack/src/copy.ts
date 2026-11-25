@@ -38,9 +38,15 @@ import type { SkillReach } from './turn-registry.js';
  * notification and names nobody. The owner notices go out as mrkdwn through
  * `shown`.
  *
- * `memoryNotice` is the one line a team agent's own bot posts in a channel
- * for everyone there (TASK-1203; memory-notice.ts): top-level, as mrkdwn
- * text. It names no team: anyone who talks to the bot can read its memory.
+ * `memoryNotice` is the one line an agent's own bot posts in a channel for
+ * everyone there (TASK-1203; memory-notice.ts): top-level, as mrkdwn text.
+ * It names no team: anyone who talks to the bot can read its memory.
+ *
+ * No line names a team (TASK-1248): a personal agent shared with other
+ * people has its own bot, its owners manage it, and its outsiders' calls
+ * wait for the owner who set it up, as a team agent's do for its team
+ * admin. So a line says "an agent", "someone who manages me", "the person
+ * who set you up", true of both (copy.test.ts).
  */
 
 /**
@@ -101,7 +107,7 @@ export const COPY = {
     A call the turn held for approval (reply-stream.ts `held`). Neither line
     names the tool, its connector or the person: they take nothing but the
     Today link. `heldForOwner` ends an outsider's turn, which runs as the
-    bot's requester (the team admin who set it up, or claimed it since): the
+    bot's requester (the person who set it up, or claimed it since): the
     call waits in their Today, and the reader can't approve it, so it links
     nowhere. `heldForSender` ends a turn whose writer can use the agent (a
     DM, or an attended channel turn): the call waits in their own Today.
@@ -164,8 +170,9 @@ export const COPY = {
     through for the conversation's live sandbox session, then keeps it on
     the agent's allowed sites (the web app's "Always for this agent"), even
     when that session has already ended: `hostAllowed`. The site is the
-    agent's, so on a team agent it covers everyone who uses it (TASK-1212),
-    which is what "stays allowed" and "from now on" say. When it can't be
+    agent's, so on a team agent, or a personal agent shared with other
+    people, it covers everyone who uses it (TASK-1212, TASK-1248), which
+    is what "stays allowed" and "from now on" say. When it can't be
     kept, `hostAllowedForNow` (let through for the live session only) or
     `hostEnded` (Allow on a session already gone). When the agent's list of
     allowed sites is full, `hostAllowedListFull` or `hostEndedListFull` say
@@ -238,7 +245,8 @@ export const COPY = {
   // ── A channel mention's private lines (mrkdwn, shown only to its sender) ──
   /*
     A mention of the shared bot in a channel (TASK-1186; design §4b.1): the
-    shared bot answers DMs only, and a team agent answers in a channel
+    shared bot answers DMs only, and a shared agent (a team agent, or a
+    personal agent shared with other people, TASK-1248) answers in a channel
     through its own bot, once someone invites it there. Said in place of a
     turn, to an admitted sender alone, in any channel. A mention can't tell
     a group DM or a private channel from a public one, so it names no
@@ -246,10 +254,10 @@ export const COPY = {
   */
   sharedBotInChannel:
     "I don't answer in channels. To talk to your own agent, send me a direct message. " +
-    'To bring a team agent into this channel, invite its own bot with /invite.',
+    'To bring an agent into this channel, invite its own bot with /invite.',
   /*
     A bound channel Slack no longer allows (TASK-1184): archived or shared
-    with another company since a team agent's own bot first answered
+    with another company since an agent's own bot first answered
     there, or a private channel a bot Allowed before
     `groups:read` (TASK-1188) can't read: Rebuild fixes that one. Checked when each turn starts. The turn that finds
     it disconnects the channel and says this once, to its sender. Archived
@@ -258,34 +266,37 @@ export const COPY = {
   */
   channelNoLongerAllowed:
     "I've stopped answering in this channel: it's shared with another organization now, or I can't read it any more. " +
-    'I only answer in channels of this workspace. If this is a private channel, a team admin may need to set me up again.',
+    'I only answer in channels of this workspace. If this is a private channel, someone who manages me may need to set me up again.',
   channelBusy: "I'm busy with other questions in this channel. Try again in a minute.",
   /*
-    A team agent's own bot (TASK-1167) whose requester can't vouch for its
-    channels' outsiders anymore: they are no longer a team admin of the
-    agent's team, or are gone. An outsider's turn would run as them, so none
-    runs until a team admin claims the bot in the web app; members are still
-    answered. Every admitted sender reads it when the agent itself is gone,
-    or when the bot's own token can't read public channels any more
-    (TASK-1184), at a mention or at a click on an attended prompt (TASK-1188): no retry
-    fixes either, a team admin must look.
+    An agent's own bot (TASK-1167) whose requester can't vouch for its
+    channels' outsiders anymore: they no longer manage the agent (a team
+    admin of a team agent's team, an owner of a shared personal agent,
+    TASK-1248), or are gone. An outsider's turn would run as them, so none
+    runs until someone who manages the agent claims the bot in the web app;
+    members are still answered. Every admitted sender reads it when the
+    agent itself is gone, or when the bot's own token can't read public
+    channels any more (TASK-1184), at a mention or at a click on an attended
+    prompt (TASK-1188): no retry fixes either, someone who manages the agent
+    must look.
   */
-  botUnavailable: "I can't answer you here right now. A team admin needs to check my settings in the web app.",
+  botUnavailable: "I can't answer you here right now. Someone who manages me needs to check my settings in the web app.",
 
   // ── A channel's memory notice (TASK-1203; memory-notice.ts; mrkdwn, top-level, for everyone there) ──
   /*
     Posted once per binding, top-level in the channel (no thread), on the
     first turn in a newly bound channel, or in one bound before this notice
-    existed (design §4c): a team agent's memory is shared with anyone who
-    talks to it, so what it hears in a channel can come up anywhere it works.
-    In the first person, like every line of the bot's own. Fixed text: it
-    names nobody, so nothing from outside reaches it.
+    existed (design §4c): a shared agent's memory (a team agent's, or a
+    personal agent's shared with other people, TASK-1248) is shared with
+    anyone who talks to it, so what it hears in a channel can come up
+    anywhere it works. In the first person, like every line of the bot's
+    own. Fixed text: it names nobody, so nothing from outside reaches it.
   */
   memoryNotice: 'Heads up: what I hear in this channel is shared with anyone who talks to me, and I may bring it up elsewhere.',
 
   // ── A bot request's DMs (TASK-1170; blocks.ts, bot-request-dms.ts) ──
   // The admin DM's notification and fallback: it names nobody.
-  botRequestAsked: 'A team asked for its own Slack bot.',
+  botRequestAsked: "Someone asked for an agent's own Slack bot.",
   /*
     The DM's subject, plain_text only (like hostSubject and skillSubject): the
     requester's display name, the bot's name and the agent's name are all from
@@ -294,7 +305,7 @@ export const COPY = {
   */
   botRequestSubject: (i: { requester: string; botName: string; agentName: string | null }) =>
     i.agentName === null
-      ? `${i.requester} wants to add @${i.botName} for a team agent.`
+      ? `${i.requester} wants to add @${i.botName} for an agent.`
       : `${i.requester} wants to add @${i.botName} (${i.agentName} agent).`,
   // The two button labels (plain_text).
   botRequestApprove: 'Approve',
@@ -312,7 +323,7 @@ export const COPY = {
     the subject, and who approved or declined in the redraw. Never their
     email: Slack keeps a copy of what the bot says.
   */
-  botRequestRequesterFallback: 'A team admin',
+  botRequestRequesterFallback: 'Someone',
   botRequestAdminFallback: 'An admin',
   /*
     To the agent's owner when someone else approved the bot: it is live and

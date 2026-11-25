@@ -153,7 +153,7 @@ const SUBJECT = 'Ada Lovelace wants to add @Support Helper (Support agent).';
 /** An admin's DM about `requestId`, as Slack should get it: the subject, Approve and Decline, how Approve works. */
 function asked(subject = SUBJECT, requestId = REQUEST) {
   return {
-    text: 'A team asked for its own Slack bot.',
+    text: "Someone asked for an agent's own Slack bot.",
     blocks: [
       { type: 'section', text: { type: 'plain_text', text: subject, emoji: false } },
       {
@@ -858,13 +858,13 @@ describe('opened', () => {
     expect(w.lines).toEqual([sentLine(1, 0, requestIdOf(60))]);
   });
 
-  it(`the requester shows by display name, never email; with none, "A team admin"; an agent the requester can't see leaves the agent out of the subject`, async () => {
+  it(`the requester shows by display name, never email; with none, "Someone"; an agent the requester can't see leaves the agent out of the subject`, async () => {
     // No display name: her email would go to Slack, which keeps a copy. The fallback goes instead.
     const unnamed = await world();
     unnamed.auth.admins = listed(GRACE);
     unnamed.auth.users.get(ADA.id)!.displayName = null;
     await unnamed.open();
-    expect(subjectOf(unnamed)).toBe('A team admin wants to add @Support Helper (Support agent).');
+    expect(subjectOf(unnamed)).toBe('Someone wants to add @Support Helper (Support agent).');
     expect(unnamed.lines).toEqual([sentLine(1, 0)]);
 
     // Auth failing to say who she is: the same, logged code-only.
@@ -872,7 +872,7 @@ describe('opened', () => {
     down.auth.admins = listed(GRACE);
     down.auth.faults.set(`auth:get-user ${ADA.id}`, connectionReset());
     await down.open();
-    expect(subjectOf(down)).toBe('A team admin wants to add @Support Helper (Support agent).');
+    expect(subjectOf(down)).toBe('Someone wants to add @Support Helper (Support agent).');
     expect(down.lines).toEqual([failedLine('requester', 'ECONNRESET'), sentLine(1, 0)]);
 
     // She left the team: as she'd see it, the agent has no name to give.
@@ -880,7 +880,7 @@ describe('opened', () => {
     left.auth.admins = listed(GRACE);
     left.agents.setRole(CARE_TEAM, ADA.id, null);
     await left.open();
-    expect(subjectOf(left)).toBe('Ada Lovelace wants to add @Support Helper for a team agent.');
+    expect(subjectOf(left)).toBe('Ada Lovelace wants to add @Support Helper for an agent.');
     expect(left.lines).toEqual([sentLine(1, 0)]);
 
     // @ax/agents failing: the same subject, logged code-only.
@@ -888,7 +888,7 @@ describe('opened', () => {
     agentsDown.auth.admins = listed(GRACE);
     agentsDown.agents.faults.set('agents:resolve', connectionReset());
     await agentsDown.open();
-    expect(subjectOf(agentsDown)).toBe('Ada Lovelace wants to add @Support Helper for a team agent.');
+    expect(subjectOf(agentsDown)).toBe('Ada Lovelace wants to add @Support Helper for an agent.');
     expect(agentsDown.lines).toEqual([failedLine('agent', 'ECONNRESET'), sentLine(1, 0)]);
   });
 });
@@ -1063,7 +1063,7 @@ describe('closed', () => {
       {
         method: 'updateMessage',
         token: SHARED_TOKEN,
-        args: { ...graces, ...answered('Grace Hopper declined this.', 'A team asked for its own Slack bot.') },
+        args: { ...graces, ...answered('Grace Hopper declined this.', "Someone asked for an agent's own Slack bot.") },
       },
     ]);
     // Then Ada hears, as with any decline that wasn't her own.
@@ -1081,7 +1081,7 @@ describe('closed', () => {
       {
         channel: dmOf(KAY.slackId),
         ts: tsOf(2),
-        ...answered('Kay McNulty declined this.', 'A team asked for its own Slack bot.'),
+        ...answered('Kay McNulty declined this.', "Someone asked for an agent's own Slack bot."),
       },
     ]);
   });

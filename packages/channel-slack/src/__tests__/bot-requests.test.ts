@@ -820,7 +820,7 @@ describe('list', () => {
     expect(w.auth.asked).toEqual([ADA]);
   });
 
-  it("the requester shows by email when auth has no display name (AX admins read this), else as 'A team admin'", async () => {
+  it("the requester shows by email when auth has no display name (AX admins read this), else as 'Someone'", async () => {
     const w = world();
     await seedShared(w);
     await seedRequest(w);
@@ -829,7 +829,7 @@ describe('list', () => {
     expect((await w.list(GRACE)).requests[0]!.requestedBy).toBe('ada@canopyworks.example');
     // Her account gone.
     w.users.delete(ADA);
-    expect((await w.list(GRACE)).requests[0]!.requestedBy).toBe('A team admin');
+    expect((await w.list(GRACE)).requests[0]!.requestedBy).toBe('Someone');
     expect(w.lines).toEqual([]);
   });
 
@@ -844,7 +844,7 @@ describe('list', () => {
       {
         requestId: REQUEST,
         botName: BOT_NAME,
-        agentName: 'A team agent',
+        agentName: 'An agent',
         teamName: null,
         requestedBy: 'Ada Lovelace',
         requestedAt: '2026-11-13T12:00:00.000Z',
@@ -859,7 +859,7 @@ describe('list', () => {
     await seedShared(gone);
     await seedRequest(gone);
     gone.people.agents.delete(SUPPORT.id);
-    expect((await gone.list(GRACE)).requests[0]).toMatchObject({ agentName: 'A team agent', teamName: null });
+    expect((await gone.list(GRACE)).requests[0]).toMatchObject({ agentName: 'An agent', teamName: null });
     expect(gone.lines).toEqual([]);
     expect(await gone.approve({ as: GRACE })).toEqual({ status: 409, body: { error: 'agent-gone' } });
   });
@@ -870,13 +870,13 @@ describe('list', () => {
     await seedShared(other);
     await seedRequest(other);
     other.people.agents.set(SUPPORT.id, { ...SUPPORT, id: 'agt_someone_else', displayName: 'Someone Else' });
-    expect((await other.list(GRACE)).requests[0]).toMatchObject({ agentName: 'A team agent', teamName: null });
+    expect((await other.list(GRACE)).requests[0]).toMatchObject({ agentName: 'An agent', teamName: null });
 
     // A Just-me personal agent (Ada's own), which no ask could have opened.
     const personal = world();
     await seedShared(personal);
     await seedRequest(personal, { agentId: PERSONAL.id });
-    expect((await personal.list(GRACE)).requests[0]).toMatchObject({ agentName: 'A team agent', teamName: null });
+    expect((await personal.list(GRACE)).requests[0]).toMatchObject({ agentName: 'An agent', teamName: null });
     expect(personal.teams.asked).toEqual([]);
 
     // Ada's own agent once she shares it with everyone (TASK-1248): named as she, its owner, sees it. Its
@@ -924,7 +924,7 @@ describe('list', () => {
     await seedRequest(agents);
     agents.people.faults.set('agents:resolve', connectionReset());
     expect((await agents.list(GRACE)).requests[0]).toMatchObject({
-      agentName: 'A team agent',
+      agentName: 'An agent',
       teamName: null,
       requestedBy: 'Ada Lovelace',
     });
@@ -952,7 +952,7 @@ describe('list', () => {
     expect((await auth.list(GRACE)).requests[0]).toMatchObject({
       agentName: 'Support',
       teamName: 'Customer Care',
-      requestedBy: 'A team admin',
+      requestedBy: 'Someone',
     });
     expect(auth.lines).toEqual([
       {
