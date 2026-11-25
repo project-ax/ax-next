@@ -108,3 +108,4 @@ Each phase ships on its own and is reversible, up to the migration in phase 3.
 - The agent's own `update_identity` (author `agent`) and `complete-bootstrap` stay open to anyone who can use the agent. Someone an agent is shared with can steer its identity via chat. Card C should decide.
 - Anyone an agent is shared with sees which account its connections are signed in as (the connectors tab shows it, as it does for team agents). On an `everyone` agent that is the owner's Gmail address, company-wide. Card B's confirmation should name it.
 - The webhook receiver read now asks the same creator-only rule as the token write (`agents:can-manage-webhook-token`), so a co-owner isn't told "yes" and then refused.
+- A chat "Always for this agent" from someone the agent is shared with stays session-only in phase 1A (`kept: false`). Card C applies the shared-agent website rule on purpose.
