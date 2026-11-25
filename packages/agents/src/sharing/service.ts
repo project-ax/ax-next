@@ -25,7 +25,8 @@ import type { SharingStore } from './store.js';
 //      Phase 1 never lets anyone remove the creator, so an agent can't lose
 //      its last owner and `ownerId` always names an owner;
 //   7. every person named except the creator is an AX account (`isAxAccount`,
-//      the rule `everyone` uses), else 400 `unknown-person` with the id. No
+//      the rule `everyone` uses), else 400 `unknown-person`, naming no id (so a
+//      write can't be used to look an id up). No
 //      `auth:get-user` → 503 `accounts-unavailable`; any other throw
 //      propagates (500), so an outage never reads as "unknown";
 //   8. the write. A delete that won the race → 404;
@@ -43,7 +44,7 @@ export const OWNERS_MAX = 10;
 
 export type SharingWriteResult =
   | { status: 200; sharing: SharingView }
-  | { status: 400 | 403 | 404 | 503; error: string; id?: string };
+  | { status: 400 | 403 | 404 | 503; error: string };
 
 export interface SharingService {
   /**
@@ -95,29 +96,21 @@ const ownersBodySchema = z
   .object({ userIds: z.array(personIdSchema).min(1).max(OWNERS_MAX) })
   .strict();
 
-function refuse(
-  status: 400 | 403 | 404 | 503,
-  error: string,
-  id?: string,
-): SharingWriteResult {
-  return id === undefined ? { status, error } : { status, error, id };
+function refuse(status: 400 | 403 | 404 | 503, error: string): SharingWriteResult {
+  return { status, error };
 }
 
 function hasDuplicate(ids: readonly string[]): boolean {
   return new Set(ids).size !== ids.length;
 }
 
-/** The person `auth:get-user` answered for `id`, or nulls for anything else. */
+/** The person `auth:get-user` answered for `id`, or a null name for anything else. */
 function personFrom(id: string, answer: unknown): PersonView {
   if (typeof answer !== 'object' || answer === null || (answer as { id?: unknown }).id !== id) {
-    return { id, displayName: null, email: null };
+    return { id, displayName: null };
   }
-  const { displayName, email } = answer as { displayName?: unknown; email?: unknown };
-  return {
-    id,
-    displayName: typeof displayName === 'string' ? displayName : null,
-    email: typeof email === 'string' ? email : null,
-  };
+  const { displayName } = answer as { displayName?: unknown };
+  return { id, displayName: typeof displayName === 'string' ? displayName : null };
 }
 
 export function createSharingService(deps: SharingServiceDeps): SharingService {
@@ -152,7 +145,7 @@ export function createSharingService(deps: SharingServiceDeps): SharingService {
     if (ids.length === 0) return null;
     if (!bus.hasService(AUTH_GET_USER_HOOK)) return refuse(503, 'accounts-unavailable');
     for (const id of ids) {
-      if (!(await isAxAccount(bus, ctx, id))) return refuse(400, 'unknown-person', id);
+      if (!(await isAxAccount(bus, ctx, id))) return refuse(400, 'unknown-person');
     }
     return null;
   }
@@ -198,7 +191,7 @@ export function createSharingService(deps: SharingServiceDeps): SharingService {
                 ? err.name
                 : typeof err,
           );
-          return { id, displayName: null, email: null };
+          return { id, displayName: null };
         }
       }),
     );
@@ -227,7 +220,7 @@ export function createSharingService(deps: SharingServiceDeps): SharingService {
       kind === 'list' ? deps.sharing.listMembers(agent.id) : Promise.resolve([]),
     ]);
     const people = await lookUpPeople(ctx, agent.id, [...ownerIds, ...members.map((m) => m.id)]);
-    const person = (id: string): PersonView => people.get(id) ?? { id, displayName: null, email: null };
+    const person = (id: string): PersonView => people.get(id) ?? { id, displayName: null };
     // The creator leads whatever order the rows come back in.
     const creatorFirst = [
       ...ownerIds.filter((id) => id === agent.ownerId),

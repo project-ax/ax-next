@@ -72,15 +72,16 @@ type AudienceBody =
   | { kind: 'just-me' }
   | { kind: 'everyone' }
   | { kind: 'list'; members: Array<{ type: 'user'; id: string }> }; // 1..50; phase 2 adds { type: 'group'; id }
-interface PersonView { id: string; displayName: string | null; email: string | null }
+interface PersonView { id: string; displayName: string | null } // no email, ever
 interface SharingView {
   audience: { kind: 'just-me' } | { kind: 'everyone' }
           | { kind: 'list'; members: Array<{ type: 'user' } & PersonView> };
   owners: Array<PersonView & { creator: boolean }>; // creator first; 1..10
 }
 // Errors: 400 { error: 'invalid-audience' | 'invalid-owners' | 'duplicate-person' | 'creator-required' }
-//         400 { error: 'unknown-person', id } · 401 · 403 { error: 'forbidden' } (not an owner)
+//         400 { error: 'unknown-person' } (no id) · 401 · 403 { error: 'forbidden' } (not an owner)
 //         403 { error: 'team-agent' } · 404 { error: 'not-found' } · 413 · 503 { error: 'accounts-unavailable' }
+// No email in SharingView and no id in unknown-person (security review: avoids an email/account lookup by id). A people-search route for card B's picker is card B's to design.
 ```
 
 ## Who may do what on a personal agent (after this card)
@@ -384,7 +385,7 @@ git commit -m "[TASK-1246] agents: co-owners change settings; delete, routines a
 - Consumes: `SharingStore`, `AgentAudience`, `SharingView`, `PersonView` (Task 1); `checkAccess`, `isAgentOwner` (Task 2).
 - Produces (`sharing/service.ts`):
   - `AUDIENCE_MEMBERS_MAX = 50` and `OWNERS_MAX = 10`.
-  - `type SharingWriteResult = { status: 200; sharing: SharingView } | { status: 400 | 403 | 404 | 503; error: string; id?: string }`.
+  - `type SharingWriteResult = { status: 200; sharing: SharingView } | { status: 400 | 403 | 404 | 503; error: string }`.
   - `createSharingService(deps: { bus: HookBus; agents: Pick<AgentStore, 'getById'>; sharing: SharingStore }): SharingService`, with:
     - `view(ctx: AgentContext, agent: Agent): Promise<SharingView>`
     - `setAudience(ctx: AgentContext, actor: Actor, agentId: string, body: unknown): Promise<SharingWriteResult>`
@@ -400,14 +401,14 @@ Order inside a write:
 5. Duplicate ids → 400 `duplicate-person`.
 6. Owners only: the creator (`agent.ownerId`) missing → 400 `creator-required`.
 7. Every named id other than the creator → `auth:get-user`:
-   - null → 400 `unknown-person` with `id`;
+   - null → 400 `unknown-person` (no `id`: security review);
    - hook absent → 503 `accounts-unavailable`;
    - a throw propagates (500).
 8. Store write. A raced delete gives 404.
 9. Log `agents_sharing_audience_set { agentId, kind, members, by }` or `agents_sharing_owners_set { agentId, owners, by }`. Counts only: no names or emails.
 10. 200 with `view`.
 
-`view` looks every owner and member up with `auth:get-user` in parallel. A null answer, a missing hook or a throw reads as `displayName: null, email: null`, logged by error name only; it never fails the read. `creator` is `id === agent.ownerId`.
+`view` looks every owner and member up with `auth:get-user` in parallel. A null answer, a missing hook or a throw reads as `displayName: null`, logged by error name only; it never fails the read. `creator` is `id === agent.ownerId`.
 
 Route handlers:
 - `requireUser` (401), then a missing `:id` → 400.
@@ -428,7 +429,7 @@ Route handlers:
   - `{kind:'list',members:[{type:'group',id:'g1'}]}`
   - an extra key
   - 51 members
-- `listing someone who isn't an AX account → 400 unknown-person with the id`.
+- `listing someone who isn't an AX account → 400 unknown-person naming no id`.
 - `a duplicate person → 400 duplicate-person`.
 - `owners: the creator must stay; adding bob makes him an owner who sees sharing and can PATCH; bob can remove himself; carol can't add herself`:
   - `[bob]` → 400 `creator-required`;

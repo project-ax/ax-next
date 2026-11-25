@@ -20,7 +20,7 @@ import type { Actor, Agent, AgentAudience } from '../types.js';
 const ACCOUNTS: Record<string, { displayName: string; email: string }> = {
   alice: { displayName: 'Alice', email: 'alice@example.com' },
   bob: { displayName: 'Bob', email: 'bob@example.com' },
-  carol: { displayName: 'Carol', email: 'carol@example.com' },
+  carol: { displayName: 'Carol' },
 };
 
 const alice: Actor = { userId: 'alice', isAdmin: false };
@@ -163,7 +163,7 @@ describe('sharing service', () => {
     expect(store.state.writes).toBe(0);
   });
 
-  it('an owner-less id is unknown-person without a lookup; the first unknown id is named', async () => {
+  it('an owner-less id is unknown-person without a lookup, and the refusal names no id', async () => {
     const store = memoryStore(personalAgent());
     const { bus, asked } = busWith();
     const svc = service(bus, store);
@@ -178,13 +178,15 @@ describe('sharing service', () => {
           { type: 'user', id: 'ghost' },
         ],
       }),
-    ).toEqual({ status: 400, error: 'unknown-person', id: 'ownerless:s1' });
+    ).toEqual({ status: 400, error: 'unknown-person' });
     expect(asked).toEqual(['bob']);
     expect(await svc.setOwners(ctx, alice, 'agt_1', { userIds: ['alice', 'ghost', 'carol'] })).toEqual({
       status: 400,
       error: 'unknown-person',
-      id: 'ghost',
     });
+    // Negative space: a round-trip can't see an added field.
+    const refused = await svc.setOwners(ctx, alice, 'agt_1', { userIds: ['alice', 'ghost'] });
+    expect('id' in refused).toBe(false);
     expect(store.state.writes).toBe(0);
   });
 
@@ -287,8 +289,8 @@ describe('sharing service', () => {
       sharing: {
         audience: { kind: 'just-me' },
         owners: [
-          { id: 'alice', displayName: 'Alice', email: 'alice@example.com', creator: true },
-          { id: 'bob', displayName: 'Bob', email: 'bob@example.com', creator: false },
+          { id: 'alice', displayName: 'Alice', creator: true },
+          { id: 'bob', displayName: 'Bob', creator: false },
         ],
       },
     });
@@ -299,14 +301,37 @@ describe('sharing service', () => {
       sharing: {
         audience: {
           kind: 'list',
-          members: [{ type: 'user', id: 'carol', displayName: 'Carol', email: 'carol@example.com' }],
+          members: [{ type: 'user', id: 'carol', displayName: 'Carol' }],
         },
         owners: [
-          { id: 'alice', displayName: 'Alice', email: 'alice@example.com', creator: true },
-          { id: 'bob', displayName: 'Bob', email: 'bob@example.com', creator: false },
+          { id: 'alice', displayName: 'Alice', creator: true },
+          { id: 'bob', displayName: 'Bob', creator: false },
         ],
       },
     });
+  });
+
+  it('the settings carry no email on any owner or member, though auth:get-user answers one', async () => {
+    const store = memoryStore(personalAgent({ audience: 'list', shared: true }), ['alice', 'bob']);
+    store.state.members = ['carol'];
+    const svc = service(busWith().bus, store);
+    const { ctx } = ctxWithLog();
+
+    const viewed = await svc.view(ctx, store.state.agent!);
+    const written = await svc.setOwners(ctx, alice, 'agt_1', { userIds: ['alice', 'bob'] });
+    expect(written.status).toBe(200);
+    const sharings = [viewed, written.status === 200 ? written.sharing : viewed];
+    for (const sharing of sharings) {
+      const people = [...sharing.owners, ...(sharing.audience.kind === 'list' ? sharing.audience.members : [])];
+      expect(people.length).toBeGreaterThan(0);
+      for (const person of people) {
+        expect('email' in person).toBe(false);
+        expect(Object.keys(person).sort()).toEqual(
+          expect.arrayContaining(['displayName', 'id']),
+        );
+      }
+      expect(JSON.stringify(sharing)).not.toContain('@example.com');
+    }
   });
 
   describe('view', () => {
@@ -321,10 +346,10 @@ describe('sharing service', () => {
       const { ctx } = ctxWithLog();
 
       expect(await svc.view(ctx, store.state.agent!)).toEqual({
-        audience: { kind: 'list', members: [{ type: 'user', id: 'bob', displayName: null, email: null }] },
+        audience: { kind: 'list', members: [{ type: 'user', id: 'bob', displayName: null }] },
         owners: [
-          { id: 'alice', displayName: null, email: null, creator: true },
-          { id: 'bob', displayName: null, email: null, creator: false },
+          { id: 'alice', displayName: null, creator: true },
+          { id: 'bob', displayName: null, creator: false },
         ],
       });
     });
@@ -335,9 +360,9 @@ describe('sharing service', () => {
       const { ctx, lines } = ctxWithLog();
 
       const sharing = await svc.view(ctx, store.state.agent!);
-      expect(sharing.owners.map((o) => [o.id, o.displayName, o.email])).toEqual([
-        ['alice', null, null],
-        ['bob', null, null],
+      expect(sharing.owners.map((o) => [o.id, o.displayName])).toEqual([
+        ['alice', null],
+        ['bob', null],
       ]);
       const warns = lines().filter((l) => l.msg === 'agents_sharing_names_unavailable');
       expect(warns).toHaveLength(1);

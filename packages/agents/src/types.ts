@@ -95,11 +95,13 @@ export interface CallerFacts {
   listed: boolean;
 }
 
-/** A person as the sharing settings show them. Null when the name is unknown. */
+/**
+ * A person as the sharing settings show them. Null name when it is unknown.
+ * No email, deliberately: the settings must not turn an id into an address.
+ */
 export interface PersonView {
   id: string;
   displayName: string | null;
-  email: string | null;
 }
 
 /** An agent's sharing settings, as its owners see them. */

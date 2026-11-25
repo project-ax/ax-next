@@ -426,15 +426,13 @@ function serializeAgent(a: Agent): Record<string, unknown> {
   };
 }
 
-/** Write a sharing service answer: `{ sharing }` on 200, else `{ error[, id] }`. */
+/** Write a sharing service answer: `{ sharing }` on 200, else `{ error }`. */
 function writeSharingResult(res: RouteResponse, result: SharingWriteResult): void {
   if (result.status === 200) {
     res.status(200).json({ sharing: result.sharing });
     return;
   }
-  res
-    .status(result.status)
-    .json(result.id === undefined ? { error: result.error } : { error: result.error, id: result.id });
+  res.status(result.status).json({ error: result.error });
 }
 
 /**

@@ -137,7 +137,7 @@ describe('@ax/agents sharing routes (TASK-1246)', () => {
 
   /** The creator as the settings show them ("Test Admin" signed in by signIn). */
   function adminAsCreator(id: string) {
-    return { id, displayName: ADMIN_NAME, email: ADMIN_EMAIL, creator: true };
+    return { id, displayName: ADMIN_NAME, creator: true };
   }
 
   // --- who can use it ------------------------------------------------------
@@ -288,7 +288,7 @@ describe('@ax/agents sharing routes (TASK-1246)', () => {
     });
   });
 
-  it("listing someone who isn't an AX account → 400 unknown-person with the id, on either route", async () => {
+  it("listing someone who isn't an AX account → 400 unknown-person naming no id, on either route", async () => {
     const alice = await signIn(stack);
     const bob = await mintSecondUserCookie('Bob Builder');
     const agent = await createAgent(alice);
@@ -301,11 +301,13 @@ describe('@ax/agents sharing routes (TASK-1246)', () => {
         ],
       });
       expect(listed.status, nobody).toBe(400);
-      expect(listed.body).toEqual({ error: 'unknown-person', id: nobody });
+      expect(listed.body).toEqual({ error: 'unknown-person' });
+      expect('id' in (listed.body as object)).toBe(false);
 
       const owned = await putOwners(alice, agent.id, { userIds: [agent.ownerId, nobody] });
       expect(owned.status, nobody).toBe(400);
-      expect(owned.body).toEqual({ error: 'unknown-person', id: nobody });
+      expect(owned.body).toEqual({ error: 'unknown-person' });
+      expect('id' in (owned.body as object)).toBe(false);
     }
     expect(await sharingOf(alice, agent.id)).toEqual({
       audience: { kind: 'just-me' },
@@ -345,7 +347,7 @@ describe('@ax/agents sharing routes (TASK-1246)', () => {
     const added = await expectOk(putOwners(alice, agent.id, { userIds: [creator, bob.userId] }));
     expect(added.owners).toEqual([
       adminAsCreator(creator),
-      { id: bob.userId, displayName: 'Bob Builder', email: bob.email, creator: false },
+      { id: bob.userId, displayName: 'Bob Builder', creator: false },
     ]);
 
     const bobsView = await show(bob.cookie, agent.id);
@@ -555,7 +557,7 @@ describe('@ax/agents sharing routes (TASK-1246)', () => {
     expect(managed.find((a) => a.id === alices.id)).toMatchObject({ isOwner: true, shared: true });
   });
 
-  it("the owner's settings payload names people", async () => {
+  it("the owner's settings payload names people by id and display name, never by email", async () => {
     const alice = await signIn(stack);
     const bob = await mintSecondUserCookie('Bob Builder');
     const carol = await mintSecondUserCookie('Carol Singer');
@@ -574,18 +576,24 @@ describe('@ax/agents sharing routes (TASK-1246)', () => {
 
     const sharing = await sharingOf(alice, agent.id);
     expect(sharing.owners).toEqual([
-      { id: agent.ownerId, displayName: ADMIN_NAME, email: ADMIN_EMAIL, creator: true },
-      { id: bob.userId, displayName: 'Bob Builder', email: bob.email, creator: false },
+      { id: agent.ownerId, displayName: ADMIN_NAME, creator: true },
+      { id: bob.userId, displayName: 'Bob Builder', creator: false },
     ]);
     expect(sharing.audience.kind).toBe('list');
     const members = sharing.audience.kind === 'list' ? sharing.audience.members : [];
     expect([...members].sort((a, b) => a.id.localeCompare(b.id))).toEqual(
       [
-        { type: 'user', id: carol.userId, displayName: 'Carol Singer', email: carol.email },
-        { type: 'user', id: bob.userId, displayName: 'Bob Builder', email: bob.email },
+        { type: 'user', id: carol.userId, displayName: 'Carol Singer' },
+        { type: 'user', id: bob.userId, displayName: 'Bob Builder' },
       ].sort((a, b) => a.id.localeCompare(b.id)),
     );
     // A co-owner reads the same settings.
     expect(await sharingOf(bob.cookie, agent.id)).toEqual(sharing);
+
+    // Negative space: no email key on anyone, though auth:get-user holds one
+    // for each. A round-trip equality can't notice an added field.
+    for (const person of [...sharing.owners, ...members]) expect('email' in person).toBe(false);
+    const raw = JSON.stringify((await show(alice, agent.id)).body);
+    for (const email of [ADMIN_EMAIL, bob.email, carol.email]) expect(raw).not.toContain(email);
   });
 });
