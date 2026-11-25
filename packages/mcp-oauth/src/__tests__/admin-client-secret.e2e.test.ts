@@ -253,10 +253,11 @@ async function boot() {
     'auth:get-user': (async (_c, input) =>
       users.get((input as { userId: string }).userId) ?? null) as ServiceHandler,
     // Every sign-in belongs to an agent: each signer signs in for their own
-    // personal agent (`agent-<id>`), so no team-admin question arises.
+    // personal agent (`agent-<id>`), so no team-admin question arises. They
+    // are its owner (TASK-1246: only an owner signs in on a personal agent).
     'agents:resolve': (async (_c, input) => {
       const { agentId, userId } = input as { agentId: string; userId: string };
-      return { agent: { id: agentId, visibility: 'personal', ownerId: userId } };
+      return { agent: { id: agentId, visibility: 'personal', ownerId: userId, isOwner: true } };
     }) as ServiceHandler,
     // An Add's callback attaches the connector once the sign-in is stored.
     'agents:attach-connector': (async () => ({ agent: {}, changed: true })) as ServiceHandler,

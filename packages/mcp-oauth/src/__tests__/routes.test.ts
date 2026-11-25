@@ -428,7 +428,7 @@ describe('mcp-oauth begin route', () => {
     })) });
     const { deps, store } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture({ credentials: [{
         slot: 'oauth-main', kind: 'oauth', server: 'srv', ...(scopes ? { scopes } : {}),
       }] }),
@@ -466,7 +466,7 @@ describe('mcp-oauth begin route', () => {
       })) });
       const { deps } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
         'connectors:get': () => connectorFixture({ credentials: [{
           slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: slotScopes,
         }] }),
@@ -542,7 +542,7 @@ describe('mcp-oauth begin route', () => {
       })) });
       const { deps, logger } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
         'connectors:get': () => connectorFixture(),
       }, { flow, store });
       const { res, state } = fakeRes();
@@ -564,7 +564,7 @@ describe('mcp-oauth begin route', () => {
     const { deps, store, flow } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () => connectorFixture(),
       },
       { store: fakeStore({ putClient: legacyPutClient } as never) },
@@ -651,7 +651,7 @@ describe('mcp-oauth begin route', () => {
     it('connectors:get crashes (bus-wrapped) → 500 internal, not 404; logged by stage; nothing leaks', async () => {
       const { deps, store, flow, logger } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
         'connectors:get': () => wrappedFault('connectors:get', new Error(FAULT)),
       });
       const { res, state } = fakeRes();
@@ -725,7 +725,7 @@ describe('mcp-oauth begin route', () => {
     it('connectors:get refuses with PluginError not-found → still 404', async () => {
       const { deps, logger } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
         'connectors:get': () => codedError('connectors:get', 'not-found'),
       });
       const { res, state } = fakeRes();
@@ -741,7 +741,7 @@ describe('mcp-oauth begin route', () => {
     it('connectors:get says invalid-payload for a malformed connectorId → still 404, not a logged 500', async () => {
       const { deps, logger } = makeDeps({
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
         'connectors:get': () => codedError('connectors:get', 'invalid-payload'),
       });
       const { res, state } = fakeRes();
@@ -785,7 +785,7 @@ describe('mcp-oauth begin route', () => {
   it('2b. personal agent: agents:resolve accepts → 200; pending written; no team-admin lookup', async () => {
     const { deps, store, calls } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture(),
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
@@ -798,6 +798,99 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
     expect(calls.map((c) => c.hook)).not.toContain('agents:can-set-shared-credential');
+  });
+
+  // TASK-1246 — `agents:resolve` now also admits the people a personal agent is
+  // shared with, and its answer says whether the caller is one of the agent's
+  // owners. The sign-in is stored ON the agent, so whoever signs in picks the
+  // account every chat on it acts as: only an owner may. Against the unfixed
+  // code every case below got a 200, a pending row and a provider redirect.
+  describe('personal agent: only an owner may begin (TASK-1246)', () => {
+    const personal = (extra: Record<string, unknown>) => ({
+      agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-2', ...extra },
+    });
+
+    it.each([
+      ['someone it is shared with (isOwner false)', personal({ isOwner: false }), OK_USER],
+      ['an answer that carries no isOwner (fail closed)', personal({}), OK_USER],
+      ['an isOwner that is not exactly true', personal({ isOwner: 'true' }), OK_USER],
+      ['a workspace admin it is shared with (no admin bypass)', personal({ isOwner: false }), { user: { id: 'admin-1', isAdmin: true } }],
+    ])('SECURITY: %s → 403 forbidden; no connector read, vault read, state write or provider request', async (_label, answer, user) => {
+      for (const mode of ['add', 'sign-in-again']) {
+        const connectorsGet = vi.fn(() => connectorFixture());
+        const authz = vi.fn(() => ({ allowed: true }));
+        const getSecret = vi.fn(() => 'pinned-secret');
+        const canSet = vi.fn(() => ({ allowed: true }));
+        const { deps, store, flow, calls } = makeDeps({
+          'auth:require-user': () => user,
+          'agents:resolve': () => answer,
+          'agents:can-set-shared-credential': canSet,
+          'connectors:get': connectorsGet,
+          'credentials:get': getSecret,
+          'credentials:authorize-agent:account': authz,
+        });
+        const { res, state } = fakeRes();
+        await createMcpOAuthRouteHandlers(deps).begin(
+          fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode })) }),
+          res as never,
+        );
+
+        expect(state.status, mode).toBe(403);
+        expect(state.json, mode).toEqual({ error: 'forbidden' });
+        // Nothing past the agent gate: not the connector, not the vault (nor its
+        // agent-scope question), not the team-admin question.
+        expect(calls.map((c) => c.hook), mode).toEqual(['auth:require-user', 'agents:resolve']);
+        expect(connectorsGet).not.toHaveBeenCalled();
+        expect(authz).not.toHaveBeenCalled();
+        expect(getSecret).not.toHaveBeenCalled();
+        expect(canSet).not.toHaveBeenCalled();
+        // No state read or write, no provider request.
+        expect(store.isIdentityScopeRefused).not.toHaveBeenCalled();
+        expect(store.purgeExpiredPending).not.toHaveBeenCalled();
+        expect(store.putPending).not.toHaveBeenCalled();
+        expect(flow.discover).not.toHaveBeenCalled();
+        expect(flow.ensureClient).not.toHaveBeenCalled();
+        expect(flow.buildAuthorization).not.toHaveBeenCalled();
+      }
+    });
+
+    // The rule keys on `isOwner`, not on who created the agent: a co-owner signs
+    // in like the creator.
+    it('a co-owner who did not create it (isOwner true) → 200; pending written; no team-admin lookup', async () => {
+      const { deps, store, calls } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => personal({ isOwner: true }),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' })) }),
+        res as never,
+      );
+
+      expect(state.status).toBe(200);
+      expect(store.putPending).toHaveBeenCalledTimes(1);
+      expect(calls.map((c) => c.hook)).not.toContain('agents:can-set-shared-credential');
+    });
+
+    // @ax/agents always answers isOwner false on a team agent. That must not
+    // refuse a team admin: the team-admin question still decides alone.
+    it('a team agent is unchanged: isOwner false does not refuse a team admin; the team-admin question decides', async () => {
+      const TEAM_ANSWER = { agent: { id: 'agent-T', visibility: 'team', ownerId: 'team-1', isOwner: false } };
+      const { deps, store } = makeDeps({
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => TEAM_ANSWER,
+        'agents:can-set-shared-credential': () => ({ allowed: true }),
+        'connectors:get': () => connectorFixture(),
+      });
+      const { res, state } = fakeRes();
+      await createMcpOAuthRouteHandlers(deps).begin(
+        fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-T', mode: 'add' })) }),
+        res as never,
+      );
+      expect(state.status).toBe(200);
+      expect(store.putPending).toHaveBeenCalledTimes(1);
+    });
   });
 
   // TASK-798 — `agents:resolve` admits every MEMBER of a team agent, but a
@@ -959,7 +1052,7 @@ describe('mcp-oauth begin route', () => {
   it('3. connector lacks oauth slot → 400; no discovery', async () => {
     const { deps, flow } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
       'connectors:get': () =>
         connectorFixture({ credentials: [{ slot: 'k', kind: 'api-key' }] }),
     });
@@ -1019,7 +1112,7 @@ describe('mcp-oauth begin route', () => {
   it('missing agentId → 400 agentId is required; nothing read, nothing written, no provider', async () => {
     const { deps, store, flow, calls } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture(),
     });
     const { res, state } = fakeRes();
@@ -1043,7 +1136,7 @@ describe('mcp-oauth begin route', () => {
   ])('mode %s → 400; nothing read, nothing written', async (_label, extra) => {
     const { deps, store, flow, calls } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture(),
     });
     const { res, state } = fakeRes();
@@ -1074,7 +1167,7 @@ describe('mcp-oauth begin route', () => {
   it('connectors:get not-found → 404', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
       'connectors:get': () => rejectThrow('not found'),
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
@@ -1095,7 +1188,7 @@ describe('mcp-oauth begin route', () => {
     const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () => connectorFixture(),
       },
       { flow },
@@ -1125,7 +1218,7 @@ describe('mcp-oauth begin route', () => {
       const { deps } = makeDeps(
         {
           'auth:require-user': () => OK_USER,
-          'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+          'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
           'connectors:get': () => connectorFixture(),
         },
         { flow },
@@ -1152,7 +1245,7 @@ describe('mcp-oauth begin route', () => {
     const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () =>
           connectorFixture({
             credentials: [
@@ -1185,7 +1278,7 @@ describe('mcp-oauth begin route', () => {
     const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () =>
           connectorFixture({
             credentials: [
@@ -1232,7 +1325,7 @@ describe('mcp-oauth begin route', () => {
       const { deps, logger } = makeDeps(
         {
           'auth:require-user': () => OK_USER,
-          'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+          'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
           'connectors:get': () =>
             connectorFixture({
               credentials: [
@@ -1339,7 +1432,7 @@ describe('mcp-oauth begin route', () => {
     const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () =>
           connectorFixture({
             credentials: [
@@ -1372,7 +1465,7 @@ describe('mcp-oauth begin route', () => {
     const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () =>
           connectorFixture({
             credentials: [
@@ -1398,7 +1491,7 @@ describe('mcp-oauth begin route', () => {
     const flow = fakeFlow();
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture({ credentials: [
         { slot: 'oauth-main', kind: 'oauth', server: 'srv', clientRegistration: 'dcr' },
       ] }),
@@ -1414,7 +1507,7 @@ describe('mcp-oauth begin route', () => {
     const flow = fakeFlow();
     const { deps, store } = makeDeps({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture({ credentials: [
         { slot: 'oauth-main', kind: 'oauth', server: 'srv', clientRegistration: 'cimd' },
         { slot: 'header-one', kind: 'api-key', server: 'srv', headerName: 'X-API-Key' },
@@ -1435,7 +1528,7 @@ describe('mcp-oauth begin route', () => {
     const { deps, store } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
-        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
         'connectors:get': () => connectorFixture(),
       },
       { flow },
@@ -1456,7 +1549,7 @@ describe('mcp-oauth begin route', () => {
   // `add` (the callback will attach the connector) or `sign-in-again` (the
   // connector must already be on the agent; nothing is attached).
 
-  const PERSONAL = { agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } };
+  const PERSONAL = { agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } };
   const TEAM = { agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } };
   const beginReq = (mode: string) =>
     fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode })) });
@@ -1663,7 +1756,7 @@ describe('mcp-oauth begin route', () => {
 
   const BEGIN_STUBS: BusStubs = {
     'auth:require-user': () => OK_USER,
-    'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+    'agents:resolve': () => ({ agent: { id: 'agent-1', isOwner: true } }),
     'connectors:get': () => connectorFixture(),
   };
   const BEGIN_BODY = Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1', mode: 'add' }));
@@ -1798,7 +1891,7 @@ describe('mcp-oauth callback route', () => {
   ) {
     return makeDeps(
       {
-        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
         'agents:attach-connector': () => ({ agent: { id: 'agent-1' }, changed: true }),
         ...stubs,
       },
@@ -2501,6 +2594,19 @@ describe('mcp-oauth callback route', () => {
       expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
     });
 
+    // TASK-1246 — resolve still admits someone a personal agent is shared with,
+    // but the flag is the owners' to set, like the sign-in itself.
+    it.each([
+      ['isOwner false (someone it is shared with)', { isOwner: false }],
+      ['no isOwner (fail closed)', {}],
+    ])('SECURITY: personal agent, %s, forging invalid_scope sets no flag', async (_label, extra) => {
+      const { store, state } = await refuse({}, 'invalid_scope', {}, {
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-2', ...extra } }),
+      });
+      expect(store.markIdentityScopeRefused).not.toHaveBeenCalled();
+      expect(state.redirectUrl).toContain('oauth=error&reason=sign-in-failed');
+    });
+
     it.each([
       ['demoted from team admin', { 'agents:can-set-shared-credential': () => ({ allowed: false }) }],
       ['the team-admin hook refuses', { 'agents:can-set-shared-credential': () => rejectThrow('not a member') }],
@@ -2814,7 +2920,7 @@ describe('mcp-oauth callback route', () => {
     const store = storeWithPending(pending);
     const { bus } = fakeBus({
       'auth:require-user': () => OK_USER,
-      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1', isOwner: true } }),
       'connectors:get': () => connectorFixture(),
       'credentials:set': () => {},
       'agents:attach-connector': () => ({ agent: { id: 'agent-1' }, changed: true }),
@@ -3093,6 +3199,60 @@ describe('mcp-oauth callback route', () => {
         const out = await run({ stubs: { 'agents:resolve': () => ({ agent: { id: 'agent-1' } }) } });
         expect(out.state.redirectUrl).toContain('reason=not-allowed');
         expect(out.setSpy).not.toHaveBeenCalled();
+      });
+
+      // TASK-1246 — the signer may have stopped owning the personal agent since
+      // begin (taken off its owners, but still someone it is shared with, so
+      // agents:resolve still lets them in). Only an owner's sign-in lands on a
+      // personal agent. Against the unfixed code each case stored the token.
+      it.each([
+        ['no longer an owner, still shared with them (isOwner false)', { isOwner: false }],
+        ['an answer that carries no isOwner (fail closed)', {}],
+        ['an isOwner that is not exactly true', { isOwner: 'true' }],
+      ])('SECURITY: personal agent, %s → reason=not-allowed; no connector read, no token exchange, no write, no attach', async (_label, extra) => {
+        for (const mode of ['add', 'sign-in-again'] as const) {
+          const out = await run({
+            pending: { ...pending, mode },
+            stubs: {
+              'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-2', ...extra } }),
+              'agents:can-set-shared-credential': () => ({ allowed: true }),
+            },
+          });
+          expect(out.state.redirectUrl, mode).toBe(
+            'https://app.example.com/settings/connectors?connector=conn-1&oauth=error&reason=not-allowed&agentId=agent-1',
+          );
+          const hooks = out.calls.map((c) => c.hook);
+          expect(hooks, mode).not.toContain('connectors:get');
+          expect(hooks, mode).not.toContain('agents:can-set-shared-credential');
+          expect(out.flow.redeemCode).not.toHaveBeenCalled();
+          expect(out.setSpy).not.toHaveBeenCalled();
+          expect(out.attachSpy).not.toHaveBeenCalled();
+          expect(out.store.clearNeedsReconnect).not.toHaveBeenCalled();
+          expect(out.logger.warn).toHaveBeenCalledWith('mcp_oauth_callback_agent_refused', { connectorId: 'conn-1', stage: 'owner' });
+          expect(out.logger.error).not.toHaveBeenCalled();
+        }
+      });
+
+      it('a co-owner who did not create the personal agent (isOwner true) → the token is stored and attached; success', async () => {
+        const out = await run({
+          stubs: {
+            'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-2', isOwner: true } }),
+          },
+        });
+        expect(out.order).toEqual(['set', 'attach', 'clear']);
+        expect(out.calls.map((c) => c.hook)).not.toContain('agents:can-set-shared-credential');
+        expect(out.state.redirectUrl).toBe('https://app.example.com/settings/connectors?connector=conn-1&oauth=success&agentId=agent-1');
+      });
+
+      it('a team agent is unchanged: isOwner false (as @ax/agents answers on a team agent) does not refuse a team admin', async () => {
+        const out = await run({
+          stubs: {
+            'agents:resolve': () => ({ agent: { ...TEAM_AGENT.agent, isOwner: false } }),
+            'agents:can-set-shared-credential': () => ({ allowed: true }),
+          },
+        });
+        expect(out.order).toEqual(['set', 'attach', 'clear']);
+        expect(out.state.redirectUrl).toContain('oauth=success');
       });
 
       it('team agent whose signer is still a team admin → the team-admin hook is asked with the real actor; success', async () => {
@@ -3437,6 +3597,21 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     await handlers.status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res);
     expect(state.status).toBe(200);
     expect(state.json).toEqual({ status: 'needs-reconnect' });
+  });
+
+  // TASK-1246 — the probe only READS whether the agent is signed in, so it stays
+  // open to anyone agents:resolve lets use the agent, including someone a
+  // personal agent is shared with. Only choosing the sign-in is the owners'.
+  it('TASK-1246. someone a personal agent is shared with (isOwner false) still gets the read-only status', async () => {
+    const { deps } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-2', isOwner: false } }),
+      'credentials:get': () => 'access-token-value',
+    });
+    const { res, state } = fakeRes();
+    await createMcpOAuthRouteHandlers(deps).status(fakeReq({ query: { connectorId: 'conn-1', agentId: 'agent-1' } }), res as never);
+    expect(state.status).toBe(200);
+    expect(state.json).toEqual({ status: 'connected' });
   });
 
   it('Task4.4. agentId present + agents:resolve rejects → 403', async () => {
