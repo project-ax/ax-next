@@ -31,6 +31,7 @@ import { randomBytes } from 'node:crypto';
 import { createIdentityService } from './identity/service.js';
 import { createIdentityStore } from './identity/store.js';
 import { registerIdentityTools } from './identity/tools.js';
+import { createSharingService } from './sharing/service.js';
 import { createSharingStore } from './sharing/store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
@@ -789,7 +790,15 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // calls inside their handlers reach our own services, which were
       // registered above. The unregister callbacks are tracked so a
       // re-init in tests doesn't trip duplicate-route on the http-server.
-      const unregisters = await registerAdminAgentRoutes(bus, initCtx, bootPolicy, localStore);
+      // TASK-1246 — the sharing settings behind the owners-only routes.
+      const sharingService = createSharingService({ bus, agents: localStore, sharing });
+      const unregisters = await registerAdminAgentRoutes(
+        bus,
+        initCtx,
+        bootPolicy,
+        localStore,
+        sharingService,
+      );
       unregisterRoutes.push(...unregisters);
 
       // Bootstrap-reset cleanup: when an operator runs `ax admin

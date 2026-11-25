@@ -1,4 +1,5 @@
 import type { AgentStore } from './store.js';
+import type { SharingService, SharingWriteResult } from './sharing/service.js';
 import { loadPolicy, type ModelPolicy } from './model-policy.js';
 import {
   answerRequireUserFailure,
@@ -56,6 +57,14 @@ import type {
 // shape so dev-agents-stub can register pass-through filters at boot.
 // Production agents created via THIS API path must not be able to
 // silently bypass the per-agent tool catalog filter.
+//
+// TASK-1246 — sharing. A serialized agent carries `shared` and, when the
+// answer was asked for the caller, `isOwner`. GET /admin/agents/:id adds
+// `sharing` (who can use it, its owners) for one of a personal agent's owners
+// only. PUT /admin/agents/:id/audience and PUT /admin/agents/:id/owners are
+// owners-only: their checks live in sharing/service.ts. GET /admin/agents
+// lists only what the caller manages (team agents and the personal agents
+// they own), never an agent that is merely shared with them.
 // ---------------------------------------------------------------------------
 
 /** Locked at handler entry — wider than the store's 32 KiB system_prompt cap
@@ -407,9 +416,25 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     turnLimitMinutes: a.turnLimitMinutes ?? null,
     idleMinutes: a.idleMinutes ?? null,
     runnerSize: a.runnerSize ?? null,
+    // TASK-1246 — `shared` for everyone; `isOwner` only on an answer asked
+    // for the caller (agents:resolve, agents:list-for-user). The audience
+    // itself is in `sharing`, which only owners get.
+    shared: a.shared,
+    ...(a.isOwner !== undefined ? { isOwner: a.isOwner } : {}),
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   };
+}
+
+/** Write a sharing service answer: `{ sharing }` on 200, else `{ error[, id] }`. */
+function writeSharingResult(res: RouteResponse, result: SharingWriteResult): void {
+  if (result.status === 200) {
+    res.status(200).json({ sharing: result.sharing });
+    return;
+  }
+  res
+    .status(result.status)
+    .json(result.id === undefined ? { error: result.error } : { error: result.error, id: result.id });
 }
 
 /**
@@ -540,6 +565,8 @@ export interface AdminRouteDeps {
    *  emits exactly these ids, decorated with whatever metadata the matching
    *  `models:list-supported:<provider>` registrants supply. */
   boot: ModelPolicy;
+  /** TASK-1246 — an owner's sharing settings, and the owners-only writes. */
+  sharing: SharingService;
 }
 
 /** Local shape of a provider plugin's `models:list-supported:<provider>`
@@ -614,7 +641,11 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         ctx,
         { userId: actor.id, teamIds },
       );
-      res.status(200).json({ agents: out.agents.map(serializeAgent) });
+      // TASK-1246 — Settings › Agents lists what the caller manages: team
+      // agents (unchanged) and the personal agents they own. One that is only
+      // shared with them is theirs to use, not to change, so it isn't listed.
+      const managed = out.agents.filter((a) => a.ownerType === 'team' || a.isOwner === true);
+      res.status(200).json({ agents: managed.map(serializeAgent) });
     },
 
     /**
@@ -754,11 +785,75 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
           ctx,
           { agentId, userId: actor.id },
         );
-        res.status(200).json({ agent: serializeAgent(out.agent) });
+        const agent = serializeAgent(out.agent);
+        // TASK-1246 — who can use it and who owns it, for its owners only
+        // (`isOwner` is never true on a team agent).
+        if (out.agent.visibility === 'personal' && out.agent.isOwner === true) {
+          agent.sharing = await deps.sharing.view(ctx, out.agent);
+        }
+        res.status(200).json({ agent });
       } catch (err) {
         if (writeServiceError(res, err)) return;
         throw err;
       }
+    },
+
+    /**
+     * PUT /admin/agents/:id/audience (TASK-1246) — who can use the agent:
+     * `{ kind: 'just-me' }`, `{ kind: 'everyone' }` or `{ kind: 'list',
+     * members: [{ type: 'user', id }] }`. Its owners only; every check after
+     * the sign-in and the body cap is the sharing service's.
+     */
+    async setAudience(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.id;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const parsed = parseAndValidate(req.body, z.unknown());
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      writeSharingResult(
+        res,
+        await deps.sharing.setAudience(
+          ctx,
+          { userId: actor.id, isAdmin: actor.isAdmin } satisfies Actor,
+          agentId,
+          parsed.value,
+        ),
+      );
+    },
+
+    /**
+     * PUT /admin/agents/:id/owners (TASK-1246) — `{ userIds }`, the agent's
+     * owners exactly, its creator among them. Its owners only, as above.
+     */
+    async setOwners(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.id;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const parsed = parseAndValidate(req.body, z.unknown());
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      writeSharingResult(
+        res,
+        await deps.sharing.setOwners(
+          ctx,
+          { userId: actor.id, isAdmin: actor.isAdmin } satisfies Actor,
+          agentId,
+          parsed.value,
+        ),
+      );
     },
 
     /** PATCH /admin/agents/:id */
@@ -1129,10 +1224,11 @@ export async function registerAdminAgentRoutes(
   initCtx: AgentContext,
   boot: ModelPolicy,
   store: AgentStore,
+  sharing: SharingService,
 ): Promise<Array<() => void>> {
-  const handlers = createAdminAgentRouteHandlers({ bus, boot, store });
+  const handlers = createAdminAgentRouteHandlers({ bus, boot, store, sharing });
   const routes: Array<{
-    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
@@ -1153,6 +1249,10 @@ export async function registerAdminAgentRoutes(
       path: '/admin/agents/:id/skill-attachments',
       handler: handlers.setSkillAttachments,
     },
+    // TASK-1246 — owners-only sharing writes. CSRF stays on (no bypassCsrf),
+    // and the handlers cap the body at ADMIN_BODY_MAX_BYTES.
+    { method: 'PUT', path: '/admin/agents/:id/audience', handler: handlers.setAudience },
+    { method: 'PUT', path: '/admin/agents/:id/owners', handler: handlers.setOwners },
     {
       method: 'GET',
       path: '/admin/agents/:id/authored-skills',
