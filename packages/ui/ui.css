@@ -10,6 +10,12 @@
     white-space: nowrap;
     border-width: 0
 }
+.ax-pointer-events-none {
+    pointer-events: none
+}
+.ax-pointer-events-auto {
+    pointer-events: auto
+}
 .ax-fixed {
     position: fixed
 }
@@ -18,6 +24,12 @@
 }
 .ax-inset-none {
     inset: var(--ax-space-none)
+}
+.ax-right-lg {
+    right: var(--ax-space-lg)
+}
+.ax-top-lg {
+    top: var(--ax-space-lg)
 }
 .ax-z-50 {
     z-index: 50
@@ -242,6 +254,10 @@
 .ax-bg-action {
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-action) / var(--tw-bg-opacity, 1))
+}
+.ax-bg-canvas {
+    --tw-bg-opacity: 1;
+    background-color: hsl(var(--ax-bg-canvas) / var(--tw-bg-opacity, 1))
 }
 .ax-bg-canvas\/80 {
     background-color: hsl(var(--ax-bg-canvas) / 0.8)

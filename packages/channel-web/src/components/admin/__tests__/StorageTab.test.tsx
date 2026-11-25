@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { StorageTab } from '../StorageTab';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import type { AdminStorage, MyStorage, StorageOwner } from '@/lib/storage-api';
 
 /*
@@ -176,8 +176,8 @@ beforeEach(() => {
   cleanup = makeCleanup();
   handler = defaultHandler;
   installFetch();
-  toastActions.reset();
-  showToast = vi.spyOn(toastActions, 'show');
+  toast.dismissAll();
+  showToast = vi.spyOn(toast, 'show');
 });
 
 afterEach(() => {
@@ -185,9 +185,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function lastToast(): { title: string; detail?: string; kind?: string } {
+function lastToast(): { title: string; description?: string; tone?: string } {
   const args = showToast.mock.calls.at(-1)?.[0] as
-    | { title: string; detail?: string; kind?: string }
+    | { title: string; description?: string; tone?: string }
     | undefined;
   if (args === undefined) throw new Error('no toast was shown');
   return args;
@@ -690,8 +690,8 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
 
       await waitFor(() => expect(showToast).toHaveBeenCalled());
       expect(lastToast().title).toBe('Storage limits saved');
-      expect(lastToast().detail).toBe('The new settings apply to everyone right away.');
-      expect(lastToast().kind ?? 'info').toBe('info');
+      expect(lastToast().description).toBe('The new settings apply to everyone right away.');
+      expect(lastToast().tone ?? 'info').toBe('info');
 
       // The form now IS the saved state: nothing left to save.
       await waitFor(() => expect(screen.getByRole('button', { name: 'Save limits' })).toBeDisabled());

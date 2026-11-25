@@ -19,7 +19,7 @@ import { artifactTypeLine, versionLabel } from '@/lib/artifact-labels';
 import { copyShareLink } from '@/lib/copy-share-link';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { useResolvedTheme } from '@/lib/theme';
 import { useArtifact } from '@/lib/use-artifact';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -89,7 +89,7 @@ export function ArtifactViewer({
         saveFromContentOrigin((await loadToken('download')).url);
       } catch (e) {
         logRequestFailure(e, 'artifact-download');
-        toastActions.error(DOWNLOAD_FAILED);
+        toast.show({ title: DOWNLOAD_FAILED, tone: 'danger' });
       } finally {
         downloadInFlight.current = false;
         setDownloading(false);
@@ -113,12 +113,12 @@ export function ArtifactViewer({
     setRestoring(true);
     try {
       await workspaceApi.restoreArtifact(artifactId, picked);
-      toastActions.show({ title: `Restored v${picked}` });
+      toast.show({ title: `Restored v${picked}` });
       setPicked(null);
       refresh();
     } catch (e) {
       logRequestFailure(e, 'artifact-restore');
-      toastActions.error(RESTORE_FAILED);
+      toast.show({ title: RESTORE_FAILED, tone: 'danger' });
     } finally {
       setRestoring(false);
     }

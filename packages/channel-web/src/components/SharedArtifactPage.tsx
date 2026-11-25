@@ -23,7 +23,7 @@ import { saveFromContentOrigin } from '@/lib/file-download';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { sharedArtifactsApi } from '@/lib/shared-artifacts-api';
 import { useResolvedTheme } from '@/lib/theme';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { timeAgo } from '@/lib/workspace-time';
 import { artifactPreviewKind, type ArtifactTokenPurpose, type SharedArtifactView } from '@/lib/workspace-types';
 import { ArtifactPreview } from './workspace/ArtifactPreview';
@@ -104,7 +104,7 @@ function Shared({ code, artifact }: { code: string; artifact: SharedArtifactView
         saveFromContentOrigin((await loadToken('download')).url);
       } catch (e) {
         logRequestFailure(e, 'shared-artifact-download');
-        toastActions.error(DOWNLOAD_FAILED);
+        toast.show({ title: DOWNLOAD_FAILED, tone: 'danger' });
       } finally {
         inFlight.current = false;
         setDownloading(false);

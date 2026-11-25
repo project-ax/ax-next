@@ -7,7 +7,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { setTheme } from '@/lib/theme';
 import { WorkspaceApiError, workspaceApi } from '@/lib/workspace-api';
 import { saveFromContentOrigin } from '@/lib/file-download';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import type { ArtifactDetail } from '@/lib/workspace-types';
 import { ArtifactViewer } from '../ArtifactViewer';
 
@@ -88,7 +88,7 @@ beforeEach(() => {
   vi.mocked(saveFromContentOrigin).mockReset();
   writeText.mockClear();
   Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-  toastActions.reset();
+  toast.dismissAll();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -181,8 +181,7 @@ describe('ArtifactViewer', () => {
   it('Copy link: when the browser refuses the clipboard, the link is shown to copy by hand', async () => {
     api.setArtifactLink.mockResolvedValue('A'.repeat(32));
     writeText.mockRejectedValueOnce(new DOMException('NotAllowedError'));
-    const show = vi.spyOn(toastActions, 'show');
-    const error = vi.spyOn(toastActions, 'error');
+    const show = vi.spyOn(toast, 'show');
     renderViewer();
     await screen.findByTitle('Deal tracker');
     fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
@@ -192,7 +191,7 @@ describe('ArtifactViewer', () => {
     expect(field.value).toBe(`${window.location.origin}/a/${'A'.repeat(32)}`);
     expect(field.readOnly).toBe(true);
     // The code never goes into a toast or the console.
-    const said = JSON.stringify([show.mock.calls, error.mock.calls, vi.mocked(console.warn).mock.calls]);
+    const said = JSON.stringify([show.mock.calls, vi.mocked(console.warn).mock.calls]);
     expect(said).not.toContain('A'.repeat(32));
   });
 

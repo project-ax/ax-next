@@ -41,7 +41,7 @@ import {
   toggleModel,
   type Draft,
 } from '@/lib/models-picker';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { ModelCatalogPane } from './ModelCatalogPane';
 import { SaveImpactDialog, type ImpactLine } from './SaveImpactDialog';
 import { SelectedModelsPane } from './SelectedModelsPane';
@@ -127,7 +127,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
       setLoad((prev) => (prev.kind === 'ready' ? { ...prev, policy: saved } : prev));
       setDraft(draftOf(saved));
       setConfirm(null);
-      toastActions.show({ title: SAVED_TITLE, detail: SAVED_DETAIL, kind: 'info' });
+      toast.show({ title: SAVED_TITLE, description: SAVED_DETAIL });
     } catch (err) {
       console.warn('models: save failed', err);
       setConfirm(null);

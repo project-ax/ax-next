@@ -23,7 +23,7 @@ import {
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { USAGE_LIMIT_BOUNDS, putUsageLimits, type UsageLimits } from '@/lib/usage-admin';
 import { DAILY_LIMIT_INVALID, TURNS_LIMIT_INVALID, failureMessage } from '@/lib/usage-copy';
 
@@ -128,10 +128,9 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
       });
       setDraft(null);
       onSaved(saved);
-      toastActions.show({
+      toast.show({
         title: 'Limits saved',
-        detail: 'Default limits updated. Individual overrides still apply.',
-        kind: 'info',
+        description: 'Default limits updated. Individual overrides still apply.',
       });
     } catch (err) {
       setSaveError(

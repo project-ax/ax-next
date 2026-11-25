@@ -7,7 +7,7 @@ import {
   within,
 } from '@testing-library/react';
 import { UsageTab } from '../UsageTab';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import type { UsageReport, UsageUser } from '@/lib/usage-admin';
 
 /*
@@ -138,8 +138,8 @@ beforeEach(() => {
   report = makeReport();
   handler = defaultHandler;
   installFetch();
-  toastActions.reset();
-  showToast = vi.spyOn(toastActions, 'show');
+  toast.dismissAll();
+  showToast = vi.spyOn(toast, 'show');
 });
 
 afterEach(() => {
@@ -181,9 +181,9 @@ function openUsageDetails(name: string) {
   fireEvent.click(screen.getByRole('button', { name: `Details for ${name}` }));
 }
 
-function lastToast(): { title: string; detail?: string; kind?: string } {
+function lastToast(): { title: string; description?: string; tone?: string } {
   const args = showToast.mock.calls.at(-1)?.[0] as
-    | { title: string; detail?: string; kind?: string }
+    | { title: string; description?: string; tone?: string }
     | undefined;
   if (args === undefined) throw new Error('no toast was shown');
   return args;
@@ -436,7 +436,7 @@ describe('UsageTab — the two limits', () => {
 
     await waitFor(() => expect(showToast).toHaveBeenCalled());
     expect(lastToast().title).toBe('Limits saved');
-    expect(lastToast().kind ?? 'info').toBe('info');
+    expect(lastToast().tone ?? 'info').toBe('info');
 
     // The form now IS the saved state: nothing left to save.
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save limits' })).toBeNull());

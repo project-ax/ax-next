@@ -25,7 +25,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Skeleton } from '@/components/ui/skeleton';
 
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import {
   fetchUsage,
   resumeUser,
@@ -181,12 +181,11 @@ export function UsageTab() {
         suspended,
       }));
       setPauseOpen(false);
-      toastActions.show({
+      toast.show({
         title:
           interrupted === 0
             ? 'Paused. Nothing was running.'
             : `Paused. Stopped ${interrupted} running ${interrupted === 1 ? 'task' : 'tasks'}.`,
-        kind: 'info',
       });
     } catch (err) {
       setPauseError(
@@ -211,9 +210,8 @@ export function UsageTab() {
         status: statusWithoutPause(row, row.limits ?? limits),
         suspended: null,
       }));
-      toastActions.show({
+      toast.show({
         title: `Resumed agents for ${label}.`,
-        kind: 'info',
       });
       // Whether they are also close to a limit is the server's call.
       void load('again');

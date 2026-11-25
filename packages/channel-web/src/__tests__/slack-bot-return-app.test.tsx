@@ -17,7 +17,7 @@ import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
 import { fetchSlackStatus } from '../lib/slack-admin';
-import { toastActions } from '../lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
 
 vi.mock('../lib/bootstrap-status', () => ({
@@ -86,7 +86,7 @@ function arriveAt(search: string): void {
 
 beforeEach(() => {
   originalLocation = window.location;
-  toastActions.reset();
+  toast.dismissAll();
   vi.mocked(getSession).mockReset();
   vi.mocked(fetchBootstrapStatus).mockReset();
   vi.mocked(fetchBootstrapStatus).mockResolvedValue('completed');
@@ -106,7 +106,7 @@ beforeEach(() => {
 afterEach(() => {
   replaceState.mockRestore();
   Object.defineProperty(window, 'location', { writable: true, value: originalLocation });
-  toastActions.reset();
+  toast.dismissAll();
 });
 
 /** Where the app put the address bar for the Slack bot return, if it did. */

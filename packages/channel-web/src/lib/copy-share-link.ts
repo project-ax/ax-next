@@ -19,7 +19,7 @@
  * log line, never a toast.
  */
 import { logRequestFailure } from './http';
-import { toastActions } from './toast-store';
+import { toast } from '@project-ax/ui';
 import { workspaceApi } from './workspace-api';
 
 const LINK_FAILED = 'We couldn’t turn the link on just now. Nothing changed — try again in a moment.';
@@ -89,7 +89,7 @@ export function copyLinkFrom(getCode: () => Promise<string | null>): Promise<Cop
  */
 export async function copyShareLink(artifactId: string): Promise<CopyOutcome> {
   const outcome = await copyLinkFrom(() => workspaceApi.setArtifactLink(artifactId, 'ensure'));
-  if (outcome.kind === 'copied') toastActions.show({ title: 'Link copied' });
-  if (outcome.kind === 'failed') toastActions.error(LINK_FAILED);
+  if (outcome.kind === 'copied') toast.show({ title: 'Link copied' });
+  if (outcome.kind === 'failed') toast.show({ title: LINK_FAILED, tone: 'danger' });
   return outcome;
 }

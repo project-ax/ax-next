@@ -156,17 +156,6 @@
       "count": 1
     }
   },
-  "packages/channel-web/src/components/Toast.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 8
-    },
-    "ax-ui/no-classname": {
-      "count": 8
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 6
-    }
-  },
   "packages/channel-web/src/components/UserMenu.tsx": {
     "ax-ui/no-arbitrary-values": {
       "count": 7

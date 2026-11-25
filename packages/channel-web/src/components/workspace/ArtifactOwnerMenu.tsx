@@ -31,7 +31,7 @@ import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field
 import { Input } from '@/components/ui/input';
 import { copyLinkFrom } from '@/lib/copy-share-link';
 import { HttpError, logRequestFailure } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { workspaceApi } from '@/lib/workspace-api';
 import { versionLabel } from '@/lib/artifact-labels';
 import type { ArtifactDetail, ArtifactSummary } from '@/lib/workspace-types';
@@ -104,7 +104,7 @@ export function ArtifactOwnerMenu({
       } else if (pending === 'link-off') {
         await workspaceApi.setArtifactLink(artifact.artifactId, 'off');
         onChanged({ ...artifact, linkOn: false });
-        toastActions.show({ title: 'Link turned off' });
+        toast.show({ title: 'Link turned off' });
       } else if (pending === 'link-new') {
         // Started in the click, before any await, so Safari allows the copy.
         const outcome = await copyLinkFrom(() => workspaceApi.setArtifactLink(artifact.artifactId, 'rotate'));
@@ -113,11 +113,11 @@ export function ArtifactOwnerMenu({
           return;
         }
         onChanged({ ...artifact, linkOn: true });
-        if (outcome.kind === 'copied') toastActions.show({ title: 'New link copied' });
+        if (outcome.kind === 'copied') toast.show({ title: 'New link copied' });
         else setManualUrl(outcome.url);
       } else {
         await workspaceApi.deleteArtifact(artifact.artifactId);
-        toastActions.show({ title: 'Artifact deleted' });
+        toast.show({ title: 'Artifact deleted' });
         onChanged(null);
       }
       setPending(null);

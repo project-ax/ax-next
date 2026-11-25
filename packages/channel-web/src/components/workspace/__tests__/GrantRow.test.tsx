@@ -38,7 +38,7 @@ import {
   SLOT_HINT,
 } from '@/lib/grant-copy';
 import { connectorAccessCopy } from '@/lib/connector-access-copy';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import type { PermissionRequest } from '@/server/types';
 import type { GrantResume } from '@/lib/workspace-resume';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -90,16 +90,16 @@ const hostReq: PermissionRequest = {
   sessionId: 'sess-9',
 };
 
-let show: MockInstance<typeof toastActions.show>;
+let show: MockInstance<typeof toast.show>;
 
 beforeEach(() => {
-  show = vi.spyOn(toastActions, 'show');
+  show = vi.spyOn(toast, 'show');
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   resetGrantDraftsForTest();
-  toastActions.reset();
+  toast.dismissAll();
 });
 
 /** A 200 whose body is the route's "Just this once" answer, `{ added }`. */
@@ -375,7 +375,7 @@ describe('a host grant', () => {
 
     await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
     expect(show).toHaveBeenCalledTimes(1);
-    expect(show).toHaveBeenCalledWith({ title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL });
+    expect(show).toHaveBeenCalledWith({ title: HOST_ALLOWED_TITLE, description: HOST_ALLOWED_DETAIL });
     expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
   });
 
@@ -404,7 +404,7 @@ describe('a host grant', () => {
       await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
       expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"persist":true');
       expect(show).toHaveBeenCalledTimes(1);
-      expect(show).toHaveBeenCalledWith({ title, detail });
+      expect(show).toHaveBeenCalledWith({ title, description: detail });
       const said = JSON.stringify(show.mock.calls);
       expect(said).not.toContain('example.org');
       if (!answer.kept) expect(said).not.toMatch(/site allowed|from now on/i);
@@ -448,7 +448,7 @@ describe('a host grant', () => {
 
     await waitFor(() => expect(onResolved).toHaveBeenCalledWith('host:example.org'));
     expect(show).toHaveBeenCalledTimes(1);
-    expect(show).toHaveBeenCalledWith({ title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL });
+    expect(show).toHaveBeenCalledWith({ title: HOST_ENDED_TITLE, description: HOST_ENDED_DETAIL });
     expect(JSON.stringify(show.mock.calls)).not.toContain('example.org');
   });
 

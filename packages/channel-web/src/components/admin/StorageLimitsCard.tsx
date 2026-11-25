@@ -41,7 +41,7 @@ import {
   failureMessage,
   formatMb,
 } from '@/lib/storage-copy';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 
 const LIMIT = STORAGE_LIMIT_BOUNDS.limitMb;
 const WARN = STORAGE_LIMIT_BOUNDS.warnPercent;
@@ -112,10 +112,9 @@ export function StorageLimitsCard({ limits, onSaved }: StorageLimitsCardProps) {
       });
       setDraft(null);
       onSaved(saved);
-      toastActions.show({
+      toast.show({
         title: 'Storage limits saved',
-        detail: 'The new settings apply to everyone right away.',
-        kind: 'info',
+        description: 'The new settings apply to everyone right away.',
       });
     } catch (err) {
       setSaveError(

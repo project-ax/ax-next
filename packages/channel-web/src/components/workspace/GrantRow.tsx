@@ -87,7 +87,7 @@ import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-desti
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
@@ -161,18 +161,18 @@ function blankSlots(slots: readonly GrantSlot[]): string[] {
 function hostAllowToast(
   persist: boolean,
   outcome: HostGrantOutcome,
-): { title: string; detail: string } {
-  const allowed = { title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL };
-  const ended = { title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL };
+): { title: string; description: string } {
+  const allowed = { title: HOST_ALLOWED_TITLE, description: HOST_ALLOWED_DETAIL };
+  const ended = { title: HOST_ENDED_TITLE, description: HOST_ENDED_DETAIL };
   if (!persist) return outcome.added ? allowed : ended;
   if (outcome.kept === true) return allowed;
   if (outcome.full === true) {
     return {
       title: outcome.added ? HOST_FOR_NOW_TITLE : HOST_ENDED_TITLE,
-      detail: HOST_LIST_FULL_DETAIL,
+      description: HOST_LIST_FULL_DETAIL,
     };
   }
-  return outcome.added ? { title: HOST_FOR_NOW_TITLE, detail: HOST_NOT_KEPT_DETAIL } : ended;
+  return outcome.added ? { title: HOST_FOR_NOW_TITLE, description: HOST_NOT_KEPT_DETAIL } : ended;
 }
 
 export function GrantRow({
@@ -398,7 +398,7 @@ export function GrantRow({
       });
       // The row goes either way; the toast says which it was. An answer we
       // could not read (`null`) says nothing rather than guess.
-      if (outcome !== null) toastActions.show(hostAllowToast(persist, outcome));
+      if (outcome !== null) toast.show(hostAllowToast(persist, outcome));
       resolveAndReturnFocus();
     } catch (err) {
       setError(userFacingMessage(err, 'grant-row'));
