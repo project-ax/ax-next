@@ -772,10 +772,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 58
+      "count": 71
     },
     "ax-ui/no-raw-elements": {
-      "count": 56
+      "count": 67
     }
   },
   "packages/channel-web/src/components/settings/RememberedSitesPanel.tsx": {
@@ -956,6 +956,17 @@
       "count": 11
     }
   },
+  "packages/channel-web/src/components/workspace/AgentAdvancedLimits.tsx": {
+    "ax-ui/no-arbitrary-values": {
+      "count": 6
+    },
+    "ax-ui/no-classname": {
+      "count": 6
+    },
+    "ax-ui/no-raw-elements": {
+      "count": 6
+    }
+  },
   "packages/channel-web/src/components/workspace/AgentApps.tsx": {
     "ax-ui/no-arbitrary-values": {
       "count": 4
@@ -1071,7 +1082,7 @@
   },
   "packages/channel-web/src/components/workspace/AgentSlack.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-classname": {
       "count": 7
@@ -1105,6 +1116,17 @@
     },
     "ax-ui/no-classname": {
       "count": 7
+    },
+    "ax-ui/no-raw-elements": {
+      "count": 5
+    }
+  },
+  "packages/channel-web/src/components/workspace/AgentSlackDms.tsx": {
+    "ax-ui/no-arbitrary-values": {
+      "count": 3
+    },
+    "ax-ui/no-classname": {
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
       "count": 5
