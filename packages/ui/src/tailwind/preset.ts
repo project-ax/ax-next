@@ -57,10 +57,10 @@ export const axPreset: Config = {
       spin: { to: { transform: 'rotate(360deg)' } },
       pulse: { '50%': { opacity: '0.5' } },
     },
-    // Added on top of the token scales: control heights (Button, IconButton) and the 44px touch target below md.
+    // Added on top of the token scales: control heights (Button, IconButton), the 44px touch target below md, and the skeleton block height / 90% line width.
     extend: {
-      height: CONTROL,
-      width: CONTROL,
+      height: { ...CONTROL, 'skeleton-block': '160px' },
+      width: { ...CONTROL, '9/10': '90%' },
       minHeight: CONTROL,
       minWidth: CONTROL,
     },

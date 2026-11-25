@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import { Plus } from 'lucide-react';
-import { Button, Divider, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
+import { AsyncState, Button, Divider, EmptyState, Notice, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -64,7 +64,17 @@ describe('props', () => {
     const ib2: P<typeof IconButton> = { icon: Plus };
     // @ts-expect-error primary is not an IconButton intent
     const ib3: P<typeof IconButton> = { label: 'x', icon: Plus, intent: 'primary' };
-    void [b1, b2, b3, ib1, ib2, ib3];
+    // @ts-expect-error className is not a prop
+    const n1: P<typeof Notice> = { tone: 'info', className: 'x' };
+    // @ts-expect-error error is not a tone (use danger)
+    const n2: P<typeof Notice> = { tone: 'error' };
+    // @ts-expect-error className is not a prop
+    const e1: P<typeof EmptyState> = { title: 'x', className: 'x' };
+    // @ts-expect-error className is not a prop
+    const a1: P<typeof AsyncState> = { status: 'ready', skeleton: 'rows', loadingLabel: 'x', className: 'x' };
+    // @ts-expect-error tone of an error is danger or info only
+    const a2: P<typeof AsyncState> = { status: 'error', skeleton: 'rows', loadingLabel: 'x', error: { message: 'x', tone: 'warning' } };
+    void [b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });
 });
