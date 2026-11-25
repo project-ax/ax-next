@@ -89,5 +89,21 @@ describe('AdminSettings — Teams tab', () => {
     await waitFor(() =>
       expect(screen.getByText(/list teams/i)).toBeTruthy(),
     );
+    // A failed list is announced as an alert, and there is nothing to retry here.
+    expect(screen.getByRole('alert')).toHaveTextContent(/list teams/i);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('announces the load as a busy status, then says there are no teams yet', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
+
+    render(<TeamList />);
+    const loading = screen.getByRole('status');
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    expect(loading).toHaveTextContent('Loading teams…');
+    expect(await screen.findByRole('heading', { name: 'No teams yet' })).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });

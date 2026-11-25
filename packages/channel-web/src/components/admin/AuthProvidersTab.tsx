@@ -18,7 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { PaneStatus } from '../PaneStatus';
+import { AsyncState } from '@project-ax/ui';
 import {
   listAuthProviders,
   setAuthProviderEnabled,
@@ -145,38 +145,33 @@ export function AuthProvidersTab() {
     <div className="font-sans">
       <SettingsActions><Button type="button" onClick={() => setAdding(true)}>Add provider</Button></SettingsActions>
 
-      {loading && <PaneStatus variant="loading">Loading providers…</PaneStatus>}
+      {loading && <AsyncState status="loading" skeleton="rows" loadingLabel="Loading providers…" />}
 
+      {/* The raw message went to the console with TASK-342; the button says "Try again", the label the audit and
+          the track's copy spec settle on (TASK-341 introduced the same pair in ModelConfigTab). */}
       {loadError && (
-        <PaneStatus variant="error" className="mb-3 flex items-center justify-between gap-3">
-          {/* The raw message went to the console with TASK-342; and the button
-              says "Try again" now, which is the label the audit and the track's
-              copy spec settle on. TASK-341 introduced the same pair in
-              ModelConfigTab and flagged that this one still read "Retry" —
-              this is that alignment. */}
-          <span>We couldn’t load your sign-in methods.</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchProviders()}
-          >
-            Try again
-          </Button>
-        </PaneStatus>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading providers…"
+          error={{ message: 'We couldn’t load your sign-in methods.', onRetry: () => void fetchProviders() }}
+        />
       )}
 
       {actionError && (
-        <PaneStatus variant="error" className="mb-3">
-          {actionError}
-        </PaneStatus>
+        <AsyncState status="error" skeleton="lines" loadingLabel="Updating sign-in methods…" error={{ message: actionError }} />
       )}
 
       {!loading && !loadError && providers.length === 0 && !adding && (
-        <PaneStatus variant="empty">
-          No identity providers configured. Add one to let users sign in with
-          Google or GitHub.
-        </PaneStatus>
+        <AsyncState
+          status="empty"
+          skeleton="rows"
+          loadingLabel="Loading providers…"
+          empty={{
+            title: 'No identity providers configured',
+            description: 'Add one to let users sign in with Google or GitHub.',
+          }}
+        />
       )}
 
       <ul className="flex flex-col list-none m-0 p-0">

@@ -20,18 +20,7 @@
  * Every sentence is pinned here or comes from `lib/agent-slack.ts`. These words
  * never name the product, the plumbing or a role.
  */
-import { useState, type ReactNode } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Spinner } from '@/components/ui/spinner';
+import { ConfirmAction } from '@project-ax/ui';
 import {
   AGENT_SLACK_COPY,
   agentSlackBotErrorCopy,
@@ -51,16 +40,6 @@ export interface RebuildFrom {
 
 type Live = Extract<Bot, { state: 'live' }>;
 
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
-
 /** What the bot is called in a sentence: its handle when it has one, else its name. */
 function whoIs(bot: Pick<Live, 'botName' | 'handle'>): string {
   return bot.handle !== null ? `@${bot.handle}` : bot.botName;
@@ -69,67 +48,6 @@ function whoIs(bot: Pick<Live, 'botName' | 'handle'>): string {
 /** The name of a bot Set up again took away, as the form's notice says it. */
 export function rebuildWho(from: RebuildFrom): string {
   return whoIs(from);
-}
-
-/**
- * The shape both dialogs share: a title and description, an error line, a
- * decline button and a confirm button that shows `busyLabel` while it works.
- * Close requests while the call is in flight are ignored.
- */
-function ConfirmDialog({
-  open,
-  onClose,
-  busy,
-  error,
-  title,
-  description,
-  decline,
-  confirm,
-  busyLabel,
-  variant,
-  onConfirm,
-}: {
-  open: boolean;
-  onClose: () => void;
-  busy: boolean;
-  error: string | null;
-  title: string;
-  description: string;
-  decline: string;
-  confirm: string;
-  busyLabel: string;
-  variant: 'default' | 'destructive';
-  onConfirm: () => void;
-}) {
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (busy || next) return;
-        onClose();
-      }}
-    >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={onClose} disabled={busy}>
-            {decline}
-          </Button>
-          <Button variant={variant} onClick={onConfirm} disabled={busy}>
-            {busy ? <Busy>{busyLabel}</Busy> : confirm}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 /**
@@ -159,14 +77,9 @@ export function RebuildBotDialog({
   onRebuilt: (from: RebuildFrom) => void;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const who = whoIs(bot);
 
   async function confirm() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
     try {
       const { appDeleted } = await disconnectSlackBot(agentId, installId);
       onCancelled({
@@ -180,33 +93,26 @@ export function RebuildBotDialog({
       onChanged();
     } catch (err) {
       logRequestFailure(err, 'agent-slack');
+      // The bot is already gone: closing and reading again is the whole answer, so return normally.
       if (agentSlackBotStale(err)) {
-        onClose();
         onChanged();
-      } else {
-        setError(agentSlackBotErrorCopy(err).message);
+        return;
       }
-    } finally {
-      setBusy(false);
+      throw err;
     }
   }
 
   return (
-    <ConfirmDialog
+    <ConfirmAction
       open={open}
-      onClose={() => {
-        setError(null);
-        onClose();
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
-      busy={busy}
-      error={error}
       title={`Set up ${who} again?`}
       description={`We'll remove ${who} from Slack and delete its Slack app. Then you add it again here. It's a new bot in Slack, so invite it to each channel again. If Slack won't let us delete the old app, it may need deleting by hand in Slack's app settings.`}
-      decline="Keep it"
-      confirm="Set up again"
-      busyLabel="Removing…"
-      variant="destructive"
-      onConfirm={() => void confirm()}
+      confirmLabel="Set up again"
+      errorMessage={(err) => agentSlackBotErrorCopy(err).message}
+      onConfirm={confirm}
     />
   );
 }
@@ -233,46 +139,35 @@ export function ClaimBotDialog({
   installId: string;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const who = whoIs(bot);
 
   async function confirm() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
     try {
       await claimAgentSlackBot(agentId, installId);
       onChanged();
     } catch (err) {
       logRequestFailure(err, 'agent-slack');
+      // Nothing left to claim: close silently and read again.
       if (agentSlackBotStale(err)) {
-        onClose();
         onChanged();
-      } else {
-        setError(AGENT_SLACK_COPY.generic);
+        return;
       }
-    } finally {
-      setBusy(false);
+      throw err;
     }
   }
 
   return (
-    <ConfirmDialog
+    <ConfirmAction
       open={open}
-      onClose={() => {
-        setError(null);
-        onClose();
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
-      busy={busy}
-      error={error}
       title={`Take over ${who}?`}
       description={`Right now ${who} answers only team members. Once you take over, it answers people outside the team with your access, and anything it needs approved waits in your Today.`}
-      decline="Not now"
-      confirm="Take over"
-      busyLabel="Taking over…"
-      variant="default"
-      onConfirm={() => void confirm()}
+      confirmLabel="Take over"
+      tone="neutral"
+      errorMessage={() => AGENT_SLACK_COPY.generic}
+      onConfirm={confirm}
     />
   );
 }

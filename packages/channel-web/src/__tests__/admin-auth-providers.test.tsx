@@ -60,10 +60,22 @@ describe('AuthProvidersTab', () => {
   it('shows the empty state when no providers are configured', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     render(<AuthProvidersTab />);
-    await waitFor(() =>
-      expect(screen.getByText(/No identity providers configured/i)).toBeTruthy(),
-    );
+    expect(await screen.findByRole('heading', { name: 'No identity providers configured' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Add provider/i })).toBeTruthy();
+  });
+
+  it('announces the load as a busy status, and a failed load as an alert with Try again', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
+    render(<AuthProvidersTab />);
+    const loading = screen.getByRole('status');
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    expect(loading).toHaveTextContent('Loading providers…');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('We couldn’t load your sign-in methods.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('heading', { name: 'No identity providers configured' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('clicking "Add provider" reveals the AddProviderForm', async () => {

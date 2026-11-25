@@ -560,31 +560,13 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
  * between them means something.
  *
  * `status: 'ok'` cannot reach here: a caller with rows renders rows.
+ *
+ * Callers draw it with `AsyncState`: `info` and no retry when `unavailable` (this
+ * deployment has no producer, so nothing could come back), `danger` with
+ * their own reload as the retry when `failed`, and no retry when they have none.
  */
-export function ReadFailure({
-  status,
-  what,
-  className = 'text-[13px]',
-}: {
-  status: Exclude<WorkspaceReadStatus, 'ok'>;
-  /** The thing we cannot show, as a noun phrase: "what Quill works out". */
-  what: string;
-  /** The caller's own type scale. The words are shared; the size is not. */
-  className?: string;
-}) {
-  return (
-    <p className={cn('leading-relaxed text-muted-foreground', className)}>
-      {status === 'unavailable' ? (
-        <>
-          This deployment doesn&apos;t keep {what}, so there&apos;s nothing to
-          show.
-        </>
-      ) : (
-        <>
-          We couldn&apos;t read {what} just now. Treat this as unknown rather
-          than empty, and try reloading.
-        </>
-      )}
-    </p>
-  );
+export function readFailureCopy(status: Exclude<WorkspaceReadStatus, 'ok'>, what: string): string {
+  return status === 'unavailable'
+    ? `This deployment doesn't keep ${what}, so there's nothing to show.`
+    : `We couldn't read ${what} just now. Treat this as unknown rather than empty, and try reloading.`;
 }

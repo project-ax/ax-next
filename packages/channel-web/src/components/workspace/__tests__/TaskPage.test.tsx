@@ -555,7 +555,6 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'We couldn’t confirm the check-in started. Try again, and it won’t start twice.',
     );
-    expect(alert.className).toContain('destructive');
     await settled(check, 2);
 
     fireEvent.click(check);
@@ -766,7 +765,6 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'This task changed while you had it open. We’ve loaded the latest, so try again.',
     );
-    expect(alert.className).toContain('destructive');
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Zero open tickets, edited' }),
     ).toBeInTheDocument();
@@ -832,7 +830,6 @@ describe('TaskPage (TASK-910)', () => {
     fireEvent.click(screen.getByRole('button', { name: press }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(says);
-    expect(alert.className).toContain('destructive');
     // `RoutineApiError.message` speaks of routines; this page never says it.
     expect(document.body.textContent).not.toMatch(/routine/i);
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
@@ -856,7 +853,6 @@ describe('TaskPage (TASK-910)', () => {
     fireEvent.click(check);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('We couldn’t start the check-in. Try again.');
-    expect(alert.className).toContain('destructive');
     await settled(check, 2);
 
     fireEvent.click(check);
@@ -909,7 +905,6 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'We couldn’t find this task. It may have been deleted, or it belongs to someone else.',
     );
-    expect(alert.className).toContain('destructive');
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: 'Task' })).toBeInTheDocument();
@@ -922,7 +917,6 @@ describe('TaskPage (TASK-910)', () => {
     const first = renderPage();
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('We couldn’t load this task just now. Nothing was lost.');
-    expect(alert.className).toContain('destructive');
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Zero open support tickets' }),
@@ -933,9 +927,10 @@ describe('TaskPage (TASK-910)', () => {
     taskMock.mockReset();
     taskMock.mockRejectedValue(new WorkspaceApiError(TASK_PATH, 401));
     renderPage();
-    const expired = await screen.findByRole('alert');
-    expect(expired).toHaveTextContent(HTTP_SESSION_ENDED);
-    expect(expired.className).not.toContain('destructive');
+    // Signing in is not a repair: the quiet register, announced politely, not as an alert.
+    await screen.findByText(HTTP_SESSION_ENDED);
+    expect(screen.getAllByRole('status').some((el) => el.textContent?.includes(HTTP_SESSION_ENDED))).toBe(true);
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 

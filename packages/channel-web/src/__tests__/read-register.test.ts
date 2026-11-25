@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest';
 import { HttpError } from '../lib/http';
 import {
   readAlertVariant,
+  readNoticeTone,
   toReadOutcome,
   type ReadOutcome,
 } from '../lib/read-register';
@@ -147,5 +148,23 @@ describe('toReadOutcome', () => {
     expect(toReadOutcome(new Error('Failed to fetch'))).toBe('failed');
     expect(toReadOutcome('not an error at all')).toBe('failed');
     expect(toReadOutcome(undefined)).toBe('failed');
+  });
+});
+
+describe('readNoticeTone', () => {
+  it('is the same ruling as readAlertVariant, in the design system\'s words', () => {
+    const kinds: ReadOutcome[] = ['expired', 'gone', 'failed'];
+    for (const kind of kinds) {
+      for (const retrying of [true, false]) {
+        const variant = readAlertVariant(kind, { retrying });
+        expect(readNoticeTone(kind, { retrying })).toBe(variant === 'default' ? 'info' : 'danger');
+      }
+    }
+  });
+
+  it('an expired session is info, a failed read with no retry armed is danger', () => {
+    expect(readNoticeTone('expired')).toBe('info');
+    expect(readNoticeTone('failed')).toBe('danger');
+    expect(readNoticeTone('gone')).toBe('danger');
   });
 });

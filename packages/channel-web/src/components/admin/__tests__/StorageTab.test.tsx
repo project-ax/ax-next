@@ -232,7 +232,9 @@ describe('StorageTab — Your storage, for everyone', () => {
   it('shows a busy placeholder that a screen reader can announce while it loads', () => {
     handler = () => new Promise<Response>(() => {});
     render(<StorageTab isAdmin={false} />);
-    expect(screen.getByText('Loading your storage…')).toBeInTheDocument();
+    const loading = screen.getByRole('status');
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    expect(loading).toHaveTextContent('Loading your storage…');
     expect(screen.queryByRole('progressbar')).toBeNull();
     // The card keeps its title while it loads, so the page does not jump.
     expect(screen.getByRole('heading', { name: 'Your storage' })).toBeInTheDocument();

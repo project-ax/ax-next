@@ -42,11 +42,12 @@
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { AsyncState, Button as AxButton } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -70,7 +71,6 @@ import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { SlackBotRequests } from '@/components/admin/SlackBotRequests';
 import { SlackBotsCard } from './SlackBotsCard';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import {
   connectSlack,
   disconnectSlack,
@@ -119,16 +119,6 @@ function shortDate(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
-
 // ── Around the states ──────────────────────────────────────────────────────
 
 function Loading() {
@@ -139,19 +129,6 @@ function Loading() {
         <Skeleton key={i} className="h-10 w-full" aria-hidden="true" />
       ))}
     </div>
-  );
-}
-
-function ReadError({ onRetry }: { onRetry: () => void }) {
-  return (
-    <Alert variant="destructive">
-      <AlertDescription className="flex flex-col items-start gap-3">
-        <p>We couldn&apos;t load your Slack settings.</p>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
   );
 }
 
@@ -248,15 +225,16 @@ function LeftoverAppsNote({
                     {app.botName}
                   </a>
                   {/* Named for its app: two leftovers often share a name. */}
-                  <Button
-                    variant="ghost"
+                  <AxButton
+                    intent="quiet"
                     size="sm"
                     aria-label={`I deleted it: ${app.botName} (${app.appId})`}
-                    disabled={busyAppId !== null}
+                    busy={busyAppId === app.appId}
+                    disabled={busyAppId !== null && busyAppId !== app.appId}
                     onClick={() => void forget(app.appId)}
                   >
-                    {busyAppId === app.appId ? <Busy>I deleted it</Busy> : 'I deleted it'}
-                  </Button>
+                    I deleted it
+                  </AxButton>
                 </span>
               </li>
             ))}
@@ -411,9 +389,9 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
           )}
         </CardContent>
         <CardFooter>
-          <Button type="submit" disabled={busy}>
-            {busy ? <Busy>Connecting…</Busy> : 'Connect'}
-          </Button>
+          <AxButton type="submit" intent="primary" busy={busy}>
+            Connect
+          </AxButton>
         </CardFooter>
       </Card>
     </form>
@@ -426,7 +404,6 @@ const DIALOG_COPY = {
     body: "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
     keep: 'Keep connected',
     confirm: 'Disconnect',
-    working: 'Disconnecting…',
   },
   // Nobody could reach an agent yet, so the words are about the app we started.
   pending: {
@@ -434,7 +411,6 @@ const DIALOG_COPY = {
     body: "We'll delete the Slack app we started. You can connect again any time.",
     keep: 'Keep going',
     confirm: 'Stop connecting',
-    working: 'Stopping…',
   },
 } as const;
 
@@ -489,12 +465,12 @@ function DisconnectDialog({
           </Alert>
         )}
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
+          <AxButton intent="secondary" onClick={() => close(false)} disabled={busy}>
             {copy.keep}
-          </Button>
-          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>{copy.working}</Busy> : copy.confirm}
-          </Button>
+          </AxButton>
+          <AxButton intent="secondary" onClick={() => void confirm()} busy={busy}>
+            {copy.confirm}
+          </AxButton>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -583,12 +559,12 @@ function RenameForm({
         </Alert>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
-        </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Renaming…</Busy> : 'Rename'}
-        </Button>
+        </AxButton>
+        <AxButton type="submit" intent="primary" busy={busy}>
+          Rename
+        </AxButton>
       </DialogFooter>
     </form>
   );
@@ -723,12 +699,12 @@ function ReplaceTokenForm({
         </Alert>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
-        </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Replacing…</Busy> : 'Replace token'}
-        </Button>
+        </AxButton>
+        <AxButton type="submit" intent="primary" busy={busy}>
+          Replace token
+        </AxButton>
       </DialogFooter>
     </form>
   );
@@ -818,12 +794,12 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
         )}
       </CardContent>
       <CardFooter className="flex flex-wrap gap-2">
-        <Button onClick={() => void resume()} disabled={busy}>
-          {busy ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
-        </Button>
-        <Button variant="outline" onClick={() => setConfirming(true)} disabled={busy}>
+        <AxButton intent="primary" busy={busy} onClick={() => void resume()}>
+          Continue in Slack
+        </AxButton>
+        <AxButton intent="secondary" onClick={() => setConfirming(true)} disabled={busy}>
           Cancel
-        </Button>
+        </AxButton>
       </CardFooter>
       <DisconnectDialog open={confirming} onOpenChange={setConfirming} kind="pending" {...actions} />
     </Card>
@@ -1002,7 +978,14 @@ export function SlackTab() {
         </Alert>
       )}
       {load.kind === 'loading' && <Loading />}
-      {load.kind === 'error' && <ReadError onRetry={() => void read()} />}
+      {load.kind === 'error' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading Slack settings…"
+          error={{ message: "We couldn't load your Slack settings.", onRetry: () => void read() }}
+        />
+      )}
       {load.kind === 'ready' && (
         <StatusView
           status={load.status}

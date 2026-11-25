@@ -8,7 +8,7 @@
  * opposite answers and a bare empty state renders as the second one.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentRail } from '../AgentRail';
 import { AgentSettings } from '../AgentSettings';
@@ -851,11 +851,8 @@ describe('AgentSettings — "Granted by you"', () => {
     renderConnectorsSettings();
     await openGrants();
 
-    expect(
-      await screen.findByText(
-        'Nothing yet — nobody has granted anything beyond the rules above.',
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Nothing yet' })).toBeTruthy();
+    expect(screen.getByText('Nobody has granted anything beyond the rules above.')).toBeTruthy();
   });
 
   it('a personal agent: the heading and notes are unchanged', async () => {
@@ -882,11 +879,37 @@ describe('AgentSettings — "Granted by you"', () => {
   it('a personal agent with nothing granted keeps its own empty note', async () => {
     renderConnectorsSettings();
     await openGrants();
-    expect(
-      await screen.findByText(
-        /Nothing yet — you haven.t granted anything beyond the rules above\./,
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Nothing yet' })).toBeTruthy();
+    expect(screen.getByText(/You haven.t granted anything beyond the rules above\./)).toBeTruthy();
+  });
+});
+
+describe('AgentSettings — "Granted by you" when the read did not work', () => {
+  it('a failed read is an alert with Try again, and Try again reads the rail again', async () => {
+    railMock.mockResolvedValueOnce(
+      rail({ grants: { status: 'failed', rows: [], incomplete: true, shared: false } }),
+    );
+    renderConnectorsSettings();
+    await openGrants();
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 3000 });
+    expect(alert).toHaveTextContent(/couldn.t read a record of what you.ve granted just now/);
+    const calls = railMock.mock.calls.length;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(railMock.mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it('a deployment with no record of grants says so quietly, with nothing to try again', async () => {
+    railMock.mockResolvedValue(
+      rail({ grants: { status: 'unavailable', rows: [], incomplete: true, shared: false } }),
+    );
+    renderConnectorsSettings();
+    await openGrants();
+
+    const note = await screen.findByText(/doesn.t keep a record of what you.ve granted/);
+    expect(note.closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 });
 

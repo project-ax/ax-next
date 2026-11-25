@@ -870,14 +870,14 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
       fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
       const first = await screen.findByRole('dialog');
       expectClean();
-      fireEvent.click(within(first).getByRole('button', { name: 'Keep it' }));
+      fireEvent.click(within(first).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       unmount();
       renderIt(ready(true, { ...LIVE_BOT, needsClaim: true }));
       fireEvent.click(await screen.findByRole('button', { name: 'Take over' }));
       const second = await screen.findByRole('dialog');
       expectClean();
-      fireEvent.click(within(second).getByRole('button', { name: 'Not now' }));
+      fireEvent.click(within(second).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     });
 

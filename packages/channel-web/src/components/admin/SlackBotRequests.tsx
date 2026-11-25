@@ -21,9 +21,10 @@
  * Card titles carry `role="heading"` (level 2) to keep the h1 -> h2 outline
  * (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Button as AxButton } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
@@ -35,7 +36,6 @@ import {
 } from '@/components/ui/dialog';
 import { FieldGroup } from '@/components/ui/field';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
-import { Spinner } from '@/components/ui/spinner';
 import { slackShortDate } from '@/lib/agent-slack';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
@@ -52,16 +52,6 @@ import {
 } from '@/lib/slack-bot-requests';
 
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; list: SlackBotRequestList };
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
 
 export function SlackBotRequests() {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
@@ -191,16 +181,16 @@ export function SlackBotRequests() {
                   >
                     Approve…
                   </Button>
-                  <Button
+                  <AxButton
                     size="sm"
-                    variant="outline"
-                    // While it works the visible "Declining…" is the name.
-                    aria-label={declining === request.requestId ? undefined : `Decline ${request.botName}`}
-                    disabled={declining !== null}
+                    intent="secondary"
+                    aria-label={`Decline ${request.botName}`}
+                    busy={declining === request.requestId}
+                    disabled={declining !== null && declining !== request.requestId}
                     onClick={() => void decline(request)}
                   >
-                    {declining === request.requestId ? <Busy>Declining…</Busy> : 'Decline'}
-                  </Button>
+                    Decline
+                  </AxButton>
                 </div>
               </li>
             ))}
@@ -359,12 +349,12 @@ function ApproveForm({
         </Alert>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           {COPY['cancel']}
-        </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Creating…</Busy> : COPY['approve']}
-        </Button>
+        </AxButton>
+        <AxButton type="submit" intent="primary" busy={busy}>
+          {COPY['approve']}
+        </AxButton>
       </DialogFooter>
     </form>
   );

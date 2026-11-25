@@ -306,12 +306,12 @@ describe('none', () => {
     expect(go).not.toHaveBeenCalled();
   });
 
-  it('while an ask is out the button says Asking…, and neither it nor the link can be pressed', async () => {
+  it('while an ask is out the button stays labelled and busy, and the link cannot be pressed', async () => {
     const out = deferred<void>();
     ask.mockReturnValueOnce(out.promise);
     const onChanged = renderIt(NONE_NO_TOKEN);
     fireEvent.click(screen.getByRole('button', { name: 'Add to Slack' }));
-    expect(await screen.findByRole('button', { name: 'Asking…' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add to Slack' })).toHaveAttribute('aria-busy', 'true'));
     expect(screen.getByRole('button', { name: 'I can install Slack apps myself' })).toBeDisabled();
     out.resolve();
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
@@ -454,10 +454,10 @@ describe('none', () => {
     expect(Object.keys(request.mock.calls[0]?.[1] ?? {})).toEqual(['botName']);
   });
 
-  it('while it is going to Slack the button says Adding… and a second press sends nothing', async () => {
+  it('while it is going to Slack the button stays labelled and busy, and a second press sends nothing', async () => {
     renderIt(NONE_STORED);
     submit();
-    expect(await screen.findByRole('button', { name: 'Adding…' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add to Slack' })).toHaveAttribute('aria-busy', 'true'));
     expect(screen.getByRole('button', { name: 'Ask an admin instead' })).toBeDisabled();
     await waitFor(() => expect(go).toHaveBeenCalledTimes(1));
     fireEvent.submit(screen.getByLabelText('Bot name').closest('form') as HTMLFormElement);

@@ -86,6 +86,7 @@ import {
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
+import { Button as AxButton, Inline } from '@project-ax/ui';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { AgentSlackMenu } from './AgentSlackMenu';
 import { AgentSlackBotChannels } from './AgentSlackBotChannels';
@@ -172,16 +173,6 @@ export interface AgentSlackBotProps {
 
 /** Who adds the bot in Slack: an admin, asked for the person, or the person themselves (the install-it-myself path). */
 type Way = 'admin' | 'self';
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
 
 /**
  * The frame every state draws (TASK-1187). The title is where things stand, in
@@ -445,9 +436,11 @@ function RequestForm({
             <AlertDescription>{formError}</AlertDescription>
           </Alert>
         )}
-        <Button type="submit" className="self-start" disabled={busy}>
-          {busy ? <Busy>{way === 'admin' ? 'Asking…' : 'Adding…'}</Busy> : 'Add to Slack'}
-        </Button>
+        <Inline>
+          <AxButton type="submit" intent="primary" busy={busy}>
+            Add to Slack
+          </AxButton>
+        </Inline>
         {way === 'admin' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.adminWillApprove}</p>}
         {/* One link that flips the way, so focus stays on it when its words change. Not a submit: type="button". */}
         <Button
@@ -584,9 +577,11 @@ function Pending({
       }
     >
       {bot.canContinue && (
-        <Button className="self-start" disabled={busy !== null} onClick={() => void run('continue')}>
-          {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
-        </Button>
+        <Inline>
+          <AxButton intent="primary" busy={busy === 'continue'} disabled={busy === 'cancel'} onClick={() => void run('continue')}>
+            Continue in Slack
+          </AxButton>
+        </Inline>
       )}
       {error !== null && (
         <Alert variant="destructive">
@@ -903,12 +898,12 @@ function DisconnectBotDialog({
           </Alert>
         )}
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
+          <AxButton intent="secondary" onClick={() => close(false)} disabled={busy}>
             Keep it
-          </Button>
-          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>Removing…</Busy> : 'Remove'}
-          </Button>
+          </AxButton>
+          <AxButton intent="secondary" onClick={() => void confirm()} busy={busy}>
+            Remove
+          </AxButton>
         </DialogFooter>
       </DialogContent>
     </Dialog>

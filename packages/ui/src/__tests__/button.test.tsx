@@ -25,6 +25,12 @@ describe('Button', () => {
     expect(b.getAttribute('type')).toBe('button');
   });
 
+  it('aria-label names a row of look-alike buttons while the visible label stays', () => {
+    render(<Button aria-label="Decline Quill Bot">Decline</Button>);
+    const b = screen.getByRole('button', { name: 'Decline Quill Bot' });
+    expect(b.textContent).toBe('Decline');
+  });
+
   it('busy: aria-busy and aria-disabled (not disabled), keeps the label, ignores clicks', () => {
     const onClick = vi.fn();
     render(<Button busy onClick={onClick}>Save</Button>);

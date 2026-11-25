@@ -35,6 +35,7 @@ import {
   LogIn,
   Trash2,
 } from 'lucide-react';
+import { AsyncState } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -67,7 +68,7 @@ import type {
   AgentConnectorToolsRead,
   AgentToolVerdict,
 } from '@/lib/workspace-types';
-import { GrantLine, ReadFailure } from './bits';
+import { GrantLine, readFailureCopy } from './bits';
 
 /**
  * TASK-795 — the word for a `needs-sign-in` connector, by the setup it needs.
@@ -219,10 +220,11 @@ export function ConnectorDetails({
               Access you approved
             </h4>
             {grantsFailed && (
-              <ReadFailure
-                status="failed"
-                what={`the access you approved for ${row.name}`}
-                className="text-[12.5px]"
+              <AsyncState
+                status="error"
+                skeleton="lines"
+                loadingLabel="Reading the access you approved…"
+                error={{ message: readFailureCopy('failed', `the access you approved for ${row.name}`) }}
               />
             )}
             {grants.map((g, i) => (

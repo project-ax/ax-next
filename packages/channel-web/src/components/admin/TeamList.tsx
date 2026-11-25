@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from 'react';
 import { listTeams, type Team } from '../../lib/admin';
-import { PaneStatus } from '../PaneStatus';
+import { AsyncState } from '@project-ax/ui';
 import { SettingsRow } from '../settings/SettingsLayout';
 
 /**
@@ -54,22 +54,21 @@ export function TeamList() {
     <div className="font-sans">
       <p className="mb-6 text-sm text-muted-foreground">Teams are view-only for now.</p>
 
-      {error && <PaneStatus variant="error">{error}</PaneStatus>}
-
-      {teams === null && !error && (
-        <PaneStatus variant="loading">Loading teams…</PaneStatus>
-      )}
-
-      {teams !== null && teams.length === 0 && (
-        <PaneStatus variant="empty">
-          No teams yet. Teams will let you share agents and connectors with a
-          group of people at once, instead of one person at a time.
-        </PaneStatus>
-      )}
-
-      <div className="flex flex-col">
-        {teams?.map((t) => <SettingsRow key={t.id} label={t.displayName} detail={teamCaption(t)} />)}
-      </div>
+      <AsyncState
+        status={error ? 'error' : teams === null ? 'loading' : teams.length === 0 ? 'empty' : 'ready'}
+        skeleton="rows"
+        loadingLabel="Loading teams…"
+        error={{ message: error ?? '' }}
+        empty={{
+          title: 'No teams yet',
+          description:
+            'Teams will let you share agents and connectors with a group of people at once, instead of one person at a time.',
+        }}
+      >
+        <div className="flex flex-col">
+          {teams?.map((t) => <SettingsRow key={t.id} label={t.displayName} detail={teamCaption(t)} />)}
+        </div>
+      </AsyncState>
     </div>
   );
 }

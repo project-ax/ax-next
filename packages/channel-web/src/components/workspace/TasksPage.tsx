@@ -28,6 +28,7 @@
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
+import { AsyncState } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -54,7 +55,7 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
-import { readAlertVariant } from '@/lib/read-register';
+import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS, groupTasks, taskGroup, type ActiveTaskGroup } from '@/lib/task-groups';
 import { rowFact, rowLatest } from '@/lib/task-row-line';
@@ -154,7 +155,16 @@ export function TasksPage({
             </div>
           )}
           {state.kind === 'failed' && (
-            <TasksLoadFailure error={state.error} onRetry={retry} />
+            <AsyncState
+              status="error"
+              skeleton="block"
+              loadingLabel="Loading tasks"
+              error={{
+                message: LOAD_COPY[state.error],
+                tone: readNoticeTone(state.error),
+                ...(state.error === 'failed' ? { onRetry: retry } : {}),
+              }}
+            />
           )}
           {state.kind === 'ready' && (
             <TaskBoard
@@ -218,34 +228,6 @@ function AgentFilter({
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-/**
- * The page couldn't load at all. Borrowed from the old project page's
- * `ProjectLoadFailure` (e011da3) without its "All projects" button, and private
- * until a second surface wants it (decisions row 12). A failed read is ours to
- * retry. An expired session is the reader's to sign back into, so it offers no
- * button, in the default register (`lib/read-register.ts`).
- */
-function TasksLoadFailure({
-  error,
-  onRetry,
-}: {
-  error: TasksReadError;
-  onRetry: () => void;
-}) {
-  return (
-    <Alert variant={readAlertVariant(error)}>
-      <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span className="min-w-0">{LOAD_COPY[error]}</span>
-        {error === 'failed' && (
-          <Button variant="secondary" size="sm" className="ml-auto" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-      </AlertDescription>
-    </Alert>
   );
 }
 

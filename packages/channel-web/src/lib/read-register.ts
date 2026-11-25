@@ -253,3 +253,12 @@ export function readAlertVariant(
   if (kind === 'gone') return 'destructive';
   return opts?.retrying === true ? 'default' : 'destructive';
 }
+
+/**
+ * The same ruling, spoken in `@project-ax/ui`'s words: `default` is the quiet
+ * `info` tone, `destructive` is `danger`. For `AsyncState`'s `error.tone` (and
+ * `Notice`) so the register stays one rule while the component changes.
+ */
+export function readNoticeTone(kind: ReadOutcome, opts?: { retrying?: boolean }): 'info' | 'danger' {
+  return readAlertVariant(kind, opts) === 'default' ? 'info' : 'danger';
+}

@@ -165,7 +165,7 @@ describe('BotTokenReplaceDialog', () => {
     expect(replace).toHaveBeenCalledTimes(1);
     expect(replace).toHaveBeenCalledWith(TOKEN);
     expect(atCall).toEqual({ field: '', html: expect.not.stringContaining(TOKEN) });
-    expect(await within(dialog).findByRole('button', { name: 'Replacing…' })).toBeDisabled();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Replace token' })).toHaveAttribute('aria-busy', 'true'));
     expectTokenNowhere();
     finish();
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -235,11 +235,11 @@ describe('BotTokenReplaceDialog', () => {
     replace.mockReturnValueOnce(new Promise<void>((resolve) => (finish = resolve)));
     const dialog = openDialog();
     pasteAndSubmit(dialog);
-    const busy = await within(dialog).findByRole('button', { name: 'Replacing…' });
+    const busy = within(dialog).getByRole('button', { name: 'Replace token' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     fireEvent.submit(busy.closest('form')!);
     expect(replace).toHaveBeenCalledTimes(1);
-    expect(busy).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     expect(tokenInput(dialog)).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });

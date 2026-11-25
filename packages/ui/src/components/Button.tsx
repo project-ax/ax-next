@@ -16,6 +16,8 @@ export interface ButtonProps {
   form?: string;
   autoFocus?: boolean;
   'aria-describedby'?: string;
+  // For a row of look-alike buttons: "Decline Quill Bot" names which one. Without it the label is the name.
+  'aria-label'?: string;
   ref?: Ref<HTMLButtonElement>;
   children: ReactNode;
 }

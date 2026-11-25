@@ -7,6 +7,7 @@ import {
   Link as LinkIcon,
   Terminal,
 } from 'lucide-react';
+import { AsyncState, EmptyState, Text } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -32,15 +33,7 @@ import type { AgentRailData, GrantRow } from '@/lib/workspace-api';
 import type { AgentAbility } from '@/lib/workspace-types';
 import { AddConnector } from './AddConnector';
 import { AgentConnectors } from './AgentConnectors';
-import { GrantLine, PermissionLine, ReadFailure } from './bits';
-
-function Note({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[13px] leading-relaxed text-muted-foreground">
-      {children}
-    </p>
-  );
-}
+import { GrantLine, PermissionLine, readFailureCopy } from './bits';
 
 /**
  * What ON means for Read web pages (TASK-763, owner decision 2026-10-03).
@@ -230,6 +223,7 @@ export function ConnectorsTab({
             revoking={revoking}
             notice={notice}
             onRevoke={onRevoke}
+            onRetry={onConnectorsChanged}
           />
         </CollapsibleContent>
       </Collapsible>
@@ -275,11 +269,11 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
   }
   if (status !== 'ok' || abilities === null) {
     return (
-      <Note>
+      <Text role="meta">
         {status === 'unavailable'
           ? 'This workspace can’t switch these on or off yet.'
           : 'We couldn’t read these just now.'}
-      </Note>
+      </Text>
     );
   }
   return (
@@ -411,33 +405,33 @@ function Permissions({
   }
   if (rail === null) {
     return (
-      <Note>
+      <Text role="meta">
         {error === null
           ? 'We can’t show this yet.'
           : 'We couldn’t read this just now.'}{' '}
         Until it loads, treat what {name} may do as unknown rather than empty.
-      </Note>
+      </Text>
     );
   }
   const { status, rows, incomplete, unrestrictedTools } = rail.permissions;
   if (status !== 'ok') {
     return (
-      <Note>
+      <Text role="meta">
         {status === 'unavailable'
           ? `This deployment doesn’t publish the rules that govern ${name}.`
           : `We couldn’t read the rules that govern ${name} just now.`}{' '}
         Treat this as unknown rather than empty — an agent with no list shown is
         not an agent with no reach.
-      </Note>
+      </Text>
     );
   }
   return (
     <div className="flex flex-col">
       {rows.length === 0 && (
-        <Note>
-          Nothing here describes {name}&apos;s reach yet. That means we
-          can&apos;t tell you — not that there isn&apos;t any.
-        </Note>
+        <EmptyState
+          title={`Nothing here describes ${name}'s reach yet`}
+          description="That means we can't tell you — not that there isn't any."
+        />
       )}
       {rows.length > 0 && (
         <div className="flex flex-col">
@@ -496,6 +490,7 @@ function Grants({
   revoking,
   notice,
   onRevoke,
+  onRetry,
 }: {
   rail: AgentRailData | null;
   name: string;
@@ -505,11 +500,13 @@ function Grants({
   revoking: ReadonlySet<string>;
   notice: string | null;
   onRevoke: (row: GrantRow) => void;
+  /** Re-reads the rail: offered as Try again when the grants read failed. */
+  onRetry?: (() => void) | undefined;
 }) {
   if (rail === null) {
-    if (loading) return <Note>Reading what you&apos;ve granted…</Note>;
+    if (loading) return <Text role="meta">Reading what you&apos;ve granted…</Text>;
     return (
-      <Note>
+      <Text role="meta">
         {/*
           The raw detail used to ride in a parenthetical here — `We couldn't
           read this just now (workspace /agents/ag_… → 401).` A request path
@@ -517,13 +514,22 @@ function Grants({
           finds. `workspace-rail.ts` logs it now (TASK-288).
         */}
         We couldn&apos;t read this just now.
-      </Note>
+      </Text>
     );
   }
   const { status, incomplete } = rail.grants;
   if (status !== 'ok') {
     return (
-      <ReadFailure status={status} what="a record of what you've granted" />
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Reading what you've granted…"
+        error={{
+          message: readFailureCopy(status, "a record of what you've granted"),
+          tone: status === 'unavailable' ? 'info' : 'danger',
+          ...(status === 'failed' && onRetry !== undefined ? { onRetry } : {}),
+        }}
+      />
     );
   }
   const rows = filter(rail.grants.rows);
@@ -538,11 +544,14 @@ function Grants({
   return (
     <div className="flex flex-col">
       {rows.length === 0 && moved === 0 && (
-        <Note>
-          {shared
-            ? 'Nothing yet — nobody has granted anything beyond the rules above.'
-            : "Nothing yet — you haven't granted anything beyond the rules above."}
-        </Note>
+        <EmptyState
+          title="Nothing yet"
+          description={
+            shared
+              ? 'Nobody has granted anything beyond the rules above.'
+              : "You haven't granted anything beyond the rules above."
+          }
+        />
       )}
       {rows.map((row, i) => (
         <GrantLine

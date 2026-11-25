@@ -40,11 +40,12 @@
  * its token any more. Disconnecting it is how it gets rebuilt, and its
  * Disconnect dialog says so.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Button as AxButton } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
@@ -55,7 +56,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import {
   Table,
   TableBody,
@@ -84,16 +84,6 @@ const GENERIC_FAILURE = 'Something went wrong. Try again in a minute.';
 function shortDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
 }
 
 export interface SlackBotsCardProps {
@@ -373,12 +363,12 @@ function DisconnectBotDialog({
           </Alert>
         )}
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
+          <AxButton intent="secondary" onClick={() => close(false)} disabled={busy}>
             {pending ? 'Keep going' : 'Keep it'}
-          </Button>
-          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>{pending ? 'Stopping…' : 'Disconnecting…'}</Busy> : pending ? 'Stop setting up' : 'Disconnect'}
-          </Button>
+          </AxButton>
+          <AxButton intent="secondary" onClick={() => void confirm()} busy={busy}>
+            {pending ? 'Stop setting up' : 'Disconnect'}
+          </AxButton>
         </DialogFooter>
       </DialogContent>
     </Dialog>

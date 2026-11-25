@@ -185,6 +185,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
+import { AsyncState } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -200,7 +201,7 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
-import { readAlertVariant, type AlertRegister } from '@/lib/read-register';
+import { readNoticeTone, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { taskGroup, TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups';
@@ -771,7 +772,18 @@ export function TaskPage({
                 <Spinner />
               </div>
             )}
-            {state.kind === 'failed' && <TaskLoadFailure error={state.error} onRetry={refresh} />}
+            {state.kind === 'failed' && (
+              <AsyncState
+                status="error"
+                skeleton="block"
+                loadingLabel="Loading task"
+                error={{
+                  message: LOAD_COPY[state.error],
+                  tone: readNoticeTone(state.error),
+                  ...(state.error === 'failed' ? { onRetry: refresh } : {}),
+                }}
+              />
+            )}
             {state.kind === 'ready' && (
               <>
                 <PageAlerts
@@ -1084,26 +1096,6 @@ function MetaRow({
         />
       )}
     </div>
-  );
-}
-
-/**
- * The page couldn't load at all. A failed read is ours to retry. A missing task
- * (or someone else's: the route answers 404 alike) and an ended session offer
- * no button, since pressing again can't fix either (`lib/read-register.ts`).
- */
-function TaskLoadFailure({ error, onRetry }: { error: TaskReadError; onRetry: () => void }) {
-  return (
-    <Alert variant={readAlertVariant(error)}>
-      <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span className="min-w-0">{LOAD_COPY[error]}</span>
-        {error === 'failed' && (
-          <Button variant="secondary" size="sm" className="ml-auto" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-      </AlertDescription>
-    </Alert>
   );
 }
 

@@ -94,17 +94,6 @@
       "count": 2
     }
   },
-  "packages/channel-web/src/components/PaneStatus.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 1
-    },
-    "ax-ui/no-classname": {
-      "count": 2
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 2
-    }
-  },
   "packages/channel-web/src/components/PersonalUsageLine.tsx": {
     "ax-ui/no-classname": {
       "count": 2
@@ -249,7 +238,7 @@
       "count": 14
     },
     "ax-ui/no-raw-elements": {
-      "count": 13
+      "count": 12
     }
   },
   "packages/channel-web/src/components/admin/AuthoredSkillsSection.tsx": {
@@ -453,7 +442,7 @@
       "count": 23
     },
     "ax-ui/no-raw-elements": {
-      "count": 18
+      "count": 17
     }
   },
   "packages/channel-web/src/components/admin/StatusDot.tsx": {
@@ -480,10 +469,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 20
+      "count": 18
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 18
     }
   },
   "packages/channel-web/src/components/admin/TeamList.tsx": {
@@ -1016,13 +1005,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentFiles.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 14
+      "count": 13
     },
     "ax-ui/no-classname": {
-      "count": 21
+      "count": 20
     },
     "ax-ui/no-raw-elements": {
-      "count": 22
+      "count": 21
     }
   },
   "packages/channel-web/src/components/workspace/AgentInstructions.tsx": {
@@ -1224,7 +1213,7 @@
   },
   "packages/channel-web/src/components/workspace/ConnectorDetails.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 19
+      "count": 18
     },
     "ax-ui/no-classname": {
       "count": 27
@@ -1235,13 +1224,13 @@
   },
   "packages/channel-web/src/components/workspace/ConnectorsTab.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 16
+      "count": 15
     },
     "ax-ui/no-classname": {
-      "count": 18
+      "count": 17
     },
     "ax-ui/no-raw-elements": {
-      "count": 20
+      "count": 19
     }
   },
   "packages/channel-web/src/components/workspace/ConsentAnnouncement.tsx": {
@@ -1333,13 +1322,13 @@
   },
   "packages/channel-web/src/components/workspace/LearnedInChat.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 12
+      "count": 11
     },
     "ax-ui/no-classname": {
-      "count": 19
+      "count": 18
     },
     "ax-ui/no-raw-elements": {
-      "count": 22
+      "count": 21
     }
   },
   "packages/channel-web/src/components/workspace/MemoryCorrection.tsx": {
@@ -1415,10 +1404,10 @@
       "count": 10
     },
     "ax-ui/no-classname": {
-      "count": 19
+      "count": 18
     },
     "ax-ui/no-raw-elements": {
-      "count": 18
+      "count": 17
     }
   },
   "packages/channel-web/src/components/workspace/TaskDialog.tsx": {
@@ -1486,10 +1475,10 @@
       "count": 32
     },
     "ax-ui/no-classname": {
-      "count": 70
+      "count": 69
     },
     "ax-ui/no-raw-elements": {
-      "count": 66
+      "count": 65
     }
   },
   "packages/channel-web/src/components/workspace/TaskReadingBlock.tsx": {
@@ -1541,10 +1530,10 @@
       "count": 10
     },
     "ax-ui/no-classname": {
-      "count": 26
+      "count": 25
     },
     "ax-ui/no-raw-elements": {
-      "count": 28
+      "count": 27
     }
   },
   "packages/channel-web/src/components/workspace/TodayTaskGroup.tsx": {
@@ -1618,10 +1607,10 @@
       "count": 17
     },
     "ax-ui/no-classname": {
-      "count": 24
+      "count": 23
     },
     "ax-ui/no-raw-elements": {
-      "count": 26
+      "count": 25
     },
     "ax-ui/no-style-prop": {
       "count": 1

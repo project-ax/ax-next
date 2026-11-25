@@ -29,7 +29,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
-import { PaneStatus } from '../PaneStatus';
+import { AsyncState } from '@project-ax/ui';
 import { useAgentStore } from '@/lib/agent-store';
 import { routineApi } from '@/lib/routines';
 
@@ -144,7 +144,12 @@ function AgentToggleRow({
         {state.enabled !== undefined && <p className="text-xs text-muted-foreground">{state.enabled ? 'Turn this off to stop new self-improvement runs.' : `Off. ${agentName}’s existing skills stay installed.`}</p>}
       </>}
       {state.error !== null && (
-        <PaneStatus variant="error">Couldn't save: {state.error}</PaneStatus>
+        <AsyncState
+          status="error"
+          skeleton="lines"
+          loadingLabel="Saving…"
+          error={{ message: `Couldn't save: ${state.error}` }}
+        />
       )}
     </div>
   );
@@ -180,23 +185,30 @@ export function AgentSelfImprovementSection({
         <CardDescription>{HELP_COPY}</CardDescription>
       </CardHeader>
       <CardContent>
-        {agentsStatus === 'loading' ? (
-          <PaneStatus variant="loading">Loading your agents…</PaneStatus>
-        ) : agentsStatus === 'error' ? (
-          <PaneStatus variant="error">
-            Couldn't load your agents. Try reopening this panel.
-          </PaneStatus>
-        ) : agents.length === 0 ? (
-          <PaneStatus variant="empty">
-            No agents yet — create one to manage its self-improvement.
-          </PaneStatus>
-        ) : (
+        <AsyncState
+          status={
+            agentsStatus === 'loading'
+              ? 'loading'
+              : agentsStatus === 'error'
+                ? 'error'
+                : agents.length === 0
+                  ? 'empty'
+                  : 'ready'
+          }
+          skeleton="rows"
+          loadingLabel="Loading your agents…"
+          error={{ message: "Couldn't load your agents. Try reopening this panel." }}
+          empty={{
+            title: 'No agents yet',
+            description: 'Create one to manage its self-improvement.',
+          }}
+        >
           <div className="flex flex-col">
             {agents.map((a) => (
               <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} onChanged={onChanged} />
             ))}
           </div>
-        )}
+        </AsyncState>
       </CardContent>
     </Card>
   );
@@ -238,9 +250,11 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {error && <PaneStatus variant="error">{error}</PaneStatus>}
+        {error && (
+          <AsyncState status="error" skeleton="rows" loadingLabel="Loading default routines…" error={{ message: error }} />
+        )}
         {rows === null && !error && (
-          <PaneStatus variant="loading">Loading default routines…</PaneStatus>
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading default routines…" />
         )}
         {rows?.map((row) => (
           <div

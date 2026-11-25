@@ -42,6 +42,7 @@ import {
   FileText,
   Folder,
 } from 'lucide-react';
+import { Text } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
@@ -164,15 +165,6 @@ function RailRow({
         <ChevronRight size={12} className="ml-auto shrink-0 opacity-60" />
       )}
     </Button>
-  );
-}
-
-/** A section's own status line. Never the whole page — see the header. */
-function SectionNote({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="px-2.5 py-1.5 text-[12.5px] leading-relaxed text-muted-foreground">
-      {children}
-    </p>
   );
 }
 
@@ -468,10 +460,10 @@ export function AgentFiles({
                   />
                 ))}
                 {durable.truncated && (
-                  <SectionNote>
+                  <Text role="meta">
                     Showing the first {durable.entries.length}. There are more
                     files in this folder than we list here.
-                  </SectionNote>
+                  </Text>
                 )}
               </div>
             )}

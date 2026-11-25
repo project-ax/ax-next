@@ -526,7 +526,7 @@ describe('TasksPage (TASK-909)', () => {
     expect(
       await screen.findByText('We couldn’t load your tasks just now. Nothing was lost.'),
     ).toBeInTheDocument();
-    expect(screen.getByRole('alert').className).toContain('destructive');
+    expect(screen.getByRole('alert')).toHaveTextContent('We couldn’t load your tasks just now.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Support queue')).toBeInTheDocument();
@@ -538,8 +538,9 @@ describe('TasksPage (TASK-909)', () => {
     tasksMock.mockRejectedValueOnce(new WorkspaceApiError('/tasks', 401));
     renderPage();
     expect(await screen.findByText(HTTP_SESSION_ENDED)).toBeInTheDocument();
-    // Signing in is not a repair, so the register is the default one.
-    expect(screen.getByRole('alert').className).not.toContain('destructive');
+    // Signing in is not a repair, so the register is the quiet one: a status, not an alert.
+    expect(screen.getByRole('status')).toHaveTextContent(HTTP_SESSION_ENDED);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 

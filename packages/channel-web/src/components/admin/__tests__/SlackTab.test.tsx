@@ -392,7 +392,7 @@ describe('I deleted it', () => {
     renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] }, NOT_CONNECTED);
     const alert = await leftoverNote(true);
     fireEvent.click(button(alert, LEFT));
-    await waitFor(() => expect(button(alert, LEFT)).toBeDisabled());
+    await waitFor(() => expect(button(alert, LEFT)).toHaveAttribute('aria-busy', 'true'));
     expect(button(alert, LEFT_2)).toBeDisabled();
     fireEvent.click(button(alert, LEFT));
     fireEvent.click(button(alert, LEFT_2));
@@ -463,8 +463,8 @@ describe('Connect', () => {
     connect.mockReturnValueOnce(new Promise((r) => (finish = r)));
     renderTab(NOT_CONNECTED);
     await fillAndConnect();
-    const busy = await screen.findByRole('button', { name: /Connecting/ });
-    expect(busy).toBeDisabled();
+    const busy = screen.getByRole('button', { name: 'Connect' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     expect(connect).toHaveBeenCalledTimes(1);
     finish({ installUrl: INSTALL_URL });
@@ -783,11 +783,11 @@ describe('Rename', () => {
     fireEvent.change(nameInput(dialog), { target: { value: 'Ada Helper' } });
     const go = within(dialog).getByRole('button', { name: 'Rename' });
     fireEvent.click(go);
-    const busy = await within(dialog).findByRole('button', { name: /Renaming/ });
+    const busy = within(dialog).getByRole('button', { name: 'Rename' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     fireEvent.click(busy);
     expect(rename).toHaveBeenCalledTimes(1);
-    expect(busy).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.getByRole('dialog', { name: 'Rename the bot' })).toBeInTheDocument();
@@ -963,11 +963,11 @@ describe('Replace the configuration token', () => {
     const dialog = await openDialog();
     fireEvent.change(tokenInput(dialog), { target: { value: REFRESH } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Replace token' }));
-    const busy = await within(dialog).findByRole('button', { name: /Replacing/ });
+    const busy = within(dialog).getByRole('button', { name: 'Replace token' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     fireEvent.click(busy);
     expect(replace).toHaveBeenCalledTimes(1);
-    expect(busy).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.getByRole('dialog', { name: 'Replace the configuration token' })).toBeInTheDocument();

@@ -125,7 +125,7 @@ describe('AgentSelfImprovementSection', () => {
 
     fireEvent.click(sw);
 
-    await screen.findByText(/Couldn't save: forbidden/);
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save: forbidden");
     // Rolled back to ON after the failure.
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
   });
@@ -149,6 +149,6 @@ describe('AgentSelfImprovementSection', () => {
   it('shows the empty state when the user has no agents', () => {
     seedAgents([]);
     render(<AgentSelfImprovementSection />);
-    expect(screen.getByText(/No agents yet/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'No agents yet' })).toBeInTheDocument();
   });
 });

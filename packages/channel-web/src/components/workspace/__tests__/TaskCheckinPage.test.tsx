@@ -457,7 +457,6 @@ describe('TaskCheckinPage (TASK-911)', () => {
     expect(alert).toHaveTextContent(
       'We couldn’t find this check-in. It may be too old to open here, or it belongs to someone else.',
     );
-    expect(alert.className).toContain('destructive');
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(screen.getByRole('heading', { level: 1, name: 'Check-in' })).toBeInTheDocument();
   });
@@ -469,7 +468,6 @@ describe('TaskCheckinPage (TASK-911)', () => {
     const first = renderPage();
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('We couldn’t load this check-in just now. Nothing was lost.');
-    expect(alert.className).toContain('destructive');
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     await ready();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -478,9 +476,10 @@ describe('TaskCheckinPage (TASK-911)', () => {
     checkinMock.mockReset();
     checkinMock.mockRejectedValue(new WorkspaceApiError(CHECKIN_PATH, 401));
     renderPage();
-    const expired = await screen.findByRole('alert');
-    expect(expired).toHaveTextContent(HTTP_SESSION_ENDED);
-    expect(expired.className).not.toContain('destructive');
+    // Signing in is not a repair: the quiet register, announced politely, not as an alert.
+    await screen.findByText(HTTP_SESSION_ENDED);
+    expect(screen.getByRole('status')).toHaveTextContent(HTTP_SESSION_ENDED);
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
@@ -499,7 +498,6 @@ describe('TaskCheckinPage (TASK-911)', () => {
     ).toBeInTheDocument();
     expect(within(transcript()).getByText('Checking the queue.')).toBeInTheDocument();
     const alert = line.closest('[role="alert"]') as HTMLElement;
-    expect(alert.className).toContain('destructive');
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(checkinMock).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(screen.queryByText(REFRESH_FAILED)).toBeNull());
