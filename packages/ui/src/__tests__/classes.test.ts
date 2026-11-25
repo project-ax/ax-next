@@ -14,7 +14,9 @@ function walk(dir: string): string[] {
   });
 }
 
-const escapeSelector = (cls: string): string => cls.replace(/:/g, '\\:');
+// CSS-escape every character that isn't a plain identifier character, as
+// Tailwind does in ui.css (`md:ax-x` -> `md\:ax-x`, `ax-w-1/2` -> `ax-w-1\/2`).
+const escapeSelector = (cls: string): string => cls.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // Anchored: `.ax-text-fg` must not be satisfied by `.ax-text-fg-muted`.
 const selectorRe = (cls: string): RegExp => new RegExp(escapeRegExp(`.${escapeSelector(cls)}`) + '(?![\\w-])');

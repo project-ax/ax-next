@@ -215,10 +215,10 @@ for (const route of ROUTES) {
           const n = (imp: string) => bad.filter((v) => v.impact === imp).reduce((a, v) => a + v.nodes.length, 0);
           axe[route.name] = { serious: n('serious'), critical: n('critical'), rules: bad.map((v) => `${v.id} (${v.impact}, ${v.nodes.length})`) };
         }
-        console.log(`ok   ${route.name}-${vp.w}-${theme}`);
+        process.stdout.write(`ok   ${route.name}-${vp.w}-${theme}\n`);
       } catch (e) {
         failed.push(`${route.name}-${vp.w}-${theme}`);
-        console.log(`FAIL ${route.name}-${vp.w}-${theme}: ${(e as Error).message.split("\n").slice(0, 4).join(" ")}`);
+        process.stdout.write(`FAIL ${route.name}-${vp.w}-${theme}: ${(e as Error).message.split("\n").slice(0, 4).join(" ")}\n`);
       } finally {
         await ctx.close();
       }
@@ -241,8 +241,8 @@ const summary = Object.fromEntries(
   ]),
 );
 writeFileSync(`${outDir}/axe-summary.json`, JSON.stringify(summary, null, 2) + '\n');
-console.log(JSON.stringify(summary, null, 2));
+process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 if (failed.length > 0) {
-  console.log(`failed: ${failed.join(', ')}`);
+  process.stdout.write(`failed: ${failed.join(', ')}\n`);
   process.exitCode = 1;
 }
