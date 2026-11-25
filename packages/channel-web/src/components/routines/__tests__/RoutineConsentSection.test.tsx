@@ -28,7 +28,7 @@ describe('routine permissions', () => {
       revision: 'v1',
     });
     render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
-    expect(screen.getByLabelText('Loading task permissions')).toBeVisible();
+    expect(screen.getByText('Loading task permissions')).toBeVisible();
     expect(
       await screen.findByText('Ask before creating or editing tasks'),
     ).toBeVisible();

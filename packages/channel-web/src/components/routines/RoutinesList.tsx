@@ -4,7 +4,6 @@ import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Field, FieldLabel } from '@/components/ui/field';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -12,15 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
-import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { Separator } from '@/components/ui/separator';
 import {
   routineApi,
@@ -43,7 +35,7 @@ function rowKey(row: Pick<Routine, 'agentId' | 'routineId'>): string {
 /** What a delete needs of a row: a readable routine, or one the host can't read (TASK-913). */
 type DeleteTarget = Pick<Routine, 'agentId' | 'routineId' | 'revision' | 'name'>;
 const UNCONFIRMED = 'We couldn’t confirm this change. Try again.';
-const PENDING_FIRST = 'Retry the unconfirmed change before making another change.';
+const PENDING_FIRST = 'Try the unconfirmed change again before making another change.';
 const UNREADABLE_LINE = 'We can’t read this routine anymore, so it isn’t running.';
 const unreadableName = (r: Pick<UnreadableRoutine, 'name'>) => r.name || 'Untitled routine';
 
@@ -252,52 +244,39 @@ export function RoutinesList({
         ))}
       </div>
       {error && (
-        <Alert
-          variant="destructive"
-          className="bg-destructive-soft text-destructive"
-          data-testid="routines-list-error"
+        <Notice
+          tone="danger"
+          {...(fireProtected ? {} : { action: { label: 'Try again', onClick: () => setVersion((n) => n + 1) } })}
         >
-          <AlertDescription>
-            {error}
-            <Button
-              variant="ghost"
-              disabled={fireProtected}
-              onClick={() => setVersion((n) => n + 1)}
-            >
-              Refresh
-            </Button>
-          </AlertDescription>
-        </Alert>
+          {error}
+        </Notice>
       )}
       {uncertain && (
-        <Alert>
-          <AlertDescription>
-            We couldn’t confirm this change. Retry sends the same change.
-            <Button
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() => {
-                const pending = operation.current;
-                if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
-                else if (pending) void mutate(pending.row, 'enabled');
-              }}
-            >
-              Retry change
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="info"
+          {...(busy !== null
+            ? {}
+            : {
+                action: {
+                  label: 'Try again',
+                  onClick: () => {
+                    const pending = operation.current;
+                    if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
+                    else if (pending) void mutate(pending.row, 'enabled');
+                  },
+                },
+              })}
+        >
+          We couldn’t confirm this change. Try again sends the same change.
+        </Notice>
       )}
       {list === null && !error ? (
-        <Skeleton aria-label="Loading routines" className="h-28 w-full" />
+        <AsyncState status="loading" skeleton="rows" loadingLabel="Loading routines" />
       ) : list?.length === 0 && unreadable.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>{origin === 'default' ? 'No active default routines' : 'No routines yet'}</EmptyTitle>
-            <EmptyDescription>
-              {origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <EmptyState
+          title={origin === 'default' ? 'No active default routines' : 'No routines yet'}
+          description={origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
+        />
       ) : (
         <>
         {list?.map((row) => (
@@ -382,9 +361,7 @@ export function RoutinesList({
                   )}
                 </div>
                 {row.lastError && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{row.lastError}</AlertDescription>
-                  </Alert>
+                  <Notice tone="danger">{row.lastError}</Notice>
                 )}
                 {row.webhook !== null &&
                   row.permissions.manageSecret && (
@@ -402,16 +379,9 @@ export function RoutinesList({
                     </>
                   )}
                 {firesError ? (
-                  <Alert variant="destructive">
-                    <AlertDescription>
-                      Recent runs are unavailable.
-                    </AlertDescription>
-                  </Alert>
+                  <Notice tone="danger">Recent runs are unavailable.</Notice>
                 ) : fires === null ? (
-                  <Skeleton
-                    aria-label="Loading recent runs"
-                    className="h-12 w-full"
-                  />
+                  <AsyncState status="loading" skeleton="lines" loadingLabel="Loading recent runs" />
                 ) : fires.length ? (
                   <FireRowsTable fires={fires} />
                 ) : (

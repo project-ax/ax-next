@@ -158,13 +158,13 @@
   },
   "packages/channel-web/src/components/admin/AddProviderForm.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 10
+      "count": 9
     },
     "ax-ui/no-raw-elements": {
-      "count": 9
+      "count": 7
     }
   },
   "packages/channel-web/src/components/admin/AdminPane.tsx": {
@@ -227,7 +227,7 @@
       "count": 2
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/admin/AuthProvidersTab.tsx": {
@@ -243,10 +243,10 @@
   },
   "packages/channel-web/src/components/admin/AuthoredSkillsSection.tsx": {
     "ax-ui/no-classname": {
-      "count": 23
+      "count": 21
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 19
     }
   },
   "packages/channel-web/src/components/admin/BrandingTab.tsx": {
@@ -287,10 +287,10 @@
   },
   "packages/channel-web/src/components/admin/BundleReviewDialog.tsx": {
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 4
+      "count": 3
     }
   },
   "packages/channel-web/src/components/admin/DefaultRoutinesSection.tsx": {
@@ -298,21 +298,21 @@
       "count": 4
     },
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 4
+      "count": 1
     }
   },
   "packages/channel-web/src/components/admin/KeyForm.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 3
     }
   },
   "packages/channel-web/src/components/admin/ModelCatalogPane.tsx": {
@@ -323,7 +323,7 @@
       "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 7
     }
   },
   "packages/channel-web/src/components/admin/ModelCombobox.tsx": {
@@ -339,24 +339,24 @@
   },
   "packages/channel-web/src/components/admin/ModelConfigTab.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 5
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 4
     }
   },
   "packages/channel-web/src/components/admin/ModelsTab.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 4
     }
   },
   "packages/channel-web/src/components/admin/PauseAgentsDialog.tsx": {
@@ -423,7 +423,7 @@
       "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 7
     }
   },
   "packages/channel-web/src/components/admin/SlackBotsCard.tsx": {
@@ -431,32 +431,21 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 6
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 6
     }
   },
   "packages/channel-web/src/components/admin/SlackTab.tsx": {
     "ax-ui/no-classname": {
-      "count": 23
+      "count": 22
     },
     "ax-ui/no-raw-elements": {
-      "count": 17
+      "count": 16
     }
   },
   "packages/channel-web/src/components/admin/StatusDot.tsx": {
-    "ax-ui/no-classname": {
-      "count": 1
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 1
-    }
-  },
-  "packages/channel-web/src/components/admin/StorageLimitsCard.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 2
-    },
     "ax-ui/no-classname": {
       "count": 1
     },
@@ -469,10 +458,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 18
+      "count": 16
     },
     "ax-ui/no-raw-elements": {
-      "count": 18
+      "count": 14
     }
   },
   "packages/channel-web/src/components/admin/TeamList.tsx": {
@@ -481,17 +470,6 @@
     },
     "ax-ui/no-raw-elements": {
       "count": 3
-    }
-  },
-  "packages/channel-web/src/components/admin/UsageLimitsCard.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 2
-    },
-    "ax-ui/no-classname": {
-      "count": 1
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 1
     }
   },
   "packages/channel-web/src/components/admin/UsageOverrideEditor.tsx": {
@@ -515,10 +493,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 15
+      "count": 13
     },
     "ax-ui/no-raw-elements": {
-      "count": 19
+      "count": 16
     }
   },
   "packages/channel-web/src/components/credentials/ConnectorAccessNotice.tsx": {

@@ -387,10 +387,10 @@ describe('structured routine form', () => {
     const save = screen.getByRole('button', { name: 'Save' });
     fireEvent.click(save);
     fireEvent.click(save);
-    await screen.findByRole('button', { name: 'Retry save' });
+    await screen.findByRole('button', { name: 'Try again' });
     expect(routineApi.update).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText('Name')).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(2));
     expect(vi.mocked(routineApi.update).mock.calls[0]).toEqual(
       vi.mocked(routineApi.update).mock.calls[1],

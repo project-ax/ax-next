@@ -189,7 +189,7 @@ describe('AgentSettings — desktop', () => {
     expect(screen.getByRole('link', { name: 'Open Tasks' })).toHaveAttribute('href', '/workspace/tasks');
     expect(screen.queryByRole('button', { name: 'New routine' })).toBeNull();
     expect(screen.getByText(/built-in maintenance/)).toBeVisible();
-    expect(screen.getByLabelText('Loading task permissions')).toBeVisible();
+    expect(screen.getByText('Loading task permissions')).toBeVisible();
   });
 
   it('draws the memories list it is given under Memory', () => {

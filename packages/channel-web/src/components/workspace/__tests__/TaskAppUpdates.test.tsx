@@ -91,7 +91,7 @@ describe('private task app setup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Replace address' }));
     fireEvent.click(screen.getByRole('button', { name: 'Replace address' }));
     await waitFor(() => expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument());
-    expect(await screen.findByRole('button', { name: 'Retry app setup' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeVisible();
     expect(document.body).not.toHaveTextContent('PRIVATE-response');
   });
 });

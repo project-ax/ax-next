@@ -24,7 +24,6 @@ import {
   FieldSet,
   FieldLegend,
 } from '@/components/ui/field';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Collapsible,
@@ -32,7 +31,6 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import { routineApi } from '@/lib/routines';
 import { describeCron } from '@/lib/cron-describe';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
@@ -41,6 +39,7 @@ import { TaskForm, type TaskAgentChoice } from '@/components/workspace/TaskForm'
 import { ActiveHoursDaySelector } from './ActiveHoursDaySelector';
 import { WebhookAddressFields } from './WebhookAddressFields';
 import { changed, useRoutineDraft } from './use-routine-draft';
+import { AsyncState, Notice, Stack } from '@project-ax/ui';
 
 interface Props {
   mode: 'create' | 'edit';
@@ -102,17 +101,13 @@ export function RoutineEditor(props: Props) {
     };
   }, [props.agentId, props.mode, props.routine?.routineId, generation]);
   if (props.mode === 'edit' && loaded === null)
-    return loadError ? (
-      <Alert variant="destructive">
-        <AlertDescription>
-          We couldn’t load this routine.{' '}
-          <Button variant="outline" onClick={() => setGeneration((v) => v + 1)}>
-            Retry
-          </Button>
-        </AlertDescription>
-      </Alert>
-    ) : (
-      <Skeleton aria-label="Loading routine" className="h-64 w-full" />
+    return (
+      <AsyncState
+        status={loadError ? 'error' : 'loading'}
+        skeleton="block"
+        loadingLabel="Loading routine"
+        error={{ message: 'We couldn’t load this routine.', onRetry: () => setGeneration((v) => v + 1) }}
+      />
     );
   const shared = {
     initial: loaded ? editableDefinition(loaded) : empty(props.taskMode),
@@ -487,26 +482,22 @@ function RoutineForm({
       {/* TASK-1037. This form makes the same save as the Tasks form, so the same changes cancel a saved
           Repeat's waiting app updates, and it says so by Save too. It has no kind control. */}
       {cancelsWaitingUpdates && (
-        <Alert id={`${id}-save-waiting`} role="status">
-          <AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription>
-        </Alert>
+        <Stack id={`${id}-save-waiting`}>
+          <Notice tone="info">Saving these changes cancels any app updates still waiting to run.</Notice>
+        </Stack>
       )}
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {error}
-            {conflict && onReload && (
-              <Button type="button" variant="outline" onClick={onReload}>
-                Reload and discard my changes
-              </Button>
-            )}
-            {uncertain && (
-              <p>
-                We couldn’t confirm the result. Retry sends the same change.
-              </p>
-            )}
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="danger"
+          {...(conflict && onReload ? { action: { label: 'Reload and discard my changes', onClick: onReload } } : {})}
+        >
+          {error}
+          {uncertain && (
+            <p>
+              We couldn’t confirm the result. Try again sends the same change.
+            </p>
+          )}
+        </Notice>
       )}
       {!validation.success && firstIssue && !activeDaysInvalid && (
         <p className="text-sm text-destructive" role="status">
@@ -514,11 +505,7 @@ function RoutineForm({
         </p>
       )}
       {!canEdit && (
-        <Alert>
-          <AlertDescription>
-            You don’t have permission to edit this task.
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info">You don’t have permission to edit this task.</Notice>
       )}
       <Separator />
       <div className="flex flex-wrap items-center gap-2">
@@ -553,7 +540,7 @@ function RoutineForm({
             {busy
               ? 'Saving…'
               : uncertain
-                ? 'Retry save'
+                ? 'Try again'
                 : mode === 'create'
                   ? 'Create routine'
                   : 'Save'}

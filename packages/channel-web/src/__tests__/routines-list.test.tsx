@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { RoutinesList } from '../components/routines/RoutinesList';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { routineFixture as row } from '../components/routines/__tests__/routine-fixture';
@@ -204,9 +204,11 @@ describe('routine list', () => {
     vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       { ...row, revision: 'new-revision', enabled: !row.enabled },
     ], unreadable: [] });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    const readError = screen.getByText('Routine management is temporarily unavailable.').closest('[role="alert"]') as HTMLElement;
+    fireEvent.click(within(readError).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(routineApi.list).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByRole('button', { name: 'Retry change' }));
+    const unconfirmed = screen.getByText(/We couldn’t confirm this change/).closest('[role="status"]') as HTMLElement;
+    fireEvent.click(within(unconfirmed).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(2));
     expect(vi.mocked(routineApi.update).mock.calls[1]).toEqual(
       vi.mocked(routineApi.update).mock.calls[0],
@@ -319,7 +321,7 @@ describe('agent settings routine creation', () => {
     vi.mocked(routineApi.list).mockImplementation(() => new Promise(() => {}));
     const props = { agentId: 'a', agentName: 'Caveman', onFired: vi.fn(), hideCreateAction: true };
     const { rerender } = render(<RoutinesList {...props} createRequest={0} />);
-    expect(screen.getByLabelText('Loading routines')).toBeTruthy();
+    expect(screen.getByText('Loading routines')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'New routine' })).toBeNull();
     rerender(<RoutinesList {...props} createRequest={1} />);
     expect(await screen.findByRole('dialog', { name: 'New routine' })).toBeTruthy();

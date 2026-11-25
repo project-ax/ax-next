@@ -5,9 +5,8 @@ import { routineApi, type RoutineReceiver } from '@/lib/routines';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { AsyncState } from '@project-ax/ui';
 
 export function WebhookAddressFields({ agentId, routineId, path, saved, disabled, onPendingChange }: {
   agentId: string; routineId?: string | undefined; path: string; saved: boolean; disabled: boolean;
@@ -45,10 +44,12 @@ export function WebhookAddressFields({ agentId, routineId, path, saved, disabled
     }
   }
   if (!routineId) return <FieldDescription>Save this task to get its own webhook address.</FieldDescription>;
-  if (failed) return <Alert variant="destructive"><AlertDescription>We couldn’t load the current address. Reload it before copying or replacing it.
-    <Button type="button" variant="outline" disabled={disabled} onClick={() => setGeneration(v => v + 1)}>Retry app setup</Button>
-  </AlertDescription></Alert>;
-  if (!receiver) return <Skeleton aria-label="Loading webhook address" className="h-10 w-full" />;
+  if (failed) return <AsyncState status="error" skeleton="lines" loadingLabel="Loading webhook address"
+    error={{
+      message: 'We couldn’t load the current address. Reload it before copying or replacing it.',
+      ...(disabled ? {} : { onRetry: () => setGeneration(v => v + 1) }),
+    }} />;
+  if (!receiver) return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading webhook address" />;
   const preview = validateWebhookPath(path) ? `${new URL(receiver.url, window.location.origin).href}${path}` : null;
   return <Field>
     <FieldLabel>Webhook URL</FieldLabel>

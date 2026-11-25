@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
-import { Skeleton } from '@/components/ui/skeleton';
 import { ALWAYS_ALLOW_STILL_ASKS } from '@/components/workspace/decision-copy';
 import { routineApi, type RoutineConsent } from '@/lib/routines';
 
@@ -68,10 +66,7 @@ export function RoutineConsentSection({
   return (
     <section aria-label="Task permissions" className="flex flex-col gap-2" tabIndex={-1} data-return-focus="routine-consent">
       {consent === null && error === null && (
-        <Skeleton
-          aria-label="Loading task permissions"
-          className="h-8 w-full"
-        />
+        <AsyncState status="loading" skeleton="lines" loadingLabel="Loading task permissions" />
       )}
       {consent !== null && (
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -100,9 +95,7 @@ export function RoutineConsentSection({
         </div>
       )}
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
     </section>
   );
