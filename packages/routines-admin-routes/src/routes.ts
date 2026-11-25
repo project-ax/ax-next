@@ -295,9 +295,12 @@ export function createRoutinesAdminHandlers(deps: AdminDeps) {
       const ctx = actorContext(actor.id, input.agentId);
       try {
         await deps.bus.call('agents:resolve', ctx, { agentId: input.agentId, userId: actor.id });
-        // The existing agent-management predicate also guards receiver tokens.
-        // This read checks authority only: it never obtains or creates a token.
-        const out = await call('agents:can-manage-connectors', ctx, {
+        // The token's own predicate: the one rule agents:ensure-webhook-token
+        // (the `receiver` write below) enforces, so this read never says yes to
+        // someone that write refuses (TASK-1246: a personal agent's co-owner
+        // manages its connectors but is not given its token). It checks
+        // authority only: it never obtains or creates a token.
+        const out = await call('agents:can-manage-webhook-token', ctx, {
           agentId: input.agentId, actor: { userId: actor.id, isAdmin: actor.isAdmin },
         }, z.object({ allowed: z.boolean() }).strict());
         res.status(200).json(out);

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
+import { sql } from 'kysely';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { registerRoutinesAdminRoutes } from '../../../routines-admin-routes/src/routes.js';
 import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
@@ -46,14 +47,32 @@ describe('receiver access through HTTP and the real agents permission producer',
     const result = await receiverAccess(agent === 'personal' ? h.agentId : h.teamAgentId);
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ allowed });
-    expect(result.hookNames).toContain('agents:can-manage-connectors');
+    expect(result.hookNames).toContain('agents:can-manage-webhook-token');
+  });
+
+  // TASK-1246: a co-owner of a personal agent manages its connectors
+  // (agents:can-manage-connectors says yes) but the webhook token stays the
+  // creator's, so the read must say no, as the receiver write would.
+  it("a personal agent's co-owner is told no: the token stays the creator's", async () => {
+    h = await createRoutineHarness({ authenticatedUserId: 'member' });
+    await sql`INSERT INTO agents_v1_owners (agent_id, user_id) VALUES (${h.agentId}, 'member')`.execute(h.db);
+    const result = await receiverAccess(h.agentId);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ allowed: false });
+    expect(result.hookNames).toContain('agents:can-manage-webhook-token');
+    expect(
+      await h.bus.call('agents:can-manage-connectors', h.owner, {
+        agentId: h.agentId,
+        actor: { userId: 'member', isAdmin: false },
+      }),
+    ).toEqual({ allowed: true });
   });
 
   it('resolves viewer access before revealing a personal agent capability', async () => {
     h = await createRoutineHarness({ authenticatedUserId: 'member' });
     const result = await receiverAccess(h.agentId);
     expect(result.status).toBe(404);
-    expect(result.hookNames).not.toContain('agents:can-manage-connectors');
+    expect(result.hookNames).not.toContain('agents:can-manage-webhook-token');
     expect(result.body).not.toEqual({ allowed: false });
   });
 

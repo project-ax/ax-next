@@ -532,6 +532,30 @@ export interface CanManageConnectorsOutput {
   allowed: boolean;
 }
 
+// --- agents:can-manage-webhook-token (TASK-1246) -----------------------------
+//
+// May `actor` rotate or read (`ensure`) this agent's webhook token? Whoever
+// holds the token can fire the agent's routines, so: a workspace admin; on a
+// personal agent its CREATOR only, never a co-owner (its routines run as the
+// creator); on a team agent a team admin. The exact predicate
+// `agents:rotate-webhook-token` / `agents:ensure-webhook-token` enforce, exposed
+// so a caller (the routine receiver's access read) shows the affordance only to
+// someone the token hooks will serve. It is deliberately NOT
+// `agents:can-manage-connectors`, which also says yes to a personal agent's
+// co-owners. `allowed` is `false` — not an error — for any actor the token
+// hooks would refuse; a rejection is a fault, not a denial. `not-found` when the
+// agent does not exist.
+
+export const CanManageWebhookTokenInputSchema = z
+  .object({
+    agentId: z.string().min(1).max(256),
+    actor: z.object({ userId: z.string().min(1), isAdmin: z.boolean() }).strict(),
+  })
+  .strict();
+export const CanManageWebhookTokenOutputSchema = z.object({ allowed: z.boolean() }).strict();
+export type CanManageWebhookTokenInput = z.infer<typeof CanManageWebhookTokenInputSchema>;
+export type CanManageWebhookTokenOutput = z.infer<typeof CanManageWebhookTokenOutputSchema>;
+
 // --- agents:can-set-shared-credential (TASK-813) -----------------------------
 //
 // May `actor` choose the SHARED credential stored on this agent — start an

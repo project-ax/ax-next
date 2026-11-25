@@ -514,3 +514,55 @@ describe('who may change a personal agent (TASK-1246)', () => {
     }
   });
 });
+
+// The webhook token stays the creator's (TASK-1246). `agents:can-manage-webhook-token`
+// is the read a caller asks before it shows the receiver affordance, and it
+// must give exactly the answer the token hooks enforce: a read that says yes
+// while `ensure` says no is the bug this pins (a co-owner of a personal agent
+// passes `agents:can-manage-connectors` but is refused the token).
+describe('agents:can-manage-webhook-token answers what the token hooks enforce (TASK-1246)', () => {
+  it.each<[string, Actor, 'personal' | 'list' | 'team', boolean]>([
+    ['the creator', alice, 'personal', true],
+    ['a co-owner', bob, 'personal', false],
+    ['an audience member (everyone)', carol, 'personal', false],
+    ['an audience member (named in a list)', dave, 'list', false],
+    ['someone with no AX account', ghost, 'personal', false],
+    ['a workspace admin who is not an owner', wsAdmin, 'personal', true],
+    ['a team admin', teamAdmin, 'team', true],
+    ['a plain team member', teamMember, 'team', false],
+    ['someone outside the team', outsider, 'team', false],
+    ['a workspace admin on a team agent', wsAdmin, 'team', true],
+  ])('%s: %s agent -> %s, and ensure-webhook-token agrees', async (_who, actor, kind, expected) => {
+    const s = await boot();
+    const agentId =
+      kind === 'team'
+        ? await s.seedTeam()
+        : kind === 'list'
+          ? await s.seedShared({ kind: 'list', members: [{ type: 'user', id: 'dave' }] })
+          : await s.seedShared();
+
+    const asked = await s.call<{ allowed: boolean }>('agents:can-manage-webhook-token', actor, {
+      actor,
+      agentId,
+    });
+    expect(asked).toEqual({ allowed: expected });
+
+    const ensured = await s
+      .call<{ token: string }>('agents:ensure-webhook-token', actor, { actor, agentId })
+      .then(
+        () => true,
+        (err: unknown) => {
+          expect(err).toMatchObject({ code: 'forbidden' });
+          return false;
+        },
+      );
+    expect(ensured).toBe(asked.allowed);
+  });
+
+  it('a missing agent is not-found, not a denial', async () => {
+    const s = await boot();
+    await expect(
+      s.call('agents:can-manage-webhook-token', alice, { actor: alice, agentId: 'no-such-agent' }),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+});

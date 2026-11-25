@@ -100,6 +100,8 @@ Widening `agents:can-manage-connectors` to co-owners also reaches its other call
 - the workspace connectors tab's Remove and per-agent key;
 - apps-bridge builder-mode app links (`apps-bridge/src/bridge-call.ts:166`, `:307`). Viewer mode stays creator-only (`:308`).
 
+One caller must NOT follow it: the routine receiver's access read (`GET /settings/routines/:agentId/receiver-access`, routines-admin-routes `receiverAccess`). It used to ask `agents:can-manage-connectors`, so widening that would tell a co-owner "allowed" while the token write (`agents:ensure-webhook-token`) refuses them. It now asks `agents:can-manage-webhook-token`, which shares one predicate (`webhookTokenAllowed`) with the rotate and ensure hooks: the token stays the creator's.
+
 In this card, co-owners and the audience can't chat with the agent yet: memory refuses non-creators (`memory/src/access.ts:66`), so a k8s sandbox open fails. Card C fixes that.
 
 ---

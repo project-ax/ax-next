@@ -42,6 +42,8 @@ import {
   GetDisplayNameInputSchema,
   GetDisplayNameOutputSchema,
   CanManageRoutinesOutputSchema,
+  CanManageWebhookTokenInputSchema,
+  CanManageWebhookTokenOutputSchema,
   AgentsResolveAuthoredSkillsOutputSchema,
   IdentityCompleteBootstrapOutputSchema,
   IdentityGetOutputSchema,
@@ -160,6 +162,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:resolve-by-webhook-token',
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
+        'agents:can-manage-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:attach-connector',
@@ -428,6 +431,29 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           await localStore.setWebhookToken(input.agentId, token);
           return { token };
         },
+      );
+
+      // TASK-1246 — the predicate the two token hooks above enforce
+      // ({@link webhookTokenAllowed}), exposed so the routine receiver's access
+      // read answers exactly what `ensure` will do. Not
+      // agents:can-manage-connectors: that one also says yes to a personal
+      // agent's co-owners, who are refused the token. `false` for anyone the
+      // token hooks refuse; a missing agent is `not-found`.
+      bus.registerService(
+        'agents:can-manage-webhook-token',
+        PLUGIN_NAME,
+        async (ctx, raw) => {
+          const input = CanManageWebhookTokenInputSchema.parse(raw);
+          const existing = await getForConnectorEdit(
+            localStore,
+            input.agentId,
+            'agents:can-manage-webhook-token',
+          );
+          return {
+            allowed: await webhookTokenAllowed(existing, bus, ctx, input.actor, callerFacts),
+          };
+        },
+        { returns: CanManageWebhookTokenOutputSchema },
       );
 
       bus.registerService<{ skillId: string }, { attached: boolean }>(
@@ -1376,8 +1402,10 @@ async function assertConnectorsManageAllowed(
 }
 
 /**
- * May `actor` rotate or read (`ensure`) `agent`'s webhook token? Whoever holds
- * the token can fire the agent's routines, so:
+ * May `actor` rotate or read (`ensure`) `agent`'s webhook token? The one rule
+ * behind both token hooks and `agents:can-manage-webhook-token`, the read a
+ * caller asks before showing the affordance. Whoever holds the token can fire
+ * the agent's routines, so:
  *
  *   - a workspace admin: always (existing);
  *   - a personal agent: its creator only (`ownerId`), never a co-owner

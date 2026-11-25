@@ -138,6 +138,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:resolve-by-webhook-token',
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
+        'agents:can-manage-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:attach-connector',

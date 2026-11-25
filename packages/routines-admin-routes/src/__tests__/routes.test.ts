@@ -137,7 +137,7 @@ function setup(
     'tool-policy:get-routine-consent': { enabled: false, revision: 'c1' },
     'tool-policy:revoke-routine-consent': { enabled: false, revision: 'c2' },
     'agents:ensure-webhook-token': { token: 'authorized-token' },
-    'agents:can-manage-connectors': { allowed: true },
+    'agents:can-manage-webhook-token': { allowed: true },
     'routines:list-defaults': { defaults: [] },
     'routines:get-default': {
       ...defaultDefinition,
