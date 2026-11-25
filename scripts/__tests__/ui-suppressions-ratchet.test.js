@@ -30,6 +30,15 @@ const A = 'packages/channel-web/src/A.tsx';
 const B = 'packages/channel-web/src/B.tsx';
 const ON2 = '--suppress-rule ax-ui/no-style-prop --suppress-rule ax-ui/no-arbitrary-values';
 const ON4 = `${ON2} --suppress-rule ax-ui/no-classname --suppress-rule ax-ui/no-raw-elements`;
+// Severities in the channel-web block of eslint.config.mjs. The ratchet reads
+// these (not the script) to decide whether a rule was switched on.
+const SEV2 = { 'ax-ui/no-style-prop': 'error', 'ax-ui/no-arbitrary-values': 'error' };
+const SEV4 = { ...SEV2, 'ax-ui/no-classname': 'error', 'ax-ui/no-raw-elements': 'error' };
+
+function configText(rules) {
+  const lines = Object.entries(rules).map(([rule, sev]) => `      '${rule}': '${sev}',`);
+  return `export default [{\n  rules: {\n${lines.join('\n')}\n  },\n}];\n`;
+}
 
 function supp(entries) {
   // entries: { file: { rule: count } }
@@ -42,7 +51,7 @@ function supp(entries) {
 }
 
 /**
- * Commit `base` then `head` (each `{ suppressions?: object|null, script?: string, files?: string[] }`)
+ * Commit `base` then `head` (each `{ suppressions?: object|null, script?: string, rules?: {rule: severity}, configText?: string, files?: string[] }`)
  * and return { repo, baseSha }.
  */
 function repoWith(base, head) {
@@ -62,6 +71,7 @@ function repoWith(base, head) {
       join(repo, 'package.json'),
       JSON.stringify({ scripts: { 'lint:ui:suppress': `eslint src ${state.script ?? ON2}` } }),
     );
+    writeFileSync(join(repo, 'eslint.config.mjs'), state.configText ?? configText(state.rules ?? SEV2));
     if (state.suppressions === null || state.suppressions === undefined) {
       rmSync(join(repo, 'eslint-suppressions.json'), { force: true });
     } else {
@@ -141,17 +151,40 @@ describe('ui-suppressions-ratchet', () => {
     expect(run(repo, [], { BASE_SHA: baseSha }).status).toBe(1);
   });
 
-  it('a rule switched on in this range (added to lint:ui:suppress) may carry a total', () => {
+  it('a rule switched on in this range (base off, head error) may carry a total', () => {
     const { repo, baseSha } = repoWith(
-      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2 },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
       {
         suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } },
         script: ON4,
+        rules: SEV4,
       },
     );
     const r = run(repo, [baseSha]);
     expect(r.status).toBe(0);
     expect(r.out).toContain('ax-ui/no-classname switched on');
+  });
+
+  it('a rule absent from the base config counts as off', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } }, script: ON4, rules: SEV4 },
+    );
+    expect(run(repo, [baseSha]).status).toBe(0);
+  });
+
+  it('a rise on a rule already error at the base fails (the two-PR bypass: dropped from the script, then re-added higher)', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV4 },
+      {
+        suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } },
+        script: ON4,
+        rules: SEV4,
+      },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname: total went up — base 0, head 40');
   });
 
   it('a rule already on at the base may not come back after being fully pruned', () => {
@@ -165,6 +198,63 @@ describe('ui-suppressions-ratchet', () => {
     const r = run(repo, [baseSha]);
     expect(r.status).toBe(1);
     expect(r.out).toContain('ax-ui/no-arbitrary-values: total went up — base 0, head 1');
+  });
+
+  it('warn at the base is not off: a rise fails', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: { ...SEV4, 'ax-ui/no-classname': 'warn' } },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
+    );
+    expect(run(repo, [baseSha]).status).toBe(1);
+  });
+
+  it('a rule that is off at HEAD may not rise', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+    );
+    expect(run(repo, [baseSha]).status).toBe(1);
+  });
+
+  it('quoted rule ids in the script parse (switch-on still recognised)', () => {
+    const quoted = `${ON2} --suppress-rule "ax-ui/no-classname" --suppress-rule 'ax-ui/no-raw-elements'`;
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+      {
+        suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4, 'ax-ui/no-raw-elements': 3 } },
+        script: quoted,
+        rules: SEV4,
+      },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('ax-ui/no-raw-elements switched on');
+  });
+
+  it('a switched-on rule missing from lint:ui:suppress fails', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } }, script: ON2, rules: SEV4 },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname');
+    expect(r.out).toContain('lint:ui:suppress');
+  });
+
+  it('an unparseable severity at HEAD fails closed, naming the rule', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+      {
+        suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } },
+        script: ON4,
+        configText: "export default [{ rules: { 'ax-ui/no-classname': sev } }];\n",
+      },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname');
+    expect(r.out).toContain('severity');
   });
 
   it('fails closed on an unresolvable base or none at all', () => {

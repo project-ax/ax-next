@@ -14,12 +14,16 @@
 // moving code between files is legal. It also fails if any key names a path
 // that does not exist at HEAD (delete that entry by hand).
 //
-// Switching a rule on is the one legitimate way for a total to rise: the step
-// that ships a rule's replacements adds it to the root package.json
-// `lint:ui:suppress` script and regenerates the file. A rule that is in that
-// script at HEAD but NOT at the base is treated as switched on in this range and
-// may carry any total. A rule already in the base script may not grow, even if
-// its entries had all been fixed and pruned.
+// Switching a rule on is the one legitimate way for a total to rise: the PR
+// that ships a rule's replacements flips it from 'off' (or absent) to 'error'
+// in the channel-web block of eslint.config.mjs, adds it to the root
+// package.json `lint:ui:suppress` script, and regenerates the file. So a rule's
+// total may rise only if its severity in that block is 'off' (or the rule is
+// absent) at the base and 'error' at HEAD, and the rule is in the HEAD script.
+// A rule already on at the base may not grow, even if its entries had all been
+// fixed and pruned. (Keying on the script instead would let a rule be dropped
+// from it in one PR and re-added at a higher count in the next.) A severity
+// that cannot be read at HEAD fails closed.
 //
 // Usage:
 //   node scripts/ui-suppressions-ratchet.mjs <base-ref>
@@ -85,7 +89,22 @@ function suppressScriptRules(ref) {
     return new Set();
   }
   if (typeof script !== 'string') return new Set();
-  return new Set([...script.matchAll(/--suppress-rule[=\s]+(\S+)/g)].map((m) => m[1]));
+  return new Set(
+    [...script.matchAll(/--suppress-rule[=\s]+(\S+)/g)].map((m) => m[1].replace(/^(["'])(.*)\1$/, '$2')),
+  );
+}
+
+/**
+ * A rule's severity in `eslint.config.mjs` at `ref`: 'off' | 'warn' | 'error',
+ * or null when no `'<rule>': '<severity>'` entry can be read (absent, or not a
+ * string literal).
+ */
+function severity(ref, rule) {
+  const text = show(ref, 'eslint.config.mjs');
+  if (text === null) return null;
+  const escaped = rule.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`'${escaped}':\\s*'(off|warn|error)'`).exec(text);
+  return m ? m[1] : null;
 }
 
 const baseRef = process.argv[2] || process.env.BASE_SHA;
@@ -123,15 +142,30 @@ if (baseText === null) {
 } else {
   const before = totals(parseSuppressions(baseText, base));
   const after = totals(head);
-  const switchedOn = suppressScriptRules('HEAD');
-  for (const rule of suppressScriptRules(base)) switchedOn.delete(rule);
+  const scriptRules = suppressScriptRules('HEAD');
 
   for (const rule of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const b = before.get(rule) ?? 0;
     const h = after.get(rule) ?? 0;
     if (h <= b) continue;
-    if (switchedOn.has(rule)) {
-      process.stdout.write(`${TAG}: ${rule} switched on in this range: frozen ${h} (base ${b}).\n`);
+    const was = severity(base, rule) ?? 'off'; // absent counts as off
+    const now = severity('HEAD', rule);
+    if (now === null) {
+      problems.push(
+        `${rule}: total went up (base ${b}, head ${h}) and its severity in eslint.config.mjs at HEAD ` +
+          `cannot be read (expected a literal 'off' | 'warn' | 'error'). Failing closed.`,
+      );
+      continue;
+    }
+    if (was === 'off' && now === 'error') {
+      if (scriptRules.has(rule)) {
+        process.stdout.write(`${TAG}: ${rule} switched on in this range: frozen ${h} (base ${b}).\n`);
+      } else {
+        problems.push(
+          `${rule}: switched on in this range but missing from the lint:ui:suppress script in package.json, ` +
+            `so its frozen total (${h}) cannot be regenerated. Add --suppress-rule ${rule}.`,
+        );
+      }
       continue;
     }
     problems.push(
