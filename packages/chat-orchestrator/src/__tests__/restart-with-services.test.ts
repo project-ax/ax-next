@@ -85,6 +85,8 @@ async function setup(opts: {
   openSessionThrowsOn?: number | readonly number[];
   /** A failing open throws a plain error, with no diagnosis. */
   openSessionPlainError?: boolean;
+  /** Register agents:identity:get, answering this first-run state (read at each spawn). */
+  identityBootstrap?: { current: 'none' | 'pending' | 'done' };
   /** The gated open's session is alive while it opens (k8s: session:create runs inside the open). */
   aliveWhileOpening?: boolean;
   /** Hold the host-note's session:queue-work until this resolves (it lands in the inbox after). */
@@ -101,8 +103,8 @@ async function setup(opts: {
   }
   const row = (id: string): Row => (rows[id] ??= { activeSessionId: null, activeReqId: null, serviceSet: null });
   const live = new Set<string>();
-  /** Every sandbox:open-session: its session, the services it folds, and its system-prompt augment. */
-  const opens: Array<{ sessionId: string; services?: Array<{ name: string }>; augment: string }> = [];
+  /** Every sandbox:open-session: its session, the services it folds, its system-prompt augment, and whether it opens in first-run setup. */
+  const opens: Array<{ sessionId: string; services?: Array<{ name: string }>; augment: string; bootstrap?: true }> = [];
   const openThrows = (n: number): boolean =>
     typeof opts.openSessionThrowsOn === 'number'
       ? opts.openSessionThrowsOn === n
@@ -183,12 +185,13 @@ async function setup(opts: {
       const i = input as {
         sessionId: string;
         services?: Array<{ name: string }>;
-        owner?: { agentConfig?: { systemPromptAugment?: string } };
+        owner?: { agentConfig?: { systemPromptAugment?: string; identity?: { bootstrapMode?: boolean } } };
       };
       opens.push({
         sessionId: i.sessionId,
         ...(i.services !== undefined ? { services: i.services } : {}),
         augment: i.owner?.agentConfig?.systemPromptAugment ?? '',
+        ...(i.owner?.agentConfig?.identity?.bootstrapMode === true ? { bootstrap: true as const } : {}),
       });
       const n = opens.length;
       if (opts.openGate !== undefined && opts.openGate.on === n) {
@@ -208,6 +211,13 @@ async function setup(opts: {
       handles.set(i.sessionId, hk);
       return { runnerEndpoint: 'unix:///tmp/x.sock', handle: hk.handle };
     },
+    ...(opts.identityBootstrap !== undefined
+      ? {
+          'agents:identity:get': async () => ({
+            identity: '', soul: '', instructions: '', bootstrap: opts.identityBootstrap!.current,
+          }),
+        }
+      : {}),
     'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
     'proxy:close-session': async () => ({}),
     // The tool catalog (@ax/mcp-client's dispatcher): what agents are offered.
@@ -695,7 +705,14 @@ describe('restart_with_services (dev services on demand)', () => {
     // conv-c had its set on; its sandbox was reaped; the agent is at its cap.
     const pc = t.invoke('s-c', 'conv-c', 'req-c');
     await waitFor(() => t.queued.filter((q) => q.entry.type === 'user-message').length === 2, 'turn c');
-    expect(t.opens.at(-1)).toEqual({ sessionId: 's-c', augment: expect.any(String) }); // no services
+    // No services, and a prompt that only offers the set: nothing else.
+    expect(t.opens.at(-1)).toEqual({
+      sessionId: 's-c',
+      augment:
+        'Service sets you can start with restart_with_services: "e2e" ("e2e": mongo). Starting one ' +
+        'restarts your sandbox inside this turn, so save your work first (push your branch, or write to ' +
+        '/files). Turn them off with stop_services.',
+    });
     expect(t.row('conv-c').serviceSet).toBeNull();
     expect(t.setServiceSetCalls.at(-1)).toEqual({ conversationId: 'conv-c', userId: AGENT.ownerId, serviceSet: null });
     await t.emitTurnEnd('s-c', 'conv-c', 'req-c', 'assistant');
@@ -1120,6 +1137,27 @@ describe('restart_with_services: a failed services open is told to the agent (TA
     );
     expect(next.open.augment).not.toContain('boom');
     await endTurn(t, next.open.sessionId, 'req-2', next.p);
+  });
+
+  it('a sandbox in first-run setup leaves the notice for the first sandbox that can hear it', async () => {
+    // Bootstrap mode: the runner shows only the bootstrap augment, never the
+    // system-prompt augment the notice rides, so that sandbox must not spend it.
+    const identityBootstrap: { current: 'none' | 'pending' | 'done' } = { current: 'pending' };
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } }, identityBootstrap });
+    expect(await t.invoke('s-1', 'conv-1', 'req-1')).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+
+    const setupTurn = await spawnTurn(t, 'req-2');
+    expect(setupTurn.open.bootstrap).toBe(true);
+    expect(setupTurn.open.augment).not.toContain(NOTICE);
+    await endTurn(t, setupTurn.open.sessionId, 'req-2', setupTurn.p);
+
+    // First-run setup is done: the next sandbox opens in normal mode and hears it.
+    identityBootstrap.current = 'done';
+    await exitSandbox(t, setupTurn.open.sessionId);
+    const normal = await spawnTurn(t, 'req-3');
+    expect(normal.open.bootstrap).toBeUndefined();
+    expect(normal.open.augment).toContain('dev service "mongo" failed (read-only filesystem)');
+    await endTurn(t, normal.open.sessionId, 'req-3', normal.p);
   });
 
   it('a failed open that carried no service set leaves no notice', async () => {

@@ -5437,9 +5437,14 @@ export function createOrchestrator(
     // member's turn. Not to a sandbox that folds that same set again: "this
     // sandbox has none of its services" would be false there. Its open
     // succeeding means the set starts now, so the entry goes all the same.
+    // Nor in first-run setup (bootstrap mode): the runner shows that sandbox
+    // only the bootstrap augment, so it can't hear the notice and must not
+    // spend it; the entry stays for the first sandbox in normal mode.
     // Kept here, for the open below: only this entry is consumed there.
     const serviceSetFailure =
-      ctx.conversationId !== undefined && !isOutsiderTurn(ctx)
+      ctx.conversationId !== undefined &&
+      !isOutsiderTurn(ctx) &&
+      agentConfig.identity?.bootstrapMode !== true
         ? serviceSetFailureByConversation.get(ctx.conversationId)
         : undefined;
     const serviceSetFailureLine =
