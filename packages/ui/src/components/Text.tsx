@@ -12,10 +12,11 @@ export interface TextProps {
 }
 
 const ROLE: Record<TextRoleName, string> = {
-  body: 'ax-text-body ax-text-fg',
-  'body-strong': 'ax-text-body-strong ax-text-fg',
-  meta: 'ax-text-meta ax-text-fg-muted',
-  caption: 'ax-text-caption ax-text-fg-subtle',
+  body: 'ax-text-body ax-text-fg ax-font-sans',
+  'body-strong': 'ax-text-body-strong ax-text-fg ax-font-sans',
+  meta: 'ax-text-meta ax-text-fg-muted ax-font-sans',
+  // fg-muted, not fg-subtle: subtle is under 4.5:1 on light surfaces, too faint for 12px text (ruling R7).
+  caption: 'ax-text-caption ax-text-fg-muted ax-font-sans',
   code: 'ax-text-code ax-text-fg ax-font-mono',
 };
 

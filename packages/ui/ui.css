@@ -113,6 +113,9 @@
 .ax-font-mono {
     font-family: var(--ax-font-mono)
 }
+.ax-font-sans {
+    font-family: var(--ax-font-sans)
+}
 .ax-text-body {
     font-size: var(--ax-text-body-size);
     line-height: var(--ax-text-body-line);
@@ -165,10 +168,6 @@
 .ax-text-fg-muted {
     --tw-text-opacity: 1;
     color: hsl(var(--ax-fg-muted) / var(--tw-text-opacity, 1))
-}
-.ax-text-fg-subtle {
-    --tw-text-opacity: 1;
-    color: hsl(var(--ax-fg-subtle) / var(--tw-text-opacity, 1))
 }
 @media (min-width: 768px) {
     .md\:ax-grid-cols-1 {

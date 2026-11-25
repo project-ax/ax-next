@@ -11,10 +11,10 @@ export interface HeadingProps {
 }
 
 const ROLE: Record<HeadingRole, string> = {
-  display: 'ax-text-display',
-  title: 'ax-text-title',
-  heading: 'ax-text-heading',
-  subheading: 'ax-text-subheading',
+  display: 'ax-text-display ax-font-sans',
+  title: 'ax-text-title ax-font-sans',
+  heading: 'ax-text-heading ax-font-sans',
+  subheading: 'ax-text-subheading ax-font-sans',
 };
 
 const TAGS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
