@@ -46,6 +46,30 @@ tester.run('no-classname', plugin.rules['no-classname'], {
   ],
 });
 
+const INTRINSIC = [{ intrinsicOnly: true }];
+tester.run('no-classname (intrinsicOnly)', plugin.rules['no-classname'], {
+  valid: [
+    { code: 'const a = <Button className="x" />;', options: INTRINSIC },
+    { code: 'const a = <Foo.Bar className="x" />;', options: INTRINSIC },
+    { code: 'const a = <foo.bar className="x" />;', options: INTRINSIC },
+    { code: 'const a = <Card class="x" />;', options: INTRINSIC },
+    { code: 'const a = <Button className={x} />;', options: INTRINSIC, languageOptions: tsLanguageOptions, filename: 'a.tsx' },
+  ],
+  invalid: [
+    { code: 'const a = <div className="x" />;', options: INTRINSIC, errors: [{ messageId: 'noClassname' }] },
+    { code: 'const a = <span class="x" />;', options: INTRINSIC, errors: [{ messageId: 'noClassname' }] },
+    { code: 'const a = <button className="x" />;', options: INTRINSIC, errors: [{ messageId: 'noClassname' }] },
+    { code: 'const a = <Stack className="x" />;', options: [{ intrinsicOnly: false }], errors: [{ messageId: 'noClassname' }] },
+    {
+      code: 'const a = <p className={x}>hi</p>;',
+      options: INTRINSIC,
+      languageOptions: tsLanguageOptions,
+      filename: 'a.tsx',
+      errors: [{ messageId: 'noClassname' }],
+    },
+  ],
+});
+
 tester.run('no-style-prop', plugin.rules['no-style-prop'], {
   valid: [{ code: 'const a = <Stack gap="md" />;' }],
   invalid: [
@@ -82,6 +106,31 @@ tester.run('no-raw-elements', plugin.rules['no-raw-elements'], {
       languageOptions: tsLanguageOptions,
       filename: 'a.tsx',
       errors: [{ message: /Stack/ }],
+    },
+  ],
+});
+
+const NARROW = [{ elements: ['div', 'span', 'p', 'h2', 'h3', 'h4', 'h5', 'h6'] }];
+tester.run('no-raw-elements (elements option)', plugin.rules['no-raw-elements'], {
+  valid: [
+    { code: 'const a = <button />;', options: NARROW },
+    { code: 'const a = <input />;', options: NARROW },
+    { code: 'const a = <ul><li /></ul>;', options: NARROW },
+    { code: 'const a = <section />;', options: NARROW },
+    { code: 'const a = <h1>t</h1>;', options: NARROW },
+    { code: 'const a = <table />;', options: NARROW, languageOptions: tsLanguageOptions, filename: 'a.tsx' },
+  ],
+  invalid: [
+    { code: 'const a = <div />;', options: NARROW, errors: [{ message: /Stack/ }] },
+    { code: 'const a = <span />;', options: NARROW, errors: [{ message: /Text/ }] },
+    { code: 'const a = <h4>t</h4>;', options: NARROW, errors: [{ message: /Heading/ }] },
+    { code: 'const a = <button />;', options: [{ elements: ['button'] }], errors: [{ message: /IconButton/ }] },
+    {
+      code: 'const a = <p>x</p>;',
+      options: NARROW,
+      languageOptions: tsLanguageOptions,
+      filename: 'a.tsx',
+      errors: [{ message: /Text/ }],
     },
   ],
 });

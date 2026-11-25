@@ -15,17 +15,30 @@ export default {
   meta: {
     type: 'problem',
     docs: { description: 'Disallow raw layout/text/form elements in app UI code.' },
-    schema: [],
+    // `elements` narrows the check to the tags whose replacements have
+    // shipped (the list widens per area in S3–S6; see the roadmap). Omitted =
+    // every tag below.
+    schema: [
+      {
+        type: 'object',
+        properties: {
+          elements: { type: 'array', items: { enum: Object.keys(REPLACEMENTS) }, uniqueItems: true },
+        },
+        additionalProperties: false,
+      },
+    ],
     messages: {
       noRawElement: 'Raw <{{tag}}> is not allowed in app UI. Use {{replacement}} from @project-ax/ui.',
     },
   },
   create(context) {
+    const only = context.options[0]?.elements;
+    const checked = new Set(only ?? Object.keys(REPLACEMENTS));
     return {
       JSXOpeningElement(node) {
         if (node.name.type !== 'JSXIdentifier') return;
         const tag = node.name.name;
-        if (!Object.hasOwn(REPLACEMENTS, tag)) return;
+        if (!checked.has(tag)) return;
         context.report({ node, messageId: 'noRawElement', data: { tag, replacement: REPLACEMENTS[tag] } });
       },
     };

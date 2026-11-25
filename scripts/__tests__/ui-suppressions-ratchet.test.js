@@ -393,7 +393,7 @@ describe('ui-suppressions-ratchet', () => {
 
   it('a present-but-unparseable severity at the base fails closed, naming the rule', () => {
     const { repo, baseSha } = repoWith(
-      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': { raw: "['error', {}]" } } },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': { raw: 'sev' } } },
       { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } }, script: ON4, rules: SEV4 },
     );
     const r = run(repo, [baseSha]);
@@ -401,6 +401,73 @@ describe('ui-suppressions-ratchet', () => {
     expect(r.out).toContain('ax-ui/no-classname');
     expect(r.out).toContain('base');
     expect(r.out).toContain('severity');
+  });
+
+  it('array-form severity at HEAD reads its first element (switch-on with options)', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+      {
+        suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4, 'ax-ui/no-raw-elements': 3 } },
+        script: ON4,
+        rules: {
+          ...SEV2,
+          'ax-ui/no-classname': { raw: "['error', { intrinsicOnly: true }]" },
+          'ax-ui/no-raw-elements': { raw: '[\n        "error",\n        { elements: [\'div\', \'span\'] },\n      ]' },
+        },
+      },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('ax-ui/no-classname switched on');
+    expect(r.out).toContain('ax-ui/no-raw-elements switched on');
+  });
+
+  it('array-form severity at the base reads its first element (error at base: a rise fails)', () => {
+    const { repo, baseSha } = repoWith(
+      {
+        suppressions: { [A]: { 'ax-ui/no-classname': 4 } },
+        script: ON4,
+        rules: { ...SEV4, 'ax-ui/no-classname': { raw: "['error', { intrinsicOnly: true }]" } },
+      },
+      {
+        suppressions: { [A]: { 'ax-ui/no-classname': 5 } },
+        script: ON4,
+        rules: { ...SEV4, 'ax-ui/no-classname': { raw: "['error', { intrinsicOnly: true }]" } },
+      },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname: total went up — base 4, head 5');
+  });
+
+  it('array-form off at the base, plain error at HEAD is a switch-on', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: { ...SEV4, 'ax-ui/no-classname': { raw: "['off', {}]" } } },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
+    );
+    expect(run(repo, [baseSha]).status).toBe(0);
+  });
+
+  it('array-form error -> array-form warn with frozen entries is a downgrade', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': { raw: "['error', {}]" } } },
+      { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': { raw: '["warn", {}]' } } },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain("from 'error' to 'warn'");
+  });
+
+  it('an array whose first element is not a severity literal stays unreadable', () => {
+    for (const raw of ['[sev, {}]', "[ 'fatal', {} ]", '[2, {}]', '[]']) {
+      const { repo, baseSha } = repoWith(
+        { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON2, rules: SEV2 },
+        { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } }, script: ON4, rules: { ...SEV2, 'ax-ui/no-classname': { raw } } },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status, raw).toBe(1);
+      expect(r.out, raw).toContain('cannot be read');
+    }
   });
 
   it('fails closed on an unresolvable base or none at all', () => {

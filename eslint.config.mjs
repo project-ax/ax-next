@@ -310,8 +310,13 @@ export default tseslint.config(
     // invariant-2 entry above.
     //
     // Rules switch on as their replacements ship (ruling R15, 2026-11-24).
-    // no-arbitrary-values, no-style-prop, no-classname and no-raw-elements are
-    // on, with existing violations frozen. no-internal-imports turns on per
+    // no-arbitrary-values and no-style-prop are on in full. no-classname and
+    // no-raw-elements are on only as far as replacements have shipped
+    // (ruling R12): className on intrinsic (lowercase) elements, and the raw
+    // tags Stack / Inline / Text / Heading replace. The element list and
+    // component className widen as replacements ship, per area in S3–S6; S8
+    // ends with the full lists. Existing violations are frozen either way.
+    // no-internal-imports turns on per
     // area as S3–S6 replace each shadcn primitive. Each switch-on adds its rule
     // to the root `lint:ui:suppress` script and regenerates
     // eslint-suppressions.json. See
@@ -322,8 +327,9 @@ export default tseslint.config(
     rules: {
       'ax-ui/no-arbitrary-values': 'error',
       'ax-ui/no-style-prop': 'error',
-      'ax-ui/no-classname': 'error',
-      'ax-ui/no-raw-elements': 'error',
+      // Narrowed to shipped replacements; widens per area in S3–S6 (roadmap).
+      'ax-ui/no-classname': ['error', { intrinsicOnly: true }],
+      'ax-ui/no-raw-elements': ['error', { elements: ['div', 'span', 'p', 'h2', 'h3', 'h4', 'h5', 'h6'] }],
       'ax-ui/no-internal-imports': 'off', // S3–S6, per area
     },
   },

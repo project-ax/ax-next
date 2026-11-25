@@ -15,7 +15,10 @@
 - Migrated files: removed from `eslint-suppressions.json` with `pnpm lint:ui:prune`; the suppression count only
   goes down.
 - UI lint rules switch on as their replacements ship (ruling R15: S1 = `no-arbitrary-values` + `no-style-prop`;
-  S2a = `no-classname` + `no-raw-elements`; S3–S6 = `no-internal-imports`, per area). Each switch-on adds its rule
+  S2a = `no-classname` on intrinsic elements only + `no-raw-elements` for `div`/`span`/`p`/`h2`–`h6`, the tags
+  S2a's components replace (ruling R12); S3–S6 = `no-internal-imports`, per area, and each area widens the
+  `no-raw-elements` element list and extends `no-classname` to the components it replaces; S8 ends with the full
+  lists). Each switch-on adds its rule
   to the root `lint:ui:suppress` script and regenerates `eslint-suppressions.json` — the CI ratchet
   (`scripts/ui-suppressions-ratchet.mjs`) lets a rule's total rise only in the PR that flips its severity in
   `eslint.config.mjs` from `off` to `error`. S1 and S2a are on; S3–S6 are still to come.
@@ -33,7 +36,7 @@
 | Card | Scope | Depends on | Done when |
 |---|---|---|---|
 | **S1 Foundation** | `@project-ax/ui` scaffold, tokens, generated `theme.css`, contrast test, channel-web consumes `theme.css` through legacy aliases, `@project-ax/eslint-plugin-ui` (className/style/raw-elements/arbitrary/imports) with ESLint bulk suppressions on channel-web, write guard hook + lint hook, CODEOWNERS | — | Step-1 plan's tasks pass; channel-web renders identically; a new arbitrary value or `style` in channel-web fails `pnpm lint` |
-| **S2a Build + stories infra** | Restricted Tailwind preset (`prefix: 'ax-'`, token scales only), generated `base.css` + `ui.css`, Storybook (react-vite) + axe + Playwright story screenshots in CI. Ships with `Text`, `Heading`, `Stack`, `Inline`, `Grid`, `Divider` and their stories; switch on `ax-ui/no-classname` + `ax-ui/no-raw-elements` (regenerate suppressions) | S1 | Stories pass axe; screenshot baseline committed; preset test proves `p-4` is not generated |
+| **S2a Build + stories infra** | Restricted Tailwind preset (`prefix: 'ax-'`, token scales only), generated `ui.css`, Storybook (react-vite) + axe + Playwright story screenshots in CI (Storybook's `preview.css` supplies the base layer). Ships with `Text`, `Heading`, `Stack`, `Inline`, `Grid`, `Divider` and their stories; switch on `ax-ui/no-classname` (intrinsic elements only) + `ax-ui/no-raw-elements` (`div`/`span`/`p`/`h2`–`h6`) and regenerate suppressions — the element list and component `className` widen per area in S3–S6, and S8 ends with the full lists | S1 | Stories pass axe; screenshot baseline committed; preset test proves `p-4` is not generated |
 | **S2b Text + layout migration** | Replace the 15 most-repeated class strings app-wide (`text-sm text-muted-foreground` ×87, `flex flex-col gap-2` ×52, …) with `Text`/`Stack`/`Inline` | S2a | Suppression count drops by the migrated occurrences; no visual diff beyond the §5.1 type-scale collapse (screenshots) |
 | **S2c Composites escape hatch** | `CustomSection` (`reason`) + `defineComposite({name,purpose,render})` + lint rules `custom-section`, `composites-only-preset`; channel-web `src/composites/` created. First caller: move one existing bespoke widget behind `CustomSection` (no half-wired export) | S2a | A `CustomSection` with no `reason`, or wrapping anything but one composite, fails lint; Tailwind outside `src/composites/` fails lint |
 | **S3 States + feedback** | `AsyncState`, `EmptyState`, `Notice`, `Toast`, `Button` (`intent`, `size`, `busy`), `IconButton`, `ConfirmAction`. Migrate every loading/error/empty/confirm site; delete PaneStatus, ReadFailure, ReadError×2, LoadingRows×2, Note×2, SectionNote, the 3 LoadFailures, the 3 `Busy` copies, private ConfirmDialog. Add confirms to Revoke and site Remove (rule 5) | S2a | §6.3 rules 5 + 7 hold app-wide; retry copy is "Try again" everywhere |

@@ -157,8 +157,9 @@ function channelWebBlock(text) {
  * A rule's severity in the channel-web block of `eslint.config.mjs` at `ref`:
  * 'off' | 'warn' | 'error'; 'absent' when the rule id is not in the block (or
  * there is no block/file); 'unreadable' when the id is there but its value is
- * not a plain severity string (e.g. `['error', {...}]`), the id occurs more
- * than once (ESLint applies the last), or several blocks match the glob.
+ * neither a plain severity string nor an array whose first element is one
+ * (`['error', {...}]` reads 'error'), the id occurs more than once (ESLint
+ * applies the last), or several blocks match the glob.
  */
 function severity(ref, rule) {
   const text = show(ref, 'eslint.config.mjs');
@@ -169,8 +170,14 @@ function severity(ref, rule) {
   const occurrences = block.match(new RegExp(`(['"])${escaped}\\1`, 'g'))?.length ?? 0;
   if (occurrences === 0) return 'absent';
   if (occurrences > 1) return 'unreadable';
-  const m = new RegExp(`(['"])${escaped}\\1\\s*:\\s*(['"])(off|warn|error)\\2\\s*[,}\\s]`).exec(block);
-  return m ? m[3] : 'unreadable';
+  // A plain string, or the array form `['error', { ...options }]` whose first
+  // element is the severity. Anything else fails closed.
+  const m = new RegExp(`(['"])${escaped}\\1\\s*:\\s*(\\[)?\\s*(['"])(off|warn|error)\\3\\s*([,}\\]])`).exec(block);
+  if (!m) return 'unreadable';
+  const array = m[2] === '[';
+  // Plain: the value ends at ',' or '}'. Array: the severity is followed by ',' or ']'.
+  if (array ? m[5] === '}' : m[5] === ']') return 'unreadable';
+  return m[4];
 }
 
 const baseRef = process.argv[2] || process.env.BASE_SHA;

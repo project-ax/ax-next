@@ -429,8 +429,10 @@ are *errors* in channel-web. Existing violations are frozen in `eslint-suppressi
 suppressions), and the CI ratchet (`scripts/ui-suppressions-ratchet.mjs`) only lets them go down; a rule's frozen
 total may rise only in the PR that switches the rule on. Feature cards that touch an
 unmigrated file may leave its existing violations alone but must not add new ones. Rules switch on as their
-replacements ship (S1: arbitrary values and style; S2a: className and raw elements; S3–S6: internal shadcn imports,
-per area) — there is nothing to comply with before then (ruling 2026-11-24).
+replacements ship (S1: arbitrary values and style; S2a: className on intrinsic elements only, and raw
+`div`/`span`/`p`/`h2`–`h6`; S3–S6: internal shadcn imports per area, and each area widens the raw-element list and
+extends the className ban to the components it replaces; S8 ends with the full lists) — there is nothing to
+comply with before then (rulings 2026-11-24, R12).
 
 Steps 3–7 can split by surface (admin/settings/routines vs workspace/today/tasks) to run in parallel through
 auto-ship; the component lands with whichever surface PR gets there first, and the other rebases onto it.
