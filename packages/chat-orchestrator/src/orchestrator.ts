@@ -1376,7 +1376,7 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * before the orchestrator's own bound. A reviewer showed that does not hold:
  * the `chatTimeoutMs` timer is armed only AFTER setup — `chat:start`
  * subscribers, `agents:resolve`, `proxy:open-session` and `sandbox:open-session`
- * (registered `timeoutMs: 300_000` by both providers) — while the bus clock
+ * (each registered with its own timeout: a fixed 300 s on sandbox-subprocess; on sandbox-k8s the readiness budget plus overhead, which runs to minutes when a session has dev services) — while the bus clock
  * starts at handler entry. A three-minute cold pod spawn therefore still put
  * the bus deadline two minutes AHEAD of the orchestrator's, and now that
  * channel-web surfaces the rejection it would have killed a healthy streaming

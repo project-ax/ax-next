@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { PluginError } from '@ax/core';
+import { MAX_OPEN_SESSION_SERVICES } from '@ax/sandbox-protocol';
 
 export interface SharedPoolConfig {
   replicas: number; prefix: string; storageNamespace: string; tlsDirectory: string; serverName: string;
@@ -264,6 +265,19 @@ export function resolveConfig(
         'exactly one of proxySocketHostPath (hostPath/Unix socket) or proxyEndpoint (TCP Service) may be set — they are mutually exclusive proxy transports',
     });
   }
+  // TASK-1240 — both feed the open-session bus timeout (and so the readiness
+  // wait). NaN, a non-positive or an infinite value would make that clock
+  // fire at once or never; over an hour is a typo, not a policy.
+  for (const field of ['readinessTimeoutMs', 'perServiceColdStartMs'] as const) {
+    const value = raw[field];
+    if (value !== undefined && !(Number.isFinite(value) && value > 0 && value <= 3_600_000)) {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: '@ax/sandbox-k8s',
+        message: `${field} must be a positive number of milliseconds, at most one hour (got ${value})`,
+      });
+    }
+  }
   const resolved: ResolvedSandboxK8sConfig = {
     backend: raw.backend ?? 'pod',
     agentSandboxApiVersion: raw.agentSandboxApiVersion ?? 'v1beta1',
@@ -343,4 +357,52 @@ export function computeReadinessBudgetMs(args: {
 }): number {
   if (args.serviceCount <= 0) return args.baseTimeoutMs;
   return args.baseTimeoutMs + args.serviceCount * args.perServiceColdStartMs;
+}
+
+/**
+ * TASK-1240 — everything `sandbox:open-session` may spend beyond the readiness
+ * wait itself: the failure path's pod delete (kill.ts backs off up to 1.75 s
+ * per attempt, bounded by its own retries), the log reads that name a failing
+ * service, and the rest of the open. The mount-preparation pod has its own
+ * deadline, which `computeOpenSessionTimeoutMs` adds separately (it is
+ * `readinessTimeoutMs`).
+ */
+export const OPEN_SESSION_OVERHEAD_MS = 180_000;
+
+/**
+ * TASK-1240 — the bus timeout for ONE `sandbox:open-session` call. The handler
+ * waits for the pod for `computeReadinessBudgetMs` (which grows with the
+ * service count), and when that wait gives up it diagnoses the failing service
+ * and deletes the pod before throwing. The bus clock must outlast all of that,
+ * or the caller gets a bare `timeout` and the diagnosis is lost. So: the
+ * budget this call will use, plus the mount-preparation pod's own deadline
+ * (`readinessTimeoutMs`), plus `OPEN_SESSION_OVERHEAD_MS`. A service-less open
+ * comes to 300 s with the defaults.
+ *
+ * Takes the raw (pre-validation) input, because the bus resolves the timeout
+ * before the handler runs: a malformed input counts as service-less and never
+ * throws (the handler's own schema parse refuses it). The count is clamped to
+ * `MAX_OPEN_SESSION_SERVICES` so an oversized array cannot stretch the clock;
+ * the handler refuses it anyway.
+ */
+export function computeOpenSessionTimeoutMs(
+  config: Pick<ResolvedSandboxK8sConfig, 'readinessTimeoutMs' | 'perServiceColdStartMs'>,
+  input: unknown,
+): number {
+  const services =
+    typeof input === 'object' && input !== null
+      ? (input as { services?: unknown }).services
+      : undefined;
+  const count = Array.isArray(services)
+    ? Math.min(services.length, MAX_OPEN_SESSION_SERVICES)
+    : 0;
+  return (
+    computeReadinessBudgetMs({
+      baseTimeoutMs: config.readinessTimeoutMs,
+      serviceCount: count,
+      perServiceColdStartMs: config.perServiceColdStartMs,
+    }) +
+    config.readinessTimeoutMs +
+    OPEN_SESSION_OVERHEAD_MS
+  );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Plugin } from '@ax/core';
+import { HookBus, type Plugin } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -299,5 +299,22 @@ describe('createSandboxK8sPlugin — §11 host-read + cleanup wiring', () => {
     if (out.kind !== 'file') throw new Error('expected file');
     expect(Buffer.from(out.contents).toString('utf-8')).toBe('hello');
     await h.close();
+  });
+});
+
+describe('sandbox:open-session registration (TASK-1240)', () => {
+  it('registers sandbox:open-session with a timeout that follows the readiness budget (TASK-1240)', async () => {
+    const bus = new HookBus();
+    const spy = vi.spyOn(bus, 'registerService');
+    await createSandboxK8sPlugin({
+      api: makeMockK8sApi(),
+      hostIpcUrl: TEST_HOST_IPC_URL,
+      orphanSweepIntervalMs: 0,
+    }).init({ bus, config: {} });
+    const policy = spy.mock.calls.find((c) => c[0] === 'sandbox:open-session')![3]!.timeoutMs;
+    expect(typeof policy).toBe('function');
+    const fn = policy as (input: unknown) => number;
+    expect(fn({})).toBe(300_000);
+    expect(fn({ services: [{}, {}, {}] })).toBe(660_000);
   });
 });

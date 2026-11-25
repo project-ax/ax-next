@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { computeReadinessBudgetMs, resolveConfig } from '../config.js';
+import { MAX_OPEN_SESSION_SERVICES } from '@ax/sandbox-protocol';
+import {
+  computeOpenSessionTimeoutMs,
+  computeReadinessBudgetMs,
+  resolveConfig,
+} from '../config.js';
 
 describe('Agent Sandbox config', () => {
   const base = { hostIpcUrl: 'http://host:80', backend: 'agent-sandbox' as const };
@@ -154,4 +159,53 @@ describe('userFilesHostReadRoot (host-mounted host-read)', () => {
         .userFilesHostReadRoot,
     ).toBe('/user-files');
   });
+});
+
+describe('computeOpenSessionTimeoutMs (TASK-1240)', () => {
+  const C = { readinessTimeoutMs: 60_000, perServiceColdStartMs: 120_000 };
+  const svc = (n: number) => ({ services: Array.from({ length: n }, () => ({})) });
+
+  it('a service-less open keeps 300 s; each service adds its cold-start allowance (TASK-1240)', () => {
+    expect(computeOpenSessionTimeoutMs(C, {})).toBe(300_000);
+    expect(computeOpenSessionTimeoutMs(C, svc(3))).toBe(660_000);
+    expect(computeOpenSessionTimeoutMs(C, svc(16))).toBe(2_220_000);
+  });
+
+  it('always outlasts the readiness wait it backs up, by readinessTimeoutMs + 180 s', () => {
+    for (const cfg of [C, { readinessTimeoutMs: 600_000, perServiceColdStartMs: 300_000 }]) {
+      for (let n = 0; n <= MAX_OPEN_SESSION_SERVICES; n++) {
+        const budget = computeReadinessBudgetMs({
+          baseTimeoutMs: cfg.readinessTimeoutMs,
+          serviceCount: n,
+          perServiceColdStartMs: cfg.perServiceColdStartMs,
+        });
+        expect(computeOpenSessionTimeoutMs(cfg, svc(n)) - budget).toBe(
+          cfg.readinessTimeoutMs + 180_000,
+        );
+      }
+    }
+  });
+
+  it('clamps to MAX_OPEN_SESSION_SERVICES and counts a malformed input as service-less', () => {
+    expect(computeOpenSessionTimeoutMs(C, svc(40))).toBe(2_220_000);
+    for (const bad of [null, undefined, 'x', { services: 'x' }, { services: { length: 5 } }]) {
+      expect(computeOpenSessionTimeoutMs(C, bad)).toBe(300_000);
+    }
+  });
+});
+
+describe('resolveConfig readiness bounds (TASK-1240)', () => {
+  const hostIpcUrl = 'http://host:80';
+  it.each(['readinessTimeoutMs', 'perServiceColdStartMs'] as const)(
+    'refuses a %s that is not finite, not positive, or over an hour',
+    (field) => {
+      for (const bad of [NaN, 0, -1, Infinity, 3_600_001]) {
+        expect(() => resolveConfig({ hostIpcUrl, [field]: bad })).toThrow(
+          expect.objectContaining({ code: 'invalid-config' }),
+        );
+      }
+      expect(resolveConfig({ hostIpcUrl, [field]: 1 })[field]).toBe(1);
+      expect(resolveConfig({ hostIpcUrl, [field]: 3_600_000 })[field]).toBe(3_600_000);
+    },
+  );
 });

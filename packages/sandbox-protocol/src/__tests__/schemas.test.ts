@@ -4,6 +4,7 @@ import {
   InstalledSkillSchema,
   McpServerSchema,
   OpenSessionInputSchema,
+  MAX_OPEN_SESSION_SERVICES,
   OpenSessionResultSchema,
   ProxyConfigSchema,
   ServiceDescriptorSchema,
@@ -808,7 +809,7 @@ describe('OpenSessionInputSchema', () => {
   });
 
   it('rejects more than 16 services (carrier cap)', () => {
-    const services = Array.from({ length: 17 }, (_, i) => ({
+    const services = Array.from({ length: MAX_OPEN_SESSION_SERVICES + 1 }, (_, i) => ({
       ...validServiceDescriptor(),
       name: `svc-${i}`,
     }));
@@ -845,10 +846,15 @@ describe('ServiceDescriptorSchema', () => {
       proxyConfig: validProxyConfig(),
       services,
     });
-    const sixteen = Array.from({ length: 16 }, (_, i) => ({ ...full, name: `svc-${i}` }));
+    const sixteen = Array.from({ length: MAX_OPEN_SESSION_SERVICES }, (_, i) => ({
+      ...full,
+      name: `svc-${i}`,
+    }));
     expect(OpenSessionInputSchema.safeParse(input(sixteen)).success).toBe(true);
     expect(
-      OpenSessionInputSchema.safeParse(input([...sixteen, { ...full, name: 'svc-16' }])).success,
+      OpenSessionInputSchema.safeParse(
+        input([...sixteen, { ...full, name: `svc-${MAX_OPEN_SESSION_SERVICES}` }]),
+      ).success,
     ).toBe(false);
     expect(
       ServiceDescriptorSchema.safeParse({
