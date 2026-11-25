@@ -9,7 +9,7 @@ import { createHmac } from 'node:crypto';
 import { RoutineDefinitionSchema, type RoutineView, type RoutineWebhookStatus } from '@ax/routines-contract';
 import type { HttpRequest, HttpResponse } from '@ax/http-server';
 import { captureExpectedStderr } from './support/expected-diagnostics.js';
-import { createRoutineHarness, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutineHarness, moveAgentToOwner, type RoutineHarness } from './support/routine-harness.js';
 import { runTickOnce } from '../tick.js';
 import { systemClock } from '../clock.js';
 let h: RoutineHarness;
@@ -169,7 +169,7 @@ describe('single registered request-time DB webhook route', () => {
   });
   it('resolves execution as the stored owner and records forbidden without deleting the definition', async () => {
     const { row, token } = await setup();
-    await sql `UPDATE agents_v1_agents SET owner_id='someone-else' WHERE agent_id=${h.agentId}`.execute(h.db);
+    await moveAgentToOwner(h.db, h.agentId, 'someone-else');
     expect(await request(token)).toBe(202);
     expect(h.invokeCalls).toHaveLength(0);
     const store = createRoutinesStore(h.db);

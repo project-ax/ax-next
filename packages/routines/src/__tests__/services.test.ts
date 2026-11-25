@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeAgentContext, type AgentContext } from '@ax/core';
 import { RoutineDefinitionSchema, RoutineViewSchema, type RoutineListOutput, type RoutineView } from '@ax/routines-contract';
-import { createRoutineHarness, materializePersonalDefaults, type RoutineHarness } from './support/routine-harness.js';
+import { createRoutineHarness, materializePersonalDefaults, moveAgentToOwner, type RoutineHarness } from './support/routine-harness.js';
 const definition = RoutineDefinitionSchema.parse({ name: 'Daily', promptBody: 'Summarize', trigger: { kind: 'interval', every: '1h' } });
 let h: RoutineHarness;
 afterEach(async () => { await h?.close(); });
@@ -50,8 +50,7 @@ describe('registered routine services with real agents', () => {
   });
   it('reconciles transferred personal ownership on management reads', async () => {
     h = await createRoutineHarness(); const row = await create();
-    const { sql } = await import('kysely');
-    await sql`UPDATE agents_v1_agents SET owner_id = ${h.teamAdmin.userId} WHERE agent_id = ${h.agentId}`.execute(h.db);
+    await moveAgentToOwner(h.db, h.agentId, h.teamAdmin.userId);
     const current = await h.bus.call<unknown, RoutineView>('routines:get', h.teamAdmin, { agentId: h.agentId, routineId: row.routineId });
     expect(current.revision).not.toBe(row.revision); expect(current.permissions.edit).toBe(true);
     await expect(h.bus.call('routines:get', h.owner, { agentId: h.agentId, routineId: row.routineId })).rejects.toMatchObject({ code: 'forbidden' });
