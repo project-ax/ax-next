@@ -67,7 +67,8 @@
   - the fresh-open routing race;
   - Slack's 30-min cap, which includes the open;
   - web's 15-min chunk-buffer idle TTL;
-  - credentials aging through the open.
+  - credentials aging through the open;
+  - on the restart path the open counts against the turn limit (design §3.2), so a long restart open can use up the turn.
 
   None of these is changed here. See the decisions shard, and check TASK-1224..1226 and TASK-1242 before filing.
 
@@ -287,7 +288,7 @@ Expected: PASS, no tsc errors.
       - the call rejected with `{ code: 'service-sidecar-failed', diagnosis: { service: 'postgres', path: '/var/lib/postgresql/data/pgdata', reason: 'permission denied' } }`;
       - `api.deletes.length` > 0.
   - **`'a healthy three-service stack that needs more than 300 s still opens (TASK-1240)'`**
-    - Setup: `api.setReadResponses(...35 × { status: { phase: 'Pending' } }, { status: { phase: 'Running', podIP: '10.0.0.9', conditions: [{ type: 'Ready', status: 'True' }] } })`. The 36th read happens at 350 s.
+    - Setup: `api.setReadResponses(...35 × { status: { phase: 'Pending' } }, { status: { phase: 'Running', podIP: '<pod ip>', conditions: [{ type: 'Ready', status: 'True' }] } })`. The 36th read happens at 350 s.
     - After advancing 300_001: not settled.
     - After advancing 60_000 more:
       - it resolved;
