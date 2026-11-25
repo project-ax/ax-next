@@ -28,7 +28,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Pause, Trash2 } from 'lucide-react';
-import { Notice } from '@project-ax/ui';
+import { Button as AxButton, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -38,7 +38,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 
@@ -181,14 +180,9 @@ export function TaskDeleteDialog({
               Pause instead
             </Button>
           )}
-          <Button variant="destructive" disabled={busy} onClick={() => void remove()}>
-            {busy ? (
-              <Spinner data-icon="inline-start" aria-hidden="true" />
-            ) : (
-              <Trash2 data-icon="inline-start" aria-hidden="true" />
-            )}
+          <AxButton intent="primary" icon={Trash2} busy={busy} onClick={() => void remove()}>
             Delete task
-          </Button>
+          </AxButton>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -360,11 +360,11 @@ describe('MarkDoneConfirmation', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
   });
 
-  it('disables the buttons while busy', () => {
+  it('shows the confirm button busy (label kept) and disables Cancel while busy', () => {
     render(<MarkDoneConfirmation unticked={1} primary busy onConfirm={() => {}} onCancel={() => {}} />);
-    expect(
-      (screen.getByRole('button', { name: 'Mark done anyway' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    const confirm = screen.getByRole('button', { name: 'Mark done anyway' });
+    expect(confirm).toHaveAttribute('aria-busy', 'true');
+    expect(confirm).toHaveTextContent('Mark done anyway');
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

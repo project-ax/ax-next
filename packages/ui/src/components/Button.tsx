@@ -11,11 +11,11 @@ export interface ButtonProps {
   busy?: boolean;
   disabled?: boolean;
   type?: 'button' | 'submit' | 'reset';
-  icon?: LucideIcon;
+  icon?: LucideIcon | undefined;
   onClick?: (e: MouseEvent<HTMLButtonElement>) => void;
   form?: string;
   autoFocus?: boolean;
-  'aria-describedby'?: string;
+  'aria-describedby'?: string | undefined;
   // For a row of look-alike buttons. Must contain the visible label text (WCAG 2.5.3 Label in Name):
   // "Decline Quill Bot" for a "Decline" button. Without it the label is the name.
   'aria-label'?: string;

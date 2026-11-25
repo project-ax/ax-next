@@ -663,14 +663,14 @@ describe('a task that thinks it’s done (TASK-950)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     act(() => button.focus());
     fireEvent.click(button);
-    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('aria-busy', 'true');
     const decoy = document.createElement('button');
     document.body.append(decoy);
     act(() => decoy.focus());
     act(() => decoy.remove());
     expect(document.activeElement).toBe(document.body);
     await act(async () => fail(new WorkspaceApiError('/x', status)));
-    await waitFor(() => expect(button).toBeEnabled());
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-busy'));
   }
 
   it('a failed Mark done puts focus back on the button', async () => {

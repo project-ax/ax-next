@@ -44,6 +44,7 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactElement } from 'react';
 import { CalendarDays, CalendarPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Button as AxButton } from '@project-ax/ui';
 import {
   Field,
   FieldDescription,
@@ -53,7 +54,6 @@ import {
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Spinner } from '@/components/ui/spinner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ROUTINE_FINISH_BY_LATEST } from '@ax/routines-contract';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
@@ -292,10 +292,9 @@ export function TaskFinishDate({
                 {failure !== null && <FieldError id={errorId}>{failure.line}</FieldError>}
               </Field>
               <div className="flex flex-wrap items-center gap-3">
-                <Button type="submit" variant="secondary" disabled={saving || dead}>
-                  {saving && <Spinner data-icon="inline-start" aria-hidden="true" />}
+                <AxButton type="submit" intent="secondary" busy={saving} disabled={dead}>
                   Save
-                </Button>
+                </AxButton>
                 {finishBy !== null && (
                   <Button
                     type="button"

@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, FileText } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
-import { Button } from '@/components/ui/button';
-import { Notice } from '@project-ax/ui';
+import { FileText } from 'lucide-react';
+import { Button as AxButton, Notice, Stack, Text } from '@project-ax/ui';
 import { clampAttachmentName } from '@/lib/attachment-name';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveBlob, saveFromUrl } from '@/lib/file-download';
 import { httpFetch, HttpError, logRequestFailure } from '@/lib/http';
@@ -161,26 +159,19 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
 
   return (
     <div className="flex w-full max-w-xs flex-col gap-2">
-      <Button type="button" variant="outline" disabled={busy || started || !downloadable}
+      <AxButton type="button" intent="secondary" icon={FileText} busy={busy} disabled={started || !downloadable}
         aria-label={busy ? `Downloading ${name}` : gone ? `${name} is no longer available` : `Download ${name}`}
-        aria-busy={busy} onClick={() => void download()}
-        className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left">
-        <FileText data-icon="inline-start" aria-hidden="true" />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="flex min-w-0">
-            <span className="truncate">{stem}</span>
-            {extension.length > 0 && <span className="shrink-0">{extension}</span>}
-          </span>
-          <span className="text-xs font-normal text-muted-foreground" aria-live="polite">
+        onClick={() => void download()}>
+        <Stack gap="xs" align="start">
+          <Text inline truncate>{name}</Text>
+          <span aria-live="polite">
             {busy ? 'Downloading…'
               : gone ? 'No longer available'
                 : started ? DOWNLOAD_STARTED_NOTE
                   : [size, 'Download'].filter(Boolean).join(' · ')}
           </span>
-        </span>
-        {busy ? <Spinner data-icon="inline-end" aria-hidden="true" />
-          : !gone && <Download data-icon="inline-end" aria-hidden="true" />}
-      </Button>
+        </Stack>
+      </AxButton>
       {error !== null && <Notice tone="danger">{error}</Notice>}
     </div>
   );

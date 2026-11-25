@@ -67,7 +67,7 @@ describe('the task delete confirm (⋯ › Delete task…)',()=>{
   let resolve!:()=>void;vi.mocked(routineApi.remove).mockImplementationOnce(()=>new Promise(r=>{resolve=()=>r({deleted:true,cleanupPending:false});}));
   const h=show();
   fireEvent.click(deleteButton());
-  expect(deleteButton()).toBeDisabled();
+  expect(deleteButton()).toHaveAttribute('aria-busy','true');
   expect(screen.getByRole('button',{name:'Cancel'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Pause instead'})).toBeDisabled();
   fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'});

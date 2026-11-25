@@ -514,8 +514,8 @@ describe('TaskSteps: one change at a time (TASK-949)', () => {
 
     const add = screen.getByRole('button', { name: 'Add' });
     expect(input.readOnly).toBe(true);
-    expect(add).toBeDisabled();
-    expect(within(add).getByRole('status', { hidden: true })).toBeInTheDocument();
+    expect(add).toHaveAttribute('aria-busy', 'true');
+    expect(add).toHaveTextContent('Add');
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
     for (const control of screen.getAllByRole('checkbox')) expect(control).toBeDisabled();
     for (const control of screen.getAllByRole('button', { name: 'Step options' })) {
@@ -745,12 +745,12 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(box('Check the redirects')).toBeDisabled();
     for (const item of screen.getAllByRole('listitem')) {
       expect(item).not.toHaveAttribute('aria-busy');
-      // The one spinner in this row is the Save button's own.
-      expect(item.querySelectorAll('[role="status"]').length).toBe(
+      // The one busy control in this row is the Save button's own, and it keeps its label.
+      expect(item.querySelectorAll('button[aria-busy="true"]').length).toBe(
         within(item).queryByRole('button', { name: 'Save' }) === null ? 0 : 1,
       );
     }
-    expect(within(screen.getByRole('button', { name: 'Save' })).getByRole('status', { hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toHaveAttribute('aria-busy', 'true');
     await act(async () => d.resolve(answer(withStep(PLAN, 's2', { text: 'Check every redirect', byAgent: false }))));
   });
 });

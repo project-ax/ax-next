@@ -185,7 +185,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, Notice } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -994,20 +994,18 @@ function TaskActions({
       />
       {!enabled && !claimed ? (
         // Resume is the page's one job: words, and primary.
-        <Button
+        <AxButton
           ref={refs.toggle}
           size="sm"
-          disabled={toggleBlocked || busy}
+          intent="primary"
+          icon={Play}
+          busy={toggling}
+          disabled={toggleBlocked || (busy && !toggling)}
           aria-describedby={describedBy(toggleBlocked)}
           onClick={() => onPress('resume')}
         >
-          {toggling ? (
-            <Spinner data-icon="inline-start" aria-hidden="true" />
-          ) : (
-            <Play data-icon="inline-start" aria-hidden="true" />
-          )}
           Resume
-        </Button>
+        </AxButton>
       ) : (
         <IconAction
           ref={refs.toggle}
@@ -1938,22 +1936,19 @@ function MarkDoneControls({
   const { markDone } = finish;
   const claim = variant === 'claim';
   const button = (
-    <Button
+    <AxButton
       ref={markDone.buttonRef}
       type="button"
       size="sm"
-      variant={claim ? 'default' : 'outline'}
-      disabled={!canEdit || markDone.busy}
+      intent={claim ? 'primary' : 'secondary'}
+      icon={claim ? Check : undefined}
+      busy={markDone.busy}
+      disabled={!canEdit}
       aria-describedby={claim && canEdit ? undefined : whyId}
       onClick={markDone.press}
     >
-      {markDone.busy ? (
-        <Spinner data-icon="inline-start" aria-hidden="true" />
-      ) : (
-        claim && <Check data-icon="inline-start" aria-hidden="true" />
-      )}
       Mark done
-    </Button>
+    </AxButton>
   );
   const footerLine = !canEdit
     ? MARK_DONE_NOT_ALLOWED

@@ -56,6 +56,7 @@ import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, ty
 import { RoutineReplyTextSchema } from '@ax/routines-contract';
 import { SendHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Button as AxButton } from '@project-ax/ui';
 import {
   Field,
   FieldDescription,
@@ -350,15 +351,15 @@ export function TaskReplyBox({
           {failure !== null && <FieldError id={errorId}>{failure.line}</FieldError>}
         </Field>
         <div className="flex flex-wrap items-center gap-3">
-          <Button
+          <AxButton
             ref={sendButton}
             type="submit"
-            variant="secondary"
-            disabled={sending || text.trim() === ''}
+            intent="secondary"
+            busy={sending}
+            disabled={text.trim() === ''}
           >
-            {sending && <Spinner data-icon="inline-start" aria-hidden="true" />}
             Send
-          </Button>
+          </AxButton>
           {mode === 'reply' && receipt}
         </div>
       </FieldGroup>

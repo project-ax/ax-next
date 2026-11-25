@@ -216,7 +216,8 @@ describe('TaskReplyBox — sending', () => {
     type('Hi');
     fireEvent.click(sendButton());
     await waitFor(() => expect(box().readOnly).toBe(true));
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute('aria-busy')).toBe('true');
+    expect(sendButton().textContent).toBe('Send');
     await act(async () => d.resolve({ checkIn: 'started' }));
     expect(box().readOnly).toBe(false);
   });

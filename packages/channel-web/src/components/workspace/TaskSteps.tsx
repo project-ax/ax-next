@@ -92,7 +92,7 @@ import {
   RoutineStepTextSchema,
   type RoutineStepOp,
 } from '@ax/routines-contract';
-import { Notice } from '@project-ax/ui';
+import { Button as AxButton, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -105,7 +105,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Spinner } from '@/components/ui/spinner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, isSessionEnded, logRequestFailure } from '@/lib/http';
 import { registerNoticeTone, type AlertRegister } from '@/lib/read-register';
@@ -871,10 +870,9 @@ function StepEditor({
           {failure !== null && <FieldError id={errorId}>{failure.line}</FieldError>}
         </Field>
         <Field orientation="horizontal" className="gap-2">
-          <Button type="submit" size="sm" variant="secondary" disabled={busy || !canSubmit}>
-            {sending && <Spinner data-icon="inline-start" aria-hidden="true" />}
+          <AxButton type="submit" size="sm" intent="secondary" busy={sending} disabled={(busy && !sending) || !canSubmit}>
             {submit}
-          </Button>
+          </AxButton>
           <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
             Cancel
           </Button>

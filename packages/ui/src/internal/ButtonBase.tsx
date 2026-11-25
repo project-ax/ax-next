@@ -15,7 +15,7 @@ export interface ButtonBaseProps
   tone?: 'danger';
   busy?: boolean;
   type?: 'button' | 'submit' | 'reset';
-  icon?: LucideIcon;
+  icon?: LucideIcon | undefined;
   iconOnly?: boolean;
   children?: ReactNode;
 }

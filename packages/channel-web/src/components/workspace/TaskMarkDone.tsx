@@ -42,9 +42,8 @@
  * region.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Inline, Notice, Stack } from '@project-ax/ui';
+import { Button as AxButton, Inline, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
 import { takeResolutionFocus } from '@/lib/consent-focus';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
 import type { AlertRegister } from '@/lib/read-register';
@@ -218,17 +217,16 @@ export function MarkDoneConfirmation({
       <Stack gap="md" align="start">
         <p>{untickedLine(unticked)}</p>
         <Inline gap="sm" wrap>
-          <Button
+          <AxButton
             ref={first}
             type="button"
             size="sm"
-            variant={primary ? 'default' : 'outline'}
-            disabled={busy}
+            intent={primary ? 'primary' : 'secondary'}
+            busy={busy}
             onClick={onConfirm}
           >
-            {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
             Mark done anyway
-          </Button>
+          </AxButton>
           <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
             Cancel
           </Button>

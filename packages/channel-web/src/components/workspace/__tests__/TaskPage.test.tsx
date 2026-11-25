@@ -2042,7 +2042,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(within(claim()).getByRole('heading', { level: 2, name: 'Quill thinks this is done.' })).toBeInTheDocument();
     const primary = screen
       .getAllByRole('button')
-      .filter((b) => b.className.includes('bg-action'))
+      .filter((b) => b.className.includes('bg-action'))  // matches both shadcn and ax- primary
       .map((b) => b.textContent);
     expect(primary).toEqual(['Mark done']);
     expect(screen.getByRole('button', { name: 'Check now' })).not.toHaveClass('bg-action');
@@ -2052,8 +2052,8 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   it('a claimed, paused task has Resume as an outline button too', async () => {
     taskMock.mockResolvedValue(claimed({ enabled: false, nextCheckAt: null }));
     await renderReady();
-    expect(screen.getByRole('button', { name: 'Resume' })).not.toHaveClass('bg-action');
-    expect(within(claim()).getByRole('button', { name: 'Mark done' })).toHaveClass('bg-action');
+    expect(screen.getByRole('button', { name: 'Resume' })).not.toHaveClass('ax-bg-action');
+    expect(within(claim()).getByRole('button', { name: 'Mark done' })).toHaveClass('ax-bg-action');
   });
 
   it('a claim that came with an ask keeps the ask and its Reply', async () => {
@@ -2123,7 +2123,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.getByText(line)).toBeInTheDocument();
     expect(completeMock).not.toHaveBeenCalled();
     const anyway = screen.getByRole('button', { name: 'Mark done anyway' });
-    expect(anyway).toHaveClass('bg-action');
+    expect(anyway).toHaveClass('ax-bg-action');
     expect(document.activeElement).toBe(anyway);
     completeMock.mockResolvedValue({ done: true });
     fireEvent.click(anyway);
@@ -2188,7 +2188,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     const button = within(claim()).getByRole('button', { name: 'Mark done' });
     act(() => button.focus());
     fireEvent.click(button);
-    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('aria-busy', 'true');
     dropFocusOnBody();
     await act(async () => answer.reject(new WorkspaceApiError('/tasks/a1/t1/complete', 503)));
     expect(
@@ -2196,7 +2196,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
         'We couldn’t confirm the task was marked done. Try again, and it won’t happen twice.',
       ),
     ).toBeInTheDocument();
-    await waitFor(() => expect(button).toBeEnabled());
+    await waitFor(() => expect(button).not.toHaveAttribute('aria-busy'));
     expect(document.activeElement).toBe(button);
   });
 
@@ -2477,7 +2477,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     taskMock.mockResolvedValueOnce(detail({ kind: 'get-done', steps: STEPS }));
     const { unmount } = await renderReady();
     const mark = screen.getByRole('button', { name: 'Mark done' });
-    expect(mark).not.toHaveClass('bg-action');
+    expect(mark).not.toHaveClass('ax-bg-action');
     const text = document.getElementById(mark.getAttribute('aria-describedby')!)!;
     expect(text).toHaveTextContent(
       'Only you can mark this task done. When Quill thinks it’s finished, it’ll ask you here and on Today.',
@@ -2532,7 +2532,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     await renderReady();
     fireEvent.click(screen.getByRole('button', { name: 'Mark done' }));
     expect(screen.getByText('1 step isn’t ticked. It’ll stay on the task as it is.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Mark done anyway' })).not.toHaveClass('bg-action');
+    expect(screen.getByRole('button', { name: 'Mark done anyway' })).not.toHaveClass('ax-bg-action');
     expect(completeMock).not.toHaveBeenCalled();
   });
 
@@ -3163,8 +3163,8 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     await renderReady();
     const resume = screen.getByRole('button', { name: 'Resume' });
     expect(resume).toHaveTextContent('Resume');
-    expect(resume).toHaveClass('bg-action');
-    expect(screen.getByRole('button', { name: 'Check now' })).not.toHaveClass('bg-action');
+    expect(resume).toHaveClass('ax-bg-action');
+    expect(screen.getByRole('button', { name: 'Check now' })).not.toHaveClass('ax-bg-action');
     expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Paused');
     expect(screen.getByText(PAUSED_NOTE)).toHaveClass('sr-only');
   });
