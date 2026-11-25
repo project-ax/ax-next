@@ -1195,7 +1195,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
   function expectOutsiderNote(note: unknown, name: string): void {
     expect(note).toEqual({ context: expect.stringContaining("They can't approve anything.") });
     const context = (note as { context: string }).context;
-    expect(context).toContain('waits for your owner, the team admin who set you up in Slack');
+    expect(context).toContain('waits for your owner, the person who set you up in Slack');
     expect(context).not.toContain(name);
   }
 
