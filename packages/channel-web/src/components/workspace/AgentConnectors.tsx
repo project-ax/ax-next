@@ -11,7 +11,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -280,6 +280,8 @@ export function AgentConnectors({
       ) : (
       <>
       <ConnectorsHeader name={name} count={count} onAdd={addable} />
+      {/* The Stack spaces the unsupported notice from the list under it. */}
+      <Stack gap="md">
       {status === 'ok' && !connectorsSupported && <ConnectorsUnsupported name={name} />}
       {status === 'loading' && (
         <AsyncState status="loading" skeleton="rows" loadingLabel="Loading connectors" />
@@ -360,6 +362,7 @@ export function AgentConnectors({
           </CardContent>
         </Card>
       )}
+      </Stack>
       </>
       )}
       {notice !== null && (

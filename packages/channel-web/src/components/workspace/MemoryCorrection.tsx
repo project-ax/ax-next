@@ -23,8 +23,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { ConfirmAction, Notice } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmAction, Inline, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -528,7 +527,7 @@ export function useMemoryReceipt(
       return;
     }
     if (plan.retry) {
-      const retry = root.querySelector<HTMLElement>(`[${RETRY_ATTR}]`);
+      const retry = root.querySelector<HTMLElement>(`[${RETRY_ATTR}] button`);
       if (retry !== null) {
         takeResolutionFocus(retry);
         return;
@@ -675,7 +674,6 @@ export function useMemoryReceipt(
         now={now}
         onUndo={(row) => void undo(row)}
         onUndoFix={(fix) => void undoFix(fix)}
-        className="sticky bottom-0"
       />
     );
 
@@ -713,58 +711,45 @@ export function useMemoryReceipt(
  * at all (TASK-651): "Forgotten" and "Updated." are read by the focus that
  * lands on them, and "Remembered again." / "Fix undone." by the hook's
  * `announcer` — never by a region wrapped around the ticking Undo, which would
- * read a number every second. shadcn's `Alert` hard-codes `role="alert"`, so
- * the quiet ones clear it.
+ * read a number every second. `Notice` announces by default, so the quiet ones
+ * pass `announce={false}`.
  */
 export function MemoryReceipt({
   receipt,
   now,
   onUndo,
   onUndoFix,
-  className,
 }: {
   receipt: MemoryReceiptState;
   now: number;
   onUndo: (row: FactMemoryStatement) => void;
   onUndoFix: (fix: MemoryFix) => void;
-  className?: string;
 }) {
   const drawn = { [RECEIPT_ATTR]: '' };
   if (receipt.kind === 'restored' || receipt.kind === 'fix-undone') {
     // Said by the hook's `announcer`, not here (TASK-651): see `useMemoryReceipt`.
     return (
-      <Alert role={undefined} className={className} {...drawn}>
-        <AlertDescription>
+      <section {...drawn}>
+        <Notice tone="success" announce={false}>
           <span>{receipt.kind === 'restored' ? MEMORY_RESTORED : MEMORY_FIX_UNDONE}</span>
-        </AlertDescription>
-      </Alert>
+        </Notice>
+      </section>
     );
   }
   if (isUndoFailed(receipt)) {
     const retry =
       receipt.kind === 'undo-failed' ? () => onUndo(receipt.row) : () => onUndoFix(receipt.fix);
     return (
-      <Alert variant="destructive" className={className} {...drawn}>
-        <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-          <span>
-            {receipt.kind === 'undo-failed' ? MEMORY_UNDO_FAILED : MEMORY_FIX_UNDO_FAILED}
-          </span>
-          {/*
-            Where focus lands when an Undo fails (TASK-651): the one thing to
-            do next. The alert says what went wrong; the button is its own words.
-          */}
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={receipt.status === 'undoing'}
-            onClick={retry}
-            {...{ [RETRY_ATTR]: '' }}
-          >
-            {MEMORY_UNDO_RETRY}
-          </Button>
-        </AlertDescription>
-      </Alert>
+      // Where focus lands when an Undo fails (TASK-651): the retry button inside this frame, the
+      // one thing to do next. The alert says what went wrong; the button is its own words.
+      <section {...drawn} {...{ [RETRY_ATTR]: '' }}>
+        <Notice
+          tone="danger"
+          action={{ label: MEMORY_UNDO_RETRY, onClick: retry, busy: receipt.status === 'undoing' }}
+        >
+          {receipt.kind === 'undo-failed' ? MEMORY_UNDO_FAILED : MEMORY_FIX_UNDO_FAILED}
+        </Notice>
+      </section>
     );
   }
   const left = memoryUndoSecondsLeft(receipt.since, now);
@@ -776,8 +761,9 @@ export function MemoryReceipt({
   const undo =
     receipt.kind === 'forgotten' ? () => onUndo(receipt.row) : () => onUndoFix(receipt.fix);
   return (
-    <Alert role={undefined} className={className} {...drawn}>
-      <AlertDescription className="flex flex-wrap items-center gap-2">
+    <section {...drawn}>
+      <Notice tone="info" announce={false}>
+        <Inline gap="sm" align="center" wrap>
         {/*
           Where focus lands once the dialog that produced this closes
           (TASK-644). Not a live region (TASK-651): focus already reads it, and
@@ -807,7 +793,8 @@ export function MemoryReceipt({
             {memoryUndoText(Math.max(left, 1))}
           </Button>
         )}
-      </AlertDescription>
-    </Alert>
+        </Inline>
+      </Notice>
+    </section>
   );
 }

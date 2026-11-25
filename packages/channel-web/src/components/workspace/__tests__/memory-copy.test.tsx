@@ -238,6 +238,10 @@ describe('memory-copy — the Forgotten receipt', () => {
     expect(await screen.findByText(MEMORY_UNDO_FAILED)).toBeInTheDocument();
     expect(screen.getByRole('alert').textContent).toContain(MEMORY_UNDO_FAILED);
     expect(screen.queryByText(MEMORY_RESTORED, VISIBLE)).toBeNull();
+    // Focus lands on the retry button inside the failure's frame.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: MEMORY_UNDO_RETRY })),
+    );
 
     fireEvent.click(screen.getByRole('button', { name: MEMORY_UNDO_RETRY }));
     expect(await screen.findByText(MEMORY_RESTORED, VISIBLE)).toBeInTheDocument();

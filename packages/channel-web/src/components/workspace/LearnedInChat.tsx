@@ -259,7 +259,6 @@ export function LearnedInChat({
                     now={receipt.now}
                     onUndo={(row) => void receipt.undo(row)}
                     onUndoFix={(fix) => void receipt.undoFix(fix)}
-                    className="px-2.5 py-1.5 text-[12px]"
                   />
                 );
               }
@@ -295,8 +294,7 @@ export function LearnedInChat({
                       now={receipt.now}
                       onUndo={(row) => void receipt.undo(row)}
                       onUndoFix={(fix) => void receipt.undoFix(fix)}
-                      className="px-2.5 py-1.5 text-[12px]"
-                    />
+                      />
                   </div>
                 );
               }

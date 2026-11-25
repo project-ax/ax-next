@@ -86,6 +86,7 @@ import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import { Notice, toast } from '@project-ax/ui';
+import { cn } from '@/lib/utils';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
@@ -425,7 +426,7 @@ export function GrantRow({
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           {HOST_WALL_EXPLANATION}
         </p>
-        <div className="mt-3 flex flex-wrap gap-1.5">
+        <div className={cn('mt-3 flex flex-wrap gap-1.5', error !== null && 'mb-3')}>
           <Badge variant="secondary">{request.host}</Badge>
         </div>
         {failure}
@@ -555,17 +556,27 @@ export function GrantRow({
     );
   }
 
+  const hasSetupHint = request.slots.some(
+    (s) => connectorServiceOf(s) !== undefined && s.haveExisting !== true,
+  );
+  const hasHosts = request.hosts.length > 0;
+  const textGap = request.authored === true || (hasSetupHint && !hasHosts);
+  const hostsGap = request.authored !== true && hasSetupHint && hasHosts;
   return (
     <div
       ref={rowRef}
       className="border-b border-rule-soft p-4 last:border-b-0"
       data-testid={`grant-${grant.key}`}
     >
-      <p className="text-[14px] font-medium">
+      {/*
+        A Notice has no margin of its own, so the element above it carries the gap: the last of
+        title / description (/ hosts) takes `mb-3` when a notice follows.
+      */}
+      <p className={cn('text-[14px] font-medium', description.length === 0 && textGap && 'mb-3')}>
         {title}
       </p>
       {description.length > 0 && (
-        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+        <p className={cn('mt-1 text-[13px] leading-relaxed text-muted-foreground', textGap && 'mb-3')}>
           {description}
         </p>
       )}
@@ -575,7 +586,7 @@ export function GrantRow({
       )}
 
       {request.hosts.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1.5">
+        <div className={cn('mt-3 flex flex-col gap-1.5', hostsGap && 'mb-3')}>
           <p className="text-xs text-muted-foreground">{REACH_LEAD_IN}</p>
           <div className="flex flex-wrap gap-1.5">
             {request.hosts.map((h) => (
@@ -681,7 +692,7 @@ export function GrantRow({
       )}
 
       {/* Not indexed — same reasoning as `description` above. */}
-      <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+      <p className={cn('mt-3 text-[13px] leading-relaxed text-muted-foreground', error !== null && 'mb-3')}>
         {GRANT_REASSURANCE}
       </p>
 

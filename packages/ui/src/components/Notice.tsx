@@ -9,6 +9,8 @@ export interface NoticeProps {
   children?: ReactNode;
   action?: { label: string; onClick: () => void; busy?: boolean };
   onDismiss?: () => void;
+  // false: no live role, for a notice whose content changes often (a countdown) or is announced elsewhere. Default true.
+  announce?: boolean;
 }
 
 // Only a failure interrupts (alert); warnings, information and confirmations wait their turn (status),
@@ -20,6 +22,6 @@ const ROLE: Record<NoticeTone, 'alert' | 'status'> = {
   success: 'status',
 };
 
-export function Notice(props: NoticeProps) {
-  return <NoticeView {...props} role={ROLE[props.tone]} />;
+export function Notice({ announce = true, ...props }: NoticeProps) {
+  return <NoticeView {...props} {...(announce ? { role: ROLE[props.tone] } : {})} />;
 }

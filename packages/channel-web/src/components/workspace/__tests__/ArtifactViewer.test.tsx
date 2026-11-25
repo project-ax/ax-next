@@ -355,6 +355,15 @@ describe('ArtifactViewer', () => {
     expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('Try again after a failed open reads the artifact again and shows it', async () => {
+    api.artifact.mockRejectedValueOnce(new Error('blip'));
+    renderViewer();
+    expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t open Quill’s artifact just now.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('heading', { name: 'Deal tracker' })).toBeTruthy();
+    expect(api.artifact).toHaveBeenCalledTimes(2);
+  });
+
   it('a missing artifact says so instead of a blank frame', async () => {
     api.artifact.mockRejectedValue(new WorkspaceApiError('/artifacts/art-1', 404));
     renderViewer();

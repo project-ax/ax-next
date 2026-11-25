@@ -148,7 +148,6 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
             now={receipt.now}
             onUndo={(row) => void receipt.undo(row)}
             onUndoFix={(fix) => void receipt.undoFix(fix)}
-            className="rounded-none border-x-0 border-b-0"
           />
         )}
       </CollapsibleContent>

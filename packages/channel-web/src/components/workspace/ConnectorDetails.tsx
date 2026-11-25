@@ -35,7 +35,7 @@ import {
   LogIn,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, Notice } from '@project-ax/ui';
+import { AsyncState, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
@@ -512,8 +512,17 @@ function ToolList({
           </li>
         ))}
       </ul>
-      <p className="mt-1 text-[11.5px] text-muted-foreground">{ROUTINES_WAIT_NOTE}</p>
+      {/* A Notice has no margin of its own: the line above takes the gap, a Stack spaces the notices. */}
+      <p
+        className={cn(
+          'mt-1 text-[11.5px] text-muted-foreground',
+          (missing !== null || notice !== null || unconfirmed) && 'mb-3',
+        )}
+      >
+        {ROUTINES_WAIT_NOTE}
+      </p>
 
+      <Stack gap="md">
       {missing !== null && (
         <Notice
           tone={data.status === 'unreachable' ? 'danger' : 'info'}
@@ -537,6 +546,7 @@ function ToolList({
       {unconfirmed && (
         <Notice tone="info">Saved. We couldn’t refresh this list just now, so reload to confirm.</Notice>
       )}
+      </Stack>
 
       <TooltipProvider delayDuration={200}>
         <ToolGroup

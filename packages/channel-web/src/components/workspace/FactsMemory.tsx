@@ -1,5 +1,5 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice, Text } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -247,7 +247,7 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
         onForget={setForgetTarget}
         {...(onCount ? { onCount } : {})}
       />
-      {receipt.element}
+      {receipt.element !== null && <div className="sticky bottom-0">{receipt.element}</div>}
       <MemoryFixDialog
         target={fixTarget}
         agentId={agentId}
@@ -468,7 +468,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
             </Table>
           </Card>
         )}
-        {query && rows.length > 0 && <p className="text-sm text-muted-foreground">Best matches first.</p>}
+        {query && rows.length > 0 && <Text role="meta">Best matches first.</Text>}
         {count !== null && <p className="text-xs text-muted-foreground">{memoryListFooter(count)}</p>}
         {rows.length === 40 && <p className="text-sm text-muted-foreground">Showing 40 memories. Use search to find more.</p>}
       </>}

@@ -1188,7 +1188,7 @@
   },
   "packages/channel-web/src/components/workspace/ConnectorsTab.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 15
+      "count": 14
     },
     "ax-ui/no-classname": {
       "count": 17
@@ -1286,7 +1286,7 @@
   },
   "packages/channel-web/src/components/workspace/LearnedInChat.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 11
+      "count": 9
     },
     "ax-ui/no-classname": {
       "count": 18
@@ -1300,7 +1300,7 @@
       "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/channel-web/src/components/workspace/MemoryUsedChip.tsx": {

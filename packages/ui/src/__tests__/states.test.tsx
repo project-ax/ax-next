@@ -84,6 +84,22 @@ describe('Notice', () => {
   });
 });
 
+describe('Notice announce', () => {
+  it('announce={false} renders no live role but keeps the content and the action', () => {
+    const onClick = vi.fn();
+    render(
+      <Notice tone="danger" announce={false} action={{ label: 'Undo', onClick }}>
+        Quiet words
+      </Notice>,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByText('Quiet words')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(onClick).toHaveBeenCalled();
+  });
+});
+
 describe('Notice body', () => {
   it('accepts block content without invalid-nesting console errors', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});

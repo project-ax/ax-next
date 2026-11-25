@@ -185,10 +185,17 @@ export function ConnectorsTab({
         one record of what this agent can reach never arrived.
       */}
       {rail === null && !loading && (
-        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
-          We couldn’t read what {name} can reach just now. Treat it as unknown
-          rather than empty.
-        </p>
+        <div className="mt-2">
+          <Notice
+            tone="danger"
+            {...(onConnectorsChanged !== undefined
+              ? { action: { label: 'Try again', onClick: onConnectorsChanged } }
+              : {})}
+          >
+            We couldn’t read what {name} can reach just now. Treat it as unknown
+            rather than empty.
+          </Notice>
+        </div>
       )}
       <Collapsible className="mt-6">
         <h3 className="text-[11.5px] font-medium text-muted-foreground">
@@ -237,6 +244,7 @@ export function ConnectorsTab({
             rail={rail}
             loading={loading}
             error={error}
+            onRetry={onConnectorsChanged}
           />
         </DialogContent>
       </Dialog>
@@ -363,23 +371,31 @@ function Permissions({
   rail,
   loading,
   error,
+  onRetry,
 }: {
   name: string;
   rail: AgentRailData | null;
   loading: boolean;
   error: string | null;
+  /** Re-reads the rail: the Try again for a rail that would not load. */
+  onRetry?: (() => void) | undefined;
 }) {
   if (loading && rail === null) {
     return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading what this agent can do" />;
   }
   if (rail === null) {
     return (
-      <Text role="meta">
-        {error === null
-          ? 'We can’t show this yet.'
-          : 'We couldn’t read this just now.'}{' '}
-        Until it loads, treat what {name} may do as unknown rather than empty.
-      </Text>
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Loading what this agent can do"
+        error={{
+          message: `${
+            error === null ? 'We can’t show this yet.' : 'We couldn’t read this just now.'
+          } Until it loads, treat what ${name} may do as unknown rather than empty.`,
+          ...(onRetry !== undefined ? { onRetry } : {}),
+        }}
+      />
     );
   }
   const { status, rows, incomplete, unrestrictedTools } = rail.permissions;
@@ -473,16 +489,17 @@ function Grants({
 }) {
   if (rail === null) {
     if (loading) return <Text role="meta">Reading what you&apos;ve granted…</Text>;
+    // The raw detail is logged by `workspace-rail.ts` (TASK-288), never put in the sentence.
     return (
-      <Text role="meta">
-        {/*
-          The raw detail used to ride in a parenthetical here — `We couldn't
-          read this just now (workspace /agents/ag_… → 401).` A request path
-          inside a sentence is the one shape a grep for a raw status never
-          finds. `workspace-rail.ts` logs it now (TASK-288).
-        */}
-        We couldn&apos;t read this just now.
-      </Text>
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Reading what you've granted…"
+        error={{
+          message: 'We couldn’t read this just now.',
+          ...(onRetry !== undefined ? { onRetry } : {}),
+        }}
+      />
     );
   }
   const { status, incomplete } = rail.grants;

@@ -102,6 +102,38 @@ describe('Connectors tab shell', () => {
     ).toBeTruthy();
   });
 
+  it('Try again on the tab note re-reads the rail', async () => {
+    railMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/rail', 500));
+    renderTab();
+    const note = await screen.findByText(/couldn’t read what Quill can reach just now/);
+    fireEvent.click(within(note.closest('[role="alert"]') as HTMLElement).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(railMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(/couldn’t read what Quill can reach/)).toBeNull());
+  });
+
+  it('Try again in the "See everything it can do" dialog re-reads the rail', async () => {
+    railMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/rail', 500));
+    renderTab();
+    await screen.findByText(/couldn’t read what Quill can reach just now/);
+    fireEvent.click(screen.getByRole('button', { name: 'See everything it can do' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Until it loads, treat what Quill may do as unknown/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(railMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(dialog).queryByText(/Until it loads/)).toBeNull());
+  });
+
+  it('Try again under "Granted by you" re-reads the rail', async () => {
+    railMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/rail', 500));
+    renderTab();
+    await screen.findByText(/couldn’t read what Quill can reach just now/);
+    fireEvent.click(screen.getByRole('button', { name: /Granted by you/ }));
+    const grants = (await screen.findAllByText('We couldn’t read this just now.'))[0]!;
+    fireEvent.click(within(grants.closest('[role="alert"]') as HTMLElement).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(railMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText('We couldn’t read this just now.')).toBeNull());
+  });
+
   it('says nothing about a failed read when the rail loaded', async () => {
     renderTab();
     await sw('Web search');
