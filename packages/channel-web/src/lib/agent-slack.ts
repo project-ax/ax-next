@@ -17,6 +17,8 @@
  *        (TASK-1172: a live or pending bot, named by the install id the page showed; 409 no-bot for any other)
  *   POST /settings/slack/:agentId/bot/rename  { botName } → { botName } (TASK-1171: the live bot; 409 not-live otherwise)
  *   POST /settings/slack/:agentId/bot/icon    { iconPng } → {}
+ *   POST /settings/slack/:agentId/dm-agent    → {}
+ *        (TASK-1238: a personal agent's owner makes it the agent a direct message to the shared bot reaches; 403 forbidden for a team agent)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}
  *
@@ -100,9 +102,15 @@ export type AgentSlackStatus =
       botName: string;
       /**
        * Whether a direct message to the bot reaches this agent (its owner's
-       * oldest personal agent). An older host omits it; that reads as true.
+       * chosen personal agent, or else their oldest). An older host omits it; that reads as true.
        */
       answersDms: boolean;
+      /**
+       * The display name of the agent that does answer direct messages, when it
+       * isn't this one (TASK-1238). Null when this agent answers, when none
+       * does, and from an older host that omits it (or sends an empty name).
+       */
+      dmAgentName: string | null;
     }
   | {
       state: 'ready';
@@ -249,10 +257,15 @@ function parseStatus(body: unknown): AgentSlackStatus | null {
       };
     }
     case 'personal-agent': {
-      const { botName, answersDms = true } = body;
-      return typeof botName === 'string' && typeof answersDms === 'boolean'
-        ? { state: 'personal-agent', botName, answersDms }
-        : null;
+      const { botName, answersDms = true, dmAgentName = null } = body;
+      if (typeof botName !== 'string' || typeof answersDms !== 'boolean') return null;
+      if (dmAgentName !== null && typeof dmAgentName !== 'string') return null;
+      return {
+        state: 'personal-agent',
+        botName,
+        answersDms,
+        dmAgentName: dmAgentName === '' ? null : dmAgentName,
+      };
     }
     case 'ready': {
       const { botName, workspaceName, canManage } = body;
@@ -367,6 +380,16 @@ export async function cancelSlackBotRequest(agentId: string): Promise<void> {
 }
 
 /**
+ * Make this personal agent the one a direct message to the shared bot reaches
+ * (TASK-1238). Its owner only: anyone else gets a 404, and a team agent a 403
+ * (both read as an out-of-date page by `agentSlackBotStale`). Resolves once the
+ * server stored the choice.
+ */
+export async function chooseSlackDmAgent(agentId: string): Promise<void> {
+  await post(agentId, '/dm-agent', {});
+}
+
+/**
  * Replace the live bot's configuration token with a new one the person pasted
  * (TASK-1173; only the person who set the bot up may). Resolves once Slack
  * accepted the token and the server holds it.
@@ -432,6 +455,29 @@ export async function setAgentSlackBotPicture(agentId: string, iconPng: string):
 
 export const AGENT_SLACK_COPY = Object.freeze({
   generic: 'Something went wrong. Try again in a minute.',
+});
+
+/**
+ * The lines of a personal agent's Slack section (TASK-1238): which agent a
+ * direct message reaches, and the button that makes this one it. Plain words,
+ * no product or plumbing names. `answersHere` is the sentence the section has
+ * always said. When two personal agents share a name the page says
+ * `yourOther` / `thisOne`, never "goes to Juniper. Use Juniper instead".
+ */
+export const AGENT_SLACK_DM_COPY = Object.freeze({
+  answersHere: (agent: string, bot: string): string =>
+    `${agent} is a personal agent, so it answers in a direct message with ${bot} in Slack. Channels are for team agents.`,
+  goesTo: (bot: string, other: string): string => `Direct messages to ${bot} in Slack go to ${other}.`,
+  /** No name came back (an older host): neutral, with no button. */
+  goesElsewhere: (agent: string, bot: string): string =>
+    `${agent} is a personal agent, so it can't join channels. Direct messages to ${bot} in Slack go to another of your personal agents.`,
+  useInstead: (self: string): string => `Use ${self} instead`,
+  switching: 'Switching…',
+  switched: (bot: string, self: string, from: string): string =>
+    `Done. Direct messages to ${bot} now go to ${self}. Anything already in progress finishes with ${from}. Replies in older threads go to ${self} too, and it won't see what was said there before.`,
+  notSwitched: "We couldn't switch your direct messages, so nothing changed. Try again in a minute.",
+  yourOther: (name: string): string => `your other ${name}`,
+  thisOne: (name: string): string => `this ${name}`,
 });
 
 /** How the card names a live bot: its @handle, or its name when Slack never said one. */
