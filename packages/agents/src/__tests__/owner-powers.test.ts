@@ -532,7 +532,7 @@ describe('agents:can-manage-webhook-token answers what the token hooks enforce (
     ['a plain team member', teamMember, 'team', false],
     ['someone outside the team', outsider, 'team', false],
     ['a workspace admin on a team agent', wsAdmin, 'team', true],
-  ])('%s: %s agent -> %s, and ensure-webhook-token agrees', async (_who, actor, kind, expected) => {
+  ])('%s (%o) on a %s agent -> %s, and ensure-webhook-token agrees', async (_who, actor, kind, expected) => {
     const s = await boot();
     const agentId =
       kind === 'team'

@@ -2,6 +2,7 @@
 '@ax/agents': minor
 '@ax/channel-web': patch
 '@ax/mcp-oauth': patch
+'@ax/routines-admin-routes': patch
 ---
 
 Agents can now be shared (phase 1A, no UI yet). A personal agent has an
