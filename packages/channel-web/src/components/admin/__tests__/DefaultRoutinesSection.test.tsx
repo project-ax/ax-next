@@ -112,6 +112,38 @@ describe('DefaultRoutinesSection', () => {
     });
   });
 
+  it('a failed list read offers Try again (no empty state beside it) and reads again', async () => {
+    mockList.mockRejectedValueOnce(new Error('Network error'));
+    mockList.mockResolvedValueOnce([HEARTBEAT]);
+    render(<DefaultRoutinesSection />);
+    await screen.findByText('Network error');
+    expect(screen.queryByText(/No default routines yet/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('heartbeat')).toBeTruthy();
+    expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed edit read offers Try again, which reads the routine again', async () => {
+    mockList.mockResolvedValueOnce([HEARTBEAT]);
+    mockGet.mockRejectedValueOnce(new Error('edit-read-failed'));
+    mockGet.mockResolvedValueOnce({
+      ...HEARTBEAT,
+      silenceToken: null,
+      silenceMaxChars: 300,
+      conversation: 'shared',
+      kind: 'repeat',
+      goodWhen: null,
+      activeHours: null,
+      promptBody: 'check in',
+    });
+    render(<DefaultRoutinesSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit heartbeat' }));
+    await screen.findByText('edit-read-failed');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByTestId('routine-editor')).toBeTruthy();
+    expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
   it('clicking "New default routine" opens the editor dialog', async () => {
     mockList.mockResolvedValueOnce([]);
     render(<DefaultRoutinesSection />);

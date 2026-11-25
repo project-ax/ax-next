@@ -30,7 +30,7 @@ export function NoticeView({ tone, title, children, action, onDismiss, role }: N
         {title ? <p className="ax-m-none ax-break-words ax-text-body-strong ax-font-sans">{title}</p> : null}
         {children ? <div className="ax-m-none ax-break-words ax-text-meta ax-font-sans">{children}</div> : null}
         {action ? (
-          <Button intent="secondary" size="sm" onClick={action.onClick}>
+          <Button intent="secondary" size="sm" busy={action.busy ?? false} onClick={action.onClick}>
             {action.label}
           </Button>
         ) : null}

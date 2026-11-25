@@ -14,6 +14,7 @@ export function RoutineConsentSection({
   const [consent, setConsent] = useState<RoutineConsent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const readVersion = useRef(0);
+  const reload = useRef<() => void>(() => {});
   useEffect(() => {
     let active = true;
     setConsent(null);
@@ -41,6 +42,7 @@ export function RoutineConsentSection({
       )
         load();
     };
+    reload.current = load;
     load();
     const poll = window.setInterval(load, 5000);
     window.addEventListener('ax:routine-permissions-changed', changed);
@@ -95,7 +97,9 @@ export function RoutineConsentSection({
         </div>
       )}
       {error && (
-        <Notice tone="danger">{error}</Notice>
+        <Notice tone="danger" action={{ label: 'Try again', onClick: () => reload.current() }}>
+          {error}
+        </Notice>
       )}
     </section>
   );

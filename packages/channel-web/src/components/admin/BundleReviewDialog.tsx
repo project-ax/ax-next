@@ -48,6 +48,7 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
   const [loadError, setLoadError] = useState<string | null>(null);
   const [decideError, setDecideError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState(false);
+  const [loadTick, setLoadTick] = useState(0);
 
   useEffect(() => {
     if (!isShare) return;
@@ -71,7 +72,7 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
     return () => {
       cancelled = true;
     };
-  }, [request, isShare]);
+  }, [request, isShare, loadTick]);
 
   async function decide(decision: 'admit' | 'reject') {
     setDeciding(true);
@@ -136,7 +137,14 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
           )}
 
           {error && (
-            <Notice tone="danger">{error}</Notice>
+            <Notice
+          tone="danger"
+          {...(loadError !== null
+            ? { action: { label: 'Try again', onClick: () => { setLoadError(null); setEntries(null); setLoadTick((n) => n + 1); } } }
+            : {})}
+        >
+          {error}
+        </Notice>
           )}
 
           {/* (D10) Say how far approval reaches. "Admit" gave no clue that the

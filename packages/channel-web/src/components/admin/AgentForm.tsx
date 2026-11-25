@@ -52,7 +52,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { ConfirmAction, Notice, EmptyState } from '@project-ax/ui';
+import { ConfirmAction, Notice, EmptyState, Stack } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 
@@ -175,6 +175,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [models, setModels] = useState<AgentModelOption[] | null>(null);
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsTick, setModelsTick] = useState(0);
+  const [toolsTick, setToolsTick] = useState(0);
   // The tool names the picker offers (GET /admin/agents/tools, TASK-1214).
   // Save never drops a saved name on its own; only the picker's Remove does.
   const [toolCatalog, setToolCatalog] = useState<ToolCatalogState>({ status: 'loading' });
@@ -195,12 +197,14 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const identityFieldsLocked =
     editing !== 'new' && (identityLoading || identityLoadFailed);
 
+  const [listError, setListError] = useState<string | null>(null);
   const refresh = async () => {
+    setListError(null);
     try {
       const list = await listAdminAgents();
       setAgents(list);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setListError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -218,6 +222,10 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     void listTeams()
       .then((t) => setTeams(t ?? []))
       .catch(() => setTeams([]));
+  }, [editing]);
+
+  useEffect(() => {
+    if (editing === null) return;
     // The model list is NOT best-effort-empty: an empty picker with no
     // explanation is how someone ends up staring at a form they can't submit.
     // A failure is surfaced in the form (see the Model field below).
@@ -228,7 +236,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         setModels([]);
         setModelsError(err instanceof Error ? err.message : String(err));
       });
-  }, [editing]);
+  }, [editing, modelsTick]);
 
   // TASK-1214 — read the tool list each time the form OPENS, so "close and
   // reopen this form" really retries a failed read. Keyed on the form being
@@ -253,7 +261,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       cancelled = true;
       setToolCatalog({ status: 'loading' });
     };
-  }, [formOpen]);
+  }, [formOpen, toolsTick]);
 
   // TASK-142 — load the agent's identity and soul when editing an existing
   // agent. A new agent has none yet (its first save writes them), so we skip
@@ -470,14 +478,21 @@ if (base.model !== editing.model) patch.model = base.model;
       <div className="font-sans">
         <SettingsActions><Button data-return-focus="admin-agents" onClick={startNew}>New agent</Button></SettingsActions>
 
-        {error && (
+        {(error || listError) && (
           <div className="mb-4">
-            <Notice tone="danger">{error}</Notice>
+            <Stack gap="sm">
+              {error && <Notice tone="danger">{error}</Notice>}
+              {listError && (
+                <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>
+                  {listError}
+                </Notice>
+              )}
+            </Stack>
           </div>
         )}
 
         {agents.length === 0 ? (
-          <EmptyState title="No agents yet." description="Make one." />
+          listError ? null : <EmptyState title="No agents yet." description="Make one." />
         ) : (
           <div className="flex flex-col">
             {agents.map((a) => (
@@ -632,10 +647,15 @@ if (base.model !== editing.model) patch.model = base.model;
               <Notice tone="info">{movedNotice(modelOptions.find((o) => o.id === editing.model)?.label ?? editing.model)}</Notice>
             )}
             {models !== null && modelOptions.length === 0 ? (
-              <Notice tone="danger">
+              <Notice
+                tone="danger"
+                {...(modelsError === null
+                  ? {}
+                  : { action: { label: 'Try again', onClick: () => { setModels(null); setModelsTick((n) => n + 1); } } })}
+              >
                 {modelsError === null
                   ? 'No models are available yet. That usually means no model provider is configured — add a provider key on the Model config tab, then reopen this form.'
-                  : `We couldn’t load the model list (${modelsError}). Close and reopen this form to try again.`}
+                  : `We couldn’t load the model list (${modelsError}).`}
               </Notice>
             ) : (
               <select
@@ -706,6 +726,7 @@ if (base.model !== editing.model) patch.model = base.model;
               deployment really has. `unrestricted`: an existing agent saved
               with no tools at all (the wildcard) and still nothing picked. */}
           <AgentToolPicker
+            onRetry={() => setToolsTick((n) => n + 1)}
             catalog={toolCatalog}
             selected={form.allowedTools}
             onChange={(next) => setForm((f) => ({ ...f, allowedTools: next }))}

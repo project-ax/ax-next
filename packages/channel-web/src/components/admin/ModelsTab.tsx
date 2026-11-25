@@ -190,7 +190,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
         )
       )}
       {load.catalogFailed && (
-        <Notice tone="info" action={{ label: 'Try again', onClick: () => { if (!retrying) void retryCatalog(); } }}>
+        <Notice tone="info" action={{ label: 'Try again', busy: retrying, onClick: () => void retryCatalog() }}>
           {CATALOG_LOAD_FAILED}
         </Notice>
       )}
@@ -227,7 +227,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
       {saveError !== null && (
         <Notice
           tone="danger"
-          {...(saveError.stale ? { action: { label: 'Try again', onClick: () => void loadAll() } } : {})}
+          {...(saveError.stale ? { action: { label: 'Reload and discard my changes', onClick: () => void loadAll() } } : {})}
         >
           {saveError.message}
         </Notice>

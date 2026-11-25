@@ -7,7 +7,7 @@ export interface NoticeProps {
   tone: NoticeTone;
   title?: string;
   children?: ReactNode;
-  action?: { label: string; onClick: () => void };
+  action?: { label: string; onClick: () => void; busy?: boolean };
   onDismiss?: () => void;
 }
 

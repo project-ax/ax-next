@@ -114,6 +114,18 @@ describe('AgentForm — styled delete confirm', () => {
     mockDelete.mockResolvedValue(undefined);
   });
 
+  it('a failed agent-list read offers Try again (no empty state beside it) and reads again', async () => {
+    mockList.mockReset();
+    mockList.mockRejectedValueOnce(new Error('agents-down'));
+    mockList.mockResolvedValueOnce([AGENT]);
+    render(<AgentForm isAdmin />);
+    await screen.findByText('agents-down');
+    expect(screen.queryByText('No agents yet.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Research Bot')).toBeTruthy();
+    expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
   it('does not use the OS confirm; clicking delete opens a styled dialog', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
     render(<AgentForm isAdmin />);
@@ -663,7 +675,7 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
   it('a new agent cannot be saved when the tool list cannot load', async () => {
     vi.mocked(listAgentToolOptions).mockRejectedValue(new Error('list agent tools: 503'));
     await openNew('Fern');
-    await screen.findByText(/We couldn’t load the list of tools\. Close and reopen/);
+    await screen.findByText(/We couldn’t load the list of tools\./);
 
     save();
     await waitFor(() =>
@@ -674,10 +686,29 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
     expect(createAgent).not.toHaveBeenCalled();
   });
 
-  it('closing and reopening the form reads the tool list again, as the failure line promises', async () => {
+  it('a failed model list offers Try again, which reads it again', async () => {
+    vi.mocked(listAgentModelOptions).mockRejectedValueOnce(new Error('models-503'));
+    await openNew('Fern');
+    await screen.findByText(/We couldn’t load the model list \(models-503\)\./);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText(/couldn’t load the model list/)).toBeNull());
+    expect(listAgentModelOptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed tool list offers Try again, which reads it again', async () => {
     vi.mocked(listAgentToolOptions).mockRejectedValueOnce(new Error('list agent tools: 503'));
     await openNew('Fern');
-    await screen.findByText(/We couldn’t load the list of tools\. Close and reopen/);
+    await screen.findByText(/We couldn’t load the list of tools\./);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(screen.queryByText(/couldn’t load the list of tools/)).toBeNull();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('closing and reopening the form reads the tool list again', async () => {
+    vi.mocked(listAgentToolOptions).mockRejectedValueOnce(new Error('list agent tools: 503'));
+    await openNew('Fern');
+    await screen.findByText(/We couldn’t load the list of tools\./);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(await screen.findByRole('button', { name: /new agent/i }));

@@ -292,7 +292,7 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
           )}
 
           {!loading && error && (
-            <Notice tone="danger">{error}</Notice>
+            <Notice tone="danger" action={{ label: 'Try again', onClick: () => void load() }}>{error}</Notice>
           )}
 
           {!loading && !error && skills.length === 0 && (

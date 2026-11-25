@@ -22,6 +22,10 @@ export const WithAction: Story = {
   args: { tone: 'danger', children: 'We could not reach the server.', action: { label: 'Try again', onClick: () => {} } },
 };
 
+export const WithBusyAction: Story = {
+  args: { tone: 'danger', children: 'We could not reach the server.', action: { label: 'Try again', onClick: () => {}, busy: true } },
+};
+
 export const Dismissible: Story = { args: { tone: 'info', onDismiss: () => {} } };
 
 // stories.spec.ts runs at 800px wide, so a decorator pins this story to the 390px phone width.

@@ -73,6 +73,7 @@ export function RoutinesList({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [fires, setFires] = useState<Fire[] | null>(null);
   const [firesError, setFiresError] = useState(false);
+  const [firesTick, setFiresTick] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
@@ -150,7 +151,7 @@ export function RoutinesList({
     return () => {
       active = false;
     };
-  }, [expanded, refreshKey, list]);
+  }, [expanded, refreshKey, list, firesTick]);
   const nameFor = (id: string) =>
     agentId === id && agentName
       ? agentName
@@ -246,7 +247,7 @@ export function RoutinesList({
       {error && (
         <Notice
           tone="danger"
-          {...(fireProtected ? {} : { action: { label: 'Try again', onClick: () => setVersion((n) => n + 1) } })}
+          {...(fireProtected ? {} : { action: { label: 'Refresh', onClick: () => setVersion((n) => n + 1) } })}
         >
           {error}
         </Notice>
@@ -254,18 +255,15 @@ export function RoutinesList({
       {uncertain && (
         <Notice
           tone="info"
-          {...(busy !== null
-            ? {}
-            : {
-                action: {
-                  label: 'Try again',
-                  onClick: () => {
-                    const pending = operation.current;
-                    if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
-                    else if (pending) void mutate(pending.row, 'enabled');
-                  },
-                },
-              })}
+          action={{
+            label: 'Try again',
+            busy: busy !== null,
+            onClick: () => {
+              const pending = operation.current;
+              if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
+              else if (pending) void mutate(pending.row, 'enabled');
+            },
+          }}
         >
           We couldn’t confirm this change. Try again sends the same change.
         </Notice>
@@ -379,7 +377,9 @@ export function RoutinesList({
                     </>
                   )}
                 {firesError ? (
-                  <Notice tone="danger">Recent runs are unavailable.</Notice>
+                  <Notice tone="danger" action={{ label: 'Try again', onClick: () => setFiresTick((n) => n + 1) }}>
+                    Recent runs are unavailable.
+                  </Notice>
                 ) : fires === null ? (
                   <AsyncState status="loading" skeleton="lines" loadingLabel="Loading recent runs" />
                 ) : fires.length ? (

@@ -38,6 +38,18 @@ describe('Notice', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it('a busy action keeps its label, stays focusable, and swallows clicks', () => {
+    const onClick = vi.fn();
+    render(<Notice tone="info" action={{ label: 'Try again', onClick, busy: true }}>x</Notice>);
+    const button = screen.getByRole('button', { name: 'Try again' });
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    button.focus();
+    expect(document.activeElement).toBe(button);
+    fireEvent.click(button);
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
   it('onDismiss renders "Dismiss" and calls the handler', () => {
     const onDismiss = vi.fn();
     render(<Notice tone="info" onDismiss={onDismiss}>x</Notice>);

@@ -78,6 +78,33 @@ describe('routine list', () => {
       limit: 20,
     });
   });
+  it('a failed recent-runs read offers Try again, which reads the runs again', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [row], unreadable: [] });
+    vi.mocked(routineApi.recentFires).mockRejectedValueOnce(new Error('down'));
+    show();
+    await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
+    await screen.findByText('Recent runs are unavailable.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No runs yet.')).toBeVisible();
+    expect(routineApi.recentFires).toHaveBeenCalledTimes(2);
+  });
+  it('keeps focus on the unconfirmed-change Try again while it is busy, and swallows a second click', async () => {
+    vi.mocked(routineApi.update)
+      .mockRejectedValueOnce(new RoutineApiError(0))
+      .mockReturnValue(new Promise(() => {}));
+    show();
+    await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('switch'));
+    const unconfirmed = (await screen.findByText(/We couldn’t confirm this change/)).closest('[role="status"]') as HTMLElement;
+    const retry = within(unconfirmed).getByRole('button', { name: 'Try again' });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute('aria-busy', 'true'));
+    expect(document.activeElement).toBe(retry);
+    fireEvent.click(retry);
+    expect(routineApi.update).toHaveBeenCalledTimes(2);
+  });
   it('renders a stay-on-top task like any authored routine', async () => {
     vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       { ...row, kind: 'stay-on-top', goodWhen: 'Inbox at zero.' },
@@ -205,7 +232,7 @@ describe('routine list', () => {
       { ...row, revision: 'new-revision', enabled: !row.enabled },
     ], unreadable: [] });
     const readError = screen.getByText('Routine management is temporarily unavailable.').closest('[role="alert"]') as HTMLElement;
-    fireEvent.click(within(readError).getByRole('button', { name: 'Try again' }));
+    fireEvent.click(within(readError).getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(routineApi.list).toHaveBeenCalledTimes(2));
     const unconfirmed = screen.getByText(/We couldn’t confirm this change/).closest('[role="status"]') as HTMLElement;
     fireEvent.click(within(unconfirmed).getByRole('button', { name: 'Try again' }));

@@ -30,6 +30,8 @@ export interface AgentToolPickerProps {
   onChange: (next: string[]) => void;
   /** An existing agent saved with no tools (the wildcard) and still nothing picked. */
   unrestricted: boolean;
+  /** Re-read a failed tool list. */
+  onRetry?: () => void;
 }
 
 function unknownMessage(names: readonly string[]): string {
@@ -44,6 +46,7 @@ export function AgentToolPicker({
   selected,
   onChange,
   unrestricted,
+  onRetry,
 }: AgentToolPickerProps) {
   const baseId = useId();
   // Display only: the tools AX adds itself are plumbing, so the failed-read
@@ -68,10 +71,11 @@ export function AgentToolPicker({
           skeleton="lines"
           loadingLabel="Loading the list of tools…"
           error={{
+            ...(onRetry ? { onRetry } : {}),
             message:
               kept.length > 0
-                ? `We couldn’t load the list of tools, so this agent keeps the ones it has: ${kept.join(', ')}. Close and reopen this form to try again.`
-                : 'We couldn’t load the list of tools. Close and reopen this form to try again.',
+                ? `We couldn’t load the list of tools, so this agent keeps the ones it has: ${kept.join(', ')}.`
+                : 'We couldn’t load the list of tools.',
           }}
         />
       ) : (

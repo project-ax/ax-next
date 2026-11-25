@@ -108,7 +108,7 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
                 {(p.status === 'fallback' || p.status === 'error') && (
                   <Notice
                     tone="info"
-                    action={{ label: 'Try again', onClick: () => { if (!props.retrying) props.onRetry(); } }}
+                    action={{ label: 'Try again', busy: props.retrying, onClick: props.onRetry }}
                   >
                     {providerProblem(p.name)}
                   </Notice>

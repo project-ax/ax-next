@@ -48,6 +48,7 @@ export function DefaultRoutinesSection() {
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [editReadTick, setEditReadTick] = useState(0);
   const [editorPending, setEditorPending] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -98,7 +99,7 @@ export function DefaultRoutinesSection() {
     return () => {
       cancelled = true;
     };
-  }, [editingId]);
+  }, [editingId, editReadTick]);
 
   return (
     <Card>
@@ -137,12 +138,12 @@ export function DefaultRoutinesSection() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error && (
-          <Notice tone="danger">{error}</Notice>
+          <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>{error}</Notice>
         )}
         {defaults === null ? (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading default routines" />
         ) : defaults.length === 0 ? (
-          <EmptyState
+          error ? null : <EmptyState
             title="No default routines yet."
             description={'Click "New default routine" to add one.'}
           />
@@ -220,7 +221,12 @@ export function DefaultRoutinesSection() {
                 <DialogTitle>Edit default routine: {editingId}</DialogTitle>
               </DialogHeader>
               {editLoadError !== null ? (
-                <Notice tone="danger">{editLoadError}</Notice>
+                <Notice
+                  tone="danger"
+                  action={{ label: 'Try again', onClick: () => setEditReadTick((n) => n + 1) }}
+                >
+                  {editLoadError}
+                </Notice>
               ) : editingInitial === null ? (
                 <AsyncState status="loading" skeleton="lines" loadingLabel="Loading default routine" />
               ) : (

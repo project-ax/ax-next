@@ -126,7 +126,7 @@ describe('AgentToolPicker', () => {
     setup({ catalog: { status: 'failed' }, selected: ['search_catalog'] });
     expect(
       screen.getByText(
-        'We couldn’t load the list of tools. Close and reopen this form to try again.',
+        'We couldn’t load the list of tools.',
       ),
     ).toBeTruthy();
   });
@@ -135,7 +135,7 @@ describe('AgentToolPicker', () => {
     setup({ catalog: { status: 'failed' } });
     expect(
       screen.getByText(
-        'We couldn’t load the list of tools. Close and reopen this form to try again.',
+        'We couldn’t load the list of tools.',
       ),
     ).toBeTruthy();
   });

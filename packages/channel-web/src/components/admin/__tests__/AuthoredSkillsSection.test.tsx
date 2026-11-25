@@ -286,6 +286,16 @@ describe('AuthoredSkillsSection', () => {
     });
   });
 
+  it('a failed read offers Try again, which reads the list again', async () => {
+    mockList.mockRejectedValueOnce(new Error('skills-plugin-not-loaded'));
+    mockList.mockResolvedValueOnce([SKILL_CLEAN]);
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+    await screen.findByText('skills-plugin-not-loaded');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('weather-api')).toBeInTheDocument();
+    expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
   // Delete authored drafts (admin surface) — there was previously no way to
   // remove a stale draft from this section (only Promote).
 

@@ -22,6 +22,16 @@ describe('routine permissions', () => {
       screen.queryByText('Ask before creating or editing tasks'),
     ).not.toBeInTheDocument();
   });
+  it('a failed permission read offers Try again, which reads it again', async () => {
+    vi.mocked(routineApi.getConsent)
+      .mockRejectedValueOnce(new Error('network unavailable'))
+      .mockResolvedValue({ enabled: false, revision: 'v1' });
+    render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
+    await screen.findByText('Task permissions are unavailable.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Ask before creating or editing tasks')).toBeVisible();
+    expect(screen.queryByText('Task permissions are unavailable.')).not.toBeInTheDocument();
+  });
   it('loads without guessing permission and has no grant toggle', async () => {
     vi.mocked(routineApi.getConsent).mockResolvedValue({
       enabled: false,
