@@ -5,6 +5,7 @@ import type { BotRequests } from './bot-requests.js';
 import type { AgentSlackBot, Bots } from './bots.js';
 import type { ChannelStore } from './channel-store.js';
 import { checkRights, liveOwnBot, type Rights } from './channels.js';
+import type { DmAgentStore } from './dm-agents.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
 import { INSTALL_ID_RE } from './ingress.js';
@@ -110,11 +111,16 @@ export type AgentSlackStatus =
       botChannels?: AgentSlackBotChannel[];
     }
   /**
-   * `answersDms`: a DM from the owner reaches THIS agent, their oldest
-   * personal agent (router.ts `personalAgentFor`). Which one it does reach
-   * otherwise is never said.
+   * `answersDms`: a DM from the owner to the shared app reaches THIS agent:
+   * the personal agent they chose for their DMs, or, with no choice (or one
+   * that no longer qualifies), their oldest (router.ts `personalAgentFor`,
+   * TASK-1238). `dmAgentName`: when another of their personal agents is the
+   * one a DM reaches, its display name as they wrote it ('' when it has
+   * none), so the page can offer this one instead; null when this agent
+   * answers, or none does. Only the owner reads a personal agent's section
+   * (agents:resolve), so the agent named is always the reader's own.
    */
-  | { state: 'personal-agent'; botName: string; answersDms: boolean }
+  | { state: 'personal-agent'; botName: string; answersDms: boolean; dmAgentName: string | null }
   | {
       state: 'ready';
       botName: string;
@@ -134,13 +140,20 @@ export const AGENT_SLACK_PATH = '/settings/slack/:agentId';
 /**
  * What the section's routes read for themselves (invariant 5): the shared
  * install (is Slack connected, its names), the agent's own bot, and that
- * bot's channels, which it only lists. No Slack client and no vault:
+ * bot's channels, which it only lists; and, for a personal agent, its
+ * owner's choice of DM agent (TASK-1238). No Slack client and no vault:
  * whatever reaches Slack goes through the bot domains.
  */
 export interface AgentRoutesDeps {
   bus: HookBus;
   installs: Pick<InstallStore, 'current' | 'botForAgent'>;
   channels: Pick<ChannelStore, 'listForAgent'>;
+  /**
+   * Each person's choice of which personal agent answers their DMs
+   * (dm-agents.ts), read as the DM router reads it (router.ts
+   * `personalAgentFor`) to say which one does.
+   */
+  dmAgents: Pick<DmAgentStore, 'get'>;
   logger: Logger;
 }
 
@@ -368,9 +381,17 @@ export function createAgentSlackRoutes(
         return json(200, { state: 'no-workspace', canManage: false, bot: NO_BOT } satisfies AgentSlackStatus);
       }
       // Only its owner sees a personal agent (agents:resolve), so the person
-      // asking is the one whose DMs are routed: asked exactly as the DM router asks.
-      const answersDms = (await personalAgentFor(d.bus, a.ctx, a.userId)) === a.agentId;
-      return json(200, { state: 'personal-agent', botName: install.botName, answersDms } satisfies AgentSlackStatus);
+      // asking is the one whose DMs are routed: asked exactly as the DM router
+      // asks, their choice included (TASK-1238).
+      const answering = await personalAgentFor(d.bus, a.ctx, a.userId, d.dmAgents);
+      const answersDms = answering !== null && answering.id === a.agentId;
+      return json(200, {
+        state: 'personal-agent',
+        botName: install.botName,
+        answersDms,
+        // The one a DM does reach, when it isn't this one: the reader's own agent, named for them alone.
+        dmAgentName: answering === null || answersDms ? null : answering.name,
+      } satisfies AgentSlackStatus);
     }
 
     const manage = await manages(a);

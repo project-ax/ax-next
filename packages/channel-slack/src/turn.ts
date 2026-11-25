@@ -242,15 +242,24 @@ interface AgentChoice {
 
 /**
  * The sender's own personal agent: owned by them (`ownerType 'user'`,
- * `ownerId === userId`) with `visibility 'personal'`, the OLDEST by
- * `createdAt`, ties broken by id. Never a team agent, never someone else's.
- * An agent whose date can't be read sorts after every dated one. Null when
- * they have none.
+ * `ownerId === userId`) with `visibility 'personal'`. `chosen`, the one they
+ * chose for their DMs (TASK-1238, dm-agents.ts), when `agents` has it and it
+ * is one of those; otherwise the OLDEST by `createdAt`, ties broken by id.
+ * Never a team agent, never someone else's, whatever was chosen. An agent
+ * whose date can't be read sorts after every dated one. Null when they have
+ * none.
  */
-export function pickPersonalAgent(agents: ReadonlyArray<AgentChoice>, userId: string): string | null {
+export function pickPersonalAgent(
+  agents: ReadonlyArray<AgentChoice>,
+  userId: string,
+  chosen: string | null = null,
+): string | null {
+  const own = (a: AgentChoice): boolean =>
+    a.ownerType === 'user' && a.visibility === 'personal' && a.ownerId === userId;
+  if (chosen !== null && agents.some((a) => a.id === chosen && own(a))) return chosen;
   let best: { id: string; at: number } | null = null;
   for (const a of agents) {
-    if (a.ownerType !== 'user' || a.visibility !== 'personal' || a.ownerId !== userId) continue;
+    if (!own(a)) continue;
     const time = a.createdAt instanceof Date ? a.createdAt.getTime() : Number.NaN;
     const at = Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
     if (best === null || at < best.at || (at === best.at && a.id < best.id)) best = { id: a.id, at };

@@ -42,6 +42,7 @@ import { createTurnRegistry, subscribeTurnEvents } from '../turn-registry.js';
 import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { fakeBotToken } from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
+import { memoryDmAgentStore } from './memory-dm-agent-store.js';
 import { SLACK_NOT_REMEMBERED_LINE } from '../turn-note.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -428,6 +429,14 @@ function world(o: {
   botToken?: string | null | Error;
   findUserFails?: boolean;
   listFails?: boolean;
+  /**
+   * Which personal agent each person chose for their DMs (TASK-1238), by AX
+   * user id, planted in the choice store (`w.dm`) as the database would hold
+   * it: unchecked, so a choice may name any id at all.
+   */
+  dmChoices?: Record<string, string>;
+  /** The choice store fails every read (TASK-1238). */
+  dmChoiceReadFails?: boolean;
   findOrCreateFails?: boolean;
   /** The install store fails when a queued turn re-reads its install. */
   installReadFails?: boolean;
@@ -751,6 +760,13 @@ function world(o: {
       return name === 'bot-token' ? token : null;
     },
   };
+  // Each person's choice of DM agent (TASK-1238): none unless a test plants one.
+  const dm = memoryDmAgentStore();
+  for (const [userId, agentId] of Object.entries(o.dmChoices ?? {})) dm.rows.set(userId, agentId);
+  if (o.dmChoiceReadFails === true) {
+    // A code the log may carry, and a message that names the person: the log must not.
+    dm.faults.get = Object.assign(new Error('dm choices down for usr_alice'), { code: 'ECONNRESET' });
+  }
   const dispatch = createEventRouter({
     bus,
     api: slack.api,
@@ -763,6 +779,7 @@ function world(o: {
     installs,
     queue,
     channels: bindings,
+    dmAgents: dm.store,
     externalQueue,
     channelCheck: createChannelCheck({
       api: slack.api,
@@ -821,6 +838,7 @@ function world(o: {
     prompts,
     lookups,
     teamsAsked,
+    dm,
   };
 }
 
@@ -1309,6 +1327,118 @@ describe('createEventRouter: a DM from the owner', () => {
     await w.idle();
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Let me send that.\n\n${COPY.heldForSender(TODAY)}`);
     expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.audience])).toEqual([['usr_alice', 'user', 'private']]);
+  });
+});
+
+// ── The personal agent its sender chose (TASK-1238) ─────────────────────────
+
+/*
+  A person may choose which of their personal agents answers their DMs, from
+  that agent's Slack settings (agent-routes.ts). The choice is stored
+  unchecked (dm-agents.ts), so every DM checks it against
+  agents:list-for-user with pickPersonalAgent's own rule: only the sender's
+  own personal agent is honored, and anything else falls back to the oldest,
+  as before any choice. A choice that can't be read is no DM at all, never
+  the oldest instead.
+*/
+describe('createEventRouter: the personal agent its sender chose (TASK-1238)', () => {
+  it('a DM goes to the personal agent its sender chose', async () => {
+    // agt_alice_new is Alice's newer personal agent: with no choice, agt_alice_old answers.
+    const w = world({ dmChoices: { usr_alice: 'agt_alice_new' } });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(w.conversations.map((c) => c.input['agentId'])).toEqual(['agt_alice_new']);
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId])).toEqual([['usr_alice', 'agt_alice_new']]);
+    // Read once, for the sender alone.
+    expect(w.dm.calls).toEqual([{ method: 'get', args: ['usr_alice'] }]);
+    // Asked of AX exactly as before: the sender's own agents, no teams.
+    expect(w.listed.map((l) => l.input)).toEqual([{ userId: 'usr_alice', teamIds: [] }]);
+  });
+
+  it.each([
+    ['a team agent agents lists for her', 'agt_team_ops'],
+    ["Bob's personal agent", 'agt_bob'],
+    ['an agent that is gone', 'agt_gone'],
+  ])("a choice that is no longer the sender's own personal agent (%s) is ignored: the oldest answers", async (_what, chosen) => {
+    const w = world({ dmChoices: { usr_alice: chosen } });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(w.conversations.map((c) => c.input['agentId'])).toEqual(['agt_alice_old']);
+    expect(w.invokes.map((i) => i.ctx.agentId)).toEqual(['agt_alice_old']);
+    // Answered as if she had never chosen: nothing to say, and nothing logged.
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('ok');
+    expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
+  });
+
+  it("a choice store that can't be read fails the DM: try again, and no agent runs", async () => {
+    const w = world({ dmChoiceReadFails: true });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    // Never the oldest instead: that would put her words in the agent she moved away from.
+    expect(w.invokes).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    expect(w.slack.calls.filter((c) => c.method === 'postMessage').map((c) => c.args)).toEqual([
+      { channel: DM_ALICE, threadTs: TS, markdownText: COPY.turnFailed },
+    ]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_event_failed', fields: { installId: INSTALL_ID, stage: 'agents', code: 'ECONNRESET' } },
+    ]);
+    expect(JSON.stringify(w.lines)).not.toContain('usr_alice');
+  });
+
+  it('a message routed before a switch keeps its agent; the next one takes the new choice', async () => {
+    const w = world();
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    // msg1 runs, held at the gate, and msg2 waits behind it in the same thread.
+    await w.dispatch(INSTALL, dm({ text: 'first' }));
+    await w.dispatch(INSTALL, dm({ ts: '1763035201.000200', threadTs: TS, text: 'second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes.map(wordsOf)).toEqual(['first']);
+
+    // The switch lands now, as the settings' write makes it, and msg3 starts a new thread.
+    w.dm.rows.set('usr_alice', 'agt_alice_new');
+    const T2 = '1763035202.000300';
+    await w.dispatch(INSTALL, dm({ ts: T2, text: 'third' }));
+    first.release();
+    await w.idle();
+
+    expect(w.invokes).toHaveLength(3);
+    expect(Object.fromEntries(w.invokes.map((i) => [wordsOf(i), i.ctx.agentId]))).toEqual({
+      first: 'agt_alice_old',
+      second: 'agt_alice_old',
+      third: 'agt_alice_new',
+    });
+    expect(w.conversations.map((c) => [c.input.externalKey, c.input['agentId']])).toEqual([
+      [`slack:${INSTALL_ID}:${DM_ALICE}:${TS}`, 'agt_alice_old'],
+      [`slack:${INSTALL_ID}:${DM_ALICE}:${TS}`, 'agt_alice_old'],
+      [`slack:${INSTALL_ID}:${DM_ALICE}:${T2}`, 'agt_alice_new'],
+    ]);
+  });
+
+  it("pickPersonalAgent honors a chosen agent only when it is the user's own personal agent", () => {
+    // Alice's list, and Bob's personal agent in it too: each refusal is about whose it is, not whether it was listed.
+    const agents = [
+      agent('agt_alice_new', 'usr_alice', '2026-10-02T00:00:00Z'),
+      agent('agt_team_ops', 'team_ops', '2026-01-01T00:00:00Z', true),
+      agent('agt_alice_old', 'usr_alice', '2026-03-01T00:00:00Z'),
+      agent('agt_bob', 'usr_bob', '2026-05-05T00:00:00Z'),
+    ];
+    expect(pickPersonalAgent(agents, 'usr_alice', 'agt_alice_new')).toBe('agt_alice_new');
+    expect(pickPersonalAgent(agents, 'usr_alice', 'agt_alice_old')).toBe('agt_alice_old');
+    for (const chosen of ['agt_team_ops', 'agt_bob', 'agt_gone', '', null]) {
+      expect(pickPersonalAgent(agents, 'usr_alice', chosen), String(chosen)).toBe('agt_alice_old');
+    }
+    // Each part of the rule refuses on its own: hers but not personal, or personal but owned by a team.
+    const notPersonal = { ...agent('agt_alice_shared', 'usr_alice', '2020-01-01T00:00:00Z'), visibility: 'team' };
+    const teamOwned = { ...agent('agt_alice_teamowned', 'usr_alice', '2020-01-01T00:00:00Z'), ownerType: 'team' };
+    for (const odd of [notPersonal, teamOwned]) {
+      expect(pickPersonalAgent([...agents, odd], 'usr_alice', odd.id), odd.id).toBe('agt_alice_old');
+    }
+    // Someone with no personal agent of their own gets nobody, whatever they chose.
+    expect(pickPersonalAgent(agents, 'usr_carol', 'agt_bob')).toBeNull();
+    expect(pickPersonalAgent(agents, 'usr_bob', 'agt_alice_new')).toBe('agt_bob');
   });
 });
 

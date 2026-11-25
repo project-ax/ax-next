@@ -104,7 +104,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        in the path (ingress.ts)
 //   GET  /settings/slack/:agentId  — a team agent's Slack section, from its
 //        settings: its own bot and the channels the bot answers in; any
-//        member reads (agent-routes.ts)
+//        member reads (agent-routes.ts). A personal agent's says which of
+//        its owner's personal agents answers their DMs (TASK-1238)
 //   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,/rename,/icon,
 //        /replace-token,/claim} — the agent's own Slack bot (TASK-1167,
 //        bots.ts): a team admin of its team asks for it, picks it back up in
@@ -138,11 +139,13 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
 //
 // A verified event goes to the router (router.ts): a 1:1 DM from an admitted
-// member whose verified email maps to an AX user becomes a turn of their
-// oldest personal agent, in the thread's conversation (origin 'slack'),
-// queued behind any other turn in it (turn-queue.ts). The reply streams into
-// the Slack thread (reply-stream.ts) from the turn's chat events, which one
-// subscriber per event hands to the running turn (turn-registry.ts).
+// member whose verified email maps to an AX user becomes a turn of the
+// personal agent they chose for their DMs, while it is still their own
+// personal agent, else of their oldest (TASK-1238), in the thread's
+// conversation (origin 'slack'), queued behind any other turn in it
+// (turn-queue.ts). The reply streams into the Slack thread (reply-stream.ts)
+// from the turn's chat events, which one subscriber per event hands to the
+// running turn (turn-registry.ts).
 //
 // A team agent's own bot (TASK-1167) answers @mentions in the public
 // channels someone invited it to: its first mention in one binds the channel
@@ -535,6 +538,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 installs: store,
                 queue,
                 channels: channelStore,
+                // Read on every DM, never written here (TASK-1238).
+                dmAgents,
                 externalQueue,
                 channelCheck,
                 mentionNames,
@@ -590,9 +595,10 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           // The bot routes reach the same `bots` as agents:deleted, and `botChanges`,
           // both under the one app lock, and the ask routes the same `botRequests`
           // as Admin › Slack. The section itself reads only the stores: no Slack
-          // client and no vault (invariant 5).
+          // client and no vault (invariant 5). A personal agent's section reads
+          // its owner's DM choice as the router does (TASK-1238).
           ...createAgentSlackRoutes(
-            { bus, installs: store, channels: channelStore, logger },
+            { bus, installs: store, channels: channelStore, dmAgents, logger },
             bots,
             botRequests,
             botChanges,
