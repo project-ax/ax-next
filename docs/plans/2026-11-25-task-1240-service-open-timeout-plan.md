@@ -55,7 +55,7 @@
 6. **Tell the agent at its next sandbox in that conversation.**
    - It is one system-prompt line built only from host constants, the set id and service name re-checked against `SAFE_NAME_RE` (JSON-quoted), and a reason re-checked against `SERVICE_DIAGNOSIS_REASONS`.
    - **Never the log-derived `path`, never the connector label.** Sidecar logs are untrusted image output, and dev-services spec §8 limits host-written notes to constants, ids, names and ports.
-   - It is kept in memory per conversation, capped at 1000 entries, consumed when the next open succeeds, and neither delivered nor consumed on an outsider's turn.
+   - It is kept in memory per conversation, capped at 1000 entries, consumed when the next open succeeds, and never delivered on an outsider's or first-run-setup turn. Any successful open of the failed set retires it, whoever's turn it is (whole-branch review round 1).
 
 ### Non-goals (said plainly)
 
@@ -107,7 +107,7 @@ No new dependency.
 1. **A service-less open (the common path)** still gets exactly 300 s with default config. Pinned in Task 2's config test.
 2. **A payload with more than 16 services, or a non-array `services`,** gets a finite, bounded timeout, never NaN and never a timer overflow. Pinned in Task 2's config test.
 3. **A pod stuck on a non-service init container** (the root chown pod, a hung NFS mount) or on `PodInitializing` stays generic and never blames a service. Pinned in Task 3.
-4. **An outsider's turn after a failed services open** neither hears nor consumes the notice; the next member turn hears it. Pinned in Task 4.
+4. **An outsider's turn after a failed services open** never hears the notice, and retires it only by successfully starting the failed set itself; otherwise the next member turn hears it. Pinned in Task 4 and review round 1.
 5. **A hostile diagnosis** (a service name with quotes or newlines, an unknown reason, a path made of instructions) never reaches the agent's prompt. Pinned in Task 4's unit tests.
 
 ## File map
