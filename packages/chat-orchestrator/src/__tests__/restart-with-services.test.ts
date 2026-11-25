@@ -81,7 +81,12 @@ async function setup(opts: {
   openGate?: { on: number; until: Promise<void> };
   /** The invoking request's logger throws on a line containing this. */
   throwOnLog?: string;
-  openSessionThrowsOn?: number;
+  /** The Nth sandbox:open-session (or each of these) fails, with the sidecar's diagnosis. */
+  openSessionThrowsOn?: number | readonly number[];
+  /** A failing open throws a plain error, with no diagnosis. */
+  openSessionPlainError?: boolean;
+  /** Register agents:identity:get, answering this first-run state (read at each spawn). */
+  identityBootstrap?: { current: 'none' | 'pending' | 'done' };
   /** The gated open's session is alive while it opens (k8s: session:create runs inside the open). */
   aliveWhileOpening?: boolean;
   /** Hold the host-note's session:queue-work until this resolves (it lands in the inbox after). */
@@ -98,7 +103,12 @@ async function setup(opts: {
   }
   const row = (id: string): Row => (rows[id] ??= { activeSessionId: null, activeReqId: null, serviceSet: null });
   const live = new Set<string>();
-  const opens: Array<{ sessionId: string; services?: Array<{ name: string }> }> = [];
+  /** Every sandbox:open-session: its session, the services it folds, its system-prompt augment, and whether it opens in first-run setup. */
+  const opens: Array<{ sessionId: string; services?: Array<{ name: string }>; augment: string; bootstrap?: true }> = [];
+  const openThrows = (n: number): boolean =>
+    typeof opts.openSessionThrowsOn === 'number'
+      ? opts.openSessionThrowsOn === n
+      : (opts.openSessionThrowsOn ?? []).includes(n);
   const handles = new Map<string, ReturnType<typeof makeHandle>>();
   const queued: Array<{ sessionId: string; entry: { type: string; reqId?: string; note?: string } }> = [];
   const terminated: string[] = [];
@@ -172,13 +182,24 @@ async function setup(opts: {
       return { ok: true };
     },
     'sandbox:open-session': async (_c, input: unknown) => {
-      const i = input as { sessionId: string; services?: Array<{ name: string }> };
-      opens.push({ sessionId: i.sessionId, ...(i.services !== undefined ? { services: i.services } : {}) });
-      if (opts.openGate !== undefined && opts.openGate.on === opens.length) {
+      const i = input as {
+        sessionId: string;
+        services?: Array<{ name: string }>;
+        owner?: { agentConfig?: { systemPromptAugment?: string; identity?: { bootstrapMode?: boolean } } };
+      };
+      opens.push({
+        sessionId: i.sessionId,
+        ...(i.services !== undefined ? { services: i.services } : {}),
+        augment: i.owner?.agentConfig?.systemPromptAugment ?? '',
+        ...(i.owner?.agentConfig?.identity?.bootstrapMode === true ? { bootstrap: true as const } : {}),
+      });
+      const n = opens.length;
+      if (opts.openGate !== undefined && opts.openGate.on === n) {
         if (opts.aliveWhileOpening === true) live.add(i.sessionId);
         await opts.openGate.until;
       }
-      if (opts.openSessionThrowsOn === opens.length) {
+      if (openThrows(n)) {
+        if (opts.openSessionPlainError === true) throw new Error('boom');
         throw new PluginError({
           code: 'service-sidecar-failed', plugin: '@ax/sandbox-k8s', hookName: 'sandbox:open-session',
           message: "dev service 'mongo' failed to start",
@@ -190,6 +211,13 @@ async function setup(opts: {
       handles.set(i.sessionId, hk);
       return { runnerEndpoint: 'unix:///tmp/x.sock', handle: hk.handle };
     },
+    ...(opts.identityBootstrap !== undefined
+      ? {
+          'agents:identity:get': async () => ({
+            identity: '', soul: '', instructions: '', bootstrap: opts.identityBootstrap!.current,
+          }),
+        }
+      : {}),
     'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
     'proxy:close-session': async () => ({}),
     // The tool catalog (@ax/mcp-client's dispatcher): what agents are offered.
@@ -677,7 +705,14 @@ describe('restart_with_services (dev services on demand)', () => {
     // conv-c had its set on; its sandbox was reaped; the agent is at its cap.
     const pc = t.invoke('s-c', 'conv-c', 'req-c');
     await waitFor(() => t.queued.filter((q) => q.entry.type === 'user-message').length === 2, 'turn c');
-    expect(t.opens.at(-1)).toEqual({ sessionId: 's-c' }); // no services
+    // No services, and a prompt that only offers the set: nothing else.
+    expect(t.opens.at(-1)).toEqual({
+      sessionId: 's-c',
+      augment:
+        'Service sets you can start with restart_with_services: "e2e" ("e2e": mongo). Starting one ' +
+        'restarts your sandbox inside this turn, so save your work first (push your branch, or write to ' +
+        '/files). Turn them off with stop_services.',
+    });
     expect(t.row('conv-c').serviceSet).toBeNull();
     expect(t.setServiceSetCalls.at(-1)).toEqual({ conversationId: 'conv-c', userId: AGENT.ownerId, serviceSet: null });
     await t.emitTurnEnd('s-c', 'conv-c', 'req-c', 'assistant');
@@ -946,6 +981,8 @@ describe('restart_with_services: a message during the restart open (C1)', () => 
     expect(await p1).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
     await waitFor(() => t.opens.length === 3, 'req-2 spawns fresh');
     expect(t.opens[2]!.services).toBeUndefined();
+    // TASK-1240 — and its agent hears which service failed.
+    expect(t.opens[2]!.augment).toContain('dev service "mongo" failed');
     const third = t.opens[2]!.sessionId;
     await waitFor(() => t.queued.some((q) => q.entry.reqId === 'req-2'), 'req-2 queued');
     await t.emitTurnEnd(third, 'conv-1', 'req-2', 'assistant');
@@ -1010,5 +1047,223 @@ describe('restart_with_services: the on-demand switch (C3)', () => {
     await expect(setup({ keepAlive: false })).rejects.toThrow(/onDemandServices\.enabled requires keepAlive/);
     // Off, keepAlive doesn't matter.
     await expect(setup({ keepAlive: false, enabled: false })).resolves.toBeDefined();
+  });
+});
+
+// ---- TASK-1240: the agent hears which service failed, at its next sandbox ----
+describe('restart_with_services: a failed services open is told to the agent (TASK-1240)', () => {
+  const NOTICE = "service set didn't start";
+  /** A sandbox exits (its runner ended): the conversation's next turn spawns fresh. */
+  async function exitSandbox(t: Awaited<ReturnType<typeof setup>>, sessionId: string): Promise<void> {
+    await t.handles.get(sessionId)!.handle.kill();
+    await flush();
+  }
+  /** Invoke, wait until the request's message is queued, and return the open it spawned. */
+  async function spawnTurn(
+    t: Awaited<ReturnType<typeof setup>>, reqId: string, source?: AgentContextSource,
+  ): Promise<{ p: Promise<AgentOutcome>; open: (typeof t.opens)[number] }> {
+    const before = t.opens.length;
+    const p = t.invoke(`placeholder-${reqId}`, 'conv-1', reqId, source);
+    await waitFor(() => t.queued.some((q) => q.entry.reqId === reqId), `${reqId} queued`);
+    expect(t.opens).toHaveLength(before + 1); // a fresh sandbox, not a routed turn
+    return { p, open: t.opens.at(-1)! };
+  }
+  async function endTurn(t: Awaited<ReturnType<typeof setup>>, sessionId: string, reqId: string, p: Promise<AgentOutcome>) {
+    await t.emitTurnEnd(sessionId, 'conv-1', reqId, 'assistant');
+    expect(await p).toEqual({ kind: 'complete', messages: [] });
+  }
+
+  it('a failed restart tells the agent at its next sandbox which service failed, without the path (TASK-1240)', async () => {
+    const t = await setup({ openSessionThrowsOn: 2 });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.queued.length === 1, 'the first message');
+    expect(t.opens[0]!.augment).not.toContain(NOTICE);
+    expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+    await t.endSegment('s-1', 'conv-1', 'req-1');
+    expect(await p1).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+
+    const next = await spawnTurn(t, 'req-3');
+    expect(next.open).toBe(t.opens[2]);
+    expect(next.open.services).toBeUndefined();
+    expect(next.open.augment).toContain('"e2e"');
+    expect(next.open.augment).toContain('dev service "mongo" failed (read-only filesystem)');
+    expect(next.open.augment).not.toContain('/data/db');
+    await endTurn(t, next.open.sessionId, 'req-3', next.p);
+
+    // Told once: the sandbox after that one hears nothing more.
+    await exitSandbox(t, next.open.sessionId);
+    const after = await spawnTurn(t, 'req-4');
+    expect(after.open.augment).not.toContain(NOTICE);
+    await endTurn(t, after.open.sessionId, 'req-4', after.p);
+  });
+
+  it('R32 plain path: a sandbox carrying the set that fails to open tells the agent at the next sandbox', async () => {
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    expect(await t.invoke('s-1', 'conv-1', 'req-1')).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+    expect(t.opens[0]!.augment).not.toContain(NOTICE);
+    const next = await spawnTurn(t, 'req-2');
+    expect(t.opens[1]!.augment).toContain('dev service "mongo" failed');
+    expect(next.open.augment).not.toContain('/data/db');
+    await endTurn(t, next.open.sessionId, 'req-2', next.p);
+  });
+
+  it('an outsider\'s turn neither hears nor consumes the notice', async () => {
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the set's sandbox fails to open
+
+    const outsider = await spawnTurn(t, 'req-2', 'external');
+    expect(outsider.open.augment).not.toContain(NOTICE);
+    expect(outsider.open.augment).not.toContain('mongo" failed');
+    await endTurn(t, outsider.open.sessionId, 'req-2', outsider.p);
+    await exitSandbox(t, outsider.open.sessionId);
+
+    // The next member's turn still hears it.
+    const member = await spawnTurn(t, 'req-3');
+    expect(member.open.augment).toContain('dev service "mongo" failed (read-only filesystem)');
+    await endTurn(t, member.open.sessionId, 'req-3', member.p);
+  });
+
+  it('a failed open with no diagnosis still tells the agent the set was turned off', async () => {
+    const t = await setup({
+      openSessionThrowsOn: 1, openSessionPlainError: true, rows: { 'conv-1': { serviceSet: 'e2e' } },
+    });
+    expect(await t.invoke('s-1', 'conv-1', 'req-1')).toMatchObject({ kind: 'terminated', reason: 'sandbox-open-failed' });
+    expect(t.row('conv-1').serviceSet).toBeNull();
+    const next = await spawnTurn(t, 'req-2');
+    expect(next.open.augment).toContain(
+      'The last sandbox this conversation opened with the "e2e" service set didn\'t start, so the set was ' +
+        'turned off and this sandbox has none of its services. Tell the person before calling ' +
+        'restart_with_services again.',
+    );
+    expect(next.open.augment).not.toContain('boom');
+    await endTurn(t, next.open.sessionId, 'req-2', next.p);
+  });
+
+  it('a sandbox in first-run setup leaves the notice for the first sandbox that can hear it', async () => {
+    // Bootstrap mode: the runner shows only the bootstrap augment, never the
+    // system-prompt augment the notice rides, so that sandbox must not spend it.
+    const identityBootstrap: { current: 'none' | 'pending' | 'done' } = { current: 'pending' };
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } }, identityBootstrap });
+    expect(await t.invoke('s-1', 'conv-1', 'req-1')).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+
+    const setupTurn = await spawnTurn(t, 'req-2');
+    expect(setupTurn.open.bootstrap).toBe(true);
+    expect(setupTurn.open.augment).not.toContain(NOTICE);
+    await endTurn(t, setupTurn.open.sessionId, 'req-2', setupTurn.p);
+
+    // First-run setup is done: the next sandbox opens in normal mode and hears it.
+    identityBootstrap.current = 'done';
+    await exitSandbox(t, setupTurn.open.sessionId);
+    const normal = await spawnTurn(t, 'req-3');
+    expect(normal.open.bootstrap).toBeUndefined();
+    expect(normal.open.augment).toContain('dev service "mongo" failed (read-only filesystem)');
+    await endTurn(t, normal.open.sessionId, 'req-3', normal.p);
+  });
+
+  it('a failed open that carried no service set leaves no notice', async () => {
+    const t = await setup({ openSessionThrowsOn: 1 });
+    expect(await t.invoke('s-1', 'conv-1', 'req-1')).toMatchObject({ kind: 'terminated', reason: 'dev-service-failed' });
+    expect(t.opens[0]!.services).toBeUndefined();
+    const next = await spawnTurn(t, 'req-2');
+    expect(next.open.augment).not.toContain(NOTICE);
+    await endTurn(t, next.open.sessionId, 'req-2', next.p);
+  });
+
+  it('a sandbox that folds the failed set again is not told it has none of its services, and the notice goes', async () => {
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the set's sandbox fails to open
+    expect(t.row('conv-1').serviceSet).toBeNull();
+    // The write that turns the set off didn't land (or a restart turned it back
+    // on): the member's next sandbox folds `e2e` while the notice is stored.
+    t.row('conv-1').serviceSet = 'e2e';
+
+    // A member's sandbox folds the set and opens fine: telling it "this sandbox
+    // has none of its services" would be false. The set starts now, so the
+    // notice is gone for good.
+    const member = await spawnTurn(t, 'req-2');
+    expect(member.open.services?.map((s) => s.name)).toEqual(['mongo']);
+    expect(member.open.augment).not.toContain(NOTICE);
+    expect((await t.tool(STOP_SERVICES, member.open.sessionId, 'conv-1', {})).ok).toBe(true);
+    await endTurn(t, member.open.sessionId, 'req-2', member.p);
+
+    const plain = await spawnTurn(t, 'req-3'); // the set is off again: a fresh sandbox without it
+    expect(plain.open.services).toBeUndefined();
+    expect(plain.open.augment).not.toContain(NOTICE);
+    await endTurn(t, plain.open.sessionId, 'req-3', plain.p);
+  });
+
+  it('an outsider\'s successful open of the failed set retires the notice for every later turn', async () => {
+    // Review repro: (1) a member's sandbox carrying `e2e` fails to open (R32);
+    // (2) an outsider's restart_with_services opens `e2e` fine; (3) the set is
+    // turned off; (4) the member's next sandbox must not be told "mongo failed".
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the notice is recorded
+    const outsider = await spawnTurn(t, 'req-2', 'external');
+    expect((await t.tool(RESTART_WITH_SERVICES, outsider.open.sessionId, 'conv-1', { set: 'e2e' }, 'external')).ok).toBe(true);
+    await t.endSegment(outsider.open.sessionId, 'conv-1', 'req-2');
+    await waitFor(() => t.notes().length === 1, 'the restart note');
+    const restarted = t.opens.at(-1)!;
+    expect(restarted.services?.map((s) => s.name)).toEqual(['mongo']);
+    expect(restarted.augment).not.toContain(NOTICE);
+    // The set goes off again (the outsider's stop_services).
+    expect((await t.tool(STOP_SERVICES, restarted.sessionId, 'conv-1', {}, 'external')).ok).toBe(true);
+    await endTurn(t, restarted.sessionId, 'req-2', outsider.p);
+
+    const member = await spawnTurn(t, 'req-3');
+    expect(member.open.services).toBeUndefined();
+    expect(member.open.augment).not.toContain(NOTICE);
+    expect(member.open.augment).not.toContain('mongo" failed');
+    await endTurn(t, member.open.sessionId, 'req-3', member.p);
+  });
+
+  it('a first-run-setup sandbox that opens the failed set fine retires the notice too', async () => {
+    const identityBootstrap: { current: 'none' | 'pending' | 'done' } = { current: 'pending' };
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } }, identityBootstrap });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the notice is recorded, the set off
+    t.row('conv-1').serviceSet = 'e2e'; // the set comes back on (a restart elsewhere, say)
+    const setupTurn = await spawnTurn(t, 'req-2');
+    expect(setupTurn.open.bootstrap).toBe(true);
+    expect(setupTurn.open.services?.map((s) => s.name)).toEqual(['mongo']);
+    await endTurn(t, setupTurn.open.sessionId, 'req-2', setupTurn.p);
+
+    identityBootstrap.current = 'done';
+    t.row('conv-1').serviceSet = null; // and goes off again
+    await exitSandbox(t, setupTurn.open.sessionId);
+    const normal = await spawnTurn(t, 'req-3');
+    expect(normal.open.bootstrap).toBeUndefined();
+    expect(normal.open.services).toBeUndefined();
+    expect(normal.open.augment).not.toContain(NOTICE);
+    await endTurn(t, normal.open.sessionId, 'req-3', normal.p);
+  });
+
+  it('a newer failure recorded while a notified sandbox opens survives that open', async () => {
+    let release!: () => void;
+    const until = new Promise<void>((r) => { release = r; });
+    const t = await setup({
+      openSessionThrowsOn: [1, 3], openGate: { on: 2, until }, rows: { 'conv-1': { serviceSet: 'e2e' } },
+    });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the first notice
+    const p2 = t.invoke('placeholder-req-2', 'conv-1', 'req-2');
+    await waitFor(() => t.opens.length === 2, 'req-2 opening, held');
+    expect(t.opens[1]!.augment).toContain('dev service "mongo" failed');
+
+    // Meanwhile the set comes back on (an outsider's restart, say) and another
+    // sandbox of the conversation carrying it fails too: a newer notice.
+    t.row('conv-1').serviceSet = 'e2e';
+    expect(await t.invoke('placeholder-req-3', 'conv-1', 'req-3')).toMatchObject({
+      kind: 'terminated', reason: 'dev-service-failed',
+    });
+    expect(t.opens).toHaveLength(3);
+    expect(t.opens[2]!.services?.map((s) => s.name)).toEqual(['mongo']);
+    expect(t.row('conv-1').serviceSet).toBeNull();
+
+    // req-2's open succeeds: it consumes only the notice it was given.
+    release();
+    await waitFor(() => t.queued.some((q) => q.entry.reqId === 'req-2'), 'req-2 queued');
+    await endTurn(t, t.opens[1]!.sessionId, 'req-2', p2);
+    await exitSandbox(t, t.opens[1]!.sessionId);
+    const next = await spawnTurn(t, 'req-4');
+    expect(next.open.augment).toContain('dev service "mongo" failed');
+    await endTurn(t, next.open.sessionId, 'req-4', next.p);
   });
 });

@@ -1,8 +1,10 @@
+import { SERVICE_DIAGNOSIS_REASONS } from '@ax/sandbox-protocol';
 import { connectorLabel, type ResolvedConnectorForOrch } from './connector-union.js';
 
 // ---------------------------------------------------------------------------
 // Dev services on demand (spec §3): service sets, the note a restarted runner
-// wakes up to, and the per-agent cap.
+// wakes up to, the line a sandbox opens with after its conversation's last
+// services open failed (TASK-1240), and the per-agent cap.
 //
 // A SERVICE SET is an on-demand connector's services, named by the
 // connector's id. A conversation turns one on with `restart_with_services`
@@ -153,6 +155,95 @@ export function serviceSetsPromptLine(
     'Starting one restarts your sandbox inside this turn, so save your work first (push your branch, ' +
     'or write to /files). Turn them off with stop_services.'
   );
+}
+
+/**
+ * TASK-1240 — a sandbox carrying a conversation's service set failed to open,
+ * so the set was turned off (R32). What the conversation's next sandbox is told
+ * about it: the set, and the service that failed and why when the backend
+ * named both. `service` and `reason` come as a pair or not at all.
+ */
+export interface ServiceSetFailure {
+  set: string;
+  service?: string;
+  reason?: string;
+}
+
+/** The curated reasons a backend's diagnosis may carry (@ax/sandbox-protocol). */
+const KNOWN_FAILURE_REASONS: ReadonlySet<string> = new Set(Object.values(SERVICE_DIAGNOSIS_REASONS));
+
+function isSafeName(v: unknown): v is string {
+  return typeof v === 'string' && SAFE_NAME_RE.test(v);
+}
+
+function isKnownFailureReason(v: unknown): v is string {
+  return typeof v === 'string' && KNOWN_FAILURE_REASONS.has(v);
+}
+
+/**
+ * The failure to remember from a failed open's diagnosis. The diagnosis is
+ * built from an untrusted sidecar's output (its log, for `path`), so only two
+ * of its fields are read, and kept only when they check out: a service name in
+ * SAFE_NAME_RE and a reason from the closed set. Never `path`, never any other
+ * key.
+ */
+export function serviceSetFailureFrom(
+  set: string,
+  diagnosis: Readonly<Record<string, unknown>> | undefined,
+): ServiceSetFailure {
+  const service = diagnosis?.service;
+  const reason = diagnosis?.reason;
+  return isSafeName(service) && isKnownFailureReason(reason) ? { set, service, reason } : { set };
+}
+
+/**
+ * The system-prompt line a conversation's next sandbox opens with after its
+ * last services open failed. It speaks with AX's voice, so like the services
+ * note it is built only from host constants, the set id and service name
+ * re-checked against SAFE_NAME_RE (JSON-quoted) and a reason from the closed
+ * set. The checks run again here, because the line may be built from any
+ * object. Empty when the set id doesn't pass.
+ */
+export function serviceSetFailurePromptLine(failure: ServiceSetFailure): string {
+  if (!isSafeName(failure.set)) return '';
+  const s = JSON.stringify(failure.set);
+  const { service, reason } = failure;
+  if (isSafeName(service) && isKnownFailureReason(reason)) {
+    const v = JSON.stringify(service);
+    return (
+      `The last sandbox this conversation opened with the ${s} service set didn't start: ` +
+      `dev service ${v} failed (${reason}). The set was turned off, so this sandbox has none of its services. ` +
+      'Tell the person which service failed and why before calling restart_with_services again: ' +
+      'it may fail the same way until its connector is fixed.'
+    );
+  }
+  return (
+    `The last sandbox this conversation opened with the ${s} service set didn't start, so the set was ` +
+    'turned off and this sandbox has none of its services. Tell the person before calling ' +
+    'restart_with_services again.'
+  );
+}
+
+/** How many conversations' failures the host remembers (in memory: the host is single-replica). */
+const SERVICE_SET_FAILURES_MAX = 1_000;
+
+/**
+ * Remember `failure` as the conversation's newest. Re-recording a conversation
+ * makes it the newest entry; past the cap, the oldest one is dropped (its agent
+ * just isn't told).
+ */
+export function recordServiceSetFailure(
+  failures: Map<string, ServiceSetFailure>,
+  conversationId: string,
+  failure: ServiceSetFailure,
+): void {
+  failures.delete(conversationId);
+  failures.set(conversationId, failure);
+  while (failures.size > SERVICE_SET_FAILURES_MAX) {
+    const oldest = failures.keys().next();
+    if (oldest.done === true) break;
+    failures.delete(oldest.value);
+  }
 }
 
 /**

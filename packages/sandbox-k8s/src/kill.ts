@@ -83,8 +83,10 @@ export function isTransientApiError(err: unknown): boolean {
 }
 
 /** Backoff schedule (ms) between kill attempts. Index i is the wait BEFORE
- *  attempt i+1. Short and bounded — the throttle is brief and the whole kill
- *  must stay well under the 300 s `sandbox:open-session` service timeout. */
+ *  attempt i+1. Short and bounded — the throttle is brief, and the whole kill
+ *  must fit well inside the open's overhead allowance
+ *  (`OPEN_SESSION_OVERHEAD_MS`, config.ts), so a failed open still reports
+ *  before its bus timeout. */
 const KILL_BACKOFF_MS = [250, 500, 1000];
 
 const defaultSleep = (ms: number): Promise<void> =>

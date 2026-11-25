@@ -89,9 +89,13 @@ import {
   ServiceSandboxCounter,
   buildServicesNote,
   listServiceSets,
+  recordServiceSetFailure,
   selectServiceSet,
+  serviceSetFailureFrom,
+  serviceSetFailurePromptLine,
   serviceSetsPromptLine,
   type ServiceSet,
+  type ServiceSetFailure,
 } from './service-sets.js';
 import {
   RESTART_REFUSALS,
@@ -1376,13 +1380,15 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * before the orchestrator's own bound. A reviewer showed that does not hold:
  * the `chatTimeoutMs` timer is armed only AFTER setup — `chat:start`
  * subscribers, `agents:resolve`, `proxy:open-session` and `sandbox:open-session`
- * (registered `timeoutMs: 300_000` by both providers) — while the bus clock
- * starts at handler entry. A three-minute cold pod spawn therefore still put
- * the bus deadline two minutes AHEAD of the orchestrator's, and now that
- * channel-web surfaces the rejection it would have killed a healthy streaming
- * turn's SSE and persisted a failure that never happened. Any finite slack has
- * that shape: setup is a chain of separately-bounded phases, and no single
- * number measured from handler entry dominates their sum.
+ * (each registered with its own timeout: a fixed 300 s on sandbox-subprocess;
+ * on sandbox-k8s the readiness budget plus overhead, which runs to minutes
+ * when a session has dev services) — while the bus clock starts at handler
+ * entry. A three-minute cold pod spawn therefore still put the bus deadline
+ * two minutes AHEAD of the orchestrator's, and now that channel-web surfaces
+ * the rejection it would have killed a healthy streaming turn's SSE and
+ * persisted a failure that never happened. Any finite slack has that shape:
+ * setup is a chain of separately-bounded phases, and no single number
+ * measured from handler entry dominates their sum.
  *
  * SO THE ORCHESTRATOR OWNS TURN DURATION, ALONE — which it is built to do, and
  * this is not a backstop being removed so much as a second, wrong clock. Every
@@ -3305,6 +3311,12 @@ export function createOrchestrator(
   // In-memory, like the warm-session map: the host is single-replica.
   // -------------------------------------------------------------------------
   const serviceRestarts = new ServiceRestartBook(new ServiceSandboxCounter());
+  // TASK-1240 — per conversation, the last sandbox carrying its service set
+  // that failed to open (R32: the set was turned off with it). The agent is
+  // told at the conversation's next sandbox, and the entry goes once that
+  // sandbox opens. Recorded in the open's catch, delivered with the spawn's
+  // system prompt (runAgentInvokeTurn). Capped (recordServiceSetFailure).
+  const serviceSetFailureByConversation = new Map<string, ServiceSetFailure>();
   // The sets each sandbox this host opened was offered (its kept connectors'
   // on-demand sets, at spawn), and the set it folded (null: none).
   const serviceSetsBySession = new Map<string, ServiceSet[]>();
@@ -5416,6 +5428,39 @@ export function createOrchestrator(
           ? `${agentConfig.systemPromptAugment}\n\n${serviceSetsLine}`
           : serviceSetsLine;
     }
+    // TASK-1240 — the last sandbox this conversation opened with a service set
+    // didn't start (recorded in the open's catch, below). Tell the agent, so it
+    // can tell the person which service failed and why instead of restarting
+    // into the same failure. The line holds only the set id, the service name
+    // and a curated reason, each re-checked (serviceSetFailurePromptLine):
+    // never the diagnosis' log-derived path. Normal mode only, like the lines
+    // above. Never on an outsider's turn (TASK-1091): why the owners' services
+    // failed is not the outsider's to hear, and the entry stays for the next
+    // member's turn. Not to a sandbox that folds that same set again: "this
+    // sandbox has none of its services" would be false there. Nor in first-run
+    // setup (bootstrap mode): the runner shows that sandbox only the bootstrap
+    // augment, so it can't hear the notice and must not spend it; the entry
+    // stays for the first sandbox in normal mode.
+    // The entry as this spawn found it is kept, for the open below: only this
+    // entry is consumed there, when this sandbox was told it, or — on ANY turn,
+    // outsider and first-run setup included — when it folds that same set and
+    // opens: the set starts now, so the notice is no longer true.
+    const serviceSetFailureAtSpawn =
+      ctx.conversationId !== undefined ? serviceSetFailureByConversation.get(ctx.conversationId) : undefined;
+    const serviceSetFailureHeard =
+      serviceSetFailureAtSpawn !== undefined &&
+      !isOutsiderTurn(ctx) &&
+      agentConfig.identity?.bootstrapMode !== true;
+    const serviceSetFailureLine =
+      serviceSetFailureHeard && serviceSetFailureAtSpawn.set !== serviceSet?.set
+        ? serviceSetFailurePromptLine(serviceSetFailureAtSpawn)
+        : '';
+    if (serviceSetFailureLine.length > 0) {
+      agentConfig.systemPromptAugment =
+        agentConfig.systemPromptAugment.length > 0
+          ? `${agentConfig.systemPromptAugment}\n\n${serviceSetFailureLine}`
+          : serviceSetFailureLine;
+    }
 
     // Append connector slots AFTER the skill slots so the bare-env projection's
     // first-writer-wins keeps SKILL precedence on a shared bare name (a connector
@@ -5754,6 +5799,18 @@ export function createOrchestrator(
         sandboxInput,
       );
       handle = opened.handle;
+      // TASK-1240 — this sandbox is up, so the failure notice it was given is
+      // spent; and one it made moot, by starting the same set, goes whoever's
+      // turn this is. Only that entry: a newer failure recorded while this one
+      // opened is still to be told.
+      if (
+        serviceSetFailureAtSpawn !== undefined &&
+        ctx.conversationId !== undefined &&
+        serviceSetFailureByConversation.get(ctx.conversationId) === serviceSetFailureAtSpawn &&
+        (serviceSetFailureHeard || serviceSetFailureAtSpawn.set === serviceSet?.set)
+      ) {
+        serviceSetFailureByConversation.delete(ctx.conversationId);
+      }
       augmentGenBySession.set(sessionId, augmentGenAtSpawn);
       // Dev services on demand — what this sandbox offers and folded; a set's
       // cap slot is the sandbox's from now until it goes (forgetSessionServices).
@@ -5880,6 +5937,14 @@ export function createOrchestrator(
       // stop_services from.
       if (serviceSet !== null && ctx.conversationId !== undefined) {
         await setConversationServiceSet(ctx, ctx.conversationId, ctx.userId, null, 'open-failed');
+        // TASK-1240 — and the agent hears why at the conversation's next
+        // sandbox (the failure line, above). Only the set id, plus the
+        // diagnosis' service and reason when both check out: never its path.
+        recordServiceSetFailure(
+          serviceSetFailureByConversation,
+          ctx.conversationId,
+          serviceSetFailureFrom(serviceSet.set, diagnosis),
+        );
       }
       // F2b — surface on the SSE. This early return unregistered the waiter
       // above, so onChatEnd won't fire turn-error for the chat:end below; we

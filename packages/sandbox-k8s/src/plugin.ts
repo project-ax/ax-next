@@ -10,7 +10,7 @@ import type {
   UserFilesUsageOutput,
 } from '@ax/sandbox-mount-protocol';
 import type { ZodType } from 'zod';
-import { resolveConfig, type SandboxK8sConfig } from './config.js';
+import { computeOpenSessionTimeoutMs, resolveConfig, type SandboxK8sConfig } from './config.js';
 import { createDefaultK8sApi, createDefaultSandboxApi, type K8sCoreApi } from './k8s-api.js';
 import { createAgentSandboxSessionApi, SANDBOX_SELECTOR, type SandboxCustomApi } from './agent-sandbox.js';
 import { createSharedPoolSessionApi, retireSharedClaims } from './shared-pool.js';
@@ -192,23 +192,27 @@ export function createSandboxK8sPlugin(
       const impl = createOpenSession({ api: sessionApi, preparationApi: api, config, bus, nextPid });
       bus.registerService('sandbox:session-status', PLUGIN_NAME, createSessionStatus(api, custom, config), { returns: SessionStatusSchema });
 
-      // NO `stallWarnMs` override here, deliberately (TASK-505). This hook
-      // declares a 300s timeout like `llm:call:*` does, and those opted OUT of
-      // the bus's 15s stall watch — but for the opposite reason. A generation
-      // legitimately runs for minutes, so a 15s warning would fire on the
-      // healthy case. A pod spawn does not: the warm path is a couple of
-      // seconds, and the 300s here is a worst-case backstop for a cold image
-      // pull, not a typical duration.
+      // The bus timeout FOLLOWS the readiness budget (TASK-1240). The handler
+      // waits for the pod with `computeReadinessBudgetMs` (60 s, plus 2 min per
+      // dev service), and when that wait gives up it names the failing service
+      // and deletes the pod before it throws. A fixed 300 s used to fire first
+      // from 3 services up, so the caller got a bare timeout while the pod lived
+      // on for minutes. `computeOpenSessionTimeoutMs` sizes the backstop per
+      // call: the budget this call will use, plus the mount-preparation pod's
+      // own deadline, plus 3 minutes for the rest. A service-less open keeps
+      // 300 s.
       //
-      // So a spawn still running at 15s is worth a line. It happens per fresh
-      // session, not per turn, and "sandbox spawn is 15s in" is exactly the
-      // sentence an operator staring at a turn that has done nothing wants to
-      // read. Keeping the default watch is the choice, not an oversight.
+      // NO `stallWarnMs` override, deliberately (TASK-505). A warm service-less
+      // spawn takes seconds, so one still running at 15 s is worth a line; a
+      // spawn with services logs that line once, then its outcome.
       bus.registerService<unknown, OpenSessionResult>(
         'sandbox:open-session',
         PLUGIN_NAME,
         impl,
-        { timeoutMs: 300_000, returns: OPEN_SESSION_RETURNS },
+        {
+          timeoutMs: (input) => computeOpenSessionTimeoutMs(config, input),
+          returns: OPEN_SESSION_RETURNS,
+        },
       );
 
       // §11 host-read. Read-only end to end (the one-shot reader pod mounts the

@@ -23,6 +23,7 @@
 import { PluginError, type Logger } from '@ax/core';
 import {
   extractWritablePathFromLog,
+  SERVICE_DIAGNOSIS_REASONS,
   type ServiceStartupDiagnosis,
 } from '@ax/sandbox-protocol';
 import type { K8sCoreApi } from './k8s-api.js';
@@ -40,7 +41,10 @@ interface ReadyResult {
 
 interface InitContainerStatusLike {
   name?: string;
+  ready?: boolean;
+  started?: boolean;
   state?: {
+    running?: Record<string, unknown>;
     waiting?: { reason?: string; message?: string };
     terminated?: {
       exitCode?: number;
@@ -211,13 +215,64 @@ function isFailingSidecar(s: InitContainerStatusLike): boolean {
   return false;
 }
 
+/** Waiting reasons that mean the image itself can't be pulled. */
+const IMAGE_PULL_WAITING_REASONS: ReadonlySet<string> = new Set([
+  'ErrImagePull',
+  'ImagePullBackOff',
+  'InvalidImageName',
+  'ErrImageNeverPull',
+  'ImageInspectError',
+  'RegistryUnavailable',
+  'SignatureValidationFailed',
+]);
+
+/**
+ * TASK-1240 — when no sidecar is crashing, find the container the pod is still
+ * waiting on and name it ONLY when it is clearly a service's own doing. Walks
+ * init containers in manifest order, skipping any that is ready, started or
+ * exited 0 (a started container is never blamed: that covers a probe-less
+ * sidecar, and a missed running job beats a wrong name). The first one left
+ * decides: a non-`svc-` container, or a pod-level wait (PodInitializing,
+ * ContainerCreating, …), stays generic.
+ */
+function findStuckService(
+  statuses: InitContainerStatusLike[],
+): ServiceStartupDiagnosis | undefined {
+  const stuck = statuses.find(
+    (s) =>
+      s.ready !== true && s.started !== true && s.state?.terminated?.exitCode !== 0,
+  );
+  if (stuck === undefined) return undefined;
+  const name = stuck.name ?? '';
+  if (!name.startsWith(SERVICE_SIDECAR_PREFIX)) return undefined;
+  const service = name.slice(SERVICE_SIDECAR_PREFIX.length);
+  const waitingReason = stuck.state?.waiting?.reason;
+  if (waitingReason !== undefined && IMAGE_PULL_WAITING_REASONS.has(waitingReason)) {
+    return { service, reason: SERVICE_DIAGNOSIS_REASONS.imagePull };
+  }
+  if (stuck.state?.running !== undefined) {
+    return { service, reason: SERVICE_DIAGNOSIS_REASONS.notReady };
+  }
+  return undefined;
+}
+
 export async function diagnoseServiceSidecars(
   input: DiagnoseServiceSidecarsInput,
 ): Promise<ServiceStartupDiagnosis | undefined> {
   try {
     const statuses = input.pod.status?.initContainerStatuses ?? [];
     const failing = statuses.find(isFailingSidecar);
-    if (failing === undefined) return undefined;
+    if (failing === undefined) {
+      // No crash: a service that is stuck without crashing can still be named.
+      const stuck = findStuckService(statuses);
+      if (stuck !== undefined) {
+        input.podLog.info('service_sidecar_failed', {
+          service: stuck.service,
+          reason: stuck.reason,
+        });
+      }
+      return stuck;
+    }
 
     const container = failing.name ?? '';
     const service = container.slice(SERVICE_SIDECAR_PREFIX.length);

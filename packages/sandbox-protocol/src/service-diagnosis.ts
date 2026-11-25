@@ -43,7 +43,8 @@ export interface ServiceStartupDiagnosis {
   path?: string;
   /**
    * A CURATED reason phrase from a closed set — never raw log text.
-   * One of: 'read-only filesystem' | 'permission denied' | 'startup failed'.
+   * One of: 'read-only filesystem' | 'permission denied' | 'startup failed' |
+   * 'not ready in time' | 'image pull failed'.
    */
   reason: string;
 }
@@ -53,6 +54,10 @@ export const SERVICE_DIAGNOSIS_REASONS = {
   readOnly: 'read-only filesystem',
   permissionDenied: 'permission denied',
   startupFailed: 'startup failed',
+  /** Running, but never became ready before the deadline (no crash seen). */
+  notReady: 'not ready in time',
+  /** The image could not be pulled (bad name, missing, or unreachable). */
+  imagePull: 'image pull failed',
 } as const;
 
 /** Max chars of any captured tail this module will scan (defense-in-depth; the
@@ -145,6 +150,12 @@ export function formatServiceDiagnosis(d: ServiceStartupDiagnosis): string {
   const svc = service.length > 0 ? `'${service}'` : 'a dev service';
   if (path !== undefined) {
     return `Dev service ${svc} couldn't write ${path} (${reason}) — add ${path} to the service's writablePaths.`;
+  }
+  if (reason === SERVICE_DIAGNOSIS_REASONS.notReady) {
+    return `Dev service ${svc} didn't become ready in time. It may need longer to start, or its health check never passes.`;
+  }
+  if (reason === SERVICE_DIAGNOSIS_REASONS.imagePull) {
+    return `Dev service ${svc} couldn't start: its image couldn't be pulled. Check that the image exists and the cluster can pull it.`;
   }
   return `Dev service ${svc} failed to start (${reason}). If it needs to write to a directory, add that path to the service's writablePaths.`;
 }
