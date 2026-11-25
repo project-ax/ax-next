@@ -27,9 +27,10 @@
 //
 // Severities are read from the channel-web config block only, comments
 // stripped, so a decoy line elsewhere can't fake one. A severity that is present
-// but unreadable fails closed. A rule that has frozen entries may not go from
-// 'error' to anything else (that would launder the entries: off + prune, then
-// back on higher) unless a commit in the range carries `UI-Ratchet-Override:`.
+// but unreadable (or given twice, or in two matching blocks) fails closed. A
+// rule that has frozen entries may not go from 'error' to anything else (that
+// would launder the entries: off + prune, then back on higher). There is no
+// in-PR waiver; changing this script is the reviewed way (CODEOWNERS).
 //
 // Usage:
 //   node scripts/ui-suppressions-ratchet.mjs <base-ref>
@@ -123,14 +124,19 @@ function stripComments(text) {
   return out;
 }
 
+const MULTIPLE = Symbol('multiple channel-web blocks');
+
 /**
  * The config object whose `files` is the channel-web tsx glob, comments
- * stripped; null if there is none. Anchoring here keeps a decoy line elsewhere
- * in the file (or in a comment) from being read as the rule's severity.
+ * stripped; null if there is none, MULTIPLE if more than one has it (ESLint
+ * merges them, later ones winning, so reading one is guessing). Anchoring here
+ * keeps a decoy line elsewhere in the file (or in a comment) from being read as
+ * the rule's severity.
  */
 function channelWebBlock(text) {
   const code = stripComments(text);
   const re = /files:\s*\[\s*(['"])packages\/channel-web\/src\/\*\*\/\*\.tsx\1\s*\]/g;
+  const blocks = [];
   for (const m of code.matchAll(re)) {
     const open = code.lastIndexOf('{', m.index);
     if (open === -1) continue;
@@ -138,35 +144,33 @@ function channelWebBlock(text) {
     for (let i = open; i < code.length; i++) {
       if (code[i] === '{') depth++;
       else if (code[i] === '}' && --depth === 0) {
-        const block = code.slice(open, i + 1);
-        if (block.includes('ax-ui/')) return block;
+        blocks.push(code.slice(open, i + 1));
         break;
       }
     }
   }
-  return null;
+  if (blocks.length > 1) return MULTIPLE;
+  return blocks[0] ?? null;
 }
 
 /**
  * A rule's severity in the channel-web block of `eslint.config.mjs` at `ref`:
  * 'off' | 'warn' | 'error'; 'absent' when the rule id is not in the block (or
  * there is no block/file); 'unreadable' when the id is there but its value is
- * not a plain severity string (e.g. `['error', {...}]`).
+ * not a plain severity string (e.g. `['error', {...}]`), the id occurs more
+ * than once (ESLint applies the last), or several blocks match the glob.
  */
 function severity(ref, rule) {
   const text = show(ref, 'eslint.config.mjs');
   const block = text === null ? null : channelWebBlock(text);
   if (block === null) return 'absent';
+  if (block === MULTIPLE) return 'unreadable';
   const escaped = rule.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const occurrences = block.match(new RegExp(`(['"])${escaped}\\1`, 'g'))?.length ?? 0;
+  if (occurrences === 0) return 'absent';
+  if (occurrences > 1) return 'unreadable';
   const m = new RegExp(`(['"])${escaped}\\1\\s*:\\s*(['"])(off|warn|error)\\2\\s*[,}\\s]`).exec(block);
-  if (m) return m[3];
-  return new RegExp(`(['"])${escaped}\\1`).test(block) ? 'unreadable' : 'absent';
-}
-
-/** Reasons given by `UI-Ratchet-Override:` trailers on commits in base..HEAD. */
-function overrides(base) {
-  const r = git(['log', '--format=%(trailers:key=UI-Ratchet-Override,valueonly)', `${base}..HEAD`]);
-  return r.ok ? r.out.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+  return m ? m[3] : 'unreadable';
 }
 
 const baseRef = process.argv[2] || process.env.BASE_SHA;
@@ -206,8 +210,6 @@ if (baseText === null) {
   const after = totals(head);
   const scriptRules = suppressScriptRules('HEAD');
 
-  const waivers = overrides(base);
-
   for (const rule of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const b = before.get(rule) ?? 0;
     const h = after.get(rule) ?? 0;
@@ -217,17 +219,11 @@ if (baseText === null) {
     // Downgrade laundering: off + prune in one PR, back on at a higher count in
     // the next. A rule with frozen entries may not stop being an error.
     if (b > 0 && was === 'error' && now !== 'error') {
-      if (waivers.length > 0) {
-        process.stdout.write(
-          `${TAG}: ${rule} downgraded to '${now}' with ${b} frozen, waived by UI-Ratchet-Override: ${waivers.join('; ')}\n`,
-        );
-      } else {
-        problems.push(
-          `${rule}: severity went from 'error' to '${now}' while ${b} violations are frozen. ` +
-            `Switching a frozen rule off is a design-system decision: it needs the CODEOWNERS owner ` +
-            `and a \`UI-Ratchet-Override: <reason>\` trailer on a commit in the range.`,
-        );
-      }
+      problems.push(
+        `${rule}: severity went from 'error' to '${now}' while ${b} violations are frozen. ` +
+          `Switching off a rule that still has frozen suppressions is a design-system decision: ` +
+          `do it by changing scripts/ui-suppressions-ratchet.mjs in a reviewed PR.`,
+      );
     }
 
     if (h <= b) continue;

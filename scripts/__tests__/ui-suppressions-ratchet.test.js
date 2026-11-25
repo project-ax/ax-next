@@ -309,7 +309,8 @@ describe('ui-suppressions-ratchet', () => {
     expect(r.status).toBe(1);
     expect(r.out).toContain('ax-ui/no-classname');
     expect(r.out).toContain('design-system decision');
-    expect(r.out).toContain('UI-Ratchet-Override');
+    expect(r.out).toContain('scripts/ui-suppressions-ratchet.mjs in a reviewed PR');
+    expect(r.out).not.toContain('UI-Ratchet-Override');
   });
 
   it('removing a rule with frozen entries from the block fails; warn too', () => {
@@ -324,7 +325,7 @@ describe('ui-suppressions-ratchet', () => {
     }
   });
 
-  it('a UI-Ratchet-Override trailer waives the downgrade', () => {
+  it('a UI-Ratchet-Override trailer no longer waives anything', () => {
     const { repo, baseSha } = repoWith(
       { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
       {
@@ -334,9 +335,42 @@ describe('ui-suppressions-ratchet', () => {
         message: 'drop no-classname\n\nUI-Ratchet-Override: owner approved, see DS-12',
       },
     );
+    expect(run(repo, [baseSha]).status).toBe(1);
+  });
+
+  it('a rule id twice in the channel-web block reads unreadable (ESLint applies the last one)', () => {
+    const dup = (first, last) =>
+      "export default [{\n  files: ['packages/channel-web/src/**/*.tsx'],\n  rules: {\n" +
+      `    'ax-ui/no-style-prop': 'error',\n    'ax-ui/no-classname': '${first}',\n    'ax-ui/no-classname': '${last}',\n  },\n}];\n`;
+    // HEAD side: first says error, last says off.
+    let t = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 9 } }, script: ON4, configText: dup('error', 'off') },
+    );
+    let r = run(t.repo, [t.baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('cannot be read');
+    // base side: first says off, last says error.
+    t = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, configText: dup('off', 'error') },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 9 } }, script: ON4, rules: SEV4 },
+    );
+    r = run(t.repo, [t.baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('cannot be read');
+  });
+
+  it('two config blocks matching the channel-web glob read unreadable', () => {
+    const two =
+      "export default [{\n  files: ['packages/channel-web/src/**/*.tsx'],\n  rules: { 'ax-ui/no-style-prop': 'error', 'ax-ui/no-classname': 'error' },\n}, {\n" +
+      "  files: ['packages/channel-web/src/**/*.tsx'],\n  rules: { 'ax-ui/no-classname': 'off' },\n}];\n";
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 9 } }, script: ON4, configText: two },
+    );
     const r = run(repo, [baseSha]);
-    expect(r.status).toBe(0);
-    expect(r.out).toContain('UI-Ratchet-Override');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('cannot be read');
   });
 
   it('a downgrade with no frozen entries is fine (nothing to launder)', () => {
