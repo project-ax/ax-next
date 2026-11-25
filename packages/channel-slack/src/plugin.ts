@@ -28,6 +28,7 @@ import { createChannelCheck } from './channel-check.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import { moveConfigTokens, releaseConfigToken } from './config-tokens.js';
 import { createDecisionAnswer } from './decision-answer.js';
+import { createDmAgentStore } from './dm-agents.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
 import type { RouteSpec } from './http-types.js';
 import { INTERACTIONS_ROUTE_PATH, createInteractionsHandler } from './interactions.js';
@@ -128,9 +129,12 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // every app of theirs (secrets.ts, TASK-1175), and one binding row per
 // channel a team agent's bot answers in, in `channel_slack_v1_channels`
 // (channel-store.ts), removed with the bot or when its agent is deleted
-// (agents-deleted.ts). A token an install kept under
-// its own ref before TASK-1175 moves to its admin at boot, before any route
-// registers (config-tokens.ts). Its only egress is
+// (agents-deleted.ts). Each person's choice of which of their personal agents
+// answers their DMs to the shared app is one row of theirs in
+// `channel_slack_v1_dm_agents` (dm-agents.ts, TASK-1238; no secret, checked
+// on every read, forgotten when that agent is deleted). A token an install
+// kept under its own ref before TASK-1175 moves to its admin at boot, before
+// any route registers (config-tokens.ts). Its only egress is
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
 //
 // A verified event goes to the router (router.ts): a 1:1 DM from an admitted
@@ -381,6 +385,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
 
         const store = createInstallStore(db);
         const channelStore = createChannelStore(db);
+        // Which personal agent answers each person's DMs (TASK-1238).
+        const dmAgents = createDmAgentStore(db);
         channelsReady(channelStore);
         // One store for the events route, the admin routes and the team
         // agents' bots, so every change the others make to an install's
@@ -618,7 +624,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         undos.push(() => {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
-        undos.push(subscribeAgentsDeleted(bus, { channels: channelStore, bots }, logger));
+        undos.push(subscribeAgentsDeleted(bus, { channels: channelStore, dmAgents, bots }, logger));
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
         // Undone first: turns not yet started are dropped from both lanes,
         // and each install's count is logged once (those senders never get a
