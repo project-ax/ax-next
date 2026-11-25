@@ -35,19 +35,14 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   ChevronLeft,
   ChevronRight,
   Download,
   FileText,
   Folder,
 } from 'lucide-react';
-import { Text } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Button as AxButton, EmptyState, Notice, Text } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
-import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
@@ -101,12 +96,12 @@ function FileBodyView({ file }: { file: UserFileBody }) {
   return (
     <>
       {file.clipped === 'too-large' && (
-        <Alert className="mb-4">
-          <AlertDescription>
+        <div className="mb-4">
+          <Notice tone="info">
             This file is long, so we&rsquo;re showing the beginning of it. The
             rest is still there — we just stopped reading at a sensible place.
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       )}
       {body.trim().length === 0 ? (
         <p className="text-[13px] text-muted-foreground">
@@ -168,12 +163,12 @@ function RailRow({
   );
 }
 
-function FileListEmpty({ children }: { children: React.ReactNode }) {
-  return <Empty className="p-3 md:p-3"><EmptyHeader><EmptyDescription>{children}</EmptyDescription></EmptyHeader></Empty>;
+function FileListEmpty({ children }: { children: string }) {
+  return <EmptyState title={children} />;
 }
 
 function FileListLoading() {
-  return <div className="space-y-2 py-2" aria-label="Loading files"><span className="sr-only">Loading…</span>{[0, 1, 2].map(i => <Skeleton key={i} className="h-10 w-full" />)}</div>;
+  return <AsyncState status="loading" skeleton="rows" loadingLabel="Loading files" />;
 }
 
 export function AgentFiles({
@@ -371,59 +366,44 @@ export function AgentFiles({
 
             {durableError !== null ? (
               <div className="px-1.5">
-                <Alert variant="destructive">
-                  <AlertDescription className="flex flex-col items-start gap-2 text-[12.5px]">
-                    <span>
-                      {durableError.kind === 'unavailable'
-                        ? /*
-                            Now a fact, not a guess: the file area did not resolve at
-                            all in this deployment. There is nothing to come back
-                            for, so no button — an offer to retry would send
-                            somebody hunting for something that was never there.
-                          */
-                          `This server isn’t set up to keep ${agentName}’s files, so there’s nothing for us to open.`
-                        : durableError.kind === 'missing'
-                          ? /*
-                              A `missing` that got this far is about a folder we
-                              walked into, not about the file area. The root's version
-                              is the empty state and never reaches here.
-                            */
-                            `That folder isn’t here any more. It may have been renamed or deleted since we drew this list.`
-                          : `We could not read ${agentName}’s files. Nothing was lost; we just could not look right now.`}
-                    </span>
-                    {durableError.kind !== 'unavailable' && (
-                      /*
-                        The two buttons do DIFFERENT things, which is why they
-                        are not one handler with two labels.
+                {/*
+                  The two actions do DIFFERENT things, which is why they are not one
+                  handler with two labels.
 
-                        "Try again" re-reads where we are, because the read is
-                        what failed. "Go back" leaves — and it has to leave to
-                        the missing path's PARENT, not to `dirPath`. `dirPath` is
-                        the last successful listing, so when a folder we were
-                        already standing in vanishes and we re-request it, they
-                        are the same path: a reload would re-fetch the folder
-                        that just 404'd and land on its own error, a button that
-                        loops on the thing it offers to escape.
-                      */
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={
-                          durableError.kind === 'missing'
-                            ? () => durable.openDir(parentDirOf(durableError.path) ?? '')
-                            : durable.reload
+                  "Try again" re-reads where we are, because the read is what failed.
+                  "Go back" leaves — and it has to leave to the missing path's PARENT,
+                  not to `dirPath`. `dirPath` is the last successful listing, so when a
+                  folder we were already standing in vanishes and we re-request it, they
+                  are the same path: a reload would re-fetch the folder that just 404'd
+                  and land on its own error, a button that loops on the thing it offers
+                  to escape.
+
+                  `unavailable` gets no button: the file area did not resolve at all in
+                  this deployment, so there is nothing to come back for, and an offer to
+                  retry would send somebody hunting for something that was never there.
+                */}
+                <Notice
+                  tone="danger"
+                  {...(durableError.kind === 'unavailable'
+                    ? {}
+                    : durableError.kind === 'missing'
+                      ? {
+                          action: {
+                            label: 'Go back',
+                            onClick: () => durable.openDir(parentDirOf(durableError.path) ?? ''),
+                            busy: durable.loading,
+                          },
                         }
-                        disabled={durable.loading}
-                      >
-                        {durable.loading
-                          ? 'Trying…'
-                          : durableError.kind === 'missing'
-                            ? 'Go back'
-                            : 'Try again'}
-                      </Button>
-                    )}
-                  </AlertDescription>
-                </Alert>
+                      : { action: { label: 'Try again', onClick: durable.reload, busy: durable.loading } })}
+                >
+                  {durableError.kind === 'unavailable'
+                    ? `This server isn’t set up to keep ${agentName}’s files, so there’s nothing for us to open.`
+                    : durableError.kind === 'missing'
+                      ? // A `missing` that got this far is about a folder we walked into, not about the
+                        // file area. The root's version is the empty state and never reaches here.
+                        `That folder isn’t here any more. It may have been renamed or deleted since we drew this list.`
+                      : `We could not read ${agentName}’s files. Nothing was lost; we just could not look right now.`}
+                </Notice>
               </div>
             ) : durableRootEmpty ? (
               /*
@@ -432,7 +412,7 @@ export function AgentFiles({
                 consulted here, since a failed listing leaves the previous
                 folder's rows in it.
               */
-              <FileListEmpty>{agentName} hasn’t put any files here yet.</FileListEmpty>
+              <FileListEmpty>{`${agentName} hasn’t put any files here yet.`}</FileListEmpty>
             ) : durable.loading && durable.entries.length === 0 ? (
               <FileListLoading />
             ) : durable.entries.length === 0 ? (
@@ -541,6 +521,7 @@ export function AgentFiles({
               loading={durable.fileLoading}
               failed={durable.fileError !== null}
               file={durable.file}
+              onRetry={durable.reloadFile}
             />
           ) : (
             /*
@@ -580,6 +561,7 @@ function FileViewer({
   loading,
   failed,
   file,
+  onRetry,
 }: {
   rawPath: string;
   label: string;
@@ -588,6 +570,8 @@ function FileViewer({
   loading: boolean;
   failed: boolean;
   file: UserFileBody | null;
+  /** Reads the file again after it failed to open. */
+  onRetry: () => void;
 }) {
   const download = useFileDownload({ agentId, agentName, path: rawPath });
   return (
@@ -606,25 +590,18 @@ function FileViewer({
         <Badge variant="secondary" className="shrink-0">
           written by {agentName}
         </Badge>
-        <Button
-          variant="secondary"
+        <span className="ml-auto shrink-0">
+        <AxButton
+          intent="secondary"
           size="sm"
-          className="ml-auto shrink-0"
+          icon={Download}
+          busy={download.busy}
+          disabled={download.started}
           onClick={download.start}
-          disabled={download.busy || download.started}
         >
-          {/*
-            `data-icon` is INERT against the Button this repo has installed —
-            that one sizes and spaces icons itself, with `[&_svg]:size-4` and
-            `gap-2`. It is written anyway because it is the shadcn convention
-            the upstream Button reads, and because the two existing icon
-            buttons in this codebase spell it the same way
-            (`AuthoredSkillsSection`). One spelling now beats a migration
-            later; if the Button is ever updated, nothing here needs finding.
-          */}
-          <Download data-icon="inline-start" />
-          {download.busy ? 'Getting it…' : 'Download'}
-        </Button>
+          Download
+        </AxButton>
+        </span>
       </div>
       <div className="mb-5 truncate text-[12.5px] text-muted-foreground" title={label}>
         {label}
@@ -652,27 +629,23 @@ function FileViewer({
         {download.started ? DOWNLOAD_STARTED_NOTE : ''}
       </p>
       {download.error !== null && (
-        <Alert variant="destructive" className="mb-5">
-          <AlertTriangle />
-          <AlertDescription>{download.error}</AlertDescription>
-        </Alert>
+        <div className="mb-5">
+          <Notice tone="danger">{download.error}</Notice>
+        </div>
       )}
 
       {failed ? (
-        <Alert variant="destructive">
-          <AlertTriangle />
-          <AlertDescription className="flex flex-col items-start gap-2">
-            <span>
-              We could not open that file. It may have been rewritten or
-              deleted since this list was drawn.
-            </span>
-          </AlertDescription>
-        </Alert>
+        <AsyncState
+          status="error"
+          skeleton="lines"
+          loadingLabel="Opening file"
+          error={{
+            message: 'We could not open that file. It may have been rewritten or deleted since this list was drawn.',
+            onRetry,
+          }}
+        />
       ) : loading || file === null ? (
-        <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-          <Spinner aria-hidden="true" className="size-3.5" />
-          Opening&hellip;
-        </div>
+        <AsyncState status="loading" skeleton="lines" loadingLabel="Opening file" />
       ) : (
         <div className="max-w-[680px] rounded-lg border border-border bg-card p-6 shadow-sm">
           <FileBodyView file={file} />

@@ -870,13 +870,13 @@
   },
   "packages/channel-web/src/components/workspace/AddConnector.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 15
+      "count": 12
     },
     "ax-ui/no-classname": {
-      "count": 17
+      "count": 15
     },
     "ax-ui/no-raw-elements": {
-      "count": 17
+      "count": 16
     }
   },
   "packages/channel-web/src/components/workspace/AddKeyDialog.tsx": {
@@ -911,13 +911,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentApps.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 13
+      "count": 10
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 7
     }
   },
   "packages/channel-web/src/components/workspace/AgentAppsRows.tsx": {
@@ -936,18 +936,18 @@
       "count": 4
     },
     "ax-ui/no-classname": {
-      "count": 10
+      "count": 9
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 8
     }
   },
   "packages/channel-web/src/components/workspace/AgentConnectors.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 8
+      "count": 5
     },
     "ax-ui/no-classname": {
-      "count": 12
+      "count": 11
     },
     "ax-ui/no-raw-elements": {
       "count": 11
@@ -969,13 +969,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentFiles.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 13
+      "count": 11
     },
     "ax-ui/no-classname": {
       "count": 20
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 19
     }
   },
   "packages/channel-web/src/components/workspace/AgentInstructions.tsx": {
@@ -986,7 +986,7 @@
       "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 3
     }
   },
   "packages/channel-web/src/components/workspace/AgentRail.tsx": {
@@ -1024,13 +1024,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentSlack.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 4
     }
   },
   "packages/channel-web/src/components/workspace/AgentSlackBot.tsx": {
@@ -1041,7 +1041,7 @@
       "count": 12
     },
     "ax-ui/no-raw-elements": {
-      "count": 11
+      "count": 10
     }
   },
   "packages/channel-web/src/components/workspace/AgentSlackBotChanges.tsx": {
@@ -1101,10 +1101,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 3
     }
   },
   "packages/channel-web/src/components/workspace/ApprovalCard.tsx": {
@@ -1136,24 +1136,24 @@
   },
   "packages/channel-web/src/components/workspace/ArtifactPreview.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 8
+      "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 4
     }
   },
   "packages/channel-web/src/components/workspace/ArtifactViewer.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 13
+      "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 15
+      "count": 11
     }
   },
   "packages/channel-web/src/components/workspace/ChatComposer.tsx": {
@@ -1177,13 +1177,13 @@
   },
   "packages/channel-web/src/components/workspace/ConnectorDetails.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 18
+      "count": 14
     },
     "ax-ui/no-classname": {
-      "count": 27
+      "count": 24
     },
     "ax-ui/no-raw-elements": {
-      "count": 25
+      "count": 21
     }
   },
   "packages/channel-web/src/components/workspace/ConnectorsTab.tsx": {
@@ -1240,10 +1240,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 15
+      "count": 14
     },
     "ax-ui/no-raw-elements": {
-      "count": 16
+      "count": 14
     }
   },
   "packages/channel-web/src/components/workspace/GeneratedFileChip.tsx": {
@@ -1256,7 +1256,7 @@
   },
   "packages/channel-web/src/components/workspace/GrantRow.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 21
+      "count": 15
     },
     "ax-ui/no-classname": {
       "count": 25
@@ -1338,10 +1338,10 @@
   },
   "packages/channel-web/src/components/workspace/SkippedConnectorsNotice.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/workspace/TaskAppConnection.tsx": {

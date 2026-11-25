@@ -568,7 +568,6 @@ describe('AgentFiles: downloading', () => {
     await waitFor(() => expect(note).toHaveTextContent(DOWNLOAD_STARTED_NOTE));
     expect(button).toBeDisabled();
     expect(button).toHaveTextContent('Download');
-    expect(button).not.toHaveTextContent('Getting it');
 
     // Right after the note appears, a click does nothing.
     fireEvent.click(button);
@@ -681,8 +680,29 @@ describe('AgentFiles: downloading', () => {
     fireEvent.click(await screen.findByText('reports/q3.pdf'));
     const button = await screen.findByRole('button', { name: /download/i });
     fireEvent.click(button);
-    await waitFor(() => expect(button.hasAttribute('disabled')).toBe(true));
-    expect(button.textContent).toContain('Getting it');
+    await waitFor(() => expect(button.getAttribute('aria-busy')).toBe('true'));
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    // The label stays put; a busy click does nothing.
+    expect(button.textContent).toBe('Download');
+    fireEvent.click(button);
+    expect(downloadMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('Try again on a file that would not open reads that file again', async () => {
+    const entry = { path: 'reports/q3.pdf', name: 'reports/q3.pdf', kind: 'file' as const };
+    let opens = 0;
+    userFilesMock.mockImplementation(async (_agentId: string, relPath: string) => {
+      if (relPath === '') return { kind: 'dir', path: '', name: '', entries: [entry], truncated: false };
+      opens += 1;
+      if (opens === 1) throw new WorkspaceApiError(`/agents/a-quill/user-files/${relPath}`, 500);
+      return { kind: 'file', path: relPath, name: relPath, body: 'now it opens', clipped: null };
+    });
+    renderTab();
+    fireEvent.click(await screen.findByText('reports/q3.pdf'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('We could not open that file.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('now it opens')).toBeInTheDocument();
+    expect(opens).toBe(2);
   });
 
   it('offers nothing to download when no file is open', async () => {
@@ -758,8 +778,8 @@ describe('AgentFiles: the download state belongs to the file, not to the pane', 
       The same state, costing something worse than a stale sentence. The
       in-flight guard is deliberately a ref so a second click on the SAME file
       cannot start a second download — and if that ref outlives the file, the
-      first click on the NEXT file is silently dropped while its button says
-      "Getting it…". A control that does nothing and reports that it is working
+      first click on the NEXT file is silently dropped while its button shows
+      busy. A control that does nothing and reports that it is working
       is the worst outcome available here.
     */
     const route = (path: string) =>

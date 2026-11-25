@@ -104,7 +104,7 @@ function read(over: Partial<Extract<AgentAppsRead, { enabled: true }>> = {}): Ag
 async function renderApps(answer: AgentAppsRead | 'unavailable' = read()) {
   api.fetchAgentApps.mockResolvedValue(answer);
   render(<AgentApps agentId="a1" agentName="Quill" />);
-  await waitFor(() => expect(screen.queryByText('Loading apps…')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('Loading apps')).toBeNull());
 }
 
 beforeEach(() => {

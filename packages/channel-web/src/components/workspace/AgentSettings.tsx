@@ -35,7 +35,9 @@ import {
   Plug,
   ScrollText,
   Sparkles,
+  type LucideIcon,
 } from 'lucide-react';
+import { EmptyState } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -45,13 +47,6 @@ import {
 } from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
 import { useUser } from '@/lib/user-context';
 import { SkillsAppStore } from '@/components/settings/SkillsAppStore';
@@ -352,21 +347,11 @@ function SettingsEmpty({
   title,
   description,
 }: {
-  Icon: Icon;
+  Icon: LucideIcon;
   title: string;
   description: string;
 }) {
-  return (
-    <Empty className="border border-border bg-card">
-      <EmptyHeader>
-        <EmptyMedia variant="icon" className="bg-primary-soft text-primary">
-          <Icon aria-hidden="true" />
-        </EmptyMedia>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{description}</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
-  );
+  return <EmptyState icon={Icon} title={title} description={description} />;
 }
 
 /** Mount the connector manager only while its settings section is open. */

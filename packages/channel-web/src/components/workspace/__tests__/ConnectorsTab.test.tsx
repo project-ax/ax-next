@@ -360,4 +360,13 @@ describe('Other abilities', () => {
     expect(await screen.findByText(/couldn’t read these just now/)).toBeTruthy();
     expect(screen.queryByRole('switch')).toBeNull();
   });
+
+  it('Try again after a failed abilities read re-reads them and draws the switches', async () => {
+    abilitiesMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/abilities', 500));
+    renderTab();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    expect((await screen.findAllByRole('switch')).length).toBeGreaterThan(0);
+    expect(abilitiesMock).toHaveBeenCalledTimes(2);
+  });
 });

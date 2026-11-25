@@ -1,14 +1,12 @@
 /** The agent settings Connectors section, including its built-in ability controls. */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle,
   ChevronRight,
   Globe,
   Link as LinkIcon,
   Terminal,
 } from 'lucide-react';
-import { AsyncState, Text } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
@@ -26,7 +24,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { useAgentAbilities } from '@/lib/agent-abilities';
 import type { AgentRailData, GrantRow } from '@/lib/workspace-api';
@@ -248,7 +245,7 @@ export function ConnectorsTab({
 }
 
 function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
-  const { abilities, status, pending, set } = useAgentAbilities(agentId);
+  const { abilities, status, pending, set, reload } = useAgentAbilities(agentId);
   const [failed, setFailed] = useState(false);
   const [confirmRunCodeOff, setConfirmRunCodeOff] = useState(false);
 
@@ -258,22 +255,20 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
     if (!ok) setFailed(true);
   }
 
-  if (status === 'loading') {
-    return (
-      <div className="flex flex-col gap-3" aria-busy="true">
-        <Skeleton className="h-4 w-4/5" />
-        <Skeleton className="h-4 w-3/5" />
-        <Skeleton className="h-4 w-2/3" />
-      </div>
-    );
-  }
   if (status !== 'ok' || abilities === null) {
     return (
-      <Text role="meta">
-        {status === 'unavailable'
-          ? 'This workspace can’t switch these on or off yet.'
-          : 'We couldn’t read these just now.'}
-      </Text>
+      <AsyncState
+        status={status === 'loading' ? 'loading' : 'error'}
+        skeleton="rows"
+        loadingLabel="Loading abilities"
+        error={{
+          message:
+            status === 'unavailable'
+              ? 'This workspace can’t switch these on or off yet.'
+              : 'We couldn’t read these just now.',
+          ...(status === 'unavailable' ? { tone: 'info' as const } : { onRetry: reload }),
+        }}
+      />
     );
   }
   return (
@@ -341,11 +336,9 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
         </CardContent>
       </Card>
       {failed && (
-        <Alert variant="destructive" className="mt-3">
-          <AlertDescription>
-            We couldn’t change that just now. Nothing changed.
-          </AlertDescription>
-        </Alert>
+        <div className="mt-3">
+          <Notice tone="danger">We couldn’t change that just now. Nothing changed.</Notice>
+        </div>
       )}
       <ConfirmAction
         open={confirmRunCodeOff}
@@ -377,12 +370,7 @@ function Permissions({
   error: string | null;
 }) {
   if (loading && rail === null) {
-    return (
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-4 w-4/5" />
-        <Skeleton className="h-4 w-3/5" />
-      </div>
-    );
+    return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading what this agent can do" />;
   }
   if (rail === null) {
     return (
@@ -434,14 +422,13 @@ function Permissions({
         </div>
       )}
       {unrestrictedTools && (
-        <Alert className="mt-3">
-          <AlertTriangle aria-hidden="true" />
-          <AlertDescription>
+        <div className="mt-3">
+          <Notice tone="warning">
             Nothing limits which tools {name} can use — it can reach anything
             installed here, now or later. The rules above are what&apos;s
             installed today, not a boundary.
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       )}
       {incomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">

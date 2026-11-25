@@ -143,14 +143,13 @@ describe('SkippedConnectorsNotice', () => {
     ).toBeTruthy();
   });
 
-  it('is not an error: no alert role, and no destructive styling', async () => {
+  it('is not an error: a status, never an alert', async () => {
     connectorsMock.mockResolvedValue(read([GMAIL]));
     mount();
 
     const notice = (await screen.findByText(/isn’t signed in yet/)).closest('[role]');
-    expect(notice?.getAttribute('role')).toBe('note');
+    expect(notice?.getAttribute('role')).toBe('status');
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(notice?.className).not.toContain('destructive');
   });
 
   it('renders a hostile name as text, not markup', async () => {

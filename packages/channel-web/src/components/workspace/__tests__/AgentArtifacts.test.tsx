@@ -118,7 +118,7 @@ describe('AgentArtifacts', () => {
     probeMock.mockRejectedValue(new ArtifactsDownloadRefused('/x', status, message));
     renderPanel();
     fireEvent.click(await screen.findByRole('link', { name: /Download all/ }));
-    expect((await screen.findByRole('status')).textContent).toBe(message);
+    expect((await screen.findByRole('alert')).textContent).toBe(message);
     expect(saveFromUrl).not.toHaveBeenCalled();
   });
 
@@ -128,7 +128,7 @@ describe('AgentArtifacts', () => {
     renderPanel();
     const link = await screen.findByRole('link', { name: /Download all/ });
     fireEvent.click(link);
-    expect((await screen.findByRole('status')).textContent).toBe(
+    expect((await screen.findByRole('alert')).textContent).toBe(
       'That download didn’t start, so nothing was saved. Try again in a moment.',
     );
     fireEvent.click(link);
@@ -144,6 +144,7 @@ describe('AgentArtifacts', () => {
   it('a failed load shows an alert with Try again, which reloads', async () => {
     listMock.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce([art({})]);
     renderPanel();
+    expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t load Quill’s artifacts just now.');
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Q3 report')).toBeTruthy();
     expect(listMock).toHaveBeenCalledTimes(2);

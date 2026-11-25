@@ -36,8 +36,7 @@
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@project-ax/ui';
+import { Button, Notice } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -231,9 +230,7 @@ function RenameForm({
         </Field>
       </FieldGroup>
       {error !== null && error.field === null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error.message}</Notice>
       )}
       <DialogFooter className="gap-2">
         <Button type="button" intent="secondary" onClick={onCancel} disabled={busy}>
@@ -379,9 +376,7 @@ function PictureForm({
         )}
       </div>
       {(png === null || error !== null) && (
-        <Alert variant="destructive">
-          <AlertDescription>{error !== null ? error.message : AGENT_SLACK_BOT_CHANGE_COPY.badPicture}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error !== null ? error.message : AGENT_SLACK_BOT_CHANGE_COPY.badPicture}</Notice>
       )}
       <DialogFooter className="gap-2">
         <Button type="button" intent="secondary" onClick={onCancel} disabled={busy}>

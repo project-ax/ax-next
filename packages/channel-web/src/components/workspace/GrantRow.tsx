@@ -34,8 +34,6 @@
  *     document. `lib/consent-focus.ts` carries the argument.
  */
 import { useRef, useState, type ReactElement } from 'react';
-import { TriangleAlert } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -87,7 +85,7 @@ import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-desti
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import { toast } from '@project-ax/ui';
+import { Notice, toast } from '@project-ax/ui';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
@@ -409,16 +407,9 @@ export function GrantRow({
 
   const failure =
     error === null ? null : (
-      <Alert
-        ref={answerRef}
-        tabIndex={-1}
-        variant="destructive"
-        className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
-      >
-        <AlertDescription className="text-[13px] leading-relaxed">
-          {error}
-        </AlertDescription>
-      </Alert>
+      <section ref={answerRef} tabIndex={-1}>
+        <Notice tone="danger">{error}</Notice>
+      </section>
     );
 
   if (request.kind === 'host') {
@@ -580,12 +571,7 @@ export function GrantRow({
       )}
 
       {request.authored === true && (
-        <Alert className="mt-3 max-w-[660px]">
-          <TriangleAlert className="size-4" />
-          <AlertDescription className="text-[13px] leading-relaxed">
-            {AUTHORED_SKILL_WARNING}
-          </AlertDescription>
-        </Alert>
+        <Notice tone="warning">{AUTHORED_SKILL_WARNING}</Notice>
       )}
 
       {request.hosts.length > 0 && (
@@ -619,14 +605,12 @@ export function GrantRow({
         const connectorService = connectorServiceOf(s);
         if (connectorService !== undefined && s.haveExisting !== true)
           // Slice 5 — not the person's to type: see `connectorSetupHint`.
-          // A note, not an interruption: the shared Alert defaults to
-          // role="alert", which belongs to a failed Connect alone.
+          // A note, not an interruption: only a danger Notice is role="alert",
+          // which belongs to a failed Connect alone.
           return (
-            <Alert key={s.slot} role="note" className="mt-3 max-w-[660px]">
-              <AlertDescription className="text-[13px] leading-relaxed">
-                {connectorSetupHint(connectorService)}
-              </AlertDescription>
-            </Alert>
+            <Notice key={s.slot} tone="info">
+              {connectorSetupHint(connectorService)}
+            </Notice>
           );
         return s.haveExisting === true ? (
           <div

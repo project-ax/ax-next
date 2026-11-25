@@ -35,13 +35,10 @@ import {
   LogIn,
   Trash2,
 } from 'lucide-react';
-import { AsyncState } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Tooltip,
@@ -98,6 +95,8 @@ interface Props {
   grants: GrantRow[];
   /** TASK-757 — the approved-access read failed: say so, don't hide it. */
   grantsFailed?: boolean;
+  /** Re-reads the approved-access list: the retry for `grantsFailed`. */
+  onRetryGrants?: () => void;
   revoking: ReadonlySet<string>;
   onRevoke: (row: GrantRow) => void | Promise<void>;
   busy: boolean;
@@ -133,12 +132,10 @@ interface Props {
  */
 export function ConnectorsUnsupported({ name }: { name: string }) {
   return (
-    <Alert className="mb-3" data-testid="connectors-unsupported">
-      <AlertDescription className="text-[12.5px]">
-        {name}’s model can’t use connectors yet, so nothing here applies to {name} for
-        now.
-      </AlertDescription>
-    </Alert>
+    <Notice tone="info">
+      {name}’s model can’t use connectors yet, so nothing here applies to {name} for
+      now.
+    </Notice>
   );
 }
 
@@ -148,6 +145,7 @@ export function ConnectorDetails({
   row,
   grants,
   grantsFailed = false,
+  onRetryGrants,
   revoking,
   onRevoke,
   busy,
@@ -224,7 +222,10 @@ export function ConnectorDetails({
                 status="error"
                 skeleton="lines"
                 loadingLabel="Reading the access you approved…"
-                error={{ message: readFailureCopy('failed', `the access you approved for ${row.name}`) }}
+                error={{
+                  message: readFailureCopy('failed', `the access you approved for ${row.name}`),
+                  ...(onRetryGrants !== undefined ? { onRetry: onRetryGrants } : {}),
+                }}
               />
             )}
             {grants.map((g, i) => (
@@ -281,25 +282,26 @@ function ToolPermissions({
   return (
     <>
       {status === 'loading' && (
-        <div className="flex flex-col gap-3" aria-busy="true">
-          <Skeleton className="h-4 w-3/5" />
-          <Skeleton className="h-4 w-4/5" />
-          <Skeleton className="h-4 w-2/3" />
-        </div>
+        <AsyncState status="loading" skeleton="rows" loadingLabel={`Loading what ${agentName} may do`} />
       )}
-      {(status === 'failed' || status === 'unavailable') && (
-        <div className="flex flex-col items-start gap-2">
-          <p className="text-[13px] leading-relaxed text-muted-foreground">
-            {status === 'unavailable'
-              ? 'This workspace can’t set what each tool may do yet.'
-              : `We couldn’t read what ${agentName} may do with ${row.name} just now.`}
-          </p>
-          {status === 'failed' && (
-            <Button type="button" variant="outline" size="sm" onClick={() => state.reload()}>
-              Try again
-            </Button>
-          )}
-        </div>
+      {status === 'failed' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel={`Loading what ${agentName} may do`}
+          error={{
+            message: `We couldn’t read what ${agentName} may do with ${row.name} just now.`,
+            onRetry: () => state.reload(),
+          }}
+        />
+      )}
+      {status === 'unavailable' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel={`Loading what ${agentName} may do`}
+          error={{ message: 'This workspace can’t set what each tool may do yet.', tone: 'info' }}
+        />
       )}
       {status === 'ok' && data !== null && (
         <ToolList
@@ -513,16 +515,14 @@ function ToolList({
       <p className="mt-1 text-[11.5px] text-muted-foreground">{ROUTINES_WAIT_NOTE}</p>
 
       {missing !== null && (
-        <Alert className="mt-3">
-          <AlertDescription className="flex flex-col items-start gap-2 text-[12.5px]">
-            <p>{missing}</p>
-            {data.status === 'unreachable' && (
-              <Button type="button" variant="outline" size="sm" onClick={() => state.reload(true)}>
-                Check again
-              </Button>
-            )}
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone={data.status === 'unreachable' ? 'danger' : 'info'}
+          {...(data.status === 'unreachable'
+            ? { action: { label: 'Try again', onClick: () => state.reload(true) } }
+            : {})}
+        >
+          {missing}
+        </Notice>
       )}
       {data.status === 'ok' && data.possiblyIncomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
@@ -532,16 +532,10 @@ function ToolList({
         </p>
       )}
       {notice !== null && (
-        <Alert variant="destructive" className="mt-3">
-          <AlertDescription>{notice}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{notice}</Notice>
       )}
       {unconfirmed && (
-        <Alert className="mt-3" data-testid="verdict-unconfirmed">
-          <AlertDescription className="text-[12.5px]">
-            Saved. We couldn’t refresh this list just now, so reload to confirm.
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info">Saved. We couldn’t refresh this list just now, so reload to confirm.</Notice>
       )}
 
       <TooltipProvider delayDuration={200}>
@@ -621,17 +615,11 @@ function ToolRow({
       <span className="min-w-0 flex-1 truncate text-[13px]" title={tool.title}>
         {tool.title}
       </span>
-      {busy && (
-        <Spinner
-          aria-hidden="true"
-          className="size-3.5 shrink-0 text-muted-foreground"
-        />
-      )}
       <ToggleGroup
         type="single"
         variant="outline"
         size="sm"
-        className="shrink-0 gap-0.5"
+        className={cn('shrink-0 gap-0.5', busy && 'opacity-60')}
         aria-label={`What it may do with ${tool.title}`}
         aria-busy={busy || undefined}
         value={tool.verdict}

@@ -197,6 +197,8 @@ describe('what it shows', () => {
       target: { value: 'nothing-like-this' },
     });
     expect(screen.getByText('Nothing matches that search.')).toBeTruthy();
+    // Announced from a live region that was already mounted.
+    expect(screen.getByText('Nothing matches that search.').closest('[role=status]')).not.toBeNull();
   });
 
   it('says so when it cannot load the list, and Try again re-reads', async () => {
@@ -252,9 +254,9 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     await waitFor(() => expect(window.open).toHaveBeenCalled());
     expect(beginOAuth).toHaveBeenCalledWith({ connectorId: 'notion', agentId: 'a-quill', mode: 'add' });
     expect(getOAuthStatus).not.toHaveBeenCalled();
-    // Pending: spinner + Cancel.
+    // Pending: waiting text + Cancel.
     expect(within(row('Notion')).getByRole('button', { name: 'Cancel' })).toBeTruthy();
-    expect(within(row('Notion')).getByLabelText('Waiting for sign-in')).toBeTruthy();
+    expect(within(row('Notion')).getByText('Waiting for sign-in')).toBeTruthy();
 
     postOAuth('notion', 'success');
     // The callback already attached it: re-read, never attach from here.
@@ -283,12 +285,12 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
-    expect(within(row('Notion')).getByLabelText('Waiting for sign-in')).toBeTruthy();
+    expect(within(row('Notion')).getByText('Waiting for sign-in')).toBeTruthy();
     popup.closed = true;
     expect(
       await screen.findByRole('button', { name: 'Add — Notion' }, { timeout: 2000 }),
     ).toBeTruthy();
-    expect(within(row('Notion')).queryByLabelText('Waiting for sign-in')).toBeNull();
+    expect(within(row('Notion')).queryByText('Waiting for sign-in')).toBeNull();
     expect(within(row('Notion')).queryByRole('button', { name: 'Cancel' })).toBeNull();
     // Nobody is listening any more: a late answer adds nothing either.
     postOAuth('notion', 'success');
@@ -560,16 +562,16 @@ describe('shared key or nothing to set up: Add adds straight away', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('a refusal says only an admin can add it, with no Retry', async () => {
+  it('a refusal says only an admin can add it, with no Try again', async () => {
     attachMock.mockRejectedValueOnce(new AttachConnectorError('/agents/a-quill/connectors', 403, 'forbidden'));
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
     expect(await screen.findByText('Only a workspace admin can add Stripe to Quill.')).toBeTruthy();
-    expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(within(row('Stripe')).queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
-  it('a missing shared key says who can add it, with no Retry', async () => {
+  it('a missing shared key says who can add it, with no Try again', async () => {
     attachMock.mockRejectedValueOnce(
       new AttachConnectorError('/agents/a-quill/connectors', 409, 'connector-needs-shared-key'),
     );
@@ -580,7 +582,7 @@ describe('shared key or nothing to set up: Add adds straight away', () => {
       await screen.findByText('Company CRM doesn’t have its shared key yet. Ask a workspace admin to add it.'),
     ).toBeTruthy();
     expect(onAttached).not.toHaveBeenCalled();
-    expect(within(row('Company CRM')).queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(within(row('Company CRM')).queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
   it('an admin is told where to add the missing shared key', async () => {
@@ -598,16 +600,16 @@ describe('shared key or nothing to set up: Add adds straight away', () => {
   it.each([
     [409, 'connector-needs-sign-in', 'Stripe is added by signing in. Go back and open Add again.'],
     [400, 'connector-needs-key', 'Stripe needs a key first. Go back and open Add again.'],
-  ])('a %i %s (the list was out of date) says so, with no Retry', async (status, code, copy) => {
+  ])('a %i %s (the list was out of date) says so, with no Try again', async (status, code, copy) => {
     attachMock.mockRejectedValueOnce(new AttachConnectorError('/agents/a-quill/connectors', status, code));
     renderAdd();
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Add — Stripe' }));
     expect(await screen.findByText(copy)).toBeTruthy();
-    expect(within(row('Stripe')).queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(within(row('Stripe')).queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 
-  it('a network failure offers a plain Retry that tries the same Add again', async () => {
+  it('a network failure offers a plain Try again that tries the same Add again', async () => {
     attachMock.mockRejectedValueOnce(new HttpError('/api/workspace/agents/a-quill/connectors', 0));
     const { onAttached } = renderAdd();
     await ready();
@@ -616,7 +618,7 @@ describe('shared key or nothing to set up: Add adds straight away', () => {
       await screen.findByText('We couldn’t add Stripe to Quill just now. Nothing was saved — please try again.'),
     ).toBeTruthy();
     expect(onAttached).not.toHaveBeenCalled();
-    fireEvent.click(within(row('Stripe')).getByRole('button', { name: 'Retry' }));
+    fireEvent.click(within(row('Stripe')).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(onAttached).toHaveBeenCalled());
     expect(attachMock).toHaveBeenCalledTimes(2);
     expect(attachMock.mock.calls[1]).toEqual(['a-quill', 'stripe']);

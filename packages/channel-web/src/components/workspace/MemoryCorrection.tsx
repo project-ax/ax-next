@@ -23,7 +23,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
-import { ConfirmAction } from '@project-ax/ui';
+import { ConfirmAction, Notice } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -318,11 +318,7 @@ export function MemoryFixDialog({
             </RadioGroup>
           </FieldSet>
         </FieldGroup>
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{MEMORY_FIX_SAVE_FAILED}</AlertDescription>
-          </Alert>
-        )}
+        {error && <Notice tone="danger">{MEMORY_FIX_SAVE_FAILED}</Notice>}
         <DialogFooter>
           <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
             {MEMORY_CANCEL}

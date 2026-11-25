@@ -25,12 +25,8 @@
  * never reuses an expired address.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download } from 'lucide-react';
+import { AsyncState, EmptyState } from '@project-ax/ui';
 import { Markdown } from '@/components/Markdown';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
 import { checkContentOriginUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { UNTRUSTED_FRAME_ALLOW } from './visual/visual-doc';
@@ -67,41 +63,25 @@ function useLoad<T>(load: () => Promise<T>, context: string): [Load<T>, () => vo
 }
 
 function Loading() {
-  return (
-    <div className="flex flex-1 flex-col gap-2 py-2" role="status">
-      <span className="sr-only">Loading…</span>
-      <Skeleton className="h-full min-h-[240px] w-full" />
-    </div>
-  );
+  return <AsyncState status="loading" skeleton="block" loadingLabel="Loading preview" />;
 }
 
 function Failed({ retry }: { retry: () => void }) {
   return (
-    <Alert className="mt-2">
-      <AlertDescription className="flex flex-col items-start gap-2">
-        <span>We couldn’t open this just now. Nothing was lost.</span>
-        <Button size="sm" variant="outline" type="button" onClick={retry}>
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
+    <AsyncState
+      status="error"
+      skeleton="block"
+      loadingLabel="Loading preview"
+      error={{ message: 'We couldn’t open this just now. Nothing was lost.', onRetry: retry }}
+    />
   );
 }
 
 function DownloadOnly({ title, description, onDownload }: { title: string; description: string; onDownload(): void }) {
   return (
-    <Empty className="flex-1">
-      <EmptyHeader>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{description}</EmptyDescription>
-      </EmptyHeader>
-      <EmptyContent>
-        <Button type="button" variant="outline" onClick={onDownload}>
-          <Download data-icon="inline-start" aria-hidden />
-          Download
-        </Button>
-      </EmptyContent>
-    </Empty>
+    <div className="flex flex-1 items-center justify-center">
+      <EmptyState title={title} description={description} action={{ label: 'Download', onClick: onDownload }} />
+    </div>
   );
 }
 

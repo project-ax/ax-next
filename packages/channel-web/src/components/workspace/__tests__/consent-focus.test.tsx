@@ -954,7 +954,8 @@ describe('the host grant turned down (site 4)', () => {
       pinned on its own, deterministically, two cases below.
     */
     await waitFor(() => {
-      expect(document.activeElement).toBe(screen.getByRole('alert'));
+      // The focusable frame around the failure Notice takes focus, not <body>.
+      expect(document.activeElement).toBe(screen.getByRole('alert').closest('[tabindex="-1"]'));
     });
     expect(document.activeElement).not.toBe(document.body);
   });

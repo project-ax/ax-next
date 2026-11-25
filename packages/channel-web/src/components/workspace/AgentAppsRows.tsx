@@ -9,7 +9,6 @@ import { Button as AxButton, ConfirmAction } from '@project-ax/ui';
 import type { AppGrant, AppLink, ViewerApproval } from '@ax/apps-bridge-contract';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
 import { APP_MODE_COPY } from './AppGrantEditor';
 
 export function LinkRow({
@@ -103,16 +102,16 @@ export function LinkRow({
                     >
                       Edit
                     </Button>
-                    <Button
-                      variant="ghost"
+                    <AxButton
+                      intent="quiet"
                       size="sm"
+                      busy={rowBusy}
                       disabled={rowBusy}
                       onClick={() => setRemoving(grant)}
                       aria-label={`Remove ${grant.connectorName} from ${link.appName}`}
                     >
-                      {rowBusy && <Spinner data-icon="inline-start" aria-hidden="true" />}
                       Remove
-                    </Button>
+                    </AxButton>
                   </div>
                 )}
               </li>
