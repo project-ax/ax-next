@@ -448,6 +448,27 @@ describe('channel-web agent-workspace BFF', () => {
       expect('sharedBy' in rowOf(rows, 't1')).toBe(false);
     });
 
+    /** What @ax/agents knows about an agent that the workspace wire shape must never carry. */
+    const NEVER_ON_THE_WIRE = ['ownerId', 'isOwner', 'shared', 'audience', 'ownerType', 'visibility'] as const;
+
+    it('roster rows carry no ownership or sharing field beyond access and sharedBy, whatever the agent row holds', async () => {
+      rosterOf([
+        { ...SHARED, audience: { kind: 'everyone' } },
+        MINE,
+        TEAM,
+        { ...CO_OWNED, audience: { kind: 'list', userIds: ['u1'] } },
+      ]);
+      registerPeople({ vin: VINAY });
+
+      const { rows } = await readRoster();
+      expect(rows).toHaveLength(4);
+      for (const row of rows) {
+        for (const key of NEVER_ON_THE_WIRE) {
+          expect(key in row, `${row.id}.${key}`).toBe(false);
+        }
+      }
+    });
+
     it('the roster names who shared an agent, asks once per person, and never sends an email', async () => {
       const FROM_ADA = { ...CO_OWNED, id: 'a-ada', displayName: 'Scout', ownerId: 'ada' };
       rosterOf([
@@ -657,6 +678,17 @@ describe('channel-web agent-workspace BFF', () => {
       expect(asked).toEqual([]);
       expect(people).toEqual(['vin']);
       expect(JSON.stringify(body)).not.toContain('@');
+    });
+
+    it('the agent view carries no ownership or sharing field beyond access and sharedBy, whatever the agent row holds', async () => {
+      for (const row of [SHARED, MINE, CO_OWNED, TEAM]) {
+        agentViewOf({ ...row, audience: { kind: 'everyone' } });
+        registerPeople({ vin: VINAY });
+        const { agent } = await readAgentView(row.id);
+        for (const key of NEVER_ON_THE_WIRE) {
+          expect(key in agent, `${row.id}.${key}`).toBe(false);
+        }
+      }
     });
 
     it('the agent view of the creator’s own shared agent says creator, names nobody, and never looks the caller up', async () => {
