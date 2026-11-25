@@ -16,7 +16,6 @@
  * they are.
  */
 import { Ban, Check, Hand, Info, type LucideIcon } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
 import {
   clampDescription,
   groupTools,
@@ -27,7 +26,7 @@ import {
 } from '@/lib/connector-tool-permissions';
 import type { ToolPermissionsState } from '@/lib/use-tool-permissions';
 import { cn } from '@/lib/utils';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FieldDescription, FieldSet, FieldLegend } from '@/components/ui/field';
@@ -235,32 +234,17 @@ export function ConnectorToolPermissions({
 
   let body;
   if (load.kind === 'loading') {
-    body = (
-      <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Spinner aria-hidden="true" />
-        Looking up this connector’s tools…
-      </p>
-    );
+    body = <AsyncState status="loading" skeleton="rows" loadingLabel="Looking up this connector’s tools" />;
   } else if (load.kind === 'error') {
     body = (
-      <Alert>
-        <AlertDescription className="flex flex-col gap-3">
-          <p>We couldn’t load tool permissions. Everything else still saves.</p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="self-start"
-            onClick={() => state.reload()}
-          >
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <Notice tone="danger" action={{ label: 'Try again', onClick: () => state.reload() }}>
+        We couldn’t load tool permissions. Everything else still saves.
+      </Notice>
     );
   } else {
     const { data } = load;
     const unavailable = data.status !== 'ok' || data.tools.length === 0;
+    const failedRead = data.status === 'unreachable' || data.status === 'unknown';
     const groups = groupTools(toolRows(data));
     body = (
       <>
@@ -274,24 +258,16 @@ export function ConnectorToolPermissions({
           </p>
         )}
         {unavailable && (
-          <Alert>
-            <AlertDescription className="flex flex-col gap-3">
-              <p>
-                {unavailableMessage(data)} {STILL_SAVES}
-              </p>
-              {data.status === 'unreachable' && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="self-start"
-                  onClick={() => state.reload(true)}
-                >
-                  Check again
-                </Button>
-              )}
-            </AlertDescription>
-          </Alert>
+          // Couldn't reach it (or couldn't list) is a failed read, so it offers
+          // a retry; needing sign-in or an honestly empty list is just news.
+          <Notice
+            tone={failedRead ? 'danger' : 'info'}
+            {...(failedRead
+              ? { action: { label: 'Try again', onClick: () => state.reload(true) } }
+              : {})}
+          >
+            {unavailableMessage(data)} {STILL_SAVES}
+          </Notice>
         )}
         <ToolGroup
           label="Looks things up"

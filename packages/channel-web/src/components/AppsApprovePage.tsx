@@ -35,14 +35,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApprovalPrompt, ApprovePageIds } from '@ax/apps-bridge-contract';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Button as AxButton, EmptyState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import { WORKSPACE_ROOT_PATH } from '@/lib/workspace-route';
 import {
   AgentAppsError,
@@ -103,21 +100,10 @@ function initialChoice(prompt: ApprovalPrompt): string | null {
   return prompt.agents.length === 1 ? (prompt.agents[0]?.agentId ?? null) : null;
 }
 
-function Notice({ title, description, retry }: { title: string; description?: string; retry?: () => void }) {
+/** A finished or refused page: one line of what happened, no way forward from here. */
+function Outcome({ title, description }: { title: string; description?: string }) {
   return (
-    <Empty role="status">
-      <EmptyHeader>
-        <EmptyTitle>{title}</EmptyTitle>
-        {description !== undefined && <EmptyDescription>{description}</EmptyDescription>}
-      </EmptyHeader>
-      {retry && (
-        <EmptyContent>
-          <Button type="button" variant="outline" onClick={retry}>
-            Try again
-          </Button>
-        </EmptyContent>
-      )}
-    </Empty>
+    <EmptyState title={title} {...(description !== undefined ? { description } : {})} />
   );
 }
 
@@ -242,9 +228,7 @@ function Approve({
           </>
         )}
         {message !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{message}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{message}</Notice>
         )}
       </CardContent>
       <CardFooter className="justify-end gap-2">
@@ -257,10 +241,9 @@ function Approve({
             <Button asChild variant="ghost">
               <a href={WORKSPACE_ROOT_PATH}>Not now</a>
             </Button>
-            <Button type="button" disabled={choice === null || sending || refreshing} onClick={allow}>
-              {sending && <Spinner data-icon="inline-start" />}
+            <AxButton intent="primary" busy={sending} disabled={choice === null || sending || refreshing} onClick={allow}>
               Allow
-            </Button>
+            </AxButton>
           </>
         )}
       </CardFooter>
@@ -325,11 +308,8 @@ export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageI
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background p-6 font-sans text-foreground">
       {state.status === 'loading' && (
-        <div className="flex w-full max-w-md flex-col gap-3" role="status">
-          <span className="sr-only">Loading…</span>
-          <Skeleton className="h-7 w-3/4" />
-          <Skeleton className="h-4 w-1/2" />
-          <Skeleton className="h-24 w-full" />
+        <div className="w-full max-w-md">
+          <AsyncState status="loading" skeleton="block" loadingLabel="Loading this request" />
         </div>
       )}
       {state.status === 'ready' && (
@@ -344,10 +324,16 @@ export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageI
           onStale={refresh}
         />
       )}
-      {state.status === 'done' && <Notice title={APPROVE_DONE} />}
-      {state.status === 'framed' && <Notice title={FRAMED} />}
-      {state.status === 'not-found' && <Notice title={NOT_FOUND} description={NOTHING_SHARED} />}
-      {state.status === 'failed' && <Notice title={LOAD_FAILED} description={NOTHING_SHARED} retry={retry} />}
+      {state.status === 'done' && <Outcome title={APPROVE_DONE} />}
+      {state.status === 'framed' && <Outcome title={FRAMED} />}
+      {state.status === 'not-found' && <Outcome title={NOT_FOUND} description={NOTHING_SHARED} />}
+      {state.status === 'failed' && (
+        <div className="w-full max-w-md">
+          <Notice tone="danger" title={LOAD_FAILED} action={{ label: 'Try again', onClick: retry }}>
+            {NOTHING_SHARED}
+          </Notice>
+        </div>
+      )}
     </div>
   );
 }

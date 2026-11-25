@@ -96,21 +96,18 @@
   },
   "packages/channel-web/src/components/PersonalUsageLine.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 4
     }
   },
   "packages/channel-web/src/components/SharedArtifactPage.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 1
-    },
     "ax-ui/no-classname": {
-      "count": 9
+      "count": 8
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/channel-web/src/components/SidebarRow.tsx": {
@@ -504,7 +501,7 @@
       "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/credentials/CredentialSlotForm.tsx": {
@@ -658,10 +655,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 9
+      "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 9
+      "count": 7
     }
   },
   "packages/channel-web/src/components/settings/AwaitingReviewSection.tsx": {
@@ -677,18 +674,10 @@
   },
   "packages/channel-web/src/components/settings/ConnectorDirectory.tsx": {
     "ax-ui/no-classname": {
-      "count": 12
+      "count": 6
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
-    }
-  },
-  "packages/channel-web/src/components/settings/ConnectorEditDialog.tsx": {
-    "ax-ui/no-classname": {
-      "count": 1
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 1
+      "count": 8
     }
   },
   "packages/channel-web/src/components/settings/ConnectorOAuthConnect.tsx": {
@@ -701,18 +690,18 @@
   },
   "packages/channel-web/src/components/settings/ConnectorToolPermissions.tsx": {
     "ax-ui/no-classname": {
-      "count": 16
+      "count": 15
     },
     "ax-ui/no-raw-elements": {
-      "count": 12
+      "count": 9
     }
   },
   "packages/channel-web/src/components/settings/ConnectorsTab.tsx": {
     "ax-ui/no-classname": {
-      "count": 13
+      "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
+      "count": 11
     }
   },
   "packages/channel-web/src/components/settings/DirectoryListingRow.tsx": {
@@ -728,10 +717,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 71
+      "count": 70
     },
     "ax-ui/no-raw-elements": {
-      "count": 67
+      "count": 66
     }
   },
   "packages/channel-web/src/components/settings/RememberedSitesPanel.tsx": {
@@ -739,10 +728,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 9
+      "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 7
     }
   },
   "packages/channel-web/src/components/settings/RemoteMcpConnectorForm.tsx": {
@@ -750,17 +739,14 @@
       "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 16
+      "count": 15
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 19
     }
   },
   "packages/channel-web/src/components/settings/RequestLeftOutNotice.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
-    },
-    "ax-ui/no-raw-elements": {
       "count": 1
     }
   },
@@ -815,10 +801,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 47
+      "count": 42
     },
     "ax-ui/no-raw-elements": {
-      "count": 46
+      "count": 41
     }
   },
   "packages/channel-web/src/components/settings/SkillsTab.tsx": {

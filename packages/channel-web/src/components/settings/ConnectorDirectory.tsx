@@ -33,13 +33,10 @@
  */
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, Search } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
+import { AsyncState, Button as AxButton, EmptyState, Heading, Notice, Stack, Text } from '@project-ax/ui';
 import {
   DIRECTORY_QUERY_MAX,
   connectorServerAddresses,
@@ -52,7 +49,6 @@ import { getConnector, type Connector, type ConnectorSummary } from '@/lib/conne
 import { logRequestFailure } from '@/lib/http';
 import { timeAgo } from '@/lib/workspace-time';
 import { DirectoryListingRow } from './DirectoryListingRow';
-import { Heading, Stack, Text } from '@project-ax/ui';
 
 /** How long the box waits for typing to pause before it searches. */
 export const SEARCH_DEBOUNCE_MS = 300;
@@ -106,13 +102,11 @@ function Freshness({ page }: { page: DirectoryPage }) {
   const ago = page.syncedAt === null ? null : timeAgo(page.syncedAt);
   if (page.stale) {
     return (
-      <Alert role="note" data-testid="directory-stale">
-        <AlertDescription>
-          {ago === null
-            ? 'We couldn’t refresh the directory, so this list may be out of date. New servers may be missing. We’ll keep trying.'
-            : `We couldn’t refresh the directory, so this is the list from ${ago}. New servers may be missing. We’ll keep trying.`}
-        </AlertDescription>
-      </Alert>
+      <Notice tone="info">
+        {ago === null
+          ? 'We couldn’t refresh the directory, so this list may be out of date. New servers may be missing. We’ll keep trying.'
+          : `We couldn’t refresh the directory, so this is the list from ${ago}. New servers may be missing. We’ll keep trying.`}
+      </Notice>
     );
   }
   if (ago === null) return null;
@@ -281,59 +275,42 @@ export function ConnectorDirectory({
 
   let body: ReactNode;
   if (load.kind === 'loading') {
-    body = (
-      <div className="flex flex-col gap-3" aria-busy="true">
-        <Skeleton className="h-4 w-3/5" />
-        <Skeleton className="h-4 w-1/2" />
-      </div>
-    );
+    body = <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the directory" />;
   } else if (load.kind === 'failed') {
     body = (
-      <Alert>
-        <AlertDescription className="flex flex-col items-start gap-3">
-          <p>We couldn’t load the directory just now.</p>
-          <Button type="button" variant="outline" size="sm" onClick={retryLoad}>
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <AsyncState
+        status="error"
+        skeleton="rows"
+        loadingLabel="Loading the directory"
+        error={{ message: 'We couldn’t load the directory just now.', onRetry: retryLoad }}
+      />
     );
   } else if (!load.page.enabled) {
     body = (
-      <Empty>
-        <EmptyHeader>
-          <EmptyTitle>The directory is turned off in this workspace</EmptyTitle>
-          <EmptyDescription>You can still set up a connector by hand.</EmptyDescription>
-        </EmptyHeader>
-        <EmptyContent>
-          <Button type="button" onClick={onNewConnector}>
-            New connector
-          </Button>
-        </EmptyContent>
-      </Empty>
+      <EmptyState
+        title="The directory is turned off in this workspace"
+        description="You can still set up a connector by hand."
+        action={{ label: 'New connector', onClick: onNewConnector }}
+      />
     );
   } else if (load.page.syncedAt === null) {
+    // Not an empty list: the read has not worked yet. Something is still
+    // coming (the first load), so it is information with a retry, not red.
     body = (
-      <Empty>
-        <EmptyHeader>
-          <EmptyTitle>The directory isn’t available yet</EmptyTitle>
-          <EmptyDescription>
-            We haven’t been able to load it since this workspace started, so there’s nothing to search yet. The
-            first load takes a few minutes. If it never finishes, your network may be blocking outside sites. You
-            can still set up a connector by hand.
-          </EmptyDescription>
-        </EmptyHeader>
-        <EmptyContent>
-          <div className="flex flex-wrap justify-center gap-2">
-            <Button type="button" variant="outline" onClick={retryLoad}>
-              Try again
-            </Button>
-            <Button type="button" onClick={onNewConnector}>
-              New connector
-            </Button>
-          </div>
-        </EmptyContent>
-      </Empty>
+      <Stack gap="md" align="start">
+        <Notice
+          tone="info"
+          title="The directory isn’t available yet"
+          action={{ label: 'Try again', onClick: retryLoad }}
+        >
+          We haven’t been able to load it since this workspace started, so there’s nothing to search yet. The
+          first load takes a few minutes. If it never finishes, your network may be blocking outside sites. You
+          can still set up a connector by hand.
+        </Notice>
+        <AxButton intent="primary" onClick={onNewConnector}>
+          New connector
+        </AxButton>
+      </Stack>
     );
   } else {
     // What the results area shows for the text in the box, if anything.
@@ -344,76 +321,45 @@ export function ConnectorDirectory({
     let resultsArea: ReactNode = null;
     if (failed) {
       resultsArea = (
-        <Alert>
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>We couldn’t search the directory just now.</p>
-            <Button type="button" variant="outline" size="sm" onClick={() => runSearch(q)}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger" action={{ label: 'Try again', onClick: () => runSearch(q) }}>
+          We couldn’t search the directory just now.
+        </Notice>
       );
-    } else if (searching || shown !== null) {
-      const noMatch = shown !== null && shown.entries.length === 0 && shown.nextCursor === undefined;
-      // One status line, mounted from "Searching…" through the answer, so a
-      // screen reader hears the count or the no-match arrive in the same live
-      // region. On no match it is visually hidden: the Empty's title says it
-      // on screen, and is hidden from screen readers so it isn't heard twice.
-      let statusText = 'Searching…';
-      if (noMatch) statusText = `Nothing matches “${shown.query}”`;
-      else if (shown !== null) statusText = countLine(shown);
-      resultsArea = (
-        <div className="flex flex-col gap-3">
-          <p
-            role="status"
-            className={noMatch ? 'sr-only' : 'flex items-center gap-2 text-sm text-muted-foreground'}
-          >
-            {searching && <Spinner aria-hidden="true" />}
-            {statusText}
-          </p>
-          {noMatch && (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle aria-hidden="true">{statusText}</EmptyTitle>
-                <EmptyDescription>
-                  Try the service’s name rather than what it does. Not every service is listed yet. If you know its
-                  address, you can set it up by hand.
-                </EmptyDescription>
-              </EmptyHeader>
-              <EmptyContent>
-                <Button type="button" onClick={onNewConnector}>
-                  New connector
-                </Button>
-              </EmptyContent>
-            </Empty>
-          )}
-          {shown !== null && !noMatch && (
-            <>
-              <div className="flex flex-col">
-                {shown.entries.map((entry) => (
-                  <DirectoryListingRow key={entry.id} entry={entry} added={isAdded(entry)} onSetUp={onSetUp} />
-                ))}
-              </div>
-              {shown.nextCursor !== undefined && (
-                <div className="flex flex-col items-start gap-2">
-                  {more === 'failed' && (
-                    <p className="text-sm text-muted-foreground">We couldn’t load more just now.</p>
-                  )}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={more === 'loading'}
-                    onClick={showMore}
-                  >
-                    {more === 'loading' && <Spinner data-icon="inline-start" aria-hidden="true" />}
-                    Show more
-                  </Button>
-                </div>
-              )}
-            </>
-          )}
+    } else if (searching) {
+      resultsArea = <AsyncState status="loading" skeleton="rows" loadingLabel="Searching…" />;
+    } else if (shown !== null) {
+      const noMatch = shown.entries.length === 0 && shown.nextCursor === undefined;
+      // One status region, so a screen reader hears the count or the no-match
+      // arrive in the same place. On no match the EmptyState is the region.
+      resultsArea = noMatch ? (
+        <div role="status">
+          <EmptyState
+            title={`Nothing matches “${shown.query}”`}
+            description="Try the service’s name rather than what it does. Not every service is listed yet. If you know its address, you can set it up by hand."
+            action={{ label: 'New connector', onClick: onNewConnector }}
+          />
         </div>
+      ) : (
+        <Stack gap="md" align="start">
+          <div role="status">
+            <Text role="meta">{countLine(shown)}</Text>
+          </div>
+          <div className="flex w-full flex-col">
+            {shown.entries.map((entry) => (
+              <DirectoryListingRow key={entry.id} entry={entry} added={isAdded(entry)} onSetUp={onSetUp} />
+            ))}
+          </div>
+          {shown.nextCursor !== undefined &&
+            (more === 'failed' ? (
+              <Notice tone="danger" action={{ label: 'Try again', onClick: showMore }}>
+                We couldn’t load more just now.
+              </Notice>
+            ) : (
+              <AxButton intent="secondary" size="sm" busy={more === 'loading'} onClick={showMore}>
+                Show more
+              </AxButton>
+            ))}
+        </Stack>
       );
     }
 

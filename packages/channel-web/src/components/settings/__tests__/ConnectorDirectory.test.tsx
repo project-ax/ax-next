@@ -192,11 +192,13 @@ describe('ConnectorDirectory', () => {
       const sixHoursAgo = new Date(Date.now() - 6 * 3_600_000).toISOString();
       search.mockImplementation(async () => directoryPage({ stale: true, syncedAt: sixHoursAgo }));
       const view = renderDirectory();
-      const note = await screen.findByTestId('directory-stale');
-      expect(note).toHaveAttribute('role', 'note');
-      expect(note.textContent).toBe(
-        'We couldn’t refresh the directory, so this is the list from 6 hr ago. New servers may be missing. We’ll keep trying.',
-      );
+      const note = (
+        await screen.findByText(
+          'We couldn’t refresh the directory, so this is the list from 6 hr ago. New servers may be missing. We’ll keep trying.',
+        )
+      ).closest('[role]');
+      // A standing note, not an alarm: the list still works.
+      expect(note).toHaveAttribute('role', 'status');
       expect(screen.queryByText(/^List updated/)).toBeNull();
       // A stale list is still a list.
       expect(screen.getByLabelText('Search the directory')).toBeInTheDocument();
@@ -205,15 +207,17 @@ describe('ConnectorDirectory', () => {
       // A time it can't read: stale says so without one, and fresh says nothing.
       search.mockImplementation(async () => directoryPage({ stale: true, syncedAt: 'not a time' }));
       const unread = renderDirectory();
-      expect((await screen.findByTestId('directory-stale')).textContent).toBe(
-        'We couldn’t refresh the directory, so this list may be out of date. New servers may be missing. We’ll keep trying.',
-      );
+      expect(
+        await screen.findByText(
+          'We couldn’t refresh the directory, so this list may be out of date. New servers may be missing. We’ll keep trying.',
+        ),
+      ).toBeInTheDocument();
       unread.unmount();
       search.mockImplementation(async () => directoryPage({ syncedAt: 'not a time' }));
       renderDirectory();
       await searchBox();
       expect(screen.queryByText(/^List updated/)).toBeNull();
-      expect(screen.queryByTestId('directory-stale')).toBeNull();
+      expect(screen.queryByText(/We couldn’t refresh the directory/)).toBeNull();
     });
 
     it('says when only verified publishers are shown', async () => {
@@ -313,7 +317,7 @@ describe('ConnectorDirectory', () => {
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
       await screen.findByRole('button', { name: 'Details for Linear' });
-      expect(screen.getByTestId('directory-stale').textContent).toContain('this is the list from 6 hr ago');
+      expect(screen.getByText(/this is the list from 6 hr ago/)).toBeInTheDocument();
       expect(screen.queryByText(/^List updated/)).toBeNull();
     });
 
@@ -446,18 +450,11 @@ describe('ConnectorDirectory', () => {
       const { onNewConnector } = renderDirectory();
       // The box's own spaces are not part of the search.
       typeQuery(await searchBox(), '  zzz ');
-      const status = screen.getByRole('status');
-      expect(status).toHaveTextContent('Searching…');
-      const title = await screen.findByText('Nothing matches “zzz”', { selector: '[data-slot="empty-title"]' });
-      // The live region that said "Searching…" stays put and says there's no
-      // match, so a screen reader hears the answer arrive.
-      expect(screen.getByRole('status')).toBe(status);
-      expect(status).toHaveTextContent(/^Nothing matches “zzz”$/);
-      // Said once: the status is visually hidden and the on-screen title is
-      // hidden from screen readers. (jsdom loads no CSS, so toBeVisible can't
-      // tell; the attributes are what make this true.)
-      expect(status).toHaveClass('sr-only');
-      expect(title).toHaveAttribute('aria-hidden', 'true');
+      expect(screen.getByRole('status')).toHaveTextContent('Searching…');
+      const title = await screen.findByText('Nothing matches “zzz”');
+      // The no-match answer is announced from its own live region, and said once.
+      expect(screen.getAllByRole('status')).toHaveLength(1);
+      expect(screen.getByRole('status')).toContainElement(title);
       expect(screen.getByText(NO_MATCH_DESCRIPTION)).toBeInTheDocument();
       expect(queries()).toEqual(['', 'zzz']);
       expect(screen.queryByText(/servers? match/)).toBeNull();
@@ -572,7 +569,7 @@ describe('ConnectorDirectory', () => {
       expect(screen.getByRole('status')).toHaveTextContent(/^3 servers match$/);
     });
 
-    it('a failed Show more says so and keeps the button', async () => {
+    it('a failed Show more says so and offers Try again', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       let fail = true;
       pagedSearch(async () => {
@@ -585,13 +582,14 @@ describe('ConnectorDirectory', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       expect(await screen.findByText(MORE_FAILED)).toBeInTheDocument();
       expect(warn).toHaveBeenCalled();
-      // The rows it had stay, and so does the way to try again.
+      // The rows it had stay, and the failure offers its own Try again.
       expect(rowNames()).toEqual(['Details for Linear', 'Details for Quick Notes']);
-      const more = screen.getByRole('button', { name: 'Show more' });
-      expect(more).toBeEnabled();
+      expect(screen.getByRole('alert')).toHaveTextContent(MORE_FAILED);
+      const again = screen.getByRole('button', { name: 'Try again' });
+      expect(again).toBeEnabled();
 
       fail = false;
-      fireEvent.click(more);
+      fireEvent.click(again);
       await screen.findByRole('button', { name: 'Details for Tickets' });
       expect(screen.queryByText(MORE_FAILED)).toBeNull();
     });

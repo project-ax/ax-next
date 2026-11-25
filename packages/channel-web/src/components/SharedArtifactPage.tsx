@@ -14,11 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Empty, EmptyContent, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
-import { Divider, Text } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Divider, EmptyState, Text } from '@project-ax/ui';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { sharedArtifactsApi } from '@/lib/shared-artifacts-api';
@@ -66,23 +62,6 @@ function useSharedArtifact(code: string): [PageState, () => void] {
   return [state, useCallback(() => setAttempt((n) => n + 1), [])];
 }
 
-function Notice({ text, retry }: { text: string; retry?: () => void }) {
-  return (
-    <Empty className="flex-1">
-      <EmptyHeader>
-        <EmptyTitle>{text}</EmptyTitle>
-      </EmptyHeader>
-      {retry && (
-        <EmptyContent>
-          <Button type="button" variant="outline" onClick={retry}>
-            Try again
-          </Button>
-        </EmptyContent>
-      )}
-    </Empty>
-  );
-}
-
 function Shared({ code, artifact }: { code: string; artifact: SharedArtifactView }) {
   const [downloading, setDownloading] = useState(false);
   const inFlight = useRef(false);
@@ -122,10 +101,9 @@ function Shared({ code, artifact }: { code: string; artifact: SharedArtifactView
             Made by {artifact.agentName ?? 'an agent'} · updated {when}
           </Text>
         </div>
-        <Button type="button" variant="outline" disabled={downloading} onClick={download}>
-          {downloading ? <Spinner data-icon="inline-start" /> : <Download data-icon="inline-start" aria-hidden />}
+        <AxButton icon={Download} busy={downloading} disabled={downloading} onClick={download}>
           Download
-        </Button>
+        </AxButton>
       </header>
       <Divider />
       <main className="flex min-h-0 flex-1 flex-col">
@@ -148,17 +126,30 @@ export function SharedArtifactPage({ code }: { code: string }) {
     <div className="flex min-h-screen flex-col bg-background font-sans text-foreground">
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 p-6">
         {state.status === 'loading' && (
-          <div className="flex flex-1 flex-col gap-3" role="status">
-            <span className="sr-only">Loading…</span>
-            <Skeleton className="h-7 w-1/3" />
-            <Skeleton className="h-4 w-1/4" />
-            <Skeleton className="min-h-[480px] w-full flex-1" />
-          </div>
+          <AsyncState status="loading" skeleton="block" loadingLabel="Loading this shared page" />
         )}
         {state.status === 'ready' && <Shared code={code} artifact={state.artifact} />}
-        {state.status === 'dead' && <Notice text={LINK_DEAD} />}
-        {state.status === 'rate-limited' && <Notice text={LINK_RATE_LIMITED} retry={retry} />}
-        {state.status === 'failed' && <Notice text={LINK_FAILED} retry={retry} />}
+        {state.status === 'dead' && (
+          <div role="status" className="flex flex-1 items-center justify-center">
+            <EmptyState title={LINK_DEAD} />
+          </div>
+        )}
+        {state.status === 'rate-limited' && (
+          <AsyncState
+            status="error"
+            skeleton="block"
+            loadingLabel="Loading this shared page"
+            error={{ message: LINK_RATE_LIMITED, onRetry: retry }}
+          />
+        )}
+        {state.status === 'failed' && (
+          <AsyncState
+            status="error"
+            skeleton="block"
+            loadingLabel="Loading this shared page"
+            error={{ message: LINK_FAILED, onRetry: retry }}
+          />
+        )}
       </div>
     </div>
   );

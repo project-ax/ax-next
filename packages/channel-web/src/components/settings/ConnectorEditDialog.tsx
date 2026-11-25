@@ -11,8 +11,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState } from '@project-ax/ui';
 import {
   LegacyConnectorEditDialog,
   type ConnectorEditDialogProps,
@@ -112,20 +111,15 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
             Update the remote server and how we connect.
           </DialogDescription>
         </DialogHeader>
-        {failed ? (
-          <Alert variant="destructive">
-            <AlertDescription>
-              We couldn’t load this connector. Your existing settings are safe.
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <p role="status" className="text-sm text-muted-foreground">
-            Loading connector…
-          </p>
-        )}
-        {failed && (
-          <Button onClick={() => setRetry((n) => n + 1)}>Try again</Button>
-        )}
+        <AsyncState
+          status={failed ? 'error' : 'loading'}
+          skeleton="lines"
+          loadingLabel="Loading connector"
+          error={{
+            message: 'We couldn’t load this connector. Your existing settings are safe.',
+            onRetry: () => setRetry((n) => n + 1),
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

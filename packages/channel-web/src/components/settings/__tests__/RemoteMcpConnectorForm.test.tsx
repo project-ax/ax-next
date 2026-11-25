@@ -202,6 +202,10 @@ const withoutClientId = () => {
     { kind: 'oauth', slot: 'TOKEN', server: 'linear' },
   ];
 };
+// The address-change warning is a warning Notice (role="alert"): found by its words.
+const addressWarning = (): HTMLElement | null =>
+  screen.queryAllByRole('alert').find((el) => /^Changing (where this connector points|the address)/.test(el.textContent ?? '')) ?? null;
+
 describe('remote connector editor', () => {
   it('opens invalid header fields and associates their errors for assistive technology', async () => {
     // No custom client: adding a header points the connector somewhere new,
@@ -522,7 +526,7 @@ describe('remote connector editor', () => {
     };
     const options = { ...props(), target: 'new' as const, prefill };
     render(<ConnectorEditDialog {...options} />);
-    const note = screen.getByTestId('request-left-out');
+    const note = screen.getByText('This request also asked for:').closest('[role]') as HTMLElement;
     for (const item of [
       'access to inner.example.org',
       'another server, https://second.example.com/mcp',
@@ -591,7 +595,7 @@ describe('remote connector editor', () => {
       expect(screen.getByLabelText('Server URL')).toHaveValue('https://mcp.linear.app/mcp');
       expect(screen.getByLabelText('How to use it')).toHaveValue(key.description);
       expect(screen.queryByText(/Filled in from the request/)).toBeNull();
-      expect(screen.queryByTestId('request-left-out')).toBeNull();
+      expect(screen.queryByText('This request also asked for:')).toBeNull();
     });
     it('a key listing opens with its header named and each agent bringing its own key', async () => {
       discovery = { hosts: ['mcp.linear.app'], auth: 'other' };
@@ -665,7 +669,7 @@ describe('remote connector editor', () => {
     expect(screen.getByRole('button', { name: 'Add connector' })).toBeDisabled();
     expect(screen.queryByText(/Sign-in/)).not.toBeInTheDocument();
     failDiscovery = false;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Sign-in: OAuth')).toBeVisible();
     await waitFor(() =>
       expect(
@@ -1132,7 +1136,7 @@ describe('tool permissions (TASK-737)', () => {
       toolPermsGet = () => new Promise<Response>(() => {}) as unknown as Response;
       const options = await openNew();
       await addFirst(options);
-      expect(screen.getByText('Looking up this connector’s tools…')).toBeVisible();
+      expect(screen.getByText('Looking up this connector’s tools')).toBeVisible();
       expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     });
 
@@ -1265,11 +1269,11 @@ describe('tool permissions (TASK-737)', () => {
     const options = await openEditor();
     await screen.findByRole('group', { name: 'Permission for Search issues' });
     // Same address: no warning, the section is there and has on-screen choices to save.
-    expect(screen.queryByTestId('address-change-resets-tools')).toBeNull();
+    expect(addressWarning()).toBeNull();
     fireEvent.change(screen.getByLabelText('Server URL'), {
       target: { value: 'https://other.example.com/mcp' },
     });
-    expect(screen.getByTestId('address-change-resets-tools')).toHaveTextContent(
+    expect(addressWarning()).toHaveTextContent(
       'Changing the address resets this server’s tool permissions.',
     );
     // The choices on screen were made for the old address, so they go away.
@@ -1283,24 +1287,18 @@ describe('tool permissions (TASK-737)', () => {
     expect(toolPermsPuts).toEqual([]);
   });
 
-  // TASK-790 — the warning is advice beside a field the person is typing in,
-  // not an urgent interruption: role="note", so a screen reader does not cut
-  // into every keystroke with an alert. (The shared Alert defaults to
-  // role="alert".)
-  it('TASK-790: the address-change warning is a note, not an alert', async () => {
+  // The warning is about loss (every tool goes back to asking first), so it is
+  // a warning Notice: role="alert", found by its words rather than a test id.
+  it('TASK-790: the address-change warning is a warning Notice', async () => {
     serve(inventory({ defaults: [] }));
     await openEditor();
     await screen.findByRole('group', { name: 'Permission for Search issues' });
     fireEvent.change(screen.getByLabelText('Server URL'), {
       target: { value: 'https://other.example.com/mcp' },
     });
-    const note = screen.getByRole('note');
+    const note = addressWarning();
     expect(note).toHaveTextContent('Changing the address resets this server’s tool permissions.');
-    expect(
-      screen
-        .queryAllByRole('alert')
-        .filter((el) => /Changing the address/.test(el.textContent ?? '')),
-    ).toEqual([]);
+    expect(note).toHaveAttribute('role', 'alert');
   });
 
   it('TASK-755: putting the original address back removes the warning and restores the section', async () => {
@@ -1309,9 +1307,9 @@ describe('tool permissions (TASK-737)', () => {
     await screen.findByRole('group', { name: 'Permission for Search issues' });
     const field = screen.getByLabelText('Server URL');
     fireEvent.change(field, { target: { value: 'https://other.example.com/mcp' } });
-    expect(screen.getByTestId('address-change-resets-tools')).toBeVisible();
+    expect(addressWarning()).toBeVisible();
     fireEvent.change(field, { target: { value: ' https://mcp.example.com/mcp ' } });
-    expect(screen.queryByTestId('address-change-resets-tools')).toBeNull();
+    expect(addressWarning()).toBeNull();
     expect(screen.getByRole('group', { name: 'Permission for Search issues' })).toBeVisible();
   });
 
@@ -1469,7 +1467,7 @@ describe('tool permissions (TASK-737)', () => {
       ),
     ).toBeVisible();
     expect(pressed('archive_issue')).toEqual(['Deny']);
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(toolPermsGets).toHaveLength(2));
     expect(toolPermsGets[1]).toBe('/admin/connectors/linear/tool-permissions?refresh=1');
     await screen.findByRole('group', { name: 'Permission for archive_issue' });
@@ -1479,16 +1477,24 @@ describe('tool permissions (TASK-737)', () => {
     expect(toolPermsPuts).toEqual([]);
   });
 
-  it.each([
-    ['needs-auth', 'Sign in to this connector to see its tools.'],
-    ['unknown', 'We can’t list this connector’s tools right now.'],
-  ])('explains a %s inventory in plain words', async (status, copy) => {
-    serve({ status, checkedAt: null, tools: [], defaults: [] });
+  it('explains a needs-auth inventory in plain words, with nothing to retry', async () => {
+    serve({ status: 'needs-auth', checkedAt: null, tools: [], defaults: [] });
     await openEditor();
     expect(
-      await screen.findByText((text) => text.startsWith(copy)),
+      await screen.findByText((text) => text.startsWith('Sign in to this connector to see its tools.')),
     ).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('an unknown inventory is a failed read: it says so and offers Try again, which re-reads', async () => {
+    serve({ status: 'unknown', checkedAt: null, tools: [], defaults: [] });
+    await openEditor();
+    expect(
+      await screen.findByText((text) => text.startsWith('We can’t list this connector’s tools right now.')),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(toolPermsGets).toHaveLength(2));
+    expect(toolPermsGets[1]).toBe('/admin/connectors/linear/tool-permissions?refresh=1');
   });
 
   it('offers a retry when tool permissions fail to load, and the connector still saves', async () => {
@@ -1520,7 +1526,7 @@ describe('tool permissions (TASK-737)', () => {
   it('shows a loading line while the tools are looked up', async () => {
     toolPermsGet = () => new Promise<Response>(() => {}) as unknown as Response;
     await openEditor();
-    expect(screen.getByText('Looking up this connector’s tools…')).toBeVisible();
+    expect(screen.getByText('Looking up this connector’s tools')).toBeVisible();
   });
 
   it('for a new connector, shows a hint and never asks for tools', async () => {

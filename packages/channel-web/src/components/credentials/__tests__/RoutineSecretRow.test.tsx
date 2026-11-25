@@ -34,7 +34,7 @@ describe('own routine signing-secret controls', () => {
     expect(screen.queryByText('Not set')).not.toBeInTheDocument();
     vi.useRealTimers();
     available = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Saved')).toBeInTheDocument();
   });
 
@@ -95,7 +95,7 @@ describe('own routine signing-secret controls', () => {
     expect(screen.queryByText(/PRIVATE/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add key' })).toBeDisabled();
     available = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Saved')).toBeInTheDocument();
   });
 

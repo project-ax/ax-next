@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { Check } from 'lucide-react';
-import { ConfirmAction } from '@project-ax/ui';
+import { ConfirmAction, Notice } from '@project-ax/ui';
 import { FieldGroup } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ApiKeyField } from '@/components/credentials/ApiKeyField';
 import type { Destination } from '@ax/credentials';
 import { removeDestinationCredential, setDestinationCredential } from '@/lib/credentials';
@@ -83,9 +82,7 @@ export function CredentialSlotForm({
           </p>
         )}
         {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{error}</Notice>
         )}
         {/* The same field the rail's Add key form draws (ApiKeyField). */}
         <ApiKeyField

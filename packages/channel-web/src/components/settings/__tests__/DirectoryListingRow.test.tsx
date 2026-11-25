@@ -60,7 +60,8 @@ describe('DirectoryListingRow', () => {
       `Version 1.4.0 · updated ${monthDayYear('2026-11-03T12:00:00.000Z')}`,
     );
     // A note beside the decision, not an alert: `role="alert"` means something broke.
-    expect(within(sheet).getByRole('note')).toHaveTextContent(TRUST);
+    expect(within(sheet).getByRole('status')).toHaveTextContent(TRUST);
+    expect(within(sheet).queryByRole('alert')).toBeNull();
   });
 
   it('a listing last updated in another year says which year', async () => {

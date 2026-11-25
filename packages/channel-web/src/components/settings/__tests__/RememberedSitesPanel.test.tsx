@@ -69,9 +69,10 @@ describe('RememberedSitesPanel', () => {
   it('renders the empty state when there are no remembered sites', async () => {
     vi.spyOn(sitesLib, 'listRememberedSites').mockResolvedValue([]);
     render(<RememberedSitesPanel />);
-    await screen.findByText(
-      'Nothing here yet — we’ll ask the first time your assistant wants to read a new site.',
-    );
+    await screen.findByText('Nothing here yet');
+    expect(
+      screen.getByText('We’ll ask the first time your assistant wants to read a new site.'),
+    ).toBeInTheDocument();
   });
 
   /*
@@ -98,8 +99,7 @@ describe('RememberedSitesPanel', () => {
   // whitespace, so `getByText('…')` on the whole thing would never match. The
   // distinctive clause is enough and it is the clause that carries the meaning.
   const UNKNOWN_COPY = /That’s not the same as it being empty/;
-  const EMPTY_COPY =
-    'Nothing here yet — we’ll ask the first time your assistant wants to read a new site.';
+  const EMPTY_COPY = 'Nothing here yet';
 
   it('says we could not load the list — and does NOT say the list is empty', async () => {
     vi.spyOn(sitesLib, 'listRememberedSites').mockRejectedValue(new Error('network down'));

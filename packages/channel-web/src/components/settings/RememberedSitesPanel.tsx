@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, EmptyState } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
@@ -146,46 +146,32 @@ export function RememberedSitesPanel() {
         catches it, which is how this comment came to exist.
       */}
       {list.status === 'unknown' ? (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-2">
-            {/*
-              "Not the same as empty" is the whole message, and it comes
-              immediately after the admission, because the reader's default
-              reading of a blank settings panel is "there is nothing here" — and
-              that is the reading we have to undo. No status code, no request
-              path, no exception text: none of it is something a person can act
-              on (TASK-358's standing bar). What they can act on is the button.
-
-              "Nothing has changed" is the reassurance we are actually entitled
-              to. A failed read changes nothing, and it is deliberately NOT the
-              stronger-sounding "your sites are still allowed" — during a
-              storage outage the enforcement read fails closed too, and we would
-              be promising the opposite of what happens.
-            */}
-            <p>
-              <strong>We couldn’t load your list.</strong> That’s not the same as it
-              being empty — we just can’t see it right now. Nothing has changed.
-            </p>
-            <Button variant="outline" size="sm" onClick={() => void load()}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading remembered sites"
+          error={{
+            message:
+              'We couldn’t load your list. That’s not the same as it being empty — we just can’t see it right now. Nothing has changed.',
+            onRetry: () => void load(),
+          }}
+        />
       ) : (
       <Card variant="settings" className="divide-y divide-border">
         {list.status === 'loading' && (
-          <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading remembered sites" />
         )}
         {list.status === 'ok' && list.sites.length === 0 && (
-          <div className="px-4 py-3 text-sm text-muted-foreground">
-            {/*
+          /*
               THE ONLY PLACE THIS SENTENCE IS ALLOWED, and it is reachable from
               exactly one state: a read that came back. "Nothing here yet" is a
               claim about what this person has agreed to, and we may only make
               it when we have actually seen the list.
-            */}
-            Nothing here yet — we’ll ask the first time your assistant wants to read a new site.
-          </div>
+            */
+          <EmptyState
+            title="Nothing here yet"
+            description="We’ll ask the first time your assistant wants to read a new site."
+          />
         )}
         {(list.status === 'ok' ? list.sites : []).map((site) => {
           const date = rememberedDate(site.rememberedAt);

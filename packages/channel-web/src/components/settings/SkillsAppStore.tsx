@@ -36,7 +36,7 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   Trash2,
@@ -58,7 +58,6 @@ import {
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   Select,
@@ -168,7 +167,11 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   // user-source row can expose Edit / Delete / Submit). Keyed by id.
   const [ownSkills, setOwnSkills] = useState<Map<string, SkillSummary>>(new Map());
   const [authored, setAuthored] = useState<AuthoredSkillListing[]>([]);
+  // A failed WRITE (install, delete, submit …) and a failed READ (agents,
+  // installed, catalog) are different things: the read has a Try again.
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [retryingReads, setRetryingReads] = useState(false);
   const [search, setSearch] = useState('');
 
   // Dialog / confirmation state.
@@ -202,7 +205,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
       if (currentAgent.current === id) setInstalled(r.skills);
     } catch (err) {
       if (currentAgent.current === id) {
-        setError(err instanceof Error ? err.message : String(err));
+        setReadError(err instanceof Error ? err.message : String(err));
         setInstalled([]);
       }
     }
@@ -212,7 +215,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
     try {
       setCatalog(await listCatalogSkills());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setReadError(err instanceof Error ? err.message : String(err));
       setCatalog([]);
     }
   }, []);
@@ -232,6 +235,22 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
     }
   }, []);
 
+  const loadAgents = useCallback((isCancelled: () => boolean, keepSelection: boolean) => {
+    return listChatAgents()
+      .then((a) => {
+        if (isCancelled()) return;
+        setAgents(a);
+        setAgentsLoaded(true);
+        if (a[0] && !keepSelection) setAgentId(a[0].agentId);
+      })
+      .catch((e: unknown) => {
+        if (!isCancelled()) {
+          setAgentsLoaded(true);
+          setReadError(e instanceof Error ? e.message : String(e));
+        }
+      });
+  }, []);
+
   // Load the agent list once; default to the first agent.
   useEffect(() => {
     let cancelled = false;
@@ -240,25 +259,13 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
       void refreshCatalog(); void refreshOwn();
       return () => { cancelled = true; };
     }
-    listChatAgents()
-      .then((a) => {
-        if (cancelled) return;
-        setAgents(a);
-        setAgentsLoaded(true);
-        if (a[0]) setAgentId(a[0].agentId);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setAgentsLoaded(true);
-          setError(e instanceof Error ? e.message : String(e));
-        }
-      });
+    void loadAgents(() => cancelled, false);
     void refreshCatalog();
     void refreshOwn();
     return () => {
       cancelled = true;
     };
-  }, [fixedAgentId, refreshCatalog, refreshOwn]);
+  }, [fixedAgentId, loadAgents, refreshCatalog, refreshOwn]);
 
   // (Re)load installed whenever the selected agent changes.
   useEffect(() => {
@@ -271,6 +278,17 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   useEffect(() => {
     if (fixedAgentId) setAgentId(fixedAgentId);
   }, [fixedAgentId]);
+
+  /** Try again for a failed read: re-run every read the tab depends on. */
+  const retryReads = (): void => {
+    setReadError(null);
+    setRetryingReads(true);
+    setInstalled(null);
+    setCatalog(null);
+    const reads: Array<Promise<unknown>> = [refreshCatalog(), refreshInstalled(agentId)];
+    if (!fixedAgentId) reads.push(loadAgents(() => false, true));
+    void Promise.all(reads).finally(() => setRetryingReads(false));
+  };
 
   // ---- derived ----------------------------------------------------------
 
@@ -557,29 +575,29 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
           </>
         )}
 
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+        {readError && (
+          <Notice tone="danger" action={{ label: 'Try again', busy: retryingReads, onClick: retryReads }}>
+            {readError}
+          </Notice>
         )}
 
+        {error && <Notice tone="danger">{error}</Notice>}
+
         {shareResult && (
-          <Alert>
-            <AlertDescription>
-              {shareResult.kind === 'submitted' ? (
-                <>
-                  <code className="font-mono">{shareResult.skillId}</code> was
-                  submitted for admin review. Once admitted, it ships to everyone
-                  and your editable copy is retired.
-                </>
-              ) : (
-                <>
-                  <code className="font-mono">{shareResult.skillId}</code> is
-                  already submitted and pending admin review.
-                </>
-              )}
-            </AlertDescription>
-          </Alert>
+          <Notice tone="info">
+            {shareResult.kind === 'submitted' ? (
+              <>
+                <code className="font-mono">{shareResult.skillId}</code> was
+                submitted for admin review. Once admitted, it ships to everyone
+                and your editable copy is retired.
+              </>
+            ) : (
+              <>
+                <code className="font-mono">{shareResult.skillId}</code> is
+                already submitted and pending admin review.
+              </>
+            )}
+          </Notice>
         )}
 
         {/* ============================ INSTALLED =========================
@@ -591,23 +609,26 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
         <TabsContent value="installed" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'installed' } : {})} className="flex flex-col gap-3">
           {!fixedAgentId && <h2 className="sr-only">Installed{installedCount > 0 ? ` (${installedCount})` : ''}</h2>}
 
-          {!fixedAgentId && agentsLoaded && agents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              You don’t have an assistant yet. Create one on the Agents tab, then
-              come back here to install skills onto it.
-            </p>
+          {readError ? null : !fixedAgentId && agentsLoaded && agents.length === 0 ? (
+            <EmptyState
+              title="You don’t have an assistant yet"
+              description="Create one on the Agents tab, then come back here to install skills onto it."
+            />
           ) : installed === null ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading installed skills" />
           ) : installed.length === 0 && (fixedAgentId || ownNotInstalled.length === 0) ? (
-            <p className="text-sm text-muted-foreground">
-              {/* Don't send a first-run reader "below" to a shelf that is also
-                  empty — the other half of the walk finding at the catalog
-                  empty state. With nothing in the workspace, Create is the only
-                  door that opens. */}
-              {catalog !== null && catalog.length === 0
-                ? 'No skills installed yet. Create one to get started.'
-                : 'No skills installed yet. Install one from Browse, or create your own.'}
-            </p>
+            // Don't send a first-run reader "below" to a shelf that is also
+            // empty — the other half of the walk finding at the catalog
+            // empty state. With nothing in the workspace, Create is the only
+            // door that opens.
+            <EmptyState
+              title="No skills installed yet"
+              description={
+                catalog !== null && catalog.length === 0
+                  ? 'Create one to get started.'
+                  : 'Install one from Browse, or create your own.'
+              }
+            />
           ) : (
             <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {/* User-created or adopted skills that have no agent attachment yet.
@@ -839,17 +860,16 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
             />
           </div>
 
-          {catalog === null ||
+          {readError ? null : catalog === null ||
           !agentsLoaded ||
           ((fixedAgentId || agents.length > 0) && installed === null) ? (
             // Wait for the catalog, the agent list, and — when there's an agent —
             // the installed set, so we never flash an already-installed skill as
             // "installable" before the exclusion lands. With no agent, the catalog
             // is browsable (Install is disabled until an agent exists).
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the workspace catalog" />
           ) : notInstalled.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              {/*
+            /*
                 Three situations, not two. `notInstalled.length === 0` used to
                 collapse the first-run one into the congratulatory one, so a
                 brand-new workspace was told "everything in your workspace is
@@ -858,13 +878,24 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                 Installed section directly above says "install one from your
                 workspace below", pointing at this very line. A walk on a fresh
                 cluster hit both sentences stacked on one screen.
-              */}
-              {search.trim().length > 0
-                ? 'No matching skills in your workspace.'
-                : catalog.length === 0
-                  ? 'Your workspace catalog is empty. Add a skill to the workspace and it shows up here, ready to install.'
-                  : 'Nothing left to install — everything in your workspace is already on this assistant.'}
-            </p>
+              */
+            <EmptyState
+              title={
+                search.trim().length > 0
+                  ? 'No matching skills in your workspace'
+                  : catalog.length === 0
+                    ? 'Your workspace catalog is empty'
+                    : 'Nothing left to install'
+              }
+              {...(search.trim().length > 0
+                ? {}
+                : {
+                    description:
+                      catalog.length === 0
+                        ? 'Add a skill to the workspace and it shows up here, ready to install.'
+                        : 'Everything in your workspace is already on this assistant.',
+                  })}
+            />
           ) : (
             <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {notInstalled.map((c) => (

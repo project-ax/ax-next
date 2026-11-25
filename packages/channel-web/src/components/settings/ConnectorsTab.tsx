@@ -41,7 +41,7 @@
  * only (invariant #6).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listConnectors,
@@ -65,7 +65,6 @@ import { ConnectorDirectory } from './ConnectorDirectory';
 import { RoleCard } from '@/components/admin/RoleCard';
 import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 
 /**
  * Mechanism-free "what it needs" caption — keyMode only, no transport vocab.
@@ -163,9 +162,10 @@ export function ConnectorsTab() {
   // failure (the lib answers an empty list for its 404); anything else is, and
   // saying so beats an empty shelf that looks like "nobody asked".
   const [requestsFailed, setRequestsFailed] = useState(false);
+  const [retryingRequests, setRetryingRequests] = useState(false);
 
-  /** Reload the requests. A failure never blocks the tab: it shows an Alert
-   *  with Retry where the shelf would be. */
+  /** Reload the requests. A failure never blocks the tab: it shows a Notice
+   *  with Try again where the shelf would be. */
   const refreshRequests = useCallback(() => {
     return listAuthoredProposals()
       .then((drafts) => {
@@ -310,35 +310,41 @@ export function ConnectorsTab() {
           </SettingsActions>
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice
+              tone="danger"
+              {...(error === CONNECTOR_GONE_MESSAGE
+                ? {}
+                : { action: { label: 'Try again', onClick: () => void refreshConnectors() } })}
+            >
+              {error}
+            </Notice>
           )}
 
           {connectors === null && !error && (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading connectors" />
           )}
 
           {connectors !== null && list.length === 0 && !error && (
-            <p className="text-sm text-muted-foreground">
-              No connectors yet. Add one to make it available to the workspace.
-            </p>
+            <EmptyState
+              title="No connectors yet"
+              description="Add one to make it available to the workspace."
+            />
           )}
 
           {requestsFailed && (
-            <Alert data-testid="connector-requests-failed">
-              <AlertDescription className="flex flex-col items-start gap-2">
-                <span>Couldn’t load requests waiting for approval.</span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void refreshRequests()}
-                >
-                  Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
+            <Notice
+              tone="danger"
+              action={{
+                label: 'Try again',
+                busy: retryingRequests,
+                onClick: () => {
+                  setRetryingRequests(true);
+                  void refreshRequests().finally(() => setRetryingRequests(false));
+                },
+              }}
+            >
+              Couldn’t load requests waiting for approval.
+            </Notice>
           )}
 
           {/* Awaiting approval — every person's connector requests. Rendered only
