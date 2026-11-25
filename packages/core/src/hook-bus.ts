@@ -66,10 +66,12 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  * The bus runs the policy synchronously, once per `call()`, on the RAW input,
  * before the stall watch and before the handler. Nothing has validated that
  * input yet, so the policy must be total. Its result is held to the same rule
- * as a fixed value, and `Infinity` is still the only "no timeout". A policy
- * that throws, or returns NaN, a negative, `-Infinity` or a non-number, fails
- * the call with `invalid-payload` and the handler never runs. It never becomes
- * a call with no timer.
+ * as a fixed value, plus a ceiling: a finite result may not pass 2^31-1 ms,
+ * the longest delay `setTimeout` holds. `Infinity` is still the only "no
+ * timeout". A policy that throws, or returns NaN, a negative, `-Infinity`, a
+ * finite number above that ceiling or a non-number, fails the call with
+ * `invalid-payload` and the handler never runs. It never becomes a call with
+ * no timer, nor one whose timer fires at once.
  */
 export type ServiceTimeoutMs = number | ((input: unknown) => number);
 
@@ -135,6 +137,28 @@ export interface HookBusOptions {
  */
 function isValidTimeoutMs(value: number): boolean {
   return value === Number.POSITIVE_INFINITY || (Number.isFinite(value) && value >= 0);
+}
+
+/**
+ * The longest delay `setTimeout` holds (2^31-1 ms, ~24.8 days). Node clamps a
+ * longer one to ~1 ms, so such a timeout would fail the call at once while its
+ * handler ran on. A timeout POLICY's result is held to it (TASK-1240); a fixed
+ * `timeoutMs` is checked by `isValidTimeoutMs` alone, as it always was.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * What a timeout policy threw, for the error message. `String()` itself throws
+ * on some values (a null-prototype object), and that TypeError must not
+ * replace the `invalid-payload` the call fails with.
+ */
+function describeThrown(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  try {
+    return String(err);
+  } catch {
+    return typeof err;
+  }
 }
 
 interface RegisteredService {
@@ -330,11 +354,14 @@ export class HookBus {
         code: 'invalid-payload',
         plugin: registered.plugin,
         hookName,
-        message: `service hook '${hookName}' timeoutMs policy threw: ${err instanceof Error ? err.message : String(err)}`,
+        message: `service hook '${hookName}' timeoutMs policy threw: ${describeThrown(err)}`,
         cause: err,
       });
     }
-    if (!isValidTimeoutMs(resolved)) {
+    if (
+      !isValidTimeoutMs(resolved) ||
+      (resolved !== Number.POSITIVE_INFINITY && resolved > MAX_TIMER_DELAY_MS)
+    ) {
       // A non-number (reachable only past the types) is named by its type.
       // Printing one can throw (a Symbol, an object with no `toString`) or
       // say nothing ('[object Object]').
@@ -343,7 +370,7 @@ export class HookBus {
         code: 'invalid-payload',
         plugin: registered.plugin,
         hookName,
-        message: `service hook '${hookName}' timeoutMs policy must return a non-negative finite number or Infinity (got ${got})`,
+        message: `service hook '${hookName}' timeoutMs policy must return a non-negative number up to ${MAX_TIMER_DELAY_MS} or Infinity (got ${got})`,
       });
     }
     return resolved;

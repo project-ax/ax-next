@@ -426,6 +426,41 @@ describe('HookBus — service-boundary enforcement', () => {
     }
   });
 
+  it('a timeout policy returning more than setTimeout can hold fails the call before the handler (TASK-1240)', async () => {
+    // Node clamps a delay above 2^31-1 ms to ~1 ms: the call would fail at once
+    // while the handler's side effects ran on. Refused like NaN instead.
+    const handler = vi.fn(async () => 'ran');
+    const bus = new HookBus();
+    bus.registerService('policy', 'p', handler, { timeoutMs: () => 2_147_483_648 });
+    await expect(bus.call('policy', silentCtx(), {})).rejects.toMatchObject({
+      name: 'PluginError', code: 'invalid-payload', plugin: 'p', hookName: 'policy',
+      message: expect.stringContaining('2147483648'),
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('a timeout policy may return exactly 2^31-1 ms (TASK-1240)', async () => {
+    const bus = new HookBus();
+    bus.registerService('policy', 'p', async () => 'ran', { timeoutMs: () => 2_147_483_647 });
+    await expect(bus.call('policy', silentCtx(), {})).resolves.toBe('ran');
+  });
+
+  it('a timeout policy that throws an unprintable value still fails the call invalid-payload (TASK-1240)', async () => {
+    // `String()` of a null-prototype object throws a TypeError of its own.
+    const thrown: unknown = Object.create(null);
+    const handler = vi.fn(async () => 'ran');
+    const bus = new HookBus();
+    bus.registerService('policy', 'p', handler, {
+      timeoutMs: () => {
+        throw thrown;
+      },
+    });
+    const err = await bus.call('policy', silentCtx(), {}).catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'PluginError', code: 'invalid-payload', plugin: 'p', hookName: 'policy' });
+    expect((err as Error).cause).toBe(thrown);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('a timeout policy may return Infinity (no timeout for that call) (TASK-1240)', async () => {
     const bus = new HookBus({ defaultServiceTimeoutMs: 10 });
     bus.registerService(
