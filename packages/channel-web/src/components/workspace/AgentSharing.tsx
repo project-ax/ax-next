@@ -19,6 +19,7 @@ import { getAdminAgent } from '@/lib/admin';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import type { AgentDetail } from '@/lib/workspace-api';
 import type { AgentSettingsSection } from '@/lib/workspace-route';
+import { AgentOwners } from './AgentOwners';
 import { AudienceDialog } from './AudienceDialog';
 
 export interface AgentSharingProps {
@@ -114,9 +115,12 @@ export function AgentSharing({ agent, onSection }: AgentSharingProps) {
           {SHARING_COPY.change}
         </Button>
       </Inline>
-      {/* Task 8 renders the owners here:
-          <AgentOwners agentId={agent.id} agentName={agent.name}
-                       owners={load.sharing.owners} onSaved={onSaved} /> */}
+      <AgentOwners
+        agentId={agent.id}
+        agentName={agent.name}
+        owners={load.sharing.owners}
+        onSaved={onSaved}
+      />
       <AudienceDialog
         open={editing}
         agentId={agent.id}

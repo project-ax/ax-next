@@ -115,6 +115,13 @@ export const SHARING_COPY = {
     remove: (name: string): string => `Remove ${name} as an owner`,
     cap: "That's the most owners an agent can have. Remove one to add someone else.",
     addTitle: (agent: string): string => `Add an owner to ${agent}`,
+    /**
+     * The person field in Add owner (added with the owners list, after the
+     * ux-designer pass). Not the audience picker's placeholder: there is no
+     * Everyone here.
+     */
+    fieldLabel: 'New owner',
+    placeholder: 'Type a name',
     confirmTitle: (person: string, agent: string): string => `Add ${person} as an owner of ${agent}?`,
     /**
      * Said plainly, because it's the one real risk of this screen. Owners are

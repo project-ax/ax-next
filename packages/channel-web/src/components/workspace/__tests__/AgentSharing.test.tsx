@@ -11,10 +11,11 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SharingView } from '@ax/agents';
 import { getAdminAgent, listAdminAgents, type AdminAgent } from '@/lib/admin';
-import { searchPeople, setAudience, SharingRequestError } from '@/lib/agent-sharing-api';
+import { searchPeople, setAudience, setOwners, SharingRequestError } from '@/lib/agent-sharing-api';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import type { AgentConnectorRow, AgentConnectorsRead } from '@/lib/workspace-types';
 import { SHARING_COPY } from '@/lib/sharing-copy';
+import { UserProvider } from '@/lib/user-context';
 import { AgentSharing } from '../AgentSharing';
 
 vi.mock('@/lib/admin', async (original) => ({
@@ -25,6 +26,7 @@ vi.mock('@/lib/admin', async (original) => ({
 vi.mock('@/lib/agent-sharing-api', async (original) => ({
   ...(await original<typeof import('@/lib/agent-sharing-api')>()),
   setAudience: vi.fn(),
+  setOwners: vi.fn(),
   searchPeople: vi.fn(),
 }));
 vi.mock('@/lib/workspace-api', async () => {
@@ -35,6 +37,7 @@ vi.mock('@/lib/workspace-api', async () => {
 const getAgentMock = vi.mocked(getAdminAgent);
 const listAgentsMock = vi.mocked(listAdminAgents);
 const setAudienceMock = vi.mocked(setAudience);
+const setOwnersMock = vi.mocked(setOwners);
 const searchMock = vi.mocked(searchPeople);
 const connectorsMock = vi.mocked(workspaceApi.connectors);
 
@@ -471,5 +474,46 @@ describe('AgentSharing — the section', () => {
     const options = screen.getAllByRole('option').map((o) => o.textContent ?? '');
     expect(options[0]).toBe(SHARING_COPY.audience.justMe(2));
     expect(options.some((o) => o === SHARING_COPY.picker.justMeOption)).toBe(false);
+  });
+});
+
+describe('AgentSharing — owners', () => {
+  it('lists the owners under who can use it, and an added owner shows in both', async () => {
+    serve({ audience: { kind: 'just-me' }, owners: [VINAY] });
+    setOwnersMock.mockImplementation(async (_id, userIds) => ({
+      audience: { kind: 'just-me' },
+      owners: userIds.map((id) => ({
+        id,
+        displayName: id === 'carol' ? 'Carol' : 'Vinay',
+        creator: id === 'vinay',
+      })),
+    }));
+    searchMock.mockResolvedValue([{ id: 'carol', displayName: 'Carol' }]);
+    render(
+      <UserProvider value={{ id: 'vinay', email: 'vinay@example.com', name: 'Vinay', role: 'user' }}>
+        <AgentSharing agent={fern} onSection={vi.fn()} />
+      </UserProvider>,
+    );
+    expect(await screen.findByText(SHARING_COPY.audience.justMe(1))).toBeTruthy();
+    const owners = () => screen.getByRole('list', { name: SHARING_COPY.owners.heading });
+    expect(within(owners()).getByText('Vinay')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: SHARING_COPY.owners.add }));
+    const dialog = await screen.findByRole('dialog', { name: SHARING_COPY.owners.addTitle(FERN) });
+    fireEvent.click(within(dialog).getByRole('combobox', { name: SHARING_COPY.owners.fieldLabel }));
+    fireEvent.change(screen.getByPlaceholderText(SHARING_COPY.owners.placeholder), {
+      target: { value: 'Ca' },
+    });
+    fireEvent.click(await screen.findByRole('option', { name: 'Carol' }));
+    const confirm = await screen.findByRole('dialog', {
+      name: SHARING_COPY.owners.confirmTitle('Carol', FERN),
+    });
+    fireEvent.click(within(confirm).getByRole('button', { name: SHARING_COPY.owners.confirm }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(setOwnersMock).toHaveBeenCalledWith('agt_fern', ['vinay', 'carol']);
+    // The save's answer replaces the section's: owners can always use it, so with two it reads as its owners.
+    expect(screen.getByText(SHARING_COPY.audience.justMe(2))).toBeTruthy();
+    expect(within(owners()).getByText('Carol')).toBeTruthy();
   });
 });
