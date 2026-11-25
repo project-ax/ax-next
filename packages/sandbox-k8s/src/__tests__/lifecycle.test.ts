@@ -358,12 +358,15 @@ describe('lifecycle.diagnoseServiceSidecars (TASK-160)', () => {
       expect(diagnosis).toBeUndefined();
     });
 
-    it('names a service whose image cannot be pulled', async () => {
-      const diagnosis = await diagnose(makeMockK8sApi(), [
-        { name: 'svc-kafka', ready: false, state: { waiting: { reason: 'ImagePullBackOff' } } },
-      ]);
-      expect(diagnosis).toEqual({ service: 'kafka', reason: 'image pull failed' });
-    });
+    it.each(['ImagePullBackOff', 'RegistryUnavailable'])(
+      'names a service whose image cannot be pulled (%s)',
+      async (reason) => {
+        const diagnosis = await diagnose(makeMockK8sApi(), [
+          { name: 'svc-kafka', ready: false, state: { waiting: { reason } } },
+        ]);
+        expect(diagnosis).toEqual({ service: 'kafka', reason: 'image pull failed' });
+      },
+    );
 
     it.each(['PodInitializing', 'ContainerCreating'])(
       'stays generic while the pod is still setting up (%s)',

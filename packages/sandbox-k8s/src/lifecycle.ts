@@ -221,6 +221,9 @@ const IMAGE_PULL_WAITING_REASONS: ReadonlySet<string> = new Set([
   'ImagePullBackOff',
   'InvalidImageName',
   'ErrImageNeverPull',
+  'ImageInspectError',
+  'RegistryUnavailable',
+  'SignatureValidationFailed',
 ]);
 
 /**
