@@ -494,11 +494,14 @@ export function TodayView({
               </Stack>
             ) : (
               <Stack gap="sm" align="start">
-                {tasksError === 'failed' && 'We couldn’t check your tasks just now.'}
-                {unavailableTaskAgents.length > 0 &&
-                  `We couldn’t check tasks from ${AGENT_LIST.format(
-                    unavailableTaskAgents.map((a) => a.agentName),
-                  )}, so some may be missing.`}
+                {tasksError === 'failed' && <span>We couldn’t check your tasks just now.</span>}
+                {unavailableTaskAgents.length > 0 && (
+                  <span>
+                    {`We couldn’t check tasks from ${AGENT_LIST.format(
+                      unavailableTaskAgents.map((a) => a.agentName),
+                    )}, so some may be missing.`}
+                  </span>
+                )}
               </Stack>
             )}
           </Notice>

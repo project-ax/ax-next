@@ -321,7 +321,7 @@ export function DecisionRow({
               `<body>` in front of a row that looks unchanged.
             */}
             {stale && d.staleReason && (
-              <AnswerNotice ref={answerRef} margin="mb-4">
+              <AnswerNotice ref={answerRef} className="mb-4">
                 <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
                 {d.staleReason} {DECISION_STALE_ADVICE}
               </AnswerNotice>
@@ -375,7 +375,7 @@ export function DecisionRow({
               `<body>` with an unread error behind them.
             */}
             {notice !== null && (
-              <AnswerNotice ref={answerRef} margin="mt-3 max-w-[660px]">{notice}</AnswerNotice>
+              <AnswerNotice ref={answerRef} className="mt-3 max-w-[660px]">{notice}</AnswerNotice>
             )}
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -468,15 +468,16 @@ export function DecisionRow({
  */
 function AnswerNotice({
   ref,
-  margin,
+  className,
   children,
 }: {
   ref: (node: HTMLElement | null) => void;
-  margin: string;
+  /** Spacing and width, written at the call site so the lint rules can read it. */
+  className: string;
   children: ReactNode;
 }) {
   return (
-    <div ref={ref} tabIndex={-1} className={`${margin} ${RESOLUTION_FOCUS_RING}`}>
+    <div ref={ref} tabIndex={-1} className={`${className} ${RESOLUTION_FOCUS_RING}`}>
       <Notice tone="danger" announce={false}>
         {children}
       </Notice>

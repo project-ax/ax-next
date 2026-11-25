@@ -952,7 +952,7 @@
   },
   "packages/channel-web/src/components/workspace/AgentConversation.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 26
+      "count": 28
     },
     "ax-ui/no-classname": {
       "count": 54
@@ -1212,7 +1212,7 @@
   },
   "packages/channel-web/src/components/workspace/DecisionRow.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 18
+      "count": 19
     },
     "ax-ui/no-classname": {
       "count": 23
@@ -1507,7 +1507,7 @@
       "count": 17
     },
     "ax-ui/no-raw-elements": {
-      "count": 17
+      "count": 19
     }
   },
   "packages/channel-web/src/components/workspace/WorkspaceAttachmentChip.tsx": {

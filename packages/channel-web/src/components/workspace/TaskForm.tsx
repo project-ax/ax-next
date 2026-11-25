@@ -569,7 +569,7 @@ export function TaskForm({
           {...(conflict && onReload ? { action: { label: 'Reload and discard my changes', onClick: onReload } } : {})}
         >
           {taskSaveError(errorCode, refusedField !== null && refusedField !== 'form')}
-          {uncertain && <p>We couldn’t confirm the result. Retry sends the same change.</p>}
+          {uncertain && <p>We couldn’t confirm the result. Try again sends the same change.</p>}
         </Notice>
       )}
       {!canEdit && <Notice tone="info">You don’t have permission to edit this task.</Notice>}
@@ -581,7 +581,7 @@ export function TaskForm({
           <Button type="button" variant="ghost" disabled={busy || uncertain || addressBusy} onClick={onCancel}>Cancel</Button>
           <Button type="submit" disabled={busy || addressBusy || !canEdit}
             aria-describedby={editDropsWaiting ? `${id}-save-waiting` : kindDropsWaiting ? `${id}-kind-switch` : undefined}>
-            {busy ? 'Saving…' : uncertain ? 'Retry save' : mode === 'create' ? 'Start task' : 'Save'}
+            {busy ? 'Saving…' : uncertain ? 'Try again' : mode === 'create' ? 'Start task' : 'Save'}
           </Button>
         </div>
       </div>

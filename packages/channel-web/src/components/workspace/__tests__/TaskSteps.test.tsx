@@ -659,6 +659,7 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(rowOf('Export every article')).toHaveAttribute('aria-busy', 'true');
     await act(async () => d.resolve(answer(withStep(PLAN, 's1', { done: false }))));
     expect(box('Export every article')).not.toBeChecked();
+    expect(rowOf('Export every article')).not.toHaveAttribute('aria-busy');
   });
 
   it('a failed tick takes its busy mark away and leaves focus on its box', async () => {
@@ -667,6 +668,7 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     renderSteps();
     box('Check the redirects').focus();
     fireEvent.click(box('Check the redirects'));
+    expect(rowOf('Check the redirects')).toHaveAttribute('aria-busy', 'true');
     await act(async () => d.reject(new WorkspaceApiError('/x', 503)));
     expect(screen.getByRole('alert').textContent).toBe(UNCONFIRMED);
     expect(rowOf('Check the redirects')).not.toHaveAttribute('aria-busy');

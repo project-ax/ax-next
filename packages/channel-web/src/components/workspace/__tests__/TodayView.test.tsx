@@ -743,6 +743,18 @@ describe('what tasks need from you (TASK-933)', () => {
     expect(onRetryTasks).toHaveBeenCalledTimes(1);
   });
 
+  it('says both failures as separate lines when the read failed and some agents are also missing', () => {
+    renderToday({
+      tasksError: 'failed',
+      unavailableTaskAgents: [{ agentId: 'a-juniper', agentName: 'Juniper' }],
+      onRetryTasks: vi.fn(),
+    });
+    expect(screen.getByText(TASKS_FAILED)).toBeInTheDocument();
+    expect(
+      screen.getByText('We couldn’t check tasks from Juniper, so some may be missing.'),
+    ).toBeInTheDocument();
+  });
+
   it('a failed refresh keeps the tasks it has on screen', () => {
     renderToday({ tasksError: 'failed', tasks: [needsYouTask()] });
     expect(taskBlock()).toBeInTheDocument();

@@ -76,7 +76,7 @@ describe('shared task dialog', () => {
   it('keeps an uncertain retry on one logical request and freezes dialog dismissal', async () => {
     vi.mocked(routineApi.create).mockRejectedValueOnce(new RoutineApiError(500, 'unavailable')).mockResolvedValue(saved);
     const h = show(); await fill(); fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
-    const retry = await screen.findByRole('button', { name: 'Retry save' });
+    const retry = await screen.findByRole('button', { name: 'Try again' });
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.click(retry);
     await waitFor(() => expect(h.onSaved).toHaveBeenCalledTimes(1));

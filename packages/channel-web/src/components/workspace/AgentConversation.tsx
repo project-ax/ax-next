@@ -390,12 +390,13 @@ interface Props {
 function NoteBox({
   ref,
   focusable = false,
-  width,
+  className,
   children,
 }: {
   ref?: Ref<HTMLDivElement>;
   focusable?: boolean;
-  width: 'max-w-[720px]' | 'max-w-[600px]';
+  /** The width cap, written at the call site so the lint rules can read it. */
+  className: string;
   children: ReactNode;
 }) {
   return (
@@ -403,7 +404,7 @@ function NoteBox({
       ref={ref}
       role="note"
       {...(focusable ? { tabIndex: -1 } : {})}
-      className={focusable ? cn(width, RESOLUTION_FOCUS_RING) : width}
+      className={cn(className, focusable && RESOLUTION_FOCUS_RING)}
     >
       {children}
     </div>
@@ -882,7 +883,7 @@ export function AgentConversation({
           took away a control that worked.
         */
         <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
-          <NoteBox ref={noteRef} focusable width="max-w-[720px]">
+          <NoteBox ref={noteRef} focusable className="max-w-[720px]">
             {/*
               The composer announcer's twin, for the composer's Stop that lives
               here now: in the DOM for as long as the note is, so "Stopping."
@@ -1257,7 +1258,7 @@ function Message({
       message to carry on" is the whole instruction.
     */
     return (
-      <NoteBox width="max-w-[600px]">
+      <NoteBox className="max-w-[600px]">
         <Notice tone="info" announce={false}>
           {m.text}
         </Notice>
