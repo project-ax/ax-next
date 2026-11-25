@@ -14,6 +14,10 @@
 //     zero-width character), else 400 invalid-query.
 //   - It matches the start of any word of the display name, ignoring case.
 //     Never LIKE/ILIKE, so `%` and `_` are plain characters.
+//     Known limitation (follow-up): word starts are matched on the RAW stored
+//     name, where a word break is an ASCII space. A tab, or a bidi or
+//     zero-width character, between two words is not a break, so the second
+//     word isn't found by its start even though the fenced name shows it.
 //   - At most 10 people, in name order. Each name is fenced
 //     (fencePersonName), and a name that fences to nothing is left out.
 //   - 60 searches a minute per person, then 429 rate-limited with

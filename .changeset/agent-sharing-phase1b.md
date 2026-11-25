@@ -6,7 +6,8 @@
 
 Agents can now be shared from the UI (phase 1B). Settings has a "Who can use
 <agent>?" row: Just me, Everyone, or people picked by name, plus "Same people
-as" another agent. Widening asks first and names every connection the agent uses.
+as" another agent. Widening asks first and names the connections that travel with the agent (the ones attached to it, not your own
+connectors).
 Owners can be added and removed. Agents shared with you show up in your list and
 say who shared them. People who only use an agent just chat: no settings, no
 activity line, and errors tell them to ask the owner. People search is

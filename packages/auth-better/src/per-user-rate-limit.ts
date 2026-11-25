@@ -3,7 +3,8 @@
 //
 // A copy of channel-web's src/server/per-user-rate-limit.ts: copied, not
 // imported (invariant 2), as apps-bridge/src/limits.ts did. It limits
-// GET /admin/people (people-search.ts). Change both copies together.
+// GET /admin/people (people-search.ts). There are three copies (channel-web,
+// apps-bridge, auth-better): change all three together.
 //
 // Each person gets `limit` takes in any `windowMs`; the window slides, so a
 // take frees up exactly `windowMs` after it was spent, not at a fixed minute
