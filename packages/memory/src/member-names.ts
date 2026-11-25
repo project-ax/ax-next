@@ -44,30 +44,58 @@
  *
  * ## Whose names
  *
- * Only someone who can use the agent NOW (TASK-1209's security review). A
- * subject is model output shaped by chat, so a stored `user:<id>` can name
- * any account at all, and `auth:get-user` answers for any account. So memory
- * first proves the id is a member, and asks `auth:get-user` only about an id
- * it proved. The agent's access (`MemoryAccess`) says which proof:
+ * Only someone who takes part in the agent NOW (TASK-1209's security review,
+ * and TASK-1248's). A subject is model output shaped by chat, so a stored
+ * `user:<id>` can name any account at all, and `auth:get-user` answers for
+ * any account. So memory first proves the id is a member, and asks
+ * `auth:get-user` only about an id it proved. The agent's access
+ * (`MemoryAccess`) says which proof:
  *
  * - A team agent (`teamId`): `teams:is-member` about the agent's team, the
  *   same source `@ax/agents` decides team access with. Proven only by an
  *   answer of exactly `member: true`.
  * - A personal agent shared with other people (`memberCheck: 'agent'`,
  *   TASK-1248; it has no team): `agents:resolve` about this agent
- *   (`ctx.agentId`) and that id. It is `@ax/agents`' one "can use it" rule,
- *   the one every memory read passes. Proven only by an answer about this
- *   agent. A refusal (`forbidden`, or `not-found` for an agent that is gone)
- *   is an answer, not a fault: that id is no member.
+ *   (`ctx.agentId`) must admit the id now (`@ax/agents`' one "can use it"
+ *   rule, the one every memory read passes; only an answer about this agent
+ *   counts), AND the id must take part in the agent. That is one of:
+ *   - one of its owners: the answer says exactly `isOwner: true`;
+ *   - someone its list names: the answer says `audience: 'list'`. On a list,
+ *     `@ax/agents` admits only an owner or someone a member row names
+ *     (`checkAccess`), so there, admission means an owner named them;
+ *   - someone who owns a row in THIS agent's memory: they spoke to it. One
+ *     `memory:facts:recall` on this agent's store (its tenant is
+ *     `ctx.agentId`), scoped to their id (`ownerUserId`), closed rows
+ *     included, one row at most. Every row is stamped with the user of the
+ *     turn that wrote it, never with the subject it names and never from a
+ *     payload (`owner.ts`). So a crafted `user:<id>` row is its writer's, and
+ *     proves nothing about that id.
+ *
+ *   Admission alone is no proof. On an `everyone` agent it is every AX
+ *   account, so it would name anyone a crafted subject points at: the hole
+ *   TASK-1209 closed for team agents. Such a person reads "a teammate" until
+ *   they speak to the agent. The one exception is the caller's own key, which
+ *   is never shown, only counted ({@link memberLabels}): the person talking
+ *   takes part by talking, so admission proves it. A refusal (`forbidden`, or
+ *   `not-found` for an agent that is gone) is an answer, not a fault: that id
+ *   is no member.
+ *
+ *   `audience` is read here although TASK-1246 says to ask `shared`, never
+ *   `audience`. That rule is about whether an agent is shared, which the
+ *   access already settled. Here `audience === 'list'` answers a narrower
+ *   question: was this person's admission someone naming them on the agent?
+ *   Only a list's is. Any other value, or none, falls to the row check, the
+ *   narrower proof.
  *
  * Anything else fails closed for that id, with no `auth:get-user` call: a
- * non-member, a former member, an answer this can't read, a throw, an access
- * with neither proof, and no service to prove it with. Each id is its own
- * question: `@ax/teams` throws on an id it can't hold (over 256 characters),
- * and one such stored subject mustn't blank every name in an answer. Nothing
- * is cached: each call asks again, so someone removed from a team, or an
- * agent taken back to Just me, names nobody it no longer admits from the
- * next read on.
+ * non-member, a former member, someone an `everyone` agent admits who never
+ * spoke to it, an answer this can't read, a throw, an access with neither
+ * proof, and no service to prove it with (a store included). Each id is its
+ * own question: `@ax/teams` throws on an id it can't hold (over 256
+ * characters), and one such stored subject mustn't blank every name in an
+ * answer. Nothing is cached: each call asks again, so someone removed from a
+ * team, or an agent taken back to Just me, names nobody it no longer admits
+ * from the next read on.
  *
  * ## A name is untrusted text
  *
@@ -108,7 +136,7 @@ import {
 import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 
 import { AGENTS_RESOLVE_HOOK, type MemoryAccess } from './access.js';
-import { isPersonSubject, nameWords, recallAudienceScope } from './audience.js';
+import { isPersonSubject, nameWords, recallAudienceScope, recallFacts } from './audience.js';
 import { PLUGIN_NAME } from './plugin-name.js';
 import { isAgentSubject } from './self-report.js';
 import { SPEAKER_SUBJECT } from './subject.js';
@@ -119,6 +147,13 @@ export const AUTH_GET_USER_HOOK = 'auth:get-user';
 /** The hook that says whether an account is a current member of a team (`@ax/teams`). */
 export const TEAMS_IS_MEMBER_HOOK = 'teams:is-member';
 
+/**
+ * The facts engine's read: plugin.ts's `FACTS_RECALL_HOOK`, one of
+ * `@ax/memory`'s hard `calls`. Spelled here because plugin.ts imports this
+ * file, and importing it back would be a cycle.
+ */
+const FACTS_RECALL_HOOK = 'memory:facts:recall';
+
 /** What another member's key reads as when memory has no name to show. */
 export const TEAMMATE_TEXT = 'a teammate';
 
@@ -128,10 +163,11 @@ export const TEAMMATE_TEXT = 'a teammate';
  * codes (`faultLogFields`) only: an error's message may quote the id, the name
  * or the email. For a throw, `hook` is the lookup that threw, for the first
  * id, in the order asked, whose lookup threw. For the deadline, the code is
- * `timeout`, and `hook` is the membership check's (`teams:is-member` on a
- * team agent, `agents:resolve` on a shared personal agent) while any
- * membership check is still out, else `auth:get-user`. A throw in the same
- * round isn't logged as well.
+ * `timeout`, and `hook` is the earliest step any id is still waiting on, in
+ * the order they are asked: the membership check's (`teams:is-member` on a
+ * team agent; `agents:resolve`, then `memory:facts:recall`, on a shared
+ * personal agent), then `auth:get-user`. A throw in the same round isn't
+ * logged as well.
  */
 export const MEMBER_NAMES_FAILED_EVENT = 'memory_member_names_failed';
 
@@ -228,9 +264,11 @@ function readsAsAgentName(key: string, agentName: string): boolean {
  *
  * Only in a turn whose recall reads everything, and only for someone proven a
  * member right now (see the file header): per distinct id, one membership
- * check (`teams:is-member` on a team agent, `agents:resolve` on a shared
- * personal agent), then one `auth:get-user` if and only if it proved the id.
- * Ids are asked in parallel. Never throws.
+ * check, then one `auth:get-user` if and only if it proved the id. The check
+ * is `teams:is-member` on a team agent. On a shared personal agent it is
+ * `agents:resolve`, plus one store read (`memory:facts:recall`, one row at
+ * most) only for an id it admits that is neither an owner nor on a list. Ids
+ * are asked in parallel. Never throws.
  *
  * Never waits past {@link MEMBER_NAMES_DEADLINE_MS} (`opts.deadlineMs`, for
  * tests) for the whole round. When the round loses that race, every member
@@ -239,9 +277,12 @@ function readsAsAgentName(key: string, agentName: string): boolean {
  *
  * The caller counts too (TASK-1213). When `self` is a member key and at least
  * one other member key is on the page, the caller's id goes through the same
- * two lookups, but only so their name joins the check below. It is never a
- * label. With no other member key on the page there is nothing to collide
- * with, and nobody is asked, the caller included.
+ * lookups, but only so their name joins the check below. It is never a
+ * label. On a shared personal agent its proof is admission alone, with no
+ * store read: the person talking takes part by talking, and a sharee with no
+ * row yet must still count, or a teammate renamed to their name would pass
+ * for them in their first turn. With no other member key on the page there is
+ * nothing to collide with, and nobody is asked, the caller included.
  *
  * A name is shown only when no other key WITHIN THIS ONE ANSWER, and not the
  * caller, reads the same, compared word by word as the reserved check does
@@ -263,6 +304,14 @@ function readsAsAgentName(key: string, agentName: string): boolean {
  *   `a`) pass {@link nameWords}, so they don't collide.
  * - A lookup that fails, the caller's own included, leaves that one name out
  *   of the check for this answer (each id is its own question).
+ * - Someone an `everyone` agent admits who has never spoken to it reads
+ *   {@link TEAMMATE_TEXT}, even on rows others wrote about them: on that
+ *   audience admission proves nothing (the file header). Once any row of
+ *   theirs is in this agent's memory, a closed one included, they are named
+ *   for as long as the agent admits them.
+ * - The proof says who may be named, not who wrote a row. A crafted
+ *   `user:<id>` naming someone who does take part reads as their name on a
+ *   row they didn't write. It does on a team agent too, for any member.
  */
 export async function memberLabels(
   bus: HookBus,
@@ -296,10 +345,11 @@ export async function memberLabels(
   if (check === undefined || !bus.hasService(AUTH_GET_USER_HOOK)) return labels;
   // Every other member key on the page is asked about, to be shown. So is the
   // caller's own key, only to be counted.
-  const lookups: Lookup[] = [...ids].map(([about, userId]) => ({ about, userId, shown: true, stage: 'membership' }));
+  const [firstStep] = check.hooks;
+  const lookups: Lookup[] = [...ids].map(([about, userId]) => ({ about, userId, shown: true, waitingOn: firstStep }));
   const selfId = self === undefined ? undefined : memberKeyId(self);
   if (self !== undefined && selfId !== undefined) {
-    lookups.push({ about: self, userId: selfId, shown: false, stage: 'membership' });
+    lookups.push({ about: self, userId: selfId, shown: false, waitingOn: firstStep });
   }
   const answers = await beforeDeadline(
     Promise.all(lookups.map((lookup) => lookUp(bus, ctx, check, access.agentName, lookup))),
@@ -308,8 +358,11 @@ export async function memberLabels(
   if (answers === TIMED_OUT) {
     // All or nothing: a name that came back can't be checked against one
     // that didn't, so nobody is named. `labels` still reads "a teammate" for
-    // every member key, and no lookup ever writes to it.
-    const hook = lookups.some((lookup) => lookup.stage === 'membership') ? check.hook : AUTH_GET_USER_HOOK;
+    // every member key, and no lookup ever writes to it. The warn names the
+    // earliest step still out, in the order the steps are asked.
+    const hook =
+      [...check.hooks, AUTH_GET_USER_HOOK].find((step) => lookups.some((lookup) => lookup.waitingOn === step)) ??
+      AUTH_GET_USER_HOOK;
     warnNamesFailed(
       ctx,
       hook,
@@ -348,22 +401,31 @@ export async function memberLabels(
  * `auth:get-user` about it (the file header's "Whose names").
  */
 interface MembershipCheck {
-  /** The hook it asks: named in the warn when it throws, or is still out at the deadline. */
-  readonly hook: string;
-  /** True only on proof, false on any answer that isn't one. Throws on a fault. */
-  readonly proves: (userId: string) => Promise<boolean>;
+  /**
+   * The hooks it may ask, in the order it asks them: the first about every
+   * id, each later one only when the steps before it didn't settle the id. A
+   * warn names the one that threw, or the earliest one still out at the
+   * deadline.
+   */
+  readonly hooks: readonly [string, ...string[]];
+  /**
+   * True only on proof, false on any answer that isn't one. Throws on a
+   * fault. Tells `asking` each hook before it asks it, so a throw or a stall
+   * names the step it happened in.
+   */
+  readonly proves: (lookup: Pick<Lookup, 'userId' | 'shown'>, asking: (hook: string) => void) => Promise<boolean>;
 }
 
 /**
  * The membership check `access` calls for, or undefined when there is none
  * to ask: a team agent's team id first (TASK-1209, unchanged), else a shared
  * personal agent's `memberCheck` (TASK-1248), else nothing. Each needs its
- * hook registered, and the agent check needs the turn's agent id.
+ * first hook registered, and the agent check needs the turn's agent id.
  */
 function membershipCheck(
   bus: HookBus,
   ctx: AgentContext,
-  access: Pick<MemoryAccess, 'teamId' | 'memberCheck'>,
+  access: Pick<MemoryAccess, 'visibility' | 'teamId' | 'memberCheck'>,
 ): MembershipCheck | undefined {
   const { teamId } = access;
   if (typeof teamId === 'string' && teamId !== '') {
@@ -376,7 +438,7 @@ function membershipCheck(
     agentId !== '' &&
     bus.hasService(AGENTS_RESOLVE_HOOK)
   ) {
-    return agentMembership(bus, ctx, agentId);
+    return agentMembership(bus, ctx, access, agentId);
   }
   return undefined;
 }
@@ -384,8 +446,9 @@ function membershipCheck(
 /** A team agent's check (TASK-1209): `teams:is-member` about its team. */
 function teamMembership(bus: HookBus, ctx: AgentContext, teamId: string): MembershipCheck {
   return {
-    hook: TEAMS_IS_MEMBER_HOOK,
-    proves: async (userId) => {
+    hooks: [TEAMS_IS_MEMBER_HOOK],
+    proves: async ({ userId }, asking) => {
+      asking(TEAMS_IS_MEMBER_HOOK);
       const membership = await bus.call<{ teamId: string; userId: string }, unknown>(TEAMS_IS_MEMBER_HOOK, ctx, {
         teamId,
         userId,
@@ -397,15 +460,33 @@ function teamMembership(bus: HookBus, ctx: AgentContext, teamId: string): Member
 }
 
 /**
- * A shared personal agent's check (TASK-1248): `agents:resolve` lets the id
- * use this agent. A refusal (`forbidden`, or `not-found` for an agent that is
- * gone) is an answer: no proof, and no fault. So is an answer about another
- * agent, or one this can't read. Any other throw is a fault.
+ * A shared personal agent's check (TASK-1248): the id may use this agent now
+ * AND takes part in it (the file header's "Whose names"). Each step runs only
+ * when the one before it didn't settle the id:
+ *
+ * 1. `agents:resolve` must admit it to this agent. A refusal (`forbidden`, or
+ *    `not-found` for an agent that is gone) is an answer: no proof, and no
+ *    fault. So is an answer about another agent, or one this can't read. Any
+ *    other throw is a fault.
+ * 2. Its answer proves the people named on the agent itself: an owner
+ *    (`isOwner: true`) or someone its list names (`audience: 'list'`). It
+ *    also proves the caller's own key, never shown: the person talking takes
+ *    part by talking.
+ * 3. Anyone else it admits (on `everyone`, every AX account) must own a row in
+ *    this agent's memory ({@link spokeTo}). With no store to ask, nobody is
+ *    proven that way.
  */
-function agentMembership(bus: HookBus, ctx: AgentContext, agentId: string): MembershipCheck {
+function agentMembership(
+  bus: HookBus,
+  ctx: AgentContext,
+  access: Pick<MemoryAccess, 'visibility'>,
+  agentId: string,
+): MembershipCheck {
+  const hasStore = bus.hasService(FACTS_RECALL_HOOK);
   return {
-    hook: AGENTS_RESOLVE_HOOK,
-    proves: async (userId) => {
+    hooks: [AGENTS_RESOLVE_HOOK, FACTS_RECALL_HOOK],
+    proves: async ({ userId, shown }, asking) => {
+      asking(AGENTS_RESOLVE_HOOK);
       let out: unknown;
       try {
         out = await bus.call<{ agentId: string; userId: string }, unknown>(AGENTS_RESOLVE_HOOK, ctx, {
@@ -418,9 +499,42 @@ function agentMembership(bus: HookBus, ctx: AgentContext, agentId: string): Memb
       }
       // Only an answer about this agent proves anything.
       const agent = isRecord(out) ? out.agent : undefined;
-      return isRecord(agent) && agent.id === agentId;
+      if (!isRecord(agent) || agent.id !== agentId) return false;
+      // Named on the agent itself. `audience` answers "did someone name them
+      // here", never "is it shared" (the file header says why that is fine).
+      if (agent.isOwner === true || agent.audience === 'list') return true;
+      // The caller, only counted: admitted, and talking to it now.
+      if (!shown) return true;
+      if (!hasStore) return false;
+      asking(FACTS_RECALL_HOOK);
+      return spokeTo(bus, ctx, access, userId);
     },
   };
+}
+
+/**
+ * Whether `userId` owns a row in this agent's memory: one their own turn
+ * wrote, active or closed. One `memory:facts:recall` on this agent's store
+ * (its tenant is `ctx.agentId`), scoped to that owner (`ownerUserId`, a
+ * strict scope the engine enforces), at most one row back. It goes through
+ * `recallFacts` like every engine read in this package, though a turn that is
+ * told names is never audience-scoped, so that adds nothing. An answer this
+ * can't read proves nothing. A throw propagates, and {@link lookUp} reports
+ * it under `memory:facts:recall`.
+ */
+async function spokeTo(
+  bus: HookBus,
+  ctx: AgentContext,
+  access: Pick<MemoryAccess, 'visibility'>,
+  userId: string,
+): Promise<boolean> {
+  const out = await recallFacts<unknown>(bus, ctx, access, FACTS_RECALL_HOOK, {
+    ownerUserId: userId,
+    activeOnly: false,
+    limit: 1,
+  });
+  const statements = isRecord(out) ? out.statements : undefined;
+  return Array.isArray(statements) && statements.some(isRecord);
 }
 
 /** One id {@link memberLabels} asks about. */
@@ -430,10 +544,10 @@ interface Lookup {
   /** Shown as a label, or only counted (the caller's own key). */
   readonly shown: boolean;
   /**
-   * Which lookup is out for this id: its membership check, or its name.
-   * Written only by this id's own {@link lookUp}.
+   * The hook this id's lookups are waiting on now, or undefined once they are
+   * done. Written only while this id's own {@link lookUp} runs.
    */
-  stage: 'membership' | 'name' | 'done';
+  waitingOn: string | undefined;
 }
 
 /** What one {@link lookUp} found: a usable name, a throw, or neither. */
@@ -457,11 +571,15 @@ async function lookUp(
   lookup: Lookup,
 ): Promise<LookupAnswer> {
   const { userId } = lookup;
-  let hook = check.hook;
+  // The hook asked last: the one a throw is reported under.
+  let hook: string = check.hooks[0];
+  const asking = (next: string): void => {
+    hook = next;
+    lookup.waitingOn = next;
+  };
   try {
-    if (!(await check.proves(userId))) return { lookup };
-    hook = AUTH_GET_USER_HOOK;
-    lookup.stage = 'name';
+    if (!(await check.proves(lookup, asking))) return { lookup };
+    asking(AUTH_GET_USER_HOOK);
     const user = await bus.call<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, ctx, { userId });
     if (!isRecord(user) || user.id !== userId) return { lookup };
     const name = memberName(user.displayName, agentName);
@@ -469,7 +587,7 @@ async function lookUp(
   } catch (err) {
     return { lookup, fault: { hook, err } };
   } finally {
-    lookup.stage = 'done';
+    lookup.waitingOn = undefined;
   }
 }
 
