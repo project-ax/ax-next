@@ -15,6 +15,9 @@ function walk(dir: string): string[] {
 }
 
 const escapeSelector = (cls: string): string => cls.replace(/:/g, '\\:');
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Anchored: `.ax-text-fg` must not be satisfied by `.ax-text-fg-muted`.
+const selectorRe = (cls: string): RegExp => new RegExp(escapeRegExp(`.${escapeSelector(cls)}`) + '(?![\\w-])');
 
 describe('component classes are compiled into ui.css', () => {
   const files = walk(src);
@@ -26,7 +29,7 @@ describe('component classes are compiled into ui.css', () => {
       for (const lit of text.match(/(['"`])(?:(?!\1).)*\1/g) ?? []) {
         for (const m of lit.match(/\b(?:md|lg):ax-[\w-]+|\bax-[\w:-]+/g) ?? []) tokens.add(m);
       }
-      for (const cls of tokens) expect(css, cls).toContain(`.${escapeSelector(cls)}`);
+      for (const cls of tokens) expect(css, cls).toMatch(selectorRe(cls));
     });
   }
 });

@@ -82,9 +82,12 @@ jobs:
           cache: 'pnpm'
       # Frozen `ax-ui/*` lint violations (eslint-suppressions.json) may only go
       # down. ESLint itself lets `pnpm lint:ui:suppress` raise a count and never
-      # looks at entries for deleted files; this compares per-rule totals with
-      # the tip of the base branch (FETCH_HEAD below). Needs only node + git, so
-      # it runs before `pnpm install` and fails in seconds.
+      # looks at entries for deleted files; this compares per-rule totals (and
+      # the count of ax-ui eslint-disable directives) at HEAD with the
+      # merge-base of HEAD and the base-branch tip (FETCH_HEAD below), so
+      # commits that landed on the base since the branch point don't count.
+      # Needs only node + git, so it runs before `pnpm install` and fails in
+      # seconds.
       - name: UI lint suppressions only go down
         if: github.event_name == 'pull_request'
         env:
@@ -365,10 +368,12 @@ jobs:
   # committed baselines in packages/ui/stories-test/__screenshots__. The job
   # runs inside the same Playwright image `pnpm --filter @project-ax/ui
   # stories:update` uses to generate those baselines, so fonts and rendering
-  # match pixel for pixel; a different image tag means regenerating them.
+  # match pixel for pixel; a different image means regenerating them. Pinned
+  # by the multi-arch index digest (same string as the stories:update script
+  # in packages/ui/package.json), so a re-pushed tag can't move it.
   ui-stories:
     runs-on: ubuntu-24.04
-    container: mcr.microsoft.com/playwright:v1.59.1-noble
+    container: mcr.microsoft.com/playwright:v1.59.1-noble@sha256:b0ab6f3cb99aa7803adbc14d9027ec1785fc6e433b97e134e0f8fe61683b6b53
     permissions:
       contents: read
     steps:

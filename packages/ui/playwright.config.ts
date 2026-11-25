@@ -2,8 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 6007;
 
-// Baselines are generated in mcr.microsoft.com/playwright:v1.59.1-noble (pnpm stories:update) and checked
-// in that same image in CI, so the snapshot path carries no platform suffix: there is exactly one platform.
+// Baselines are generated in mcr.microsoft.com/playwright:v1.59.1-noble, pinned by digest (pnpm
+// stories:update), and checked in that same image in CI, so the snapshot path carries no platform suffix: there is exactly one platform.
 export default defineConfig({
   testDir: 'stories-test',
   snapshotPathTemplate: '{testDir}/__screenshots__/{arg}{ext}',

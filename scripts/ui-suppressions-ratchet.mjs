@@ -9,8 +9,9 @@
 //   - ESLint only checks suppressions for files it lints, so an entry for a
 //     deleted or renamed file is slack nobody ever trips over.
 //
-// This compares the per-rule TOTALS at HEAD against the merge-base with a base
-// ref, and fails if any rule's total went up. Totals, not per-file counts, so
+// This compares the per-rule TOTALS at HEAD against the merge-base of HEAD and
+// a base ref (CI passes the base-branch tip as FETCH_HEAD), and fails if any
+// rule's total went up. Totals, not per-file counts, so
 // moving code between files is legal. It also fails if any key names a path
 // that does not exist at HEAD (delete that entry by hand).
 //
