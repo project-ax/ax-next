@@ -374,9 +374,9 @@ describe('AgentApps', () => {
     await renderApps();
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove Linear from Sprint board' }));
-    const removeDialog = await screen.findByRole('dialog', { name: 'Remove this app?' });
+    const removeDialog = await screen.findByRole('dialog', { name: 'Remove Linear from Sprint board?' });
     expect(api.removeGrant).not.toHaveBeenCalled();
-    fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove app' }));
+    fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove connector' }));
     await waitFor(() => expect(api.removeGrant).toHaveBeenCalledWith('a1', LINK.appId, 'linear'));
     expect(api.removeGrant).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -386,6 +386,19 @@ describe('AgentApps', () => {
     expect(api.unlinkApp).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Unlink' }));
     await waitFor(() => expect(api.unlinkApp).toHaveBeenCalledWith('a1', LINK.appId));
+  });
+
+  it('after an unlink whose re-read lands later, focus parks on "Link an app", not <body>', async () => {
+    api.unlinkApp.mockResolvedValue(undefined);
+    await renderApps();
+    // The re-read after the unlink answers a moment later, with the app gone.
+    api.fetchAgentApps.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(read({ links: [] })), 150)),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink Sprint board' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Unlink' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Unlink Sprint board' })).toBeNull(), { timeout: 3000 });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Link an app' })), { timeout: 3000 });
   });
 
   it("shows only the person's own approvals, each with Revoke", async () => {

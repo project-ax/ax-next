@@ -125,9 +125,9 @@ export function LinkRow({
         onOpenChange={(open) => {
           if (!open) setRemoving(null);
         }}
-        title="Remove this app?"
+        title={shown === null ? 'Remove this connector?' : `Remove ${shown.connectorName} from ${link.appName}?`}
         description={`${link.appName} stops using ${shown?.connectorName ?? 'this connector'} straight away. The app stays linked and keeps any other connectors you gave it.`}
-        confirmLabel="Remove app"
+        confirmLabel="Remove connector"
         onConfirm={() => (removing !== null ? onRemove(removing) : undefined)}
       />
     </li>
