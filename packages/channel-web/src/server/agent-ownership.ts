@@ -1,6 +1,6 @@
 /**
  * TASK-1246 — who may change a personal agent here, and which agents a list
- * shows.
+ * shows. TASK-1248 — whether a personal agent is shared.
  *
  * `agents:resolve` used to admit a personal agent's owner and nobody else, so
  * channel-web read "resolved, and personal" as "owner". Since sharing it also
@@ -9,15 +9,43 @@
  * lists the agents shared with the caller too, with the same field. These two
  * helpers are how channel-web reads that answer.
  *
- * Both read `visibility` and `isOwner` structurally, as `unknown`: the answer
- * crossed the bus from another plugin (I2, no `@ax/agents` import), so its
- * TypeScript type describes the wire, not a guarantee.
+ * TASK-1248 — and whether a personal agent is shared at all: the answer's
+ * `shared`, read by {@link isSharedPersonalAgent}. A shared personal agent
+ * follows the team-agent rules here (its memory line, its sites, "Always for
+ * this agent"); changing its settings is still its owners'.
+ *
+ * All of them read `visibility`, `isOwner` and `shared` structurally, as
+ * `unknown`: the answer crossed the bus from another plugin (I2, no
+ * `@ax/agents` import), so its TypeScript type describes the wire, not a
+ * guarantee.
  */
 
-/** What either helper reads off an `agents:resolve` / `agents:list-for-user` answer. */
+/** What these helpers read off an `agents:resolve` / `agents:list-for-user` answer. */
 interface OwnershipFields {
   visibility?: unknown;
   isOwner?: unknown;
+}
+
+/** What {@link isSharedPersonalAgent} reads off an `agents:resolve` answer. */
+interface SharingFields {
+  visibility?: unknown;
+  shared?: unknown;
+}
+
+/**
+ * TASK-1248 — is this a personal agent shared with other people? True only
+ * when the answer says both `visibility: 'personal'` and `shared: true`. A
+ * missing `shared`, any other value, and a team agent are all `false`.
+ *
+ * Such an agent follows the team-agent rules: everyone who can use it shares
+ * its memory, and anyone who can use it keeps a site for it. Strict, because
+ * that widens reach: an answer that doesn't say is the narrower "Just me"
+ * rule, never assumed shared. `false` for a team agent on purpose: a team
+ * agent keeps its own branch at every caller, whatever it says here. It never
+ * reads `audience` (TASK-1246: `shared` is the one answer).
+ */
+export function isSharedPersonalAgent(agent: SharingFields): boolean {
+  return agent.visibility === 'personal' && agent.shared === true;
 }
 
 /**

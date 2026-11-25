@@ -662,6 +662,64 @@ describe('channel-web agent-workspace BFF', () => {
     expect(asked).toBe(0);
   });
 
+  // TASK-1248 — a personal agent shared with other people follows the team
+  // rule: its memory is shared with everyone who can use it (@ax/memory gives
+  // it the team scope), so its Memory tab must not say "private to you". Read
+  // off the RESOLVED agent. Only an exact `shared: true` on a personal agent
+  // says so; a team agent keeps its own branch whatever it says about
+  // `shared`; an answer saying neither personal nor team names no visibility.
+  it.each([
+    [
+      'a shared personal agent, read by its owner',
+      'team',
+      { visibility: 'personal', shared: true, isOwner: true },
+    ],
+    [
+      'a shared personal agent, read by someone it is shared with',
+      'team',
+      { visibility: 'personal', shared: true, isOwner: false },
+    ],
+    ['a Just-me personal agent', 'personal', { visibility: 'personal', shared: false, isOwner: true }],
+    ['a personal agent whose answer has no shared', 'personal', { visibility: 'personal', isOwner: true }],
+    [
+      "a personal agent whose answer's shared is the string 'true'",
+      'personal',
+      { visibility: 'personal', shared: 'true', isOwner: true },
+    ],
+    [
+      'a team agent whose answer says shared: false (unchanged)',
+      'team',
+      { visibility: 'team', shared: false, isOwner: false },
+    ],
+    ['an answer saying shared but neither personal nor team', undefined, { shared: true, isOwner: true }],
+  ])('%s: its memory reads as factsVisibility %s', async (_which, expected, answer) => {
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
+    bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
+      const { agentId } = i as { agentId: string };
+      if (agentId !== 'a-shared') throw notFound();
+      return { agent: { id: 'a-shared', displayName: 'Their Inbox', ...answer } };
+    });
+    bus.registerService('conversations:list', 'conversations', async () => []);
+    bus.registerService('conversations:get', 'conversations', async () => {
+      throw notFound();
+    });
+    bus.registerService('memory:recall', 'memory', async () => ({ statements: [], degraded: [] }));
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a-shared' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    const memory = (captured.body as { memory: Record<string, unknown> }).memory;
+    expect(memory.factsAvailable).toBe(true);
+    if (expected === undefined) {
+      expect('factsVisibility' in memory).toBe(false);
+    } else {
+      expect(memory.factsVisibility).toBe(expected);
+    }
+  });
+
   describe('factsExtraction (memory:status)', () => {
     /*
       `memory:status` tells us whether the memory engine has stopped learning

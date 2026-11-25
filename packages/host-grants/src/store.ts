@@ -1,9 +1,9 @@
 /**
  * @ax/host-grants store. An agent's allowed sites belong to the agent
- * (TASK-1212). `owner_user_id` records who added a row. On a personal agent
- * only its owner can add, because every writer checks access to the agent
- * first, so its list is the owner's. On a team agent the list is every
- * member's adds, one entry per host.
+ * (TASK-1212). `owner_user_id` records who added a row. Every writer checks
+ * access to the agent first, so on a personal agent only its owners add, and
+ * on a shared personal agent anyone who can use it does (TASK-1248). On a
+ * team agent the list is every member's adds, one entry per host.
  *
  * So `list`, `revoke`, the duplicate check and the cap are keyed by agent, and
  * agent a1's sites never bleed into a2. `listForUser` is the one read keyed by

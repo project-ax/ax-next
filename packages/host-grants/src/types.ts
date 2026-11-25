@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
 // TASK-1212 — an agent's allowed sites belong to the agent: `list` and `revoke`
-// are keyed by agent alone. A personal agent's list is its owner's (only the
-// owner can add to it); a team agent's is every member's adds.
+// are keyed by agent alone. On a personal agent only its owners add, and on a
+// shared personal agent anyone who can use it does (TASK-1248); a team agent's
+// list is every member's adds.
 
 export interface HostGrantsGrantInput {
   /** The person adding the site. Recorded as who added it, not whose it is. */

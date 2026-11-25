@@ -5511,7 +5511,8 @@ export function createOrchestrator(
     // session's egress allowlist at open. TASK-1212: the read is keyed by the
     // agent alone, with no user in it. On a team agent, every member's session,
     // an outsider's turn (run as the bot's requester) and a routine run load the
-    // same list. On a personal agent only its owner ever adds to it. Gated by
+    // same list. On a personal agent only its owners add to it, and on a
+    // shared personal agent anyone who can use it does (TASK-1248). Gated by
     // hasService (conditionally called, NOT declared in the manifest — same
     // convention as skills:list-user-attachments above): stripped presets without
     // @ax/host-grants no-op. CREDENTIAL-FREE (hosts only), so a throw still FAILS

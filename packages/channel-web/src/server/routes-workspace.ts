@@ -320,7 +320,12 @@ import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
 // TASK-1246 — the one reading of `agents:resolve`'s `isOwner` for a write
 // (strict) and of `agents:list-for-user`'s for the roster (lenient).
-import { hideAgentsSharedWithMe, ownsPersonalAgent } from './agent-ownership.js';
+// TASK-1248 — and of its `shared`, for a shared personal agent (strict).
+import {
+  hideAgentsSharedWithMe,
+  isSharedPersonalAgent,
+  ownsPersonalAgent,
+} from './agent-ownership.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
 // than restated so the host and the browser cannot drift about where that
 // sentence ends (invariant 4) — the module is pure constants and one pure
@@ -428,6 +433,14 @@ interface ResolvedAgent {
    * where only an explicit `true` counts. Always `false` on a team agent.
    */
   isOwner?: boolean;
+  /**
+   * TASK-1248 — does anyone but its owners use this agent? `@ax/agents` says
+   * true for a team agent and for a personal agent shared with other people.
+   * Read only through {@link isSharedPersonalAgent} (`personal` and exactly
+   * `true`), so a personal answer without it keeps the "Just me" rules; a team
+   * agent keeps its own branch whatever this says.
+   */
+  shared?: boolean;
   /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
   runner?: string;
 }
@@ -5803,14 +5816,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     }
 
+    // Whose memory it is, off the RESOLVED agent: `'team'` ("shared with
+    // everyone who can use it") for a team agent and, since TASK-1248, for a
+    // personal agent shared with other people, whose memory @ax/memory shares
+    // the same way; `'personal'` for any other personal agent. Omitted when
+    // the answer says neither.
+    const factsVisibility =
+      agent.visibility === 'team' || isSharedPersonalAgent(agent)
+        ? ('team' as const)
+        : agent.visibility === 'personal'
+          ? ('personal' as const)
+          : undefined;
+
     return {
       rules,
       ...(factsAvailable
         ? {
             factsAvailable: true,
-            ...(agent.visibility === 'personal' || agent.visibility === 'team'
-              ? { factsVisibility: agent.visibility }
-              : {}),
+            ...(factsVisibility !== undefined ? { factsVisibility } : {}),
             ...(factsExtractionPaused ? { factsExtraction: 'paused' as const } : {}),
           }
         : {}),
@@ -6746,8 +6769,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * The sites are the AGENT's (TASK-1212). On a team agent that is every
    * site anybody on the team allowed, because every member's runs reach each
    * one, so every member is shown them all (H4: never understate reach) and
-   * `shared` says whose group it is. Only the agent's managers get a Revoke
-   * ({@link sitesRemovable}). The wall's rows stay the reader's own.
+   * `shared` says whose group it is. A personal agent shared with other
+   * people follows the same rule (TASK-1248): anyone it is shared with may
+   * keep a site for it, so its group is `shared` too. Only the agent's
+   * managers get a Revoke ({@link sitesRemovable}): a team agent's admins, a
+   * personal agent's owners. The wall's rows stay the reader's own.
    *
    * The wall's store is keyed by SUBJECT and has no "list them all" read, so we
    * ask once per skill and once per connection this agent carries.
@@ -6756,7 +6782,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     actor: { id: string; isAdmin: boolean },
     agent: ResolvedAgent,
   ): Promise<AgentRailData['grants']> {
-    const shared = agent.visibility === 'team';
+    const shared = agent.visibility === 'team' || isSharedPersonalAgent(agent);
     const hasSites = bus.hasService('host-grants:list');
     const hasWall = bus.hasService('skills:approved-caps-list');
     if (!hasSites && !hasWall) {
