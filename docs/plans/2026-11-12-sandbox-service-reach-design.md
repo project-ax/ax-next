@@ -348,7 +348,8 @@ call, and one long tool call (a 10-minute e2e run, `npm install`).
 | Routine dispatch lease | 120 s, renewed by a 10 s heartbeat | `routines/src/store.ts:1219`, `repeat-limits.ts` | no: it tracks the host, not the turn | no | none |
 | Routine turn-end grace | 60 s after the invoke settles | `routines/src/fire.ts:158` | no | no | none |
 | `agent:invoke` bus timeout | none | `orchestrator.ts:1238-1291` (TASK-498) | no | no | none |
-| Sandbox readiness | 60 s + 2 min per service | `config.ts`, `open-session.ts:574-580` | no | no | at open only; covers the restart |
+| Sandbox readiness | 60 s + 2 min per service | `config.ts`, `open-session.ts:574-580` | no | no | at open only; covers the restart, and the bus timeout below follows it |
+| `sandbox:open-session` bus timeout | the readiness budget + `readinessTimeoutMs` + 3 min, per call (300 s with no services); a fixed 300 s until TASK-1240, which fired first from 3 services up | `sandbox-k8s/src/config.ts` `computeOpenSessionTimeoutMs`, `plugin.ts` | no | no | at open only; never before the readiness budget |
 
 No stall or no-progress watchdog exists anywhere in the orchestrator, runner or
 web client. Nothing counts silence except the proxy tunnel, and a streaming

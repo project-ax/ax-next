@@ -118,4 +118,26 @@ describe('formatServiceDiagnosis', () => {
     });
     expect(msg).toContain('a dev service');
   });
+
+  it('says a service never became ready, without the writablePaths hint', () => {
+    expect(
+      formatServiceDiagnosis({
+        service: 'kafka',
+        reason: SERVICE_DIAGNOSIS_REASONS.notReady,
+      }),
+    ).toBe(
+      "Dev service 'kafka' didn't become ready in time. It may need longer to start, or its health check never passes.",
+    );
+  });
+
+  it("says a service's image could not be pulled", () => {
+    expect(
+      formatServiceDiagnosis({
+        service: 'kafka',
+        reason: SERVICE_DIAGNOSIS_REASONS.imagePull,
+      }),
+    ).toBe(
+      "Dev service 'kafka' couldn't start: its image couldn't be pulled. Check that the image exists and the cluster can pull it.",
+    );
+  });
 });

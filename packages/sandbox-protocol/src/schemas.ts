@@ -338,6 +338,14 @@ export const ProxyConfigSchema = z
   });
 export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
 
+/**
+ * The most dev services one `sandbox:open-session` may carry (the on-demand
+ * ceiling). A provider that sizes a clock by service count (sandbox-k8s's
+ * open-session timeout, TASK-1240) clamps to this, so the schema and the clock
+ * cannot disagree.
+ */
+export const MAX_OPEN_SESSION_SERVICES = 16;
+
 // The full `sandbox:open-session` input envelope. Both backends `safeParse`
 // this at their boundary. `owner` and `installedSkills` are optional for
 // back-compat with non-orchestrator paths (tests, ad-hoc CLI). `proxyConfig`
@@ -389,8 +397,8 @@ export const OpenSessionInputSchema = z.object({
   // TASK-150 — dev SERVICES the orchestrator folded from the agent's connector
   // capabilities. Optional + back-compat with non-orchestrator callers (tests,
   // ad-hoc CLI) that don't set it. Each entry is re-validated at the wire
-  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 16 (the on-demand ceiling).
-  services: z.array(ServiceDescriptorSchema).max(16).optional(),
+  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at MAX_OPEN_SESSION_SERVICES (the on-demand ceiling).
+  services: z.array(ServiceDescriptorSchema).max(MAX_OPEN_SESSION_SERVICES).optional(),
   // §3.5 — the agent's runner size. Optional: unset means the chart defaults.
   runnerSize: RunnerSizeSchema.optional(),
   // §6.2 — the per-agent idle and turn limits, as the runner's env.

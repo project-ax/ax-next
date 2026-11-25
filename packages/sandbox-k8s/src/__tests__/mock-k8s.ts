@@ -30,7 +30,10 @@ export interface MockPodStatus {
   }>;
   initContainerStatuses?: Array<{
     name: string;
+    ready?: boolean;
+    started?: boolean;
     state?: {
+      running?: Record<string, unknown>;
       waiting?: { reason?: string; message?: string };
       terminated?: {
         exitCode?: number;
