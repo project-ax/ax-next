@@ -15,16 +15,24 @@
 // moving code between files is legal. It also fails if any key names a path
 // that does not exist at HEAD (delete that entry by hand).
 //
-// Switching a rule on is the one legitimate way for a total to rise: the PR
-// that ships a rule's replacements flips it from 'off' (or absent) to 'error'
-// in the channel-web block of eslint.config.mjs, adds it to the root
-// package.json `lint:ui:suppress` script, and regenerates the file. So a rule's
-// total may rise only if its severity in that block is 'off' (or the rule is
-// absent) at the base and 'error' at HEAD, and the rule is in the HEAD script.
-// The base must hold no entries for it. A rule already on at the base may not
-// grow, even if its entries had all been fixed and pruned. (Keying on the script
-// instead would let a rule be dropped from it in one PR and re-added at a higher
-// count in the next.)
+// Two things let a rule's total rise. Switching a rule on: the PR that ships a
+// rule's replacements flips it from 'off' (or absent) to 'error' in the
+// channel-web block of eslint.config.mjs, adds it to the root package.json
+// `lint:ui:suppress` script, and regenerates the file. The base must hold no
+// entries for it. Widening an 'error' rule's options: more `elements`, more
+// `uiModules`, more `components`, or `intrinsicOnly` true -> false (plain
+// 'error' with no options is the widest scope). The rule must be in the HEAD
+// script. Any other rise fails. A rule already on at the base may not grow by
+// any other route, even if its entries had all been fixed and pruned. (Keying
+// on the script instead would let a rule be dropped from it in one PR and
+// re-added at a higher count in the next.)
+//
+// The mirror image: a rule that was 'error' with frozen entries at the base may
+// not get strictly narrower or incomparable options at HEAD (fewer elements,
+// `intrinsicOnly` false -> true, fewer modules). That would hide violations
+// from the rule, then prune them. Options that cannot be read fail closed when
+// a total rose or a narrowing check needs them. Sets compare ignoring order and
+// duplicates.
 //
 // Severities are read from the channel-web config block only, comments
 // stripped, so a decoy line elsewhere can't fake one. A severity that is present
@@ -214,6 +222,127 @@ function severity(ref, rule) {
   return m[4];
 }
 
+/** Minimal literal parser for rule options: strings, booleans, arrays, objects. Returns { v, p } or null. */
+function parseLiteral(s, p) {
+  const ws = () => {
+    while (p < s.length && /\s/.test(s[p])) p++;
+  };
+  ws();
+  const c = s[p];
+  if (c === "'" || c === '"') {
+    const end = s.indexOf(c, p + 1);
+    if (end === -1) return null;
+    const v = s.slice(p + 1, end);
+    if (v.includes('\\') || v.includes('\n')) return null;
+    return { v, p: end + 1 };
+  }
+  for (const word of ['true', 'false']) {
+    if (s.startsWith(word, p) && !/[\w$]/.test(s[p + word.length] ?? '')) return { v: word === 'true', p: p + word.length };
+  }
+  if (c === '[' || c === '{') {
+    const close = c === '[' ? ']' : '}';
+    const items = c === '[' ? [] : new Map();
+    p++;
+    for (;;) {
+      ws();
+      if (s[p] === close) return { v: items, p: p + 1 };
+      let key;
+      if (c === '{') {
+        const k = /^(?:(['"])([\w$-]+)\1|([A-Za-z_$][\w$]*))\s*:/.exec(s.slice(p));
+        if (!k) return null;
+        key = k[2] ?? k[3];
+        if (items.has(key)) return null;
+        p += k[0].length;
+      }
+      const r = parseLiteral(s, p);
+      if (r === null) return null;
+      p = r.p;
+      if (c === '[') items.push(r.v);
+      else items.set(key, r.v);
+      ws();
+      if (s[p] === ',') p++;
+      else if (s[p] !== close) return null;
+    }
+  }
+  return null;
+}
+
+const OPTION_KEYS = {
+  'ax-ui/no-raw-elements': { elements: 'strings' },
+  'ax-ui/no-classname': { intrinsicOnly: 'boolean', components: 'strings' },
+  'ax-ui/no-internal-imports': { uiModules: 'strings' },
+};
+
+/**
+ * What a rule covers at `ref`, from the channel-web block:
+ *   { kind: 'off' }                  not an error (off, warn, absent)
+ *   { kind: 'scope', scope }         an error; scope is { <option>: Set | boolean | undefined }
+ *   { kind: 'unreadable' }           severity or options cannot be read
+ * An option that is absent is the widest (see compareScopes).
+ */
+function ruleScope(ref, rule) {
+  const sev = severity(ref, rule);
+  if (sev === 'unreadable') return { kind: 'unreadable' };
+  if (sev !== 'error') return { kind: 'off' };
+  const block = channelWebBlock(show(ref, 'eslint.config.mjs'));
+  const escaped = rule.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const key = new RegExp(`(['"])${escaped}\\1\\s*:`).exec(block);
+  const value = key ? parseLiteral(block, key.index + key[0].length) : null;
+  if (value === null) return { kind: 'unreadable' };
+  const tail = /^\s*([,}])/.exec(block.slice(value.p));
+  if (!tail) return { kind: 'unreadable' };
+  let options;
+  if (Array.isArray(value.v)) {
+    if (value.v.length > 2 || typeof value.v[0] !== 'string') return { kind: 'unreadable' };
+    options = value.v[1];
+  } else if (typeof value.v !== 'string') {
+    return { kind: 'unreadable' };
+  }
+  if (options === undefined) return { kind: 'scope', scope: {} };
+  const allowed = OPTION_KEYS[rule] ?? {};
+  if (!(options instanceof Map)) return { kind: 'unreadable' };
+  const scope = {};
+  for (const [k, v] of options) {
+    const type = allowed[k];
+    if (type === 'boolean' && typeof v === 'boolean') scope[k] = v;
+    else if (type === 'strings' && Array.isArray(v) && v.every((x) => typeof x === 'string')) scope[k] = new Set(v);
+    else return { kind: 'unreadable' };
+  }
+  return { kind: 'scope', scope };
+}
+
+/** 'equal' | 'wider' | 'narrower' | 'incomparable' for HEAD's set relative to base's; undefined = all. */
+function compareSets(b, h) {
+  if (b === undefined && h === undefined) return 'equal';
+  if (b === undefined) return 'narrower';
+  if (h === undefined) return 'wider';
+  const hasAll = (x, y) => [...y].every((e) => x.has(e));
+  const hSuper = hasAll(h, b);
+  const bSuper = hasAll(b, h);
+  if (hSuper && bSuper) return 'equal';
+  if (hSuper) return 'wider';
+  return bSuper ? 'narrower' : 'incomparable';
+}
+
+/** How HEAD's scope for `rule` relates to the base's. */
+function compareScopes(rule, b, h) {
+  if (rule === 'ax-ui/no-classname') {
+    const bi = b.intrinsicOnly ?? false;
+    const hi = h.intrinsicOnly ?? false;
+    if (bi !== hi) return hi ? 'narrower' : 'wider';
+    return bi ? compareSets(b.components ?? new Set(), h.components ?? new Set()) : 'equal';
+  }
+  const field = rule === 'ax-ui/no-internal-imports' ? 'uiModules' : rule === 'ax-ui/no-raw-elements' ? 'elements' : null;
+  return field === null ? 'equal' : compareSets(b[field], h[field]);
+}
+
+function describeWidening(rule, b, h) {
+  if (rule === 'ax-ui/no-classname') {
+    return (b.intrinsicOnly ?? false) !== (h.intrinsicOnly ?? false) ? 'intrinsicOnly dropped' : 'components added';
+  }
+  return rule === 'ax-ui/no-internal-imports' ? 'uiModules widened' : 'elements widened';
+}
+
 const baseRef = process.argv[2] || process.env.BASE_SHA;
 if (!baseRef) die('usage: ui-suppressions-ratchet.mjs <base-ref>  (or set BASE_SHA)');
 
@@ -268,7 +397,50 @@ if (baseText === null) {
       );
     }
 
+    // Narrowing laundering: hide frozen violations by shrinking the rule's
+    // scope, prune them, widen again later. (A severity change is the check above.)
+    let widened = null;
+    if (was === 'error' && now === 'error') {
+      const sb = ruleScope(base, rule);
+      const sh = ruleScope('HEAD', rule);
+      if (sb.kind === 'unreadable' || sh.kind === 'unreadable') {
+        if (b > 0 || h > b) {
+          problems.push(
+            `${rule}: its options in eslint.config.mjs cannot be read (base ${b}, head ${h}); ` +
+              `expected string-literal arrays and boolean literals only. Failing closed.`,
+          );
+          continue;
+        }
+      } else {
+        const rel = compareScopes(rule, sb.scope, sh.scope);
+        if (rel === 'narrower' || rel === 'incomparable') {
+          if (b > 0) {
+            problems.push(
+              `${rule}: its options got ${rel === 'narrower' ? 'narrower' : 'different (neither wider nor narrower)'} ` +
+                `while ${b} violations are frozen. Narrowing a rule that still has frozen suppressions is a ` +
+                `design-system decision, made by editing scripts/ui-suppressions-ratchet.mjs in a PR the ` +
+                `design owner reviews (CODEOWNERS requests that review).`,
+            );
+            continue;
+          }
+        } else if (rel === 'wider') {
+          widened = describeWidening(rule, sb.scope, sh.scope);
+        }
+      }
+    }
+
     if (h <= b) continue;
+    if (widened !== null) {
+      if (scriptRules.has(rule)) {
+        process.stdout.write(`${TAG}: ${rule}: widened in this range (${widened}): frozen ${h} (base ${b}).\n`);
+      } else {
+        problems.push(
+          `${rule}: widened in this range but missing from the lint:ui:suppress script in package.json, ` +
+            `so its frozen total (${h}) cannot be regenerated. Add --suppress-rule ${rule}.`,
+        );
+      }
+      continue;
+    }
     if (was === 'unreadable') {
       problems.push(
         `${rule}: total went up (base ${b}, head ${h}) and its severity at the base in ` +
