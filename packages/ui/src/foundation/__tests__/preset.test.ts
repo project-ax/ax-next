@@ -48,4 +48,18 @@ describe('renderUiCss', () => {
     const file = readFileSync(fileURLToPath(new URL('../../../ui.css', import.meta.url)), 'utf8');
     expect(file, 'run pnpm --filter @project-ax/ui gen').toBe(await renderUiCss());
   });
+
+  // The header once said `src/**/*.{ts,tsx}`: its `*/` closed the comment early, the rest of the
+  // header became the selector of the first rule, and browsers dropped `.ax-m-none` entirely.
+  it('parses cleanly and every rule is an ax- rule (the header comment closes only once)', async () => {
+    const css = await renderUiCss();
+    const root = postcss.parse(css);
+    const selectors: string[] = [];
+    root.walkRules((r) => {
+      selectors.push(r.selector);
+    });
+    expect(selectors.length).toBeGreaterThan(0);
+    for (const sel of selectors) expect(sel, sel).toMatch(/^\.(?:[a-z]+\\:)?ax-/);
+    expect(selectors).toContain('.ax-m-none');
+  });
 });
