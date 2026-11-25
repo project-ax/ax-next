@@ -5,16 +5,17 @@ import type { ChannelSlackDatabase } from './migrations.js';
  * Which of a person's personal agents answers their direct messages to the
  * shared Slack app (TASK-1238): one row per AX user, in
  * `channel_slack_v1_dm_agents`. The person picks it from a personal agent's
- * Slack settings (agent-routes.ts). With no row, their oldest personal agent
- * answers, as before.
+ * Slack settings (agent-routes.ts). With no row, their oldest "Just me"
+ * personal agent answers, as before: one shared with other people answers no
+ * DMs (TASK-1248).
  *
  * A row is never trusted as stored. The agent it names may have been deleted
- * since, or may no longer be this person's own personal agent, so every read
- * is checked against `agents:list-for-user` with the one predicate the DM
- * router uses (router.ts `personalAgentFor`), and a choice that no longer
- * qualifies is ignored: the oldest answers. That is why `get` answers the id
- * unchecked, and why nothing here asks anyone's rights. Who may write a row
- * is the route's to decide, never this file's.
+ * since, or shared, or may no longer be this person's own personal agent, so
+ * every read is checked against `agents:list-for-user` with the one
+ * predicate the DM router uses (router.ts `personalAgentFor`), and a choice
+ * that no longer qualifies is ignored: the oldest answers. That is why `get`
+ * answers the id unchecked, and why nothing here asks anyone's rights. Who
+ * may write a row is the route's to decide, never this file's.
  *
  * `removeForAgent` is the agents:deleted cleanup (agents-deleted.ts). A reset
  * leaves the rows behind, inert: they name accounts and agents that are gone,

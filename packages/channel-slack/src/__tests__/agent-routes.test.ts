@@ -1901,8 +1901,9 @@ describe("the live bot's channels in the section", () => {
   A person's choice of DM agent is stored unchecked (dm-agents.ts), and the
   section reads it exactly as the DM router does (router.ts
   `personalAgentFor`): honored only while agents:list-for-user lists it as
-  their own personal agent, else the oldest answers. So the section never
-  says one agent answers while DMs reach another.
+  their own Just-me personal agent, else the oldest such answers; a shared
+  one answers no DMs (TASK-1248). So the section never says one agent
+  answers while DMs reach another.
 */
 describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
   it("a stored choice moves the DMs, and the other agent's page names it", async () => {
@@ -2031,6 +2032,81 @@ describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
     // Pat's own agent is still theirs to choose.
     expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 200, body: {} });
     expect(w.dm.rows.get(PAT.id)).toBe(PATS.id);
+  });
+
+  it('choosing your own shared agent for DMs is 403, and nothing is stored', async () => {
+    const w = world();
+    // Alice made her agent and shared it with everyone; Carol co-owns it. A shared agent answers no DMs (TASK-1248).
+    w.people.addAgent(ALICES);
+    for (const as of [ALICE, CAROL]) {
+      expect(await w.chooseDmAgent(ALICES.id, as), as.id).toEqual(FORBIDDEN);
+    }
+    // Pat's own agent, shared with one person: as shared as everyone.
+    w.people.shareWith(PATS.id, MEL.id);
+    expect(await w.chooseDmAgent(PATS.id, PAT)).toEqual(FORBIDDEN);
+    // Refused on what agents:resolve says alone, before anyone's list or choice is read.
+    expect(w.people.inputs('agents:list-for-user')).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+  });
+
+  it('an agent shared after the rights saw it, before the DM router would, is a 404, and nothing is stored', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    const get = w.people.agents.get.bind(w.people.agents);
+    w.people.agents.get = (agentId: string) => {
+      const found = get(agentId);
+      // Shared with everyone in another tab the moment agents:resolve has read it as Just me.
+      if (agentId === later.id && found !== undefined) w.people.agents.set(agentId, { ...found, audience: 'everyone' });
+      return found;
+    };
+    expect(await w.chooseDmAgent(later.id)).toEqual(NOT_FOUND);
+    // The list the DM router reads says it is shared now: a choice the next DM would ignore is never stored.
+    expect(w.people.inputs('agents:list-for-user')).toEqual([{ userId: PAT.id, teamIds: [] }]);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+  });
+
+  it('a co-owner of a Just-me agent reads its Slack tab with no DM choice to make', async () => {
+    const w = world();
+    // Pat's agent, Just me, with Carol a co-owner; Carol has an agent of her own, which answers her DMs.
+    w.people.agents.set(PATS.id, { ...PATS, coOwners: [CAROL.id] });
+    const carols: FakeAgent = { id: 'agt_carol', displayName: "Carol's agent", visibility: 'personal', ownerType: 'user', ownerId: CAROL.id };
+    w.people.addAgent(carols);
+    // No "Use this one instead": the DM agent route would refuse it (404), so the page offers nothing.
+    expect(await w.status(PATS.id, CAROL)).toEqual(personalStatus(false, null));
+    expect(await w.chooseDmAgent(PATS.id, CAROL)).toEqual(NOT_FOUND);
+    // Even a stored choice naming it: her DMs go to her own agent, and her own agent's page says so.
+    w.dm.rows.set(CAROL.id, PATS.id);
+    expect(await w.status(PATS.id, CAROL)).toEqual(personalStatus(false, null));
+    expect(await w.status(carols.id, CAROL)).toEqual(personalStatus(true, null));
+    // With no agent of her own, the same: nothing answers her DMs, and nothing is offered.
+    w.people.agents.delete(carols.id);
+    expect(await w.status(PATS.id, CAROL)).toEqual(personalStatus(false, null));
+    // Pat, its creator, still reads which agent answers his DMs.
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(true, null));
+    // Asked as the DM router asks: one choice and one list per section read (five), and the refused
+    // choice's own list; never a second list per read, and nothing written.
+    expect(w.dm.calls.map((c) => c.method)).toEqual(['get', 'get', 'get', 'get', 'get']);
+    expect(w.people.inputs('agents:list-for-user')).toHaveLength(6);
+  });
+
+  it("the creator's Just-me agent still shows which agent answers their DMs, a shared one of theirs never", async () => {
+    const w = world();
+    const later = addPatLater(w);
+    // Pat's oldest agent is shared with everyone now: it answers no DMs, so his later one does.
+    w.people.agents.set(PATS.id, { ...w.people.agents.get(PATS.id)!, audience: 'everyone' });
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(true, null));
+    // The shared one's own page is its bot's (TASK-1248), and names no DM agent.
+    expect(await w.status(PATS.id, PAT)).toMatchObject({ status: 200, body: { state: 'ready', canManage: true } });
+    // Back to Just me, with his choice on the later one: the choice holds, and both pages say so.
+    w.people.agents.set(PATS.id, { ...w.people.agents.get(PATS.id)!, audience: 'just-me' });
+    w.dm.rows.set(PAT.id, later.id);
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(true, null));
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(false, 'Pat later'));
+    // The later one shared now: his choice no longer qualifies, and the oldest Just-me agent answers.
+    w.people.agents.set(later.id, { ...later, audience: 'everyone' });
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(true, null));
   });
 
   it('a team agent is never the DM agent: 403 to its members and team admins, 404 to someone outside the team', async () => {

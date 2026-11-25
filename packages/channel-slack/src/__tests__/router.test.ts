@@ -437,6 +437,11 @@ function world(o: {
   dmChoices?: Record<string, string>;
   /** The choice store fails every read (TASK-1238). */
   dmChoiceReadFails?: boolean;
+  /**
+   * What agents:list-for-user answers for these AX users, in place of
+   * AGENTS (TASK-1248: a list whose agents carry `shared`).
+   */
+  agentLists?: Record<string, unknown[]>;
   findOrCreateFails?: boolean;
   /**
    * The conversation id includes the agent id, as the real store keys on
@@ -578,7 +583,8 @@ function world(o: {
   bus.registerService('agents:list-for-user', 'fake-agents', async (ctx, input) => {
     listed.push({ ctx, input });
     if (o.listFails === true) throw new PluginError({ code: 'store-unavailable', plugin: 'fake-agents', message: 'down' });
-    return { agents: AGENTS[(input as { userId: string }).userId] ?? [] };
+    const { userId } = input as { userId: string };
+    return { agents: o.agentLists?.[userId] ?? AGENTS[userId] ?? [] };
   });
   bus.registerService('conversations:find-or-create', 'fake-conversations', async (ctx, input) => {
     const i = input as { externalKey: string } & Record<string, unknown>;
@@ -1481,6 +1487,105 @@ describe('createEventRouter: the personal agent its sender chose (TASK-1238)', (
   });
 });
 
+// ── A shared agent never answers DMs (TASK-1248) ────────────────────────────
+
+/*
+  A personal agent shared with other people follows the team-agent rules
+  (TASK-1248): its own bot answers in channels, and it never answers DMs, as
+  a team agent never does. agents:list-for-user says which of the sender's
+  agents are shared (`shared`, TASK-1246). Only an exact `true` takes one out
+  of the DM pick, so an entry that says nothing, or anything else, keeps
+  today's rule.
+*/
+describe('createEventRouter: a shared agent never answers DMs (TASK-1248)', () => {
+  /** A personal agent as agents:list-for-user lists it, saying whether it is shared. */
+  const listEntry = (id: string, ownerId: string, createdAt: string, shared: unknown) => ({
+    ...agent(id, ownerId, createdAt),
+    shared,
+  });
+
+  it('a DM from someone whose own agents are all shared gets the shared line and no turn runs', async () => {
+    // Bob's only agent is shared with other people now, and he chose it for his DMs before it was.
+    const w = world({
+      agentLists: { usr_bob: [listEntry('agt_bob', 'usr_bob', '2026-05-05T00:00:00Z', true)] },
+      dmChoices: { usr_bob: 'agt_bob' },
+    });
+    await w.dispatch(INSTALL, dm({ user: BOB, channel: DM_BOB }));
+    await w.idle();
+    expect(w.invokes).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    expect(w.slack.calls.filter((c) => c.method === 'postMessage').map((c) => c.args)).toEqual([
+      { channel: DM_BOB, threadTs: TS, markdownText: COPY.agentsShared(PUBLIC_ORIGIN) },
+    ]);
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_no_personal_agent', fields: { installId: INSTALL_ID, sharedOnly: true } },
+    ]);
+    // Asked of AX as every DM is; the choice is read, never rewritten.
+    expect(w.listed.map((l) => l.input)).toEqual([{ userId: 'usr_bob', teamIds: [] }]);
+    expect(w.dm.calls).toEqual([{ method: 'get', args: ['usr_bob'] }]);
+  });
+
+  it('a stored choice naming an agent that is now shared routes to their oldest unshared agent', async () => {
+    // The one Alice chose and her oldest are both shared now: the next oldest is Just me.
+    const w = world({
+      agentLists: {
+        usr_alice: [
+          listEntry('agt_alice_new', 'usr_alice', '2026-10-02T00:00:00Z', true),
+          agent('agt_team_ops', 'team_ops', '2026-01-01T00:00:00Z', true),
+          listEntry('agt_alice_old', 'usr_alice', '2026-03-01T00:00:00Z', false),
+          listEntry('agt_alice_oldest', 'usr_alice', '2026-02-01T00:00:00Z', true),
+        ],
+      },
+      dmChoices: { usr_alice: 'agt_alice_new' },
+    });
+    await w.dispatch(INSTALL, dm());
+    await w.idle();
+    expect(w.conversations.map((c) => c.input['agentId'])).toEqual(['agt_alice_old']);
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId])).toEqual([['usr_alice', 'agt_alice_old']]);
+    // Answered as if she had never chosen: nothing to say, and nothing logged.
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe('ok');
+    expect(w.lines.filter((l) => l.level !== 'debug')).toEqual([]);
+  });
+
+  it.each([
+    ['no shared at all', undefined],
+    ['false', false],
+    ["the string 'true'", 'true'],
+    ['1', 1],
+    ['null', null],
+  ])('an agent whose list entry says %s still answers: only an exact true takes it out', async (_what, shared) => {
+    const entry =
+      shared === undefined
+        ? agent('agt_bob', 'usr_bob', '2026-05-05T00:00:00Z')
+        : listEntry('agt_bob', 'usr_bob', '2026-05-05T00:00:00Z', shared);
+    const w = world({ agentLists: { usr_bob: [entry] }, dmChoices: { usr_bob: 'agt_bob' } });
+    await w.dispatch(INSTALL, dm({ user: BOB, channel: DM_BOB }));
+    await w.idle();
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId])).toEqual([['usr_bob', 'agt_bob']]);
+    expect(replyIn(w.slack.calls, DM_BOB)).toBe('ok');
+  });
+
+  it('a DM from someone with no agents of their own still gets noAgent, beside an agent only shared with them', async () => {
+    // Dave sees a team agent, and Alice's agent, shared with him: neither is his.
+    const w = world({
+      agentLists: {
+        usr_dave: [
+          agent('agt_team_dave', 'team_x', '2025-01-01T00:00:00Z', true),
+          { ...listEntry('agt_alice_shared', 'usr_alice', '2025-06-01T00:00:00Z', true), isOwner: false },
+        ],
+      },
+    });
+    await w.dispatch(INSTALL, dm({ user: DAVE }));
+    await w.idle();
+    expect(w.invokes).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.noAgent(PUBLIC_ORIGIN));
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_no_personal_agent', fields: { installId: INSTALL_ID, sharedOnly: false } },
+    ]);
+  });
+});
+
 // ── A held call's prompt (TASK-1095) ────────────────────────────────────────
 
 /*
@@ -2013,7 +2118,10 @@ describe('createEventRouter: no turn', () => {
     await w.idle();
     expect(w.invokes).toEqual([]);
     expect(w.conversations).toEqual([]);
-    expect(w.lines).toEqual([{ level: 'info', msg: 'slack_no_personal_agent', fields: { installId: INSTALL_ID } }]);
+    // `sharedOnly` (TASK-1248): whether the sender's own agents are all shared. Dave has none.
+    expect(w.lines).toEqual([
+      { level: 'info', msg: 'slack_no_personal_agent', fields: { installId: INSTALL_ID, sharedOnly: false } },
+    ]);
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.noAgent(PUBLIC_ORIGIN));
   });
 

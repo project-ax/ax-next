@@ -2175,6 +2175,43 @@ describe('pickPersonalAgent: an agent only shared with the user is never theirs 
   });
 });
 
+describe('pickPersonalAgent: a shared agent never answers DMs (TASK-1248)', () => {
+  // Bob's own personal agents, as agents:list-for-user lists them, `shared` carried as the router
+  // reads it (router.ts `agentsOf`): only a boolean, and absent when the answer has none.
+  const bobs = (id: string, createdAt: string, shared?: boolean) => ({
+    id,
+    ownerId: 'usr_bob',
+    ownerType: 'user',
+    visibility: 'personal',
+    ...(shared === undefined ? {} : { shared }),
+    createdAt: new Date(createdAt),
+  });
+  // The oldest is shared with other people, so oldest-wins alone would take it.
+  const sharedOldest = bobs('agt_bob_shared', '2026-01-01T00:00:00Z', true);
+  const justMe = bobs('agt_bob_justme', '2026-03-01T00:00:00Z', false);
+  // An answer that carries no `shared` keeps today's rule: it may answer.
+  const unsaid = bobs('agt_bob_unsaid', '2026-05-01T00:00:00Z');
+  const sharedChosen = bobs('agt_bob_shared_new', '2026-10-01T00:00:00Z', true);
+  const all = [sharedChosen, unsaid, justMe, sharedOldest];
+
+  it('skips a shared agent, even the chosen one, and falls back to the oldest unshared', () => {
+    expect(pickPersonalAgent(all, 'usr_bob')).toBe('agt_bob_justme');
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_shared_new')).toBe('agt_bob_justme');
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_shared')).toBe('agt_bob_justme');
+    // A Just-me choice is honored beside them, and so is one whose answer said nothing.
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_justme')).toBe('agt_bob_justme');
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_unsaid')).toBe('agt_bob_unsaid');
+    // With the Just-me one gone, the one whose answer said nothing is the oldest that may answer.
+    expect(pickPersonalAgent([sharedChosen, unsaid, sharedOldest], 'usr_bob', 'agt_bob_shared')).toBe('agt_bob_unsaid');
+  });
+
+  it('a person whose only agents are shared has none to pick, whatever they chose', () => {
+    expect(pickPersonalAgent([sharedChosen, sharedOldest], 'usr_bob')).toBeNull();
+    expect(pickPersonalAgent([sharedChosen, sharedOldest], 'usr_bob', 'agt_bob_shared_new')).toBeNull();
+    expect(pickPersonalAgent([sharedOldest], 'usr_bob', 'agt_bob_shared')).toBeNull();
+  });
+});
+
 describe("PLUMBING_TOOL_NAMES: channel-web's twin (TASK-1130)", () => {
   it("names exactly the calls the web's step panel hides", () => {
     expect([...PLUMBING_TOOL_NAMES].sort()).toEqual(webPlumbingToolNames().sort());

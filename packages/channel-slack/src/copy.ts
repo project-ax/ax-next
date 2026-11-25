@@ -80,6 +80,15 @@ export const COPY = {
   noAgent: (origin: string) =>
     `You don't have a personal agent in [the web app](${origin}) yet. ` +
     'Make one there, then send your message again.',
+  /*
+    A DM from someone whose own personal agents are all shared with other
+    people (TASK-1248): a shared agent answers no DMs, so they aren't told to
+    make one. It says where they can still reach one: a channel its own bot
+    is in, or the web app.
+  */
+  agentsShared: (origin: string) =>
+    "Your agents are shared with other people, so they don't answer direct messages. " +
+    `Mention one in a channel it's in, or talk to it in [the web app](${origin}).`,
   filesUnsupported:
     "I can't read files in Slack yet. Send your message as text, or share the file with me in the web app.",
   queueFull:

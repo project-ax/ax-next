@@ -21,6 +21,7 @@ const ZWSP = String.fromCharCode(0x200b);
 const ARGS: Record<string, unknown[][]> = {
   notMapped: [[ORIGIN]],
   noAgent: [[ORIGIN]],
+  agentsShared: [[ORIGIN]],
   artifactLink: [[LINK]],
   heldForSender: [[TODAY]],
   // An approval prompt's lines take Today's link (the configured origin), shown as a bare URL.
@@ -120,6 +121,7 @@ describe('COPY: everything the bot says in Slack', () => {
         'skillFailed',
         'moreSkillsInToday',
         'noAgent',
+        'agentsShared',
         'notMapped',
         'queueFull',
         'statusDefault',
@@ -158,7 +160,18 @@ describe('COPY: everything the bot says in Slack', () => {
   it('the sign-in and make-an-agent lines link to the web app', () => {
     expect(COPY.notMapped(ORIGIN)).toContain(`](${ORIGIN})`);
     expect(COPY.noAgent(ORIGIN)).toContain(`](${ORIGIN})`);
+    expect(COPY.agentsShared(ORIGIN)).toContain(`](${ORIGIN})`);
     expect(COPY.artifactLink(LINK)).toContain(`](${LINK})`);
+  });
+
+  it("a DM from someone whose own agents are all shared (TASK-1248): why none answers, and where they can talk to one", () => {
+    expect(COPY.agentsShared(ORIGIN)).toBe(
+      "Your agents are shared with other people, so they don't answer direct messages. " +
+        `Mention one in a channel it's in, or talk to it in [the web app](${ORIGIN}).`,
+    );
+    // Not the line for someone with no agent at all: they have agents.
+    expect(COPY.agentsShared(ORIGIN)).not.toBe(COPY.noAgent(ORIGIN));
+    expect(COPY.agentsShared(ORIGIN)).not.toMatch(/\bteam\b/i);
   });
 
   it("a held call's lines: the sender's links Today, where it waits for them; the owner's links nothing", () => {

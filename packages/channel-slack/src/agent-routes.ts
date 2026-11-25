@@ -11,7 +11,7 @@ import { parseIconPng, type ParsedIcon } from './icon.js';
 import { INSTALL_ID_RE } from './ingress.js';
 import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX } from './limits.js';
 import { logCode } from './log-code.js';
-import { isOwnPersonalAgent, personalAgentFor } from './router.js';
+import { dmChoiceFor, isOwnPersonalAgent } from './router.js';
 import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
 import type { InstallStore } from './store.js';
 import { checkUser } from './user-auth.js';
@@ -27,9 +27,10 @@ import { checkUser } from './user-auth.js';
  * can't install Slack apps, asking an AX admin to approve it instead
  * (TASK-1169, bot-requests.ts), and taking that ask back. The shared app
  * connects no channel here (TASK-1186; design §4b.1): a team agent is reached
- * in a channel only through its own bot. A personal agent's section says
- * which of its owner's personal agents answers their DMs to the shared app,
- * and its owner can make it this one (TASK-1238, dm-agents.ts).
+ * in a channel only through its own bot. A Just-me personal agent's section
+ * says which of its reader's own Just-me agents answers their DMs to the
+ * shared app, and its creator can make it this one (TASK-1238,
+ * dm-agents.ts). A shared agent answers no DMs (TASK-1248).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -51,8 +52,9 @@ import { checkUser } from './user-auth.js';
  *                                             no-bot when `installId` is another bot's, TASK-1173)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}, while it has an open request
- *   POST /settings/slack/:agentId/dm-agent    → {}, a personal agent's owner alone: it becomes the one
- *                                             that answers their DMs (TASK-1238); 403 for a team agent
+ *   POST /settings/slack/:agentId/dm-agent    → {}, a Just-me personal agent's creator alone: it becomes
+ *                                             the one that answers their DMs (TASK-1238); 403 for a
+ *                                             shared agent (TASK-1248)
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
@@ -60,11 +62,11 @@ import { checkUser } from './user-auth.js';
  * a team admin of the agent's team manages, workspace-admin status never
  * counts; anything but a team agent is `personal-agent`), all before a body
  * is read or the domain is asked anything. The DM agent route turns the
- * rights around: only a personal agent may be chosen, and only by its owner,
- * so a team agent the person can see is 403 `forbidden`, and the DM router's
- * own question (router.ts `isOwnPersonalAgent`) is asked before the write,
- * anything it refuses being the same 404. The routes hold no Slack client
- * and no vault: the domains do. The POSTs keep http-server's CSRF check and
+ * rights around: only a Just-me personal agent may be chosen, and only by
+ * its creator, so a shared agent the person can see is 403 `forbidden`, and
+ * the DM router's own question (router.ts `isOwnPersonalAgent`) is asked
+ * before the write, anything it refuses being the same 404. The routes hold
+ * no Slack client and no vault: the domains do. The POSTs keep http-server's CSRF check and
  * cap their bodies; an unknown body key is a 400, so nothing in a body can
  * name another agent. The bot's request body can carry its picture, and a
  * new picture's body is one, so both have Admin › Slack's Connect cap.
@@ -122,12 +124,15 @@ export type AgentSlackStatus =
    * A Just-me personal agent's section (a shared one's is its bot's, TASK-1248).
    * `answersDms`: a DM from the reader to the shared app reaches THIS agent:
    * the personal agent they chose for their DMs, or, with no choice (or one
-   * that no longer qualifies), their oldest (router.ts `personalAgentFor`,
-   * TASK-1238). `dmAgentName`: when another of their personal agents is the
-   * one a DM reaches, its display name as they wrote it ('' when it has
-   * none), so the page can offer this one instead; null when this agent
-   * answers, or none does. Only its owners read a Just-me agent's section
-   * (agents:resolve), and the agent named is always one of the reader's own.
+   * that no longer qualifies), their oldest Just-me one (router.ts
+   * `personalAgentFor`, TASK-1238). `dmAgentName`: when another of their
+   * personal agents is the one a DM reaches, its display name as they wrote
+   * it ('' when it has none), so the page can offer this one instead; null
+   * when this agent answers, or none does, or the reader didn't make this
+   * agent: a co-owner (TASK-1246) can't make it their DM agent, so there is
+   * nothing to offer (TASK-1248). Only its owners read a Just-me agent's
+   * section (agents:resolve), and the agent named is always one of the
+   * reader's own.
    */
   | { state: 'personal-agent'; botName: string; answersDms: boolean; dmAgentName: string | null }
   | {
@@ -159,9 +164,9 @@ export interface AgentRoutesDeps {
   channels: Pick<ChannelStore, 'listForAgent'>;
   /**
    * Each person's choice of which personal agent answers their DMs
-   * (dm-agents.ts), read as the DM router reads it (router.ts
-   * `personalAgentFor`) to say which one does, and written by the DM agent
-   * route, for the person asking alone.
+   * (dm-agents.ts), read as the DM router reads it (router.ts `dmChoiceFor`,
+   * `personalAgentFor`'s own read) to say which one does, and written by the
+   * DM agent route, for the person asking alone.
    */
   dmAgents: Pick<DmAgentStore, 'get' | 'set'>;
   logger: Logger;
@@ -392,8 +397,12 @@ export function createAgentSlackRoutes(
       }
       // Only its owners see a Just-me agent (agents:resolve). The person
       // asking is the one whose DMs are routed: asked exactly as the DM
-      // router asks, their choice included (TASK-1238).
-      const answering = await personalAgentFor(d.bus, a.ctx, a.userId, d.dmAgents);
+      // router asks, their choice included (TASK-1238). Only its creator may
+      // make it their DM agent (the DM agent route's own question): a
+      // co-owner (TASK-1246) has no choice to make here, so no other agent
+      // is named for them to switch from (TASK-1248).
+      const dms = await dmChoiceFor(d.bus, a.ctx, a.userId, a.agentId, d.dmAgents);
+      const answering = dms.choosable ? dms.agent : null;
       const answersDms = answering !== null && answering.id === a.agentId;
       return json(200, {
         state: 'personal-agent',
@@ -564,20 +573,22 @@ export function createAgentSlackRoutes(
   }
 
   /**
-   * Make this personal agent the one that answers its owner's DMs to the
-   * shared app (TASK-1238). Only its owner may: the person asking is the one
-   * whose choice is written, and the path is the only agent named (no body
-   * is read). Someone who can't see the agent gets the same 404 as a
-   * missing one; a shared agent they can see (a team agent, or a personal
-   * agent shared with other people, TASK-1248), whatever their role, is 403:
-   * only a Just-me agent may be chosen. The rights read anything but a
-   * shared agent as `personal-agent`, so the DM router's own question
-   * (router.ts `isOwnPersonalAgent`) is asked before the write: a choice
-   * the next DM would ignore is never stored, and an agent deleted before
-   * that list is read is the same 404. A delete landing between the list
-   * read and the write is not caught: it leaves a row for an agent that no
-   * longer exists, which is inert, since every DM checks the choice again
-   * and falls back to the oldest personal agent.
+   * Make this Just-me personal agent the one that answers its creator's DMs
+   * to the shared app (TASK-1238). Only its creator may: the person asking
+   * is the one whose choice is written, and the path is the only agent
+   * named (no body is read). Someone who can't see the agent gets the same
+   * 404 as a missing one; a shared agent they can see (a team agent, or a
+   * personal agent shared with other people, TASK-1248), whatever their
+   * role, is 403: a shared agent answers no DMs, so only a Just-me agent may
+   * be chosen. The rights read anything but a shared agent as
+   * `personal-agent`, so the DM router's own question (router.ts
+   * `isOwnPersonalAgent`) is asked before the write: a choice the next DM
+   * would ignore is never stored. A co-owner of someone else's Just-me
+   * agent (TASK-1246), and an agent deleted or shared before that list is
+   * read, get the same 404. A delete or a share landing between the list
+   * read and the write is not caught: it leaves a row the next DM ignores,
+   * which is inert, since every DM checks the choice again and falls back
+   * to the oldest Just-me agent.
    */
   async function chooseDmAgent(a: Asked): Promise<Reply> {
     const rights = await checkRights(d.bus, a.ctx, a.agentId, a.userId, 'view');

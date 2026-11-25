@@ -57,11 +57,14 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      because Slack was briefly unavailable gets "try again".
  *   4. A shared file gets "I can't read files yet"; an empty message nothing.
  *   5. auth:find-user-by-email with users.info's email → the sender's
- *      personal agent (`personalAgentFor`): the one they chose for their DMs
- *      (TASK-1238, dm-agents.ts) while agents:list-for-user still lists it as
- *      their own personal agent, else their oldest. A choice that can't be
- *      read is "try again", never the oldest instead →
- *      conversations:find-or-create for the thread
+ *      "Just me" personal agent (`personalAgentFor`): the one they chose for
+ *      their DMs (TASK-1238, dm-agents.ts) while agents:list-for-user still
+ *      lists it as their own Just-me personal agent, else their oldest
+ *      Just-me one. A personal agent shared with other people answers no
+ *      DMs, as a team agent answers none (TASK-1248): someone whose own
+ *      agents are all shared is told so (`agentsShared`), someone with none
+ *      to make one (`noAgent`). A choice that can't be read is "try again",
+ *      never the oldest instead → conversations:find-or-create for the thread
  *      (`slack:<installId>:<channel>:<thread_ts>`, origin `'slack'`). The
  *      agent is picked here, before the turn is queued, so a new choice
  *      applies from the next message on: a turn already running or waiting
@@ -215,7 +218,7 @@ export interface RouterDeps extends TurnDeps {
   mentionNames: MentionNames;
 }
 
-type Log = (level: 'info' | 'warn' | 'error', msg: string, fields?: Record<string, string | number>) => void;
+type Log = (level: 'info' | 'warn' | 'error', msg: string, fields?: Record<string, string | number | boolean>) => void;
 
 /** An answer this router couldn't read. Carries a code, so it logs like any other failure. */
 class UnreadableAnswer extends Error {
@@ -233,14 +236,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * The agents in an `agents:list-for-user` answer that carry what picking one
  * needs, each with its display name ('' when it has none) for the settings
- * to name it by.
+ * to name it by. `shared` (TASK-1246) is carried only when the answer says
+ * it as a boolean: turn.ts `pickPersonalAgent` takes out exactly
+ * `shared: true` (TASK-1248), so anything else keeps today's rule.
  */
 function agentsOf(answer: unknown) {
   const raw = isRecord(answer) ? answer['agents'] : undefined;
   if (!Array.isArray(raw)) throw new UnreadableAnswer('agents:list-for-user');
   return raw.flatMap((a: unknown) => {
     if (!isRecord(a)) return [];
-    const { id, ownerId, ownerType, visibility, createdAt, displayName } = a;
+    const { id, ownerId, ownerType, visibility, shared, createdAt, displayName } = a;
     if (typeof id !== 'string' || id.length === 0) return [];
     if (typeof ownerId !== 'string' || typeof ownerType !== 'string' || typeof visibility !== 'string') return [];
     return [
@@ -249,6 +254,7 @@ function agentsOf(answer: unknown) {
         ownerId,
         ownerType,
         visibility,
+        ...(typeof shared === 'boolean' ? { shared } : {}),
         createdAt: createdAt instanceof Date ? createdAt : new Date(Number.NaN),
         displayName: typeof displayName === 'string' ? displayName : '',
       },
@@ -261,7 +267,8 @@ function agentsOf(answer: unknown) {
  * team's (`teamIds` empty). Since TASK-1246 that list also holds personal
  * agents only SHARED with them (another person's, as owner or audience); every
  * caller narrows it with turn.ts `pickPersonalAgent`, which keeps only
- * `ownerId === userId`, so a DM never reaches an agent that is merely shared.
+ * `ownerId === userId`, so a DM never reaches an agent that is merely shared
+ * with them, nor one of their own that is shared with other people (TASK-1248).
  */
 async function ownAgents(bus: HookBus, ctx: AgentContext, userId: string) {
   const listed = await bus.call<{ userId: string; teamIds: string[] }, unknown>('agents:list-for-user', ctx, {
@@ -278,37 +285,86 @@ export interface DmAgent {
   name: string;
 }
 
+/** Where a DM from one person goes (`personalAgentFor`). */
+export interface DmRouting {
+  /** The personal agent it reaches; null when none may answer. */
+  agent: DmAgent | null;
+  /**
+   * They made at least one personal agent (`ownerType 'user'`, `visibility
+   * 'personal'`, `ownerId` theirs) that is shared with other people
+   * (`shared: true`, TASK-1248). When none answers, they are told their
+   * agents are shared, not that they have none.
+   */
+  ownSharedAgents: boolean;
+}
+
 /**
- * The agent a DM from `userId` reaches (turn.ts `pickPersonalAgent`): the
- * personal agent they chose for their DMs (TASK-1238, dm-agents.ts) while
- * AX still lists it as their own personal agent; else their oldest; null
- * when they have none. A stored choice is never trusted as stored: one
- * naming an agent that was deleted, or isn't theirs, or isn't personal, is
- * passed over for the oldest. The choice is read before the list, so a
- * delete between the two is still caught by the list.
+ * The person's DM choice, then their agents (in that order: a delete or a
+ * share between the two is still caught by the list), and where a DM from
+ * them goes. Either read failing throws.
+ */
+async function readDmRouting(bus: HookBus, ctx: AgentContext, userId: string, choices: Pick<DmAgentStore, 'get'>) {
+  const chosen = await choices.get(userId);
+  const listed = await ownAgents(bus, ctx, userId);
+  const id = pickPersonalAgent(listed, userId, chosen);
+  const routing: DmRouting = {
+    agent: id === null ? null : { id, name: listed.find((a) => a.id === id)?.displayName ?? '' },
+    ownSharedAgents: listed.some(
+      (a) => a.ownerType === 'user' && a.visibility === 'personal' && a.ownerId === userId && a.shared === true,
+    ),
+  };
+  return { listed, routing };
+}
+
+/**
+ * Where a DM from `userId` goes (turn.ts `pickPersonalAgent`): the personal
+ * agent they chose for their DMs (TASK-1238, dm-agents.ts) while AX still
+ * lists it as their own "Just me" personal agent; else their oldest Just-me
+ * one; else none. A personal agent shared with other people never answers
+ * a DM, chosen or not (TASK-1248), and `ownSharedAgents` says whether they
+ * made one. A stored choice is never trusted as stored: one naming an agent
+ * that was deleted, or isn't theirs, or isn't personal, or is shared now, is
+ * passed over for the oldest.
  *
  * Either read failing throws, and nothing falls back: a DM sent to the
  * oldest because the choice couldn't be read would put the person's words
  * into the agent they moved away from. The agent settings ask this too
- * (agent-routes.ts), so the two can't disagree.
+ * (agent-routes.ts, through `dmChoiceFor`), so the two can't disagree.
  */
 export async function personalAgentFor(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,
   choices: Pick<DmAgentStore, 'get'>,
-): Promise<DmAgent | null> {
-  const chosen = await choices.get(userId);
-  const listed = await ownAgents(bus, ctx, userId);
-  const id = pickPersonalAgent(listed, userId, chosen);
-  if (id === null) return null;
-  return { id, name: listed.find((a) => a.id === id)?.displayName ?? '' };
+): Promise<DmRouting> {
+  return (await readDmRouting(bus, ctx, userId, choices)).routing;
 }
 
 /**
- * Whether `agentId` is `userId`'s own personal agent, by the list and the
- * rule `personalAgentFor` reads a choice with: so a choice the settings
- * write (agent-routes.ts) is one the next DM honors.
+ * What a Just-me agent's Slack settings say about their reader's DMs
+ * (agent-routes.ts): where a DM from `userId` goes (`personalAgentFor`), and
+ * whether `agentId` is one they may choose for it (`choosable`, the DM agent
+ * route's own question, `isOwnPersonalAgent`), from ONE read of their choice
+ * and their agents, so the page and the next DM can't disagree and the page
+ * never offers a choice that route refuses. A co-owner of someone else's
+ * Just-me agent (TASK-1246) may not choose it (TASK-1248).
+ */
+export async function dmChoiceFor(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  agentId: string,
+  choices: Pick<DmAgentStore, 'get'>,
+): Promise<DmRouting & { choosable: boolean }> {
+  const { listed, routing } = await readDmRouting(bus, ctx, userId, choices);
+  return { ...routing, choosable: pickPersonalAgent(listed, userId, agentId) === agentId };
+}
+
+/**
+ * Whether `agentId` is `userId`'s own Just-me personal agent, by the list
+ * and the rule `personalAgentFor` reads a choice with: so a choice the
+ * settings write (agent-routes.ts) is one the next DM honors. Never one
+ * shared with other people (TASK-1248), nor one they only co-own.
  */
 export async function isOwnPersonalAgent(
   bus: HookBus,
@@ -454,20 +510,23 @@ async function routeDm(
   }
 
   const ctx = lookupCtx(userId);
-  let agentId: string | null;
+  let routing: DmRouting;
   try {
-    // The one they chose, while it is still their own personal agent, else their oldest (TASK-1238).
-    agentId = (await personalAgentFor(d.bus, ctx, userId, d.dmAgents))?.id ?? null;
+    // The one they chose, while it is still their own Just-me personal agent, else their oldest (TASK-1238).
+    routing = await personalAgentFor(d.bus, ctx, userId, d.dmAgents);
   } catch (err) {
     // Their agents or their choice couldn't be read: "try again", and never the oldest instead.
     await failed('agents', err);
     return;
   }
-  if (agentId === null) {
-    log('info', 'slack_no_personal_agent');
-    await say(COPY.noAgent(d.publicOrigin));
+  if (routing.agent === null) {
+    // No agent of theirs may answer: they have none, or every one they made is shared with other
+    // people, and a shared agent answers no DMs (TASK-1248). Those are told so, not to make one.
+    log('info', 'slack_no_personal_agent', { sharedOnly: routing.ownSharedAgents });
+    await say(routing.ownSharedAgents ? COPY.agentsShared(d.publicOrigin) : COPY.noAgent(d.publicOrigin));
     return;
   }
+  const agentId = routing.agent.id;
 
   let conversationId: string;
   try {
