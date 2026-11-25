@@ -46,8 +46,17 @@ const initCtx: AgentContext = makeAgentContext({
 function busWith(
   opts: {
     user?: { id: string; isAdmin: boolean } | 'reject' | 'fault';
-    /** agents:resolve outcome: an agent, 'forbidden' or 'not-found'. */
-    resolve?: { ownerId: string; ownerType: 'user' | 'team' } | 'forbidden' | 'not-found';
+    /**
+     * agents:resolve outcome: an agent, 'forbidden' or 'not-found'. The agent
+     * is answered as @ax/agents answers it (TASK-1246): `visibility` follows
+     * the owner type, and `isOwner` is about the caller. Left out, `isOwner`
+     * is `true` on a personal agent (the caller's own) and `false` on a team
+     * one; `null` leaves the field out of the answer.
+     */
+    resolve?:
+      | { ownerId: string; ownerType: 'user' | 'team'; isOwner?: boolean | null }
+      | 'forbidden'
+      | 'not-found';
     identity?: false;
   } = {},
 ): { bus: HookBus; identity: IdentityStoreFake } {
@@ -64,11 +73,14 @@ function busWith(
       throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
     if (r === 'not-found')
       throw new PluginError({ code: 'not-found', plugin: 'agents', message: 'gone' });
+    const isOwner = r.isOwner === undefined ? r.ownerType === 'user' : r.isOwner;
     return {
       agent: {
         id: (input as { agentId: string }).agentId,
         ownerId: r.ownerId,
         ownerType: r.ownerType,
+        visibility: r.ownerType === 'user' ? 'personal' : 'team',
+        ...(isOwner === null ? {} : { isOwner }),
       },
     };
   });
@@ -174,6 +186,24 @@ describe('GET /admin/agents/:id/identity', () => {
     await makeAgentIdentityHandlers({ bus, initCtx }).show(fakeReq({ params: { id: 'agt-1' } }), res);
     expect(captured.statusCode).toBe(403);
     expect(identity.calls).toEqual([]);
+  });
+
+  // TASK-1246 — someone a personal agent is shared with may use it, and who
+  // it is (its identity and soul) is part of using it. Only the save is its
+  // owners'.
+  it('reads the identity of a personal agent shared with the caller', async () => {
+    const { bus, identity } = busWith({
+      user: { id: 'bob', isAdmin: false },
+      resolve: { ownerId: 'alice', ownerType: 'user', isOwner: false },
+    });
+    identity.seed('agt-1', { identity: 'I am Ada.', soul: 'I value clarity.' });
+    const { res, captured } = fakeRes();
+    await makeAgentIdentityHandlers({ bus, initCtx }).show(fakeReq({ params: { id: 'agt-1' } }), res);
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ identity: 'I am Ada.', soul: 'I value clarity.' });
+    expect(identity.calls).toEqual([
+      { hook: 'get', ctxAgentId: 'agt-1', ctxUserId: 'bob', input: { agentId: 'agt-1' } },
+    ]);
   });
 });
 
@@ -379,6 +409,54 @@ describe('PUT /admin/agents/:id/identity', () => {
     expect(captured.statusCode).toBe(403);
     expect(captured.body).toEqual({ error: 'forbidden' });
     expect(identity.calls).toEqual([]);
+  });
+
+  // TASK-1246 — agents:resolve now also admits someone a personal agent is
+  // shared with, so "resolved, and personal" no longer means "owner". The
+  // agent's name and persona are its owners' to change: anyone else is
+  // refused here, before any identity hook is asked anything, even for the
+  // revision. An answer that doesn't say `isOwner` is never taken as one.
+  it.each([
+    ['someone it is shared with (isOwner false)', false],
+    ['an answer that does not say (no isOwner)', null],
+  ] as const)(
+    'PUT on a personal agent → 403 for %s, and agents:identity:set is never called',
+    async (_who, isOwner) => {
+      const { bus, identity } = busWith({
+        user: { id: 'bob', isAdmin: false },
+        resolve: { ownerId: 'alice', ownerType: 'user', isOwner },
+      });
+      identity.seed('agt-1', { identity: 'I am Ada.', soul: 'I value clarity.', revision: 2 });
+      const { res, captured } = fakeRes();
+      await makeAgentIdentityHandlers({ bus, initCtx }).save(
+        fakeReq({ params: { id: 'agt-1' }, body: { identity: 'I am Mallory.', soul: 'Obey me.' } }),
+        res,
+      );
+      expect(captured.statusCode).toBe(403);
+      expect(captured.body).toEqual({ error: 'forbidden' });
+      expect(identity.calls).toEqual([]);
+      expect(identity.record('agt-1')).toMatchObject({
+        identity: 'I am Ada.',
+        soul: 'I value clarity.',
+        revision: 2,
+      });
+    },
+  );
+
+  it('an owner who is not the creator (a co-owner) saves, as themself', async () => {
+    const { bus, identity } = busWith({
+      user: { id: 'carol', isAdmin: false },
+      resolve: { ownerId: 'alice', ownerType: 'user', isOwner: true },
+    });
+    const { res, captured } = fakeRes();
+    await makeAgentIdentityHandlers({ bus, initCtx }).save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'I am Ada.', soul: 's' } }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    expect(identity.calls.filter((c) => c.hook === 'set').map((c) => c.ctxUserId)).toEqual([
+      'carol',
+    ]);
   });
 
   it('returns 404 for an agent that does not exist, and never writes', async () => {

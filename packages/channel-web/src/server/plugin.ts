@@ -286,10 +286,11 @@ export function createChannelWebServerPlugin(
           // TASK-54 — Revoke takes a site off the agent so it is not re-loaded
           // into the next session's allowlist. Since TASK-1212 that is for
           // everyone who uses the agent, and host-grants checks no ACL, so the
-          // routes ask first: a personal agent's owner (agents:resolve), or a
-          // team agent's managers (agents:can-manage-connectors, from its
-          // settings only; Settings › Sites refuses team agents). Degrades to
-          // an idempotent no-op without host-grants.
+          // routes ask first: a personal agent's owners (agents:resolve's
+          // `isOwner`, TASK-1246), or a team agent's managers
+          // (agents:can-manage-connectors, from its settings only; Settings ›
+          // Sites refuses team agents). Degrades to an idempotent no-op
+          // without host-grants.
           hook: 'host-grants:revoke',
           degradation:
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
@@ -993,9 +994,11 @@ export function createChannelWebServerPlugin(
 
       // TASK-142 — the admin identity editor. GET reads the agent's identity
       // and soul (agents:identity:get); PUT saves them (agents:identity:set,
-      // scanned and compare-and-set by @ax/agents — TASK-989). Owner-scoped
-      // via agents:resolve; CSRF-gated on PUT by @ax/http-server. Ships with
-      // its consumer (AgentForm's identity fields) in the same PR (I3).
+      // scanned and compare-and-set by @ax/agents — TASK-989). Gated by
+      // agents:resolve, and a PUT by its `isOwner` too (TASK-1246: someone a
+      // personal agent is shared with reads, never saves); CSRF-gated on PUT
+      // by @ax/http-server. Ships with its consumer (AgentForm's identity
+      // fields) in the same PR (I3).
       const agentIdentity = makeAgentIdentityHandlers({ bus, initCtx });
       for (const [method, handler] of [
         ['GET', agentIdentity.show],

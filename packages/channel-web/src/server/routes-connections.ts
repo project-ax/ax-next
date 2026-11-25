@@ -19,6 +19,7 @@
  * authenticated, CSRF-gated route is its only caller.
  */
 import { answerRequireUserFailure, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import { ownsPersonalAgent } from './agent-ownership.js';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
 
 interface AuthRequireUserInput {
@@ -42,6 +43,11 @@ interface AgentsResolveOutput {
     skillAttachments: AgentSkillAttachment[];
     /** Optional: a duck-typed read. Only an explicit `personal` counts as one. */
     visibility?: 'personal' | 'team';
+    /**
+     * TASK-1246 — is the caller one of this agent's owners? Read only through
+     * `ownsPersonalAgent`, where only an explicit `true` counts.
+     */
+    isOwner?: boolean;
   };
 }
 
@@ -229,22 +235,26 @@ async function resolveAgentOr404(
 }
 
 /**
- * TASK-1212 — Settings › Sites adds and removes PERSONAL agents' sites only.
- * Anything else is 403 `team-agent`, answered here and `true` returned.
+ * TASK-1212 — Settings › Sites adds and removes PERSONAL agents' sites only,
+ * and TASK-1246 — only for one of the agent's owners. Anything else is
+ * refused here, `true` returned: 403 `forbidden` on a personal agent the
+ * caller doesn't own, 403 `team-agent` on any other agent.
  *
- * A site is the agent's: on a team agent one Remove takes it away from every
- * member, and host-grants checks no ACL. On a personal agent, agents:resolve
- * has already admitted its owner and nobody else, so "personal" is the whole
- * check. A team agent's sites are managed in that agent's settings, behind
- * its manage check. An agent that does not say it is personal is refused too:
- * "personal" is the one answer that skips a check, so it is never assumed.
+ * A site is the agent's: adding one widens what every run of it reaches, and
+ * removing one narrows it for everyone, and host-grants checks no ACL. Since
+ * sharing, agents:resolve also admits the people a personal agent is shared
+ * with, so "personal" is no longer the whole check: its answer has to say the
+ * caller is an owner ({@link ownsPersonalAgent}). A team agent's sites are
+ * managed in that agent's settings, behind its manage check. An agent that
+ * does not say it is personal is refused too: "an owned personal agent" is
+ * the one answer that skips a check, so it is never assumed.
  */
-function refusedUnlessPersonal(
+function refusedUnlessOwnedPersonal(
   agent: AgentsResolveOutput['agent'],
   res: RouteResponse,
 ): boolean {
-  if (agent.visibility === 'personal') return false;
-  res.status(403).json({ error: 'team-agent' });
+  if (ownsPersonalAgent(agent)) return false;
+  res.status(403).json({ error: agent.visibility === 'personal' ? 'forbidden' : 'team-agent' });
   return true;
 }
 
@@ -432,12 +442,14 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
     // host-grants:*. A site is the AGENT's (TASK-1212): list and revoke are
     // keyed by agent, and grant's ownerUserId (SERVER-FORCED from auth) records
     // who added it. host-grants checks no ACL, so add and remove here are for
-    // personal agents only (403 `team-agent` otherwise; a team agent's sites are
-    // managed in its settings, behind its manage check). host-grants:* are
-    // host-internal hooks (the untrusted runner can never grant/revoke its own
-    // persistent egress — same reasoning as proxy:add-host); this CSRF-gated
-    // route is the only settings caller. Conditionally called + hasService-gated:
-    // a preset without @ax/host-grants degrades to empty / idempotent-204.
+    // a personal agent's owners only (TASK-1246: 403 `forbidden` for someone
+    // it is only shared with; 403 `team-agent` for any other agent — a team
+    // agent's sites are managed in its settings, behind its manage check).
+    // host-grants:* are host-internal hooks (the untrusted runner can never
+    // grant/revoke its own persistent egress — same reasoning as
+    // proxy:add-host); this CSRF-gated route is the only settings caller.
+    // Conditionally called + hasService-gated: a preset without
+    // @ax/host-grants degrades to empty / idempotent-204.
 
     /**
      * POST /api/chat/allowed-sites/:agentId  body: { host }
@@ -451,7 +463,8 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
      * Security (invariant #5; the one widening surface here): identity is the
      * AUTHENTICATED user (auth:require-user → 401); the agent ACL is enforced
      * (agents:resolve → 404, no existence leak); a personal agent only (403
-     * `team-agent`, TASK-1212); ownerUserId is SERVER-FORCED from auth — never
+     * `team-agent`, TASK-1212), and only for one of its owners (403
+     * `forbidden`, TASK-1246); ownerUserId is SERVER-FORCED from auth — never
      * the body (no cross-user grant / IDOR). The browser-
      * supplied host is UNTRUSTED — the @ax/host-grants store is the authoritative
      * validator (assertValidHost: exact-match hostname only, no wildcards/ports/
@@ -472,8 +485,9 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
       // ACL: a not-accessible agent → 404 (no cross-user grant, no leak).
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
-      // Before any host-grants call: a team agent's sites are not this page's.
-      if (refusedUnlessPersonal(agent, res)) return;
+      // Before any host-grants call: a team agent's sites are not this page's,
+      // and a personal agent's are its owners' (TASK-1246).
+      if (refusedUnlessOwnedPersonal(agent, res)) return;
 
       let host: string;
       try {
@@ -530,8 +544,11 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
      *
      * TASK-1212 — a site is the agent's, so on a team agent these rows are not
      * that agent's list: a teammate may have added others. Settings › Sites
-     * shows the personal agents' rows only, where the owner is the only one
-     * who can add, so their adds ARE the agent's list.
+     * shows the personal agents' rows only. TASK-1246 — that no longer makes
+     * them the agent's whole list on a SHARED personal agent: a co-owner can
+     * add one here too, and anyone it is shared with can keep one from a chat
+     * ("Always for this agent", `routes-allow-host.ts`). The per-agent read
+     * below (`host-grants:list`) is the agent's list.
      */
     async listAllowedSitesForUser(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -589,8 +606,9 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
      *
      * TASK-1212 — the revoke takes the site off the AGENT, for everyone who
      * uses it, whoever added it. So this route removes a personal agent's
-     * sites only (its owner is the only one agents:resolve admits) and answers
-     * 403 `team-agent` for anything else: a team agent's site is for its
+     * sites only, and TASK-1246 — only for one of its owners: agents:resolve
+     * also admits the people it is shared with, and they get 403 `forbidden`.
+     * Anything else is 403 `team-agent`: a team agent's site is for its
      * owners and team admins to remove, in that agent's settings. */
     async revokeAllowedSite(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -605,8 +623,9 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
       // Before any host-grants call: on a team agent this would remove the
-      // site for the whole team, and this route has no manage check.
-      if (refusedUnlessPersonal(agent, res)) return;
+      // site for the whole team, and this route has no manage check. On a
+      // personal agent, only an owner removes one (TASK-1246).
+      if (refusedUnlessOwnedPersonal(agent, res)) return;
       if (bus.hasService('host-grants:revoke')) {
         await bus.call<HostGrantsRevokeInput, HostGrantsRevokeOutput>(
           'host-grants:revoke',

@@ -160,6 +160,16 @@
  *     Spelled out because the blanket claim this comment used to make —
  *     "every per-agent read is gated by `agents:resolve`" — was not true, and
  *     a security note nobody can check against the code is worse than none.
+ *   - a settings WRITE on a personal agent — its Instructions
+ *     (`memory/rules`), its `abilities`, a connector tool's `tool-verdicts`,
+ *     a site taken back through `grants/revoke` — also needs that resolve's
+ *     answer to say the caller is one of its owners (`isOwner`, TASK-1246;
+ *     `agent-ownership.ts`). `agents:resolve` also admits the people a
+ *     personal agent is shared with: they may use it, never change it (403
+ *     `forbidden` before any write hook; a site revoke asks the manage check
+ *     instead). The connector writes (`connectors`, `…/key`) already ask
+ *     `@ax/agents`, whose hooks answer for its owners. Team agents keep
+ *     their rules.
  *   - transcript text is UNTRUSTED model output. It rides as a plain string and
  *     React renders it as text; we never build markup from it here.
  *   - I2 — no cross-plugin imports. Every hook is a duck-typed `bus.call`, and
@@ -308,6 +318,9 @@ import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // door channel-web reads and writes them through (shared with the admin
 // identity editor).
 import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
+// TASK-1246 — the one reading of `agents:resolve`'s `isOwner` for a write
+// (strict) and of `agents:list-for-user`'s for the roster (lenient).
+import { hideAgentsSharedWithMe, ownsPersonalAgent } from './agent-ownership.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
 // than restated so the host and the browser cannot drift about where that
 // sentence ends (invariant 4) — the module is pure constants and one pure
@@ -408,6 +421,13 @@ interface ResolvedAgent {
   /** TASK-739 — connectors removed from THIS agent (legacy-owned). */
   connectorExclusions?: string[];
   visibility?: 'personal' | 'team';
+  /**
+   * TASK-1246 — is the caller one of this agent's owners? `agents:resolve`
+   * also admits the people a personal agent is shared with (`false`), so a
+   * personal agent's settings writes read this, through `ownsPersonalAgent`,
+   * where only an explicit `true` counts. Always `false` on a team agent.
+   */
+  isOwner?: boolean;
   /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
   runner?: string;
 }
@@ -641,6 +661,10 @@ interface AgentsListForUserOutput {
     displayName: string;
     connectorAttachments?: string[];
     connectorExclusions?: string[];
+    /** TASK-1246 — read only by `hideAgentsSharedWithMe` (`listAgents`). */
+    visibility?: 'personal' | 'team';
+    /** TASK-1246 — `false` on a personal agent merely shared with the user. */
+    isOwner?: boolean;
   }>;
 }
 
@@ -2354,6 +2378,28 @@ async function resolveAgentOr404(
     res.status(503).json({ error: 'agent-unavailable' });
     return null;
   }
+}
+
+/**
+ * TASK-1246 — the settings writes any member of a team agent may make (its
+ * Instructions, its abilities, a connector tool's verdict) are, on a personal
+ * agent, its owners' only. Anyone else is answered 403 `forbidden` here, and
+ * `true` returned, BEFORE any write hook runs (or any store is read for one).
+ *
+ * `agents:resolve` used to admit a personal agent's owner and nobody else, so
+ * these routes took "resolved" as "may write". It now also admits the people a
+ * personal agent is shared with, and they may use it, never change it. The
+ * caller passed `agents:resolve`, so the agent's existence is no secret from
+ * them: a 403, not a 404.
+ *
+ * Fails closed: an explicit `team` is the one answer that lets a non-owner
+ * write, so an agent that says neither `team` nor (`personal` and
+ * `isOwner: true`) is refused, never assumed to be either.
+ */
+function refusedUnlessOwnerOrTeam(agent: ResolvedAgent, res: RouteResponse): boolean {
+  if (agent.visibility === 'team' || ownsPersonalAgent(agent)) return false;
+  res.status(403).json({ error: 'forbidden' });
+  return true;
 }
 
 /** The instant a conversation was last touched, as a sortable epoch ms. */
@@ -4735,8 +4781,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    *
    * The `userId` on this ctx stays the AUTHENTICATED caller and never a
    * lookup of some notional owner: the memory and identity hooks authorize on
-   * it themselves (personal owner or team member — the same answer
-   * `agents:resolve` gave).
+   * it themselves. Since TASK-1246 that is not always the answer
+   * `agents:resolve` gave: resolve also admits the people a personal agent is
+   * shared with, the identity hooks let them read but only an owner write a
+   * personal agent, and memory still admits a personal agent's creator only.
    *
    * The ctx's scratch root is inherited from `initCtx` so the CLI preset —
    * which writes memory to the host filesystem — lands in the same root
@@ -5227,9 +5275,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
   /**
    * TASK-813 — may this caller sign in, or add a team key, ON this agent?
-   * Display only. Never asked for a personal agent (always false: its
-   * credentials live on the person). Absent or failing → false, logged by
-   * error name only — the write asks again and fails closed on its own.
+   * Display only. Never asked for a personal agent (always false there: its
+   * sign-in or key is stored on the agent too, since slice 3, but choosing
+   * it is its owners' question — {@link askMayStoreOnAgent} — not a team
+   * admin's). Absent or failing → false, logged by error name only — the
+   * write asks again and fails closed on its own.
    */
   async function sharedCredentialsAllowed(
     agentId: string,
@@ -5250,22 +5300,30 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
   /**
    * TASK-798 / slice 3 — the setup a `needs-sign-in` row offers THIS caller.
-   * A sign-in or key on a team agent is stored on the agent (everyone acts
-   * as it), so only someone who may store a credential there gets **Sign in
-   * again** / **Add key** — since TASK-813 an admin of the owning team only
-   * (`sharedCredentials`, not `manageable`: a workspace admin may add a
-   * connector but not choose the team's account). Anyone else is told to ask
-   * the owner. On a personal agent only its owner reads the list, and the
-   * owner chooses.
+   * A sign-in or key is stored ON the agent (everyone who uses it acts as
+   * it), so only someone who may choose the agent's account gets **Sign in
+   * again** / **Add key**. Anyone else is told to ask the owner:
+   *
+   *   - a team agent: an admin of the owning team only (TASK-813,
+   *     `sharedCredentials`, not `manageable`: a workspace admin may add a
+   *     connector but not choose the team's account);
+   *   - a personal agent: one of its owners (TASK-1246). `agents:resolve`
+   *     also admits the people it is shared with, and they get `ask-owner`.
+   *
+   * Display only: the writes ask @ax/agents again ({@link askMayStoreOnAgent},
+   * and @ax/mcp-oauth for a sign-in). An agent that says neither keeps the
+   * setup the read gave it, as before.
    */
   function setupForCaller(
     setup: AgentConnectorSetup | undefined,
-    teamAgent: boolean,
+    agent: ResolvedAgent,
     sharedCredentials: boolean,
   ): AgentConnectorSetup | undefined {
-    return (setup === 'sign-in' || setup === 'add-key') && teamAgent && !sharedCredentials
-      ? 'ask-owner'
-      : setup;
+    const mayChooseAccount =
+      agent.visibility === 'team'
+        ? sharedCredentials
+        : agent.visibility !== 'personal' || ownsPersonalAgent(agent);
+    return (setup === 'sign-in' || setup === 'add-key') && !mayChooseAccount ? 'ask-owner' : setup;
   }
 
   /**
@@ -5768,7 +5826,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       initCtx,
       { userId, teamIds },
     );
-    return out.agents;
+    // TASK-1246 — the list also carries personal agents merely shared with
+    // the user. `/state`, `/route` and `/tasks` read this roster as "your
+    // agents", and the picker (`GET /api/chat/agents`) hides them the same
+    // way, so they stay off it until the UI can tell the two apart (card B).
+    return hideAgentsSharedWithMe(out.agents);
   }
 
   /**
@@ -6653,20 +6715,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * only, like the helper it leans on.
    *
    * A site is the AGENT's: on a team agent one Remove takes it away from every
-   * member, and `host-grants:revoke` checks no ACL. A personal agent's owner
-   * may (agents:resolve admits nobody else). Any other agent, a team agent or
-   * one whose visibility we were not told, takes the rule its connectors'
-   * Remove already uses, `agents:can-manage-connectors` asked as the person:
-   * one rule for one settings page. Fails closed through
-   * {@link connectorsManageable}. The revoke route asks again, and there a
-   * fault is not reported as a "no".
+   * member, and `host-grants:revoke` checks no ACL. One of a personal agent's
+   * owners may, without asking anything more ({@link ownsPersonalAgent}:
+   * TASK-1246 — agents:resolve also admits the people it is shared with, so
+   * "personal" alone no longer says "owner"). Anyone else — someone a personal
+   * agent is shared with, a team agent's member, or a reader of an agent whose
+   * visibility we were not told — takes the rule its connectors' Remove
+   * already uses, `agents:can-manage-connectors` asked as the person: one rule
+   * for one settings page. Fails closed through {@link connectorsManageable}.
+   * The revoke route asks again, and there a fault is not reported as a "no".
    */
   async function sitesRemovable(
     agent: ResolvedAgent,
     actor: { id: string; isAdmin: boolean },
   ): Promise<boolean> {
     if (!bus.hasService('host-grants:revoke')) return false;
-    if (agent.visibility === 'personal') return true;
+    if (ownsPersonalAgent(agent)) return true;
     return connectorsManageable(agent.id, actor);
   }
 
@@ -8620,8 +8684,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * is reported as one rather than dressed up as success.
      *
      * A site goes for everyone who uses the agent (TASK-1212), so taking one
-     * back is for a personal agent's owner or a team agent's managers. A
-     * plain member is 403 `forbidden` and nothing is removed.
+     * back is for a personal agent's owners or a team agent's managers. A
+     * plain member, or someone a personal agent is only shared with
+     * (TASK-1246), is 403 `forbidden` and nothing is removed.
      */
     async revokeGrant(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -8654,19 +8719,22 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // stands between a team's plain member and every teammate's site, and
       // nothing past it runs without an explicit yes.
       //
-      // A personal agent needs no further question: agents:resolve above
-      // admitted its owner and nobody else. Any other agent (a team agent, or
-      // one whose visibility we were not told) takes the agent's manage check,
-      // asked as the person, the rule the rail's Revoke was drawn from. Its
-      // one "no" is `allowed: false`, a 403. A missing check is 503 and a
-      // fault rethrows to the router's 5xx, because a fault is not a denial
-      // (TASK-803, and the hook's own contract). Neither removes anything.
+      // One of a personal agent's owners needs no further question: the
+      // resolve above said so (`isOwner`). It is no longer enough that the
+      // agent is personal: since TASK-1246 agents:resolve also admits the
+      // people it is shared with. Anyone else — one of those, a team agent's
+      // member, or anyone on an agent whose visibility we were not told —
+      // takes the agent's manage check, asked as the person, the rule the
+      // rail's Revoke was drawn from. Its one "no" is `allowed: false`, a 403.
+      // A missing check is 503 and a fault rethrows to the router's 5xx,
+      // because a fault is not a denial (TASK-803, and the hook's own
+      // contract). Neither removes anything.
       if (ref.grant === 'site') {
         if (!bus.hasService('host-grants:revoke')) {
           res.status(503).json({ error: 'grants-unavailable' });
           return;
         }
-        if (agent.visibility !== 'personal') {
+        if (!ownsPersonalAgent(agent)) {
           if (!bus.hasService('agents:can-manage-connectors')) {
             res.status(503).json({ error: 'grants-unavailable' });
             return;
@@ -8723,10 +8791,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * abilities" switches (TASK-738).
      *
      * ACL is `agents:resolve`, and a refusal is a 404 like every per-agent
-     * route here. Read and write share that gate on purpose: the people
-     * `agents:resolve` lets in (the owner of a personal agent, a member of a
-     * team agent's team) are exactly the people `@ax/agents`' write rule lets
-     * edit it, so a separate 403 branch would be unreachable.
+     * route here. Anyone it lets in reads the switches: a personal agent's
+     * owners and the people it is shared with, a team agent's members. The
+     * write is narrower (TASK-1246): on a personal agent only its owners flip
+     * one, so someone it is only shared with gets a 403 there.
      */
     async abilities(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -8760,6 +8828,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * deployment's own rules say — it can never loosen past them. The answer
      * is the re-read state, so the browser shows what the store holds rather
      * than what it asked for.
+     *
+     * A switch governs every run of the agent, so on a personal agent only
+     * its owners flip one (TASK-1246, {@link refusedUnlessOwnerOrTeam}: 403
+     * before the store is touched); any member of a team agent still may.
      */
     async setAbility(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -8771,6 +8843,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
+      if (refusedUnlessOwnerOrTeam(agent, res)) return;
       if (
         !bus.hasService('tool-policy:set-agent-override') ||
         !bus.hasService('tool-policy:list-agent-overrides')
@@ -8853,7 +8926,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       ]);
       res.status(200).json({
         connectors: rows.map((r) => {
-          const setup = setupForCaller(health.setup.get(r.id), teamAgent, sharedCredentials);
+          const setup = setupForCaller(health.setup.get(r.id), agent, sharedCredentials);
           const signedIn = health.signedIn.get(r.id);
           return {
             ...r,
@@ -8987,11 +9060,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * once never lose either write) and owns the rule (TASK-798) that on a
      * team agent only its owner (a team admin) or a workspace admin may
      * attach at all; its refusal is a 403 here. This route ASKS @ax/agents
-     * the TASK-798 question up front on a team agent, so a member's request
-     * never makes the host read or write a credential on their behalf. That
-     * ask (TASK-803) is a 403 only for the hook's explicit `allowed: false`;
-     * a fault propagates (5xx) and a missing hook is a 503, so a person is
-     * never told "forbidden" about a question that was never answered.
+     * the TASK-798 question up front on a team agent, and (TASK-1246) on a
+     * personal agent the caller doesn't own (someone it is only shared
+     * with), so neither's request ever makes the host read or write a
+     * credential on their behalf. That ask (TASK-803) is a 403 only for the
+     * hook's explicit `allowed: false`; a fault propagates (5xx) and a
+     * missing hook is a 503, so a person is never told "forbidden" about a
+     * question that was never answered.
      *
      * A key write is further gated, before anything is written, on whoever
      * may choose the agent's account ({@link askMayStoreOnAgent}: a team
@@ -9023,11 +9098,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const teamAgent = agent.visibility === 'team';
       // TASK-798 — refuse a team agent's plain member before anything below
       // reads or writes a credential for them. The hook decides again.
+      // TASK-1246 — the same for someone a personal agent is only shared
+      // with: agents:resolve admits them too, but only its owners add to it
+      // (a workspace admin too: the hook's own bypass, asked with the admin
+      // bit). Its owners skip the ask, as before.
       // TASK-803 — 403 ONLY on the hook's explicit `allowed: false`. A fault
       // (a rejection, a reply with no verdict) rethrows so the router answers
       // 5xx and logs it, and a missing hook is 503 — never "forbidden". All
       // three still stop here: nothing below runs without a yes.
-      if (teamAgent && !actor.isAdmin) {
+      const askFirst = teamAgent
+        ? !actor.isAdmin
+        : agent.visibility === 'personal' && !ownsPersonalAgent(agent);
+      if (askFirst) {
         if (!bus.hasService('agents:can-manage-connectors')) {
           res.status(503).json({ error: 'connectors-unavailable' });
           return;
@@ -9607,6 +9689,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * says. The store refuses anything looser than the admin's ceiling, and
      * that refusal is a 409 carrying the ceiling — never "saved". The answer
      * is the store's re-read state, not an echo of the request.
+     *
+     * A verdict governs every run of the agent, so on a personal agent only
+     * its owners set one, a tighter one too (TASK-1246,
+     * {@link refusedUnlessOwnerOrTeam}: 403 before anything is read for the
+     * write); a team agent keeps its member rule and TASK-809's Allow check.
      */
     async setConnectorToolVerdict(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await authActorOr401(bus, initCtx, req, res);
@@ -9624,6 +9711,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
+      if (refusedUnlessOwnerOrTeam(agent, res)) return;
       if (!bus.hasService('connectors:list-effective')) {
         res.status(503).json({ error: 'connectors-unavailable' });
         return;
@@ -9780,8 +9868,14 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * `update_identity` tool refuses the section — and the admin identity
      * editor sends only identity and soul. The store caps them at 16,384
      * characters and runs them through `identity:scan` (fail closed) before
-     * saving, and its own access check — personal owner or team member — is
-     * the same answer `agents:resolve` gave below.
+     * saving, and its own access check is the same rule as the one here: a
+     * personal agent's owners or a team agent's members.
+     *
+     * TASK-1246 — `agents:resolve` also admits the people a personal agent is
+     * shared with. The Instructions steer every run of the agent, its owners'
+     * included, so they read them but never save them: 403 here
+     * ({@link refusedUnlessOwnerOrTeam}), before the identity hooks are asked
+     * anything.
      *
      * `body` is the user's own text. It is stored as text and rendered as
      * text; nothing here parses it, builds markup from it, or logs it.
@@ -9795,9 +9889,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
       // ACL first: a not-accessible agent → 404, no existence leak. Same
-      // posture as the read, and it runs BEFORE we touch any storage.
+      // posture as the read, and it runs BEFORE we touch any storage. Then
+      // the write's own rule: an owner of a personal agent, or a team member.
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
+      if (refusedUnlessOwnerOrTeam(agent, res)) return;
 
       let parsed: unknown;
       try {

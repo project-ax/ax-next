@@ -11,7 +11,8 @@
  *      tool namespaces, for a connector in THIS agent's effective list. A
  *      foreign namespace, `Bash`, or a malformed key never reaches the store.
  *   2. THE ACL. A caller `agents:resolve` refuses gets a 404 and nothing
- *      downstream runs.
+ *      downstream runs. Someone a personal agent is only shared with
+ *      (TASK-1246) gets a 403 on every PUT, whatever the verdict.
  *   3. THE SCREEN SAYS WHAT THE GATE DOES. `verdict` is the strictest of the
  *      agent's choice and the admin's ceiling; unknown values fail closed to
  *      `hold`; a choice the agent holds stays visible even when the server
@@ -111,6 +112,8 @@ const tool = (ns: string, name: string, extra: Partial<InventoryTool> = {}): Inv
 describe('connector details routes (mock bus)', () => {
   let bus: HookBus;
   let owners: Map<string, string>;
+  /** TASK-1246 — agentId → the people a personal agent is shared with. */
+  let sharedWith: Map<string, string[]>;
   let effective: Array<{
     summary: { id: string; name: string; keyMode?: 'personal' | 'workspace' };
     source: 'attached' | 'legacy-owned';
@@ -130,7 +133,11 @@ describe('connector details routes (mock bus)', () => {
   let setCalls: Array<Record<string, unknown>>;
   let setAnswer: (input: { toolKey: string; verdict: string }) => unknown;
   let listEffectiveCalls: number;
-  /** TASK-809 — the agent's visibility and the TASK-798 manage answer. */
+  /**
+   * TASK-809 — the agent's visibility and the TASK-798 manage answer.
+   * `personal` (the caller's own) unless a test says otherwise; `undefined`
+   * is an answer that doesn't say.
+   */
   let visibility: 'personal' | 'team' | undefined;
   let canManage: boolean;
   let canManageCalls: number;
@@ -141,9 +148,14 @@ describe('connector details routes (mock bus)', () => {
       if (!omit.includes(hook)) bus.registerService(hook, 'mock', async (_c, i) => fn(i));
     };
     reg('auth:require-user', async () => ({ user: { id: 'u1', isAdmin } }));
+    // @ax/agents' answer in miniature (TASK-1246): `owners` holds the agent's
+    // owner (on a team agent, a member) and `sharedWith` the people a
+    // personal agent is shared with; `isOwner` says which the caller is.
     reg('agents:resolve', async (i) => {
       const { agentId, userId } = i as { agentId: string; userId: string };
-      if (owners.get(agentId) !== userId) {
+      const owner = owners.get(agentId) === userId;
+      const shared = sharedWith.get(agentId)?.includes(userId) === true;
+      if (!owner && !shared) {
         throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
       }
       return {
@@ -151,7 +163,9 @@ describe('connector details routes (mock bus)', () => {
           id: agentId,
           connectorAttachments: ['linear'],
           connectorExclusions: [],
-          ...(visibility !== undefined && { visibility }),
+          ...(shared
+            ? { visibility: 'personal', isOwner: false }
+            : { ...(visibility !== undefined && { visibility }), isOwner: visibility !== 'team' }),
         },
       };
     });
@@ -199,6 +213,7 @@ describe('connector details routes (mock bus)', () => {
       ['a1', 'u1'],
       ['a-theirs', 'u2'],
     ]);
+    sharedWith = new Map([['a-shared', ['u1']]]);
     effective = [
       {
         summary: { id: 'gmail', name: 'Gmail', keyMode: 'workspace' },
@@ -244,7 +259,7 @@ describe('connector details routes (mock bus)', () => {
       return { ok: true };
     };
     listEffectiveCalls = 0;
-    visibility = undefined;
+    visibility = 'personal';
     canManage = false;
     canManageCalls = 0;
     isAdmin = false;
@@ -764,6 +779,36 @@ describe('connector details routes (mock bus)', () => {
       expect(setCalls).toHaveLength(0);
     });
 
+    // TASK-1246 — agents:resolve now also admits someone a personal agent is
+    // shared with, so "resolved, and personal" no longer means "owner". A
+    // verdict governs every run of the agent, its owners' included, so any
+    // verdict (a tighter one too) is an owner's: anyone else is 403 before
+    // the connector list or the verdict store is asked anything.
+    it.each(['allow', 'hold', 'deny'] as const)(
+      'a personal agent shared with the caller: %s → 403 forbidden, and no override is written',
+      async (verdict) => {
+        const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict }, 'linear', 'a-shared');
+        expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+        expect(setCalls).toHaveLength(0);
+        expect(listEffectiveCalls).toBe(0);
+        expect(defaultsCalls).toHaveLength(0);
+      },
+    );
+
+    it('someone a personal agent is shared with still reads its tools view', async () => {
+      const r = await get('linear', 'a-shared');
+      expect(r.statusCode).toBe(200);
+    });
+
+    it('an agent that does not say it is personal or a team agent is refused, never assumed to be either', async () => {
+      // `team` is the one answer that lets a non-owner choose, so silence
+      // never stands in for it.
+      visibility = undefined;
+      const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
+      expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+      expect(setCalls).toHaveLength(0);
+    });
+
     it("404s a connector that is not in this agent's list and never writes", async () => {
       effective = effective.filter((c) => c.summary.id !== 'linear');
       const r = await put({ toolKey: k(NS_LINEAR, 'search'), verdict: 'deny' });
@@ -812,7 +857,16 @@ describe('connector details routes against the real tool-policy', () => {
           if (agentId !== AGENT || userId !== 'u1') {
             throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'no' });
           }
-          return { agent: { id: AGENT, connectorAttachments: ['gmail'], connectorExclusions: [] } };
+          return {
+            agent: {
+              id: AGENT,
+              connectorAttachments: ['gmail'],
+              connectorExclusions: [],
+              // u1's own personal agent, as @ax/agents answers it (TASK-1246).
+              visibility: 'personal',
+              isOwner: true,
+            },
+          };
         },
         'connectors:list-effective': async () => ({
           connectors: [

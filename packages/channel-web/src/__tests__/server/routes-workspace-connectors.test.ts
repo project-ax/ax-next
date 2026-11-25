@@ -93,6 +93,8 @@ describe('agent connector routes', () => {
     connectorAttachments: string[];
     connectorExclusions: string[];
     visibility?: 'personal' | 'team';
+    /** TASK-1246 — `agents:resolve`'s answer about the caller: an owner? */
+    isOwner?: boolean;
     runner?: string;
   };
   let effective: Effective[];
@@ -751,12 +753,31 @@ describe('agent connector routes', () => {
         let byId = rowsById(await list());
         expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
         expect(byId.linear).toMatchObject({ setup: 'add-key' });
-        agentRow = { ...agentRow, visibility: 'personal' };
+        agentRow = { ...agentRow, visibility: 'personal', isOwner: true };
         canManage = 'deny';
         canSetShared = 'deny';
         byId = rowsById(await list());
         expect(byId.gmail).toMatchObject({ setup: 'sign-in' });
         expect(byId.linear).toMatchObject({ setup: 'add-key' });
+      });
+
+      // TASK-1246 — agents:resolve now also admits someone a personal agent
+      // is shared with. The sign-in and key are stored ON the agent and every
+      // run of it acts as them, so choosing them is its owners' call: anyone
+      // else is told to ask the owner, as a team agent's plain member is.
+      it('someone a personal agent is shared with: a missing sign-in or key is ask-owner, never sign-in', async () => {
+        registerHealth();
+        registerHas();
+        agentRow = { ...agentRow, visibility: 'personal', isOwner: false };
+        canManage = 'deny';
+        canSetShared = 'deny';
+        const r = await list();
+        expect(r.body).toMatchObject({ shared: false, manageable: false, sharedCredentials: false });
+        const byId = rowsById(r);
+        expect(byId.gmail).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
+        expect(byId.linear).toMatchObject({ health: 'needs-sign-in', setup: 'ask-owner' });
+        // A team agent's question is not asked about a personal agent.
+        expect(canSetSharedCalls).toEqual([]);
       });
 
       // TASK-813 — sign-in on a team agent follows sharedCredentials, NOT
@@ -1556,13 +1577,45 @@ describe('agent connector routes', () => {
     });
 
     // A plain `false` answer is still the one and only 403 (see the SECURITY
-    // test above), and an `isAdmin` caller never asks. Personal agents never
-    // ask either: the attach hook is the sole judge there.
-    it('a personal agent never asks the may-manage hook, so a broken hook cannot block its owner', async () => {
+    // test above), and an `isAdmin` caller never asks. A personal agent's
+    // owners never ask either: the attach hook is the sole judge there.
+    it("a personal agent's owner never asks the may-manage hook, so a broken hook cannot block them", async () => {
+      agentRow = { ...agentRow, visibility: 'personal', isOwner: true };
       canManage = 'throw';
       const r = await attach({ connectorId: 'linear' });
       expect(r.statusCode).toBe(200);
       expect(canManageCalls).toHaveLength(0);
+    });
+
+    // TASK-1246 — agents:resolve now also admits someone a personal agent is
+    // shared with, so "resolved, and personal" no longer means "owner". Adding
+    // a connector changes what every run of the agent reaches: it is its
+    // owners' (agents:attach-connector refuses anyone else). Asked up front,
+    // like a team agent's plain member, so their request never makes the host
+    // read a credential on their behalf (`company`'s shared key, here).
+    it('SECURITY: someone a personal agent is shared with is asked about up front: 403 before any credential read, and no attach', async () => {
+      agentRow = { ...agentRow, visibility: 'personal', isOwner: false };
+      canManage = 'deny';
+      const r = await attach({ connectorId: 'company' });
+      expect(r).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+      expect(credentialReads).toHaveLength(0);
+      expect(attachCalls).toHaveLength(0);
+      expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: false }, agentId: 'a1' }]);
+    });
+
+    // The hook, not this route, decides what a workspace admin may do: its
+    // bypass is unchanged, so an admin a personal agent is shared with is
+    // asked (with the admin bit) and goes on to the attach.
+    it('a workspace admin a personal agent is shared with is asked with the admin bit, and the hook decides', async () => {
+      agentRow = { ...agentRow, visibility: 'personal', isOwner: false };
+      caller = { id: 'u1', isAdmin: true };
+      canManage = 'allow';
+      const r = await attach({ connectorId: 'linear' });
+      expect(r.statusCode).toBe(200);
+      expect(canManageCalls).toEqual([{ actor: { userId: 'u1', isAdmin: true }, agentId: 'a1' }]);
+      expect(attachCalls).toEqual([
+        { actor: { userId: 'u1', isAdmin: true }, agentId: 'a1', connectorId: 'linear' },
+      ]);
     });
 
     it("the team agent's owner (a team admin) attaches: 200", async () => {

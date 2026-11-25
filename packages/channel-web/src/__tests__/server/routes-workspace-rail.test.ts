@@ -122,6 +122,11 @@ interface AgentRecord {
   visibility?: 'personal' | 'team' | undefined;
   /** A team agent's members. `agents:resolve` admits exactly these. */
   teamMembers?: string[];
+  /**
+   * TASK-1246 — the people a personal agent is shared with (its audience).
+   * `agents:resolve` admits them too, with `isOwner: false`.
+   */
+  sharedWith?: string[];
 }
 
 interface StoredDecisionLike {
@@ -235,20 +240,23 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   }
 
   /**
-   * @ax/agents' ACL in miniature: a personal agent admits its owner, a team
-   * agent its members, and everyone else gets the same `not-found`.
+   * @ax/agents' ACL in miniature: a personal agent admits its owner and the
+   * people it is shared with (TASK-1246), a team agent its members, and
+   * everyone else gets the same `not-found`. The answer's `isOwner` says
+   * whether the caller is the owner (always false on a team agent).
    */
   function registerResolve(): void {
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
       const { agentId, userId } = i as { agentId: string; userId: string };
       const row = agents.get(agentId);
+      if (row === undefined) throw notFound();
+      const owner = row.visibility !== 'team' && row.ownerId === userId;
       const admitted =
-        row !== undefined &&
-        (row.visibility === 'team'
+        row.visibility === 'team'
           ? (row.teamMembers ?? []).includes(userId)
-          : row.ownerId === userId);
+          : owner || (row.sharedWith ?? []).includes(userId);
       if (!admitted) throw notFound();
-      return { agent: row };
+      return { agent: { ...row, isOwner: owner } };
     });
   }
 
@@ -1906,7 +1914,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     registerGrants();
     registerManage();
     // It would say no if asked. It must not be asked: agents:resolve already
-    // proved the caller owns this agent, and nobody else can reach it.
+    // said the caller is this agent's owner (`isOwner`, TASK-1246).
     manageAnswers.set('u1', { allowed: false });
     siteGrants.set('a1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
 
@@ -1919,6 +1927,49 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(captured.body).toEqual({ revoked: true });
     expect(revoked).toEqual([{ agentId: 'a1', host: 'api.linear.app' }]);
     expect(manageCalls).toEqual([]);
+  });
+
+  // TASK-1246 — agents:resolve now also admits someone a personal agent is
+  // shared with, so "resolved, and personal" no longer means "owner". The
+  // no-questions shortcut is an owner's only. Anyone else it admits takes the
+  // manage check, asked as themself, and @ax/agents says no to someone it is
+  // only shared with: no Revoke, and a revoke is 403 with nothing removed.
+  it('someone a personal agent is shared with gets no Revoke, and their revoke is 403 with nothing removed', async () => {
+    registerGrants();
+    registerManage();
+    agents.set('a-shared', agent({ id: 'a-shared', ownerId: 'u2', sharedWith: ['u1'] }));
+    siteGrants.set('a-shared', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+    // What @ax/agents answers for someone the agent is only shared with.
+    manageAnswers.set('u1', { allowed: false });
+
+    // They still read the agent's sites: each is reach their own runs have.
+    const body = (await railFor('a-shared')).body as AgentRailData;
+    expect(body.grants.status).toBe('ok');
+    expect(body.grants.rows.map((g) => [g.label, g.revocable])).toEqual([
+      ['api.linear.app', false],
+    ]);
+
+    const captured = await revokeSite('a-shared');
+    expect(captured.statusCode).toBe(403);
+    expect(captured.body).toEqual({ error: 'forbidden' });
+    expect(revoked).toEqual([]);
+    expect(manageCalls).toEqual([
+      { actor: { userId: 'u1', isAdmin: false }, agentId: 'a-shared' },
+      { actor: { userId: 'u1', isAdmin: false }, agentId: 'a-shared' },
+    ]);
+  });
+
+  it('on a personal agent shared with the caller, a missing manage check means no Revoke and no revoke', async () => {
+    registerGrants();
+    agents.set('a-shared', agent({ id: 'a-shared', ownerId: 'u2', sharedWith: ['u1'] }));
+    siteGrants.set('a-shared', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+
+    const body = (await railFor('a-shared')).body as AgentRailData;
+    expect(body.grants.rows[0]?.revocable).toBe(false);
+
+    const captured = await revokeSite('a-shared');
+    expect(captured).toEqual({ statusCode: 503, body: { error: 'grants-unavailable' } });
+    expect(revoked).toEqual([]);
   });
 
   it('on a team agent, a missing or throwing manage check means no Revoke', async () => {
