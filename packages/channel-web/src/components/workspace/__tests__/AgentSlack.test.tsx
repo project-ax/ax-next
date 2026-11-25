@@ -96,6 +96,9 @@ const liveTitle = (who: string) => screen.findByRole('heading', { level: 3, name
 
 afterEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps queued `mockResolvedValueOnce` values; reset these two so one test's leftovers can't answer the next.
+  fetchStatus.mockReset();
+  choose_dm.mockReset();
 });
 
 describe('the states', () => {

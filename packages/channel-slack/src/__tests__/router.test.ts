@@ -438,6 +438,12 @@ function world(o: {
   /** The choice store fails every read (TASK-1238). */
   dmChoiceReadFails?: boolean;
   findOrCreateFails?: boolean;
+  /**
+   * The conversation id includes the agent id, as the real store keys on
+   * user + agent + thread (TASK-1238). Default: keyed on the thread alone,
+   * which other tests' ids pin.
+   */
+  agentKeyedConversations?: boolean;
   /** The install store fails when a queued turn re-reads its install. */
   installReadFails?: boolean;
   /** The channel store fails a team agent's own bot's first bind (its `upsert`): nothing is written. */
@@ -579,7 +585,7 @@ function world(o: {
     conversations.push({ ctx, input: i });
     if (o.findOrCreateFails === true) throw new Error('conversations down');
     return {
-      conversation: { conversationId: `conv:${i.externalKey}`, userId: i['userId'], agentId: i['agentId'] },
+      conversation: { conversationId: o.agentKeyedConversations ? `conv:${i['agentId']}:${i.externalKey}` : `conv:${i.externalKey}`, userId: i['userId'], agentId: i['agentId'] },
       created: true,
     };
   });
@@ -1418,7 +1424,7 @@ describe('createEventRouter: the personal agent its sender chose (TASK-1238)', (
   });
 
   it("after a switch, a reply in the same older thread goes to the new agent; the old agent's turn finishes on the old one", async () => {
-    const w = world();
+    const w = world({ agentKeyedConversations: true });
     const first = deferred();
     w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
     // The thread T1 starts with the old agent, held at the gate.
@@ -1429,10 +1435,16 @@ describe('createEventRouter: the personal agent its sender chose (TASK-1238)', (
     // The switch lands; she replies in that same thread while the first turn is still running.
     w.dm.rows.set('usr_alice', 'agt_alice_new');
     await w.dispatch(INSTALL, dm({ ts: '1763035201.000200', threadTs: TS, text: 'reply' }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The reply is asked of the new agent at once, while the old agent's turn is still held: different conversations run concurrently.
+    expect(w.invokes.map(wordsOf)).toEqual(['first', 'reply']);
     first.release();
     await w.idle();
 
-    // The reply is asked of the new agent at once; the old agent's turn is untouched and ends on the old one.
+    // The old agent's turn is untouched and ends on the old one; both replies are delivered.
+    expect(w.invokes).toHaveLength(2);
+    expect(w.slack.calls.filter((c) => c.method === 'stopStream')).toHaveLength(2);
     expect(Object.fromEntries(w.invokes.map((i) => [wordsOf(i), i.ctx.agentId]))).toEqual({
       first: 'agt_alice_old',
       reply: 'agt_alice_new',

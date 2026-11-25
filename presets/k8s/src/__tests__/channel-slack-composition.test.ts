@@ -2196,19 +2196,20 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
   it('a person picks which personal agent answers their Slack DMs; deleting it sends them back to the oldest (TASK-1238)', async () => {
     // 1. Dana has two personal agents with one name, the second newer.
+    const danaCtx = () => makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_dana' });
     const danaOld = await personalAgent('usr_dana');
     await new Promise((resolve) => setTimeout(resolve, 5));
     const danaNew = await personalAgent('usr_dana');
-    const installId = await connectWorkspace();
-    invokes.length = 0;
-    const choices = () => query("SELECT agent_id FROM channel_slack_v1_dm_agents WHERE user_id = 'usr_dana'");
-    const settings = (): Promise<Captured> =>
-      callRoute('GET', '/settings/slack/:agentId', {
-        params: { agentId: danaNew },
-        rawPath: `/settings/slack/${danaNew}`,
-      });
-    const danaCtx = () => makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_dana' });
+    // From here on, any failure (connectWorkspace included) still cleans both agents up.
     try {
+      const installId = await connectWorkspace();
+      invokes.length = 0;
+      const choices = () => query("SELECT agent_id FROM channel_slack_v1_dm_agents WHERE user_id = 'usr_dana'");
+      const settings = (): Promise<Captured> =>
+        callRoute('GET', '/settings/slack/:agentId', {
+          params: { agentId: danaNew },
+          rawPath: `/settings/slack/${danaNew}`,
+        });
       actor = { id: 'usr_dana', isAdmin: false };
 
       // 2. Before any choice, the newer agent's settings say another agent answers.
