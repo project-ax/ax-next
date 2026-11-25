@@ -99,6 +99,18 @@ export interface StreamChunkIn {
   held?: boolean;
 }
 
+/**
+ * A `chat:turn-error` payload as channel-slack reads it: each field present
+ * only when a string. `reason` picks the turn's failure sentence
+ * (turn-error-line.ts): it is looked up, never shown, because on a member's
+ * turn it can be the runner's own text. `detail` is untrusted (a dev
+ * service's logged path, a connector's name).
+ */
+export interface TurnErrorIn {
+  reason?: string;
+  detail?: string;
+}
+
 export interface TurnSink {
   reqId: string;
   conversationId: string;

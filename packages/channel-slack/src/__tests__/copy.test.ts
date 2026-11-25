@@ -1,3 +1,4 @@
+import { ERROR_LABELS } from '@ax/core/turn-error-text';
 import { describe, expect, it } from 'vitest';
 import { COPY } from '../copy.js';
 import { decodeSlackEntities } from '../format.js';
@@ -5,6 +6,8 @@ import { spellsMention } from './lenient-decoder.js';
 
 const ORIGIN = 'https://canopyworks.ai';
 const LINK = 'https://canopyworks.ai/workspace/agents/agt_123';
+/** An agent's Connectors settings, where a failed turn's reconnect lines send the person (turn-error-line.ts). */
+const CONNECTORS = 'https://canopyworks.ai/workspace/agents/agt_123/settings/connectors';
 /** Today in the web app. */
 const TODAY = 'https://canopyworks.ai/workspace';
 /** A name from outside (an agent's, a channel's) that tries to ping, link and break the escaping. */
@@ -22,6 +25,9 @@ const ARGS: Record<string, unknown[][]> = {
   notMapped: [[ORIGIN]],
   noAgent: [[ORIGIN]],
   artifactLink: [[LINK]],
+  // A failed turn's reconnect lines take the agent's Connectors settings: host-built, like artifactLink's, so no HOSTILE case.
+  turnErrorReconnect: [[CONNECTORS]],
+  turnErrorReconnectMany: [[CONNECTORS]],
   heldForSender: [[TODAY]],
   // An approval prompt's lines take Today's link (the configured origin), shown as a bare URL.
   promptToday: [[TODAY], [HOSTILE]],
@@ -124,6 +130,9 @@ describe('COPY: everything the bot says in Slack', () => {
         'queueFull',
         'statusDefault',
         'turnFailed',
+        'turnErrorProvider',
+        'turnErrorReconnect',
+        'turnErrorReconnectMany',
         'botUnavailable',
         'botRequestAsked',
         'botRequestSubject',
@@ -179,6 +188,23 @@ describe('COPY: everything the bot says in Slack', () => {
   it("a held call's lines can't name the tool, its connector or the owner: they take nothing but Today's link", () => {
     expect(typeof COPY.heldForOwner).toBe('string');
     expect(COPY.heldForSender).toHaveLength(1);
+  });
+});
+
+describe("COPY: a failed turn's own lines (TASK-1250; turn-error-line.ts)", () => {
+  it("a failed turn's own lines keep the web's first sentence, and link the agent's Connectors settings where the web has a button", () => {
+    const first = (s: string): string => {
+      const i = s.indexOf('. ');
+      expect(i).toBeGreaterThan(20);
+      return s.slice(0, i + 1);
+    };
+    expect(COPY.turnErrorProvider.startsWith(first(ERROR_LABELS['agent-model-provider-unknown']!))).toBe(true);
+    expect(COPY.turnErrorProvider).not.toBe(ERROR_LABELS['agent-model-provider-unknown']);
+    expect(COPY.turnErrorProvider).toContain('the web app');
+    expect(COPY.turnErrorReconnect(CONNECTORS).startsWith(first(ERROR_LABELS['connector-needs-reconnect']!))).toBe(true);
+    expect(COPY.turnErrorReconnectMany(CONNECTORS).startsWith(first(ERROR_LABELS['connectors-need-reconnect']!))).toBe(true);
+    for (const line of [COPY.turnErrorReconnect(CONNECTORS), COPY.turnErrorReconnectMany(CONNECTORS)])
+      expect(line).toContain(`[Open Connectors](${CONNECTORS})`);
   });
 });
 
