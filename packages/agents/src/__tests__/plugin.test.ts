@@ -226,6 +226,13 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           degradation:
             "GET /admin/agents/tools answers 503, so the agent form can't offer tools to pick and leaves each agent's tool list as it is; while it's missing, Settings can't create a new agent with tools or change an agent's tool list",
         },
+        {
+          // TASK-1246 — only the auth plugin can say an id is an AX account,
+          // which is who the 'everyone' audience admits.
+          hook: 'auth:get-user',
+          degradation:
+            "the 'everyone' audience admits only an agent's owners, and sharing writes that name a person answer 503 (nothing can check the person is an AX account)",
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
     });

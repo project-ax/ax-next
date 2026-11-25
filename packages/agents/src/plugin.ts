@@ -7,7 +7,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
-import { checkAccess } from './acl.js';
+import { checkAccess, isAxAccount, type AclDeps } from './acl.js';
 import { snapshotNewlyAttachedConnectors } from './connector-snapshot.js';
 import {
   CONNECTOR_CLEANUP_KEY,
@@ -31,6 +31,7 @@ import { randomBytes } from 'node:crypto';
 import { createIdentityService } from './identity/service.js';
 import { createIdentityStore } from './identity/store.js';
 import { registerIdentityTools } from './identity/tools.js';
+import { createSharingStore } from './sharing/store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
@@ -113,6 +114,9 @@ const PLUGIN_NAME = '@ax/agents';
 //     hard presence; declaring it would force every deployment to load
 //     @ax/teams. The team branch of `checkAccess` calls the hook via
 //     try/catch and degrades to deny when it isn't loaded.
+//   - TASK-1246: `auth:get-user` is an `optionalCalls` entry: the `everyone`
+//     audience admits AX accounts, and only the auth plugin knows them.
+//     Without it, `everyone` admits only an agent's owners (acl.ts).
 //   - We FIRE `agents:resolved` (subscriber hook). Per the auth/http-server
 //     pattern, `subscribes` lists what this plugin LISTENS to — observers
 //     subscribe at their end. We listen to nothing.
@@ -271,6 +275,17 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           degradation:
             "GET /admin/agents/tools answers 503, so the agent form can't offer tools to pick and leaves each agent's tool list as it is; while it's missing, Settings can't create a new agent with tools or change an agent's tool list",
         },
+        {
+          // TASK-1246 — an agent shared with 'everyone' admits every AX
+          // account, and only the auth plugin can say an id is one (acl.ts
+          // `isAxAccount`). Optional, not `calls`: many harnesses boot this
+          // plugin with only auth:require-user stubbed. @ax/auth-better calls
+          // only the database, http-server and credentials, so no cycle; the
+          // k8s preset test pins that it is loaded in production.
+          hook: 'auth:get-user',
+          degradation:
+            "the 'everyone' audience admits only an agent's owners, and sharing writes that name a person answer 503 (nothing can check the person is an AX account)",
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup', 'connectors:deleted'],
     },
@@ -292,18 +307,21 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       await runAgentsMigration(db);
       const localStore = createAgentStore(db);
       _store = localStore;
+      // TASK-1246 — the owner and list-member rows `checkAccess` reads.
+      const sharing = createSharingStore(db);
+      const aclDeps: AclDeps = { callerFacts: sharing.callerFacts };
 
       bus.registerService<ResolveInput, ResolveOutput>(
         'agents:resolve',
         PLUGIN_NAME,
-        async (ctx, input) => resolveAgent(localStore, bus, ctx, input, bootPolicy),
+        async (ctx, input) => resolveAgent(localStore, bus, ctx, input, bootPolicy, aclDeps),
         { returns: ResolveOutputSchema },
       );
 
       bus.registerService<ListForUserInput, ListForUserOutput>(
         'agents:list-for-user',
         PLUGIN_NAME,
-        async (_ctx, input) => listForUser(localStore, input),
+        async (ctx, input) => listForUser(localStore, bus, ctx, input),
       );
 
       bus.registerService<CreateInput, CreateOutput>(
@@ -729,6 +747,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         bus,
         agents: localStore,
         identity: createIdentityStore(db),
+        sharing,
       });
       bus.registerService<unknown, AgentIdentityRecord>(
         AGENTS_IDENTITY_GET_HOOK,
@@ -853,6 +872,7 @@ async function resolveAgent(
   ctx: AgentContext,
   input: ResolveInput,
   boot: ModelPolicy,
+  aclDeps: AclDeps,
 ): Promise<ResolveOutput> {
   const agent = await store.getById(input.agentId);
   if (agent === null) {
@@ -863,7 +883,7 @@ async function resolveAgent(
       message: `agent '${input.agentId}' not found`,
     });
   }
-  const acl = await checkAccess(agent, input.userId, bus, ctx);
+  const acl = await checkAccess(agent, input.userId, bus, ctx, aclDeps);
   if (!acl.allowed) {
     // Deliberately the SAME error code regardless of whether the agent
     // exists-but-not-yours vs. doesn't exist. We DO surface 'not-found'
@@ -890,15 +910,25 @@ async function resolveAgent(
   await bus.fire('agents:resolved', ctx, event);
   // The swap lives only in what chats see. `agent` (the stored row) is never written back.
   const policy = await loadPolicy(bus, ctx, boot);
-  return { agent: applyPolicy(agent, policy) };
+  // TASK-1246 — whether the person asked about is one of its owners, from the
+  // same check that let them in (always false on a team agent).
+  return { agent: { ...applyPolicy(agent, policy), isOwner: acl.owner } };
 }
 
+/**
+ * `agents:list-for-user` — `checkAccess` as one list (TASK-1246). The same
+ * account check decides the `everyone` arm, once per list, so a listed agent
+ * is one `agents:resolve` lets the person use and vice versa.
+ */
 async function listForUser(
   store: AgentStore,
+  bus: HookBus,
+  ctx: AgentContext,
   input: ListForUserInput,
 ): Promise<ListForUserOutput> {
   const teamIds = input.teamIds ?? [];
-  const agents = await store.listScoped({ userId: input.userId, teamIds });
+  const everyone = await isAxAccount(bus, ctx, input.userId);
+  const agents = await store.listReachable({ userId: input.userId, teamIds, everyone });
   return { agents };
 }
 

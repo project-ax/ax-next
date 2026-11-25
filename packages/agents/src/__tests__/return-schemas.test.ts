@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  AUDIENCE_KINDS,
   AgentIdentityRecordSchema,
   IdentityCompleteBootstrapOutputSchema,
   IdentityGetOutputSchema,
@@ -116,6 +117,10 @@ describe('agents return schemas', () => {
     ownerId: 'u1',
     ownerType: 'user',
     visibility: 'personal',
+    // TASK-1246 — non-default values, so a stripped field can't pass as a default.
+    audience: 'list',
+    shared: true,
+    isOwner: true,
     displayName: 'Helper',
     allowedTools: ['bash', 'web-search'],
     mcpConfigIds: ['m1'],
@@ -225,4 +230,40 @@ describe('agents return schemas', () => {
     expect(ResolveOutputSchema.safeParse({ agent: { ...agent, requestedModel: 7 } }).success).toBe(false);
   });
 
+  // TASK-1246 — `shared` is THE "is this agent shared?" answer and `isOwner`
+  // gates every owner-only write downstream. A zod object strips what it does
+  // not declare, so an undeclared one would vanish between the store and
+  // every caller of agents:resolve.
+  it('does not strip shared, isOwner or audience', () => {
+    const parsed = ResolveOutputSchema.parse({ agent }) as { agent: Agent };
+    expect(parsed.agent.shared).toBe(true);
+    expect(parsed.agent.isOwner).toBe(true);
+    expect(parsed.agent.audience).toBe('list');
+    for (const audience of AUDIENCE_KINDS) {
+      const out = ResolveOutputSchema.parse({ agent: { ...agent, audience } }) as { agent: Agent };
+      expect(out.agent.audience).toBe(audience);
+    }
+    const withoutOwner = ResolveOutputSchema.parse({ agent: { ...agent, isOwner: false } }) as { agent: Agent };
+    expect(withoutOwner.agent.isOwner).toBe(false);
+  });
+
+  it('rejects a resolve answer without shared', () => {
+    const { shared: _omit, ...withoutShared } = agent;
+    expect(ResolveOutputSchema.safeParse({ agent: withoutShared }).success).toBe(false);
+    expect(ResolveOutputSchema.safeParse({ agent: { ...agent, shared: 'yes' } }).success).toBe(false);
+  });
+
+  it('keeps a team agent valid without an audience or isOwner; rejects an unknown audience or a non-boolean isOwner', () => {
+    const { audience: _a, isOwner: _o, ...team } = {
+      ...agent,
+      ownerType: 'team' as const,
+      visibility: 'team' as const,
+      shared: true,
+    };
+    const parsed = ResolveOutputSchema.parse({ agent: team });
+    expect(parsed.agent).not.toHaveProperty('audience');
+    expect(parsed.agent).not.toHaveProperty('isOwner');
+    expect(ResolveOutputSchema.safeParse({ agent: { ...agent, audience: 'friends' } }).success).toBe(false);
+    expect(ResolveOutputSchema.safeParse({ agent: { ...agent, isOwner: 'yes' } }).success).toBe(false);
+  });
 });

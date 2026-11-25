@@ -3,7 +3,7 @@ import { isModelRef, parseModelRef, PluginError } from '@ax/core';
 import { REWRITES_THE_SURFACE, replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
-import { scopedAgents, type AgentScope } from './scope.js';
+import { reachableAgents, type ReachableScope } from './scope.js';
 import {
   AUDIENCE_KINDS,
   type Agent,
@@ -699,7 +699,12 @@ export interface AgentStore {
    */
   countByModel(models: readonly string[]): Promise<Array<{ model: string; agentCount: number }>>;
   getById(agentId: string): Promise<Agent | null>;
-  listScoped(scope: AgentScope): Promise<Agent[]>;
+  /**
+   * TASK-1246 — the agents `scope.userId` can use (`reachableAgents`, the SQL
+   * mirror of `checkAccess`), newest first, each with `isOwner` for that user
+   * (always false on a team agent).
+   */
+  listReachable(scope: ReachableScope): Promise<Agent[]>;
   create(args: AgentStoreCreateArgs): Promise<Agent>;
   /**
    * Apply a validated patch. Returns the updated row. Caller MUST have
@@ -786,7 +791,7 @@ export interface AgentStore {
    * iterate the agent set without paying for full row hydration — e.g.,
    * the @ax/routines tick loop's lazy materialization of default rows. No
    * ACL filtering: the caller is a trusted background loop, not a user
-   * request. Visibility / ownership filtering belongs in listScoped.
+   * request. Visibility / ownership filtering belongs in listReachable.
    */
   listAllIds(): Promise<string[]>;
   /**
@@ -872,11 +877,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return row === undefined ? null : rowToAgent(row);
     },
 
-    async listScoped(scope) {
-      const rows = await scopedAgents(db, scope)
-        .orderBy('created_at', 'desc')
+    async listReachable(scope) {
+      const rows = await reachableAgents(db, scope)
+        .orderBy('agents_v1_agents.created_at', 'desc')
         .execute();
-      return rows.map(rowToAgent);
+      return rows.map((row) => {
+        const agent = rowToAgent(row);
+        // An owner is a personal agent's idea: a team agent has none.
+        return { ...agent, isOwner: agent.ownerType === 'user' && row.is_owner === true };
+      });
     },
 
     async create({ ownerId, ownerType, validated, tx, bootstrap }) {

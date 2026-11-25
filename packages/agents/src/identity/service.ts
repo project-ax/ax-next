@@ -6,6 +6,7 @@ import {
   type SystemPromptAugmentChangedPayload,
 } from '@ax/core';
 import { checkAccess } from '../acl.js';
+import type { SharingStore } from '../sharing/store.js';
 import type { AgentStore } from '../store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
@@ -72,6 +73,8 @@ export interface IdentityServiceDeps {
   bus: HookBus;
   agents: Pick<AgentStore, 'getById'>;
   identity: IdentityStore;
+  /** TASK-1246 — the owner and list rows `checkAccess` reads. */
+  sharing: Pick<SharingStore, 'callerFacts'>;
 }
 
 type ScanResult =
@@ -230,7 +233,9 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
         message: `agent '${agentId}' not found`,
       });
     }
-    const acl = await checkAccess(agent, ctx.userId, bus, ctx);
+    const acl = await checkAccess(agent, ctx.userId, bus, ctx, {
+      callerFacts: deps.sharing.callerFacts,
+    });
     if (!acl.allowed) {
       throw new PluginError({
         code: 'forbidden',

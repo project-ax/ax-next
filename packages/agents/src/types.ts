@@ -242,6 +242,14 @@ export interface ResolveInput {
   userId: string;
 }
 
+/**
+ * `agents:resolve`'s answer, only when `userId` may use the agent
+ * (`checkAccess`: one of a personal agent's owners or its audience, or a member
+ * of the owning team); `forbidden` otherwise. TASK-1246: `agent.isOwner` is
+ * set, for `userId` (always false on a team agent), and `agent.shared` says
+ * whether anyone but its owners uses it. Ask `shared`, never `audience` or
+ * `visibility`, to know whether an agent is shared.
+ */
 export interface ResolveOutput {
   agent: Agent;
 }
@@ -296,6 +304,14 @@ const AgentSchema = z.object({
   // Declared explicitly for the same reason as `runner`: a zod object strips
   // undeclared keys, and this schema is the `returns` contract of agents:resolve.
   requestedModel: z.string().optional(),
+  // TASK-1246 — declared for the same strip reason as `runner`. `shared` is
+  // THE "is this agent shared?" answer (required: every agent has one).
+  // `audience` is a personal agent's only (absent on a team agent), and
+  // `isOwner` is for the userId resolve was asked about. A value outside these
+  // is a corrupt answer, not a new audience.
+  audience: z.enum(['just-me', 'everyone', 'list']).optional(),
+  shared: z.boolean(),
+  isOwner: z.boolean().optional(),
   // Declared for the same strip reason: the orchestrator reads these via
   // agents:resolve. No caps here: a stored value above today's cap must load.
   turnLimitMinutes: z.number().nullable().optional(),
@@ -316,6 +332,17 @@ export const ResolveOutputSchema = z.object({
   agent: AgentSchema,
 }) as unknown as ZodType<ResolveOutput>;
 
+/**
+ * `agents:list-for-user`: the agents `userId` can use, by the same rule as
+ * `agents:resolve` (TASK-1246), so every listed agent resolves for them and
+ * every agent that resolves is listed (given its team in `teamIds`):
+ *   - personal agents they own (created or co-owned);
+ *   - personal agents shared with them: audience `everyone` when they are an AX
+ *     account, or a `list` that names them;
+ *   - team agents of `teamIds`.
+ * Host-only and no ctx ACL: the caller supplies the person, from an
+ * authenticated source.
+ */
 export interface ListForUserInput {
   userId: string;
   /**
@@ -327,6 +354,11 @@ export interface ListForUserInput {
   teamIds?: string[];
 }
 
+/**
+ * Newest first. Each agent carries `isOwner` for `userId` (always false on a
+ * team agent): a caller that offers to change an agent, or treats a listed
+ * personal agent as the person's own, must check it.
+ */
 export interface ListForUserOutput {
   agents: Agent[];
 }
@@ -533,10 +565,11 @@ export interface CanSetSharedCredentialOutput {
 // Today.
 //
 // ACL on all three: `input.agentId` must equal `ctx.agentId`, and `ctx.userId`
-// must reach the agent (`checkAccess`: the personal owner, or a member of the
-// owning team). Malformed input is `invalid-payload`, an unknown agent
-// `not-found`, an unreachable one `forbidden`; every other answer is an
-// outcome, never a throw, so callers map it without parsing error text.
+// must reach the agent (`checkAccess`: one of a personal agent's owners or its
+// audience (TASK-1246), or a member of the owning team). Malformed input is
+// `invalid-payload`, an unknown agent `not-found`, an unreachable one
+// `forbidden`; every other answer is an outcome, never a throw, so callers
+// map it without parsing error text.
 //
 // Storage-agnostic: `revision` is an opaque change counter (callers only hand
 // it back as `expectedRevision`), not a version id; no field names a file,

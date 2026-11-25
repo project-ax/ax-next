@@ -347,7 +347,7 @@ describe('store + scopedAgents', () => {
     expect(round!.displayName).toBe('My Agent');
   });
 
-  it('scopedAgents returns only agents the user can reach', async () => {
+  it('listReachable returns only agents the user can reach, each with isOwner', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);
     const store = createAgentStore(db);
@@ -368,22 +368,28 @@ describe('store + scopedAgents', () => {
     await store.create({ ownerId: 't2', ownerType: 'team', validated: team('T2') });
 
     // u1 with no teams sees only A.
-    const noTeams = await store.listScoped({ userId: 'u1', teamIds: [] });
+    const noTeams = await store.listReachable({ userId: 'u1', teamIds: [], everyone: false });
     expect(noTeams.map((a) => a.displayName).sort()).toEqual(['A']);
 
     // u1 in team t1 sees A + T1.
-    const oneTeam = await store.listScoped({ userId: 'u1', teamIds: ['t1'] });
+    const oneTeam = await store.listReachable({ userId: 'u1', teamIds: ['t1'], everyone: false });
     expect(oneTeam.map((a) => a.displayName).sort()).toEqual(['A', 'T1']);
+    // TASK-1246 — u1 owns A (its creator's owner row); nobody owns a team agent.
+    expect(oneTeam.map((a) => [a.displayName, a.isOwner]).sort()).toEqual([
+      ['A', true],
+      ['T1', false],
+    ]);
 
     // u1 in t1 and t2 sees A + T1 + T2.
-    const twoTeams = await store.listScoped({
+    const twoTeams = await store.listReachable({
       userId: 'u1',
       teamIds: ['t1', 't2'],
+      everyone: false,
     });
     expect(twoTeams.map((a) => a.displayName).sort()).toEqual(['A', 'T1', 'T2']);
 
     // u2 in t1 sees B + T1 (not A).
-    const u2 = await store.listScoped({ userId: 'u2', teamIds: ['t1'] });
+    const u2 = await store.listReachable({ userId: 'u2', teamIds: ['t1'], everyone: false });
     expect(u2.map((a) => a.displayName).sort()).toEqual(['B', 'T1']);
   });
 
@@ -476,7 +482,7 @@ describe('store + scopedAgents', () => {
       db,
     );
     expect((await store.getById(created.id))!.displayName).toBe('Payroll bad.exe');
-    const listed = await store.listScoped({ userId: 'u1', teamIds: [] });
+    const listed = await store.listReachable({ userId: 'u1', teamIds: [], everyone: false });
     expect(listed.find((a) => a.id === created.id)!.displayName).toBe('Payroll bad.exe');
     // The stored bytes are untouched — this is a read fence, not a migration.
     const raw = await db
@@ -614,11 +620,11 @@ describe('store sharing rows (TASK-1246)', () => {
     });
 
     // Every read path: the INSERT's and the UPDATEs' RETURNING lists, getById,
-    // the scoped list, and the row-locked connector edit.
+    // the reachable list, and the row-locked connector edit.
     const personalReads = [
       personal,
       await store.getById(personal.id),
-      (await store.listScoped({ userId: 'u1', teamIds: [] }))[0],
+      (await store.listReachable({ userId: 'u1', teamIds: [], everyone: false }))[0],
       await store.update(personal.id, validateUpdatePatch({ displayName: 'Renamed' }, vctx)),
       await store.setSkillAttachments(personal.id, []),
       (await store.attachConnector(personal.id, 'gh')).agent,
@@ -656,7 +662,7 @@ describe('store sharing rows (TASK-1246)', () => {
     await sql`UPDATE agents_v1_agents SET audience = 'friends' WHERE agent_id = ${created.id}`.execute(db);
 
     await expect(store.getById(created.id)).rejects.toMatchObject({ code: 'corrupt-row' });
-    await expect(store.listScoped({ userId: 'u1', teamIds: [] })).rejects.toMatchObject({
+    await expect(store.listReachable({ userId: 'u1', teamIds: [], everyone: false })).rejects.toMatchObject({
       code: 'corrupt-row',
     });
   });
