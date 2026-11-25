@@ -1,16 +1,16 @@
 /** The agent settings Connectors section, including its built-in ability controls. */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
-  AlertTriangle,
   ChevronRight,
   Globe,
   Link as LinkIcon,
   Terminal,
 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
+import { ConfirmAction } from '@project-ax/ui';
 import {
   Collapsible,
   CollapsibleContent,
@@ -20,27 +20,17 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { useAgentAbilities } from '@/lib/agent-abilities';
 import type { AgentRailData, GrantRow } from '@/lib/workspace-api';
 import type { AgentAbility } from '@/lib/workspace-types';
 import { AddConnector } from './AddConnector';
 import { AgentConnectors } from './AgentConnectors';
-import { GrantLine, PermissionLine, ReadFailure } from './bits';
-
-function Note({ children }: { children: React.ReactNode }) {
-  return (
-    <p className="text-[13px] leading-relaxed text-muted-foreground">
-      {children}
-    </p>
-  );
-}
+import { GrantLine, PermissionLine, readFailureCopy } from './bits';
 
 /**
  * What ON means for Read web pages (TASK-763, owner decision 2026-10-03).
@@ -106,7 +96,7 @@ interface Props {
   error: string | null;
   revoking: ReadonlySet<string>;
   notice: string | null;
-  onRevoke: (row: GrantRow) => void;
+  onRevoke: (row: GrantRow) => void | Promise<void>;
   /** Re-read the rail after a connector is removed (its grants went too). */
   onConnectorsChanged?: () => void;
 }
@@ -195,10 +185,17 @@ export function ConnectorsTab({
         one record of what this agent can reach never arrived.
       */}
       {rail === null && !loading && (
-        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
-          We couldn’t read what {name} can reach just now. Treat it as unknown
-          rather than empty.
-        </p>
+        <div className="mt-2">
+          <Notice
+            tone="danger"
+            {...(onConnectorsChanged !== undefined
+              ? { action: { label: 'Try again', onClick: onConnectorsChanged } }
+              : {})}
+          >
+            We couldn’t read what {name} can reach just now. Treat it as unknown
+            rather than empty.
+          </Notice>
+        </div>
       )}
       <Collapsible className="mt-6">
         <h3 className="text-[11.5px] font-medium text-muted-foreground">
@@ -230,6 +227,7 @@ export function ConnectorsTab({
             revoking={revoking}
             notice={notice}
             onRevoke={onRevoke}
+            onRetry={onConnectorsChanged}
           />
         </CollapsibleContent>
       </Collapsible>
@@ -246,6 +244,7 @@ export function ConnectorsTab({
             rail={rail}
             loading={loading}
             error={error}
+            onRetry={onConnectorsChanged}
           />
         </DialogContent>
       </Dialog>
@@ -254,7 +253,7 @@ export function ConnectorsTab({
 }
 
 function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
-  const { abilities, status, pending, set } = useAgentAbilities(agentId);
+  const { abilities, status, pending, set, reload } = useAgentAbilities(agentId);
   const [failed, setFailed] = useState(false);
   const [confirmRunCodeOff, setConfirmRunCodeOff] = useState(false);
 
@@ -264,22 +263,20 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
     if (!ok) setFailed(true);
   }
 
-  if (status === 'loading') {
-    return (
-      <div className="flex flex-col gap-3" aria-busy="true">
-        <Skeleton className="h-4 w-4/5" />
-        <Skeleton className="h-4 w-3/5" />
-        <Skeleton className="h-4 w-2/3" />
-      </div>
-    );
-  }
   if (status !== 'ok' || abilities === null) {
     return (
-      <Note>
-        {status === 'unavailable'
-          ? 'This workspace can’t switch these on or off yet.'
-          : 'We couldn’t read these just now.'}
-      </Note>
+      <AsyncState
+        status={status === 'loading' ? 'loading' : 'error'}
+        skeleton="rows"
+        loadingLabel="Loading abilities"
+        error={{
+          message:
+            status === 'unavailable'
+              ? 'This workspace can’t switch these on or off yet.'
+              : 'We couldn’t read these just now.',
+          ...(status === 'unavailable' ? { tone: 'info' as const } : { onRetry: reload }),
+        }}
+      />
     );
   }
   return (
@@ -347,40 +344,19 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
         </CardContent>
       </Card>
       {failed && (
-        <Alert variant="destructive" className="mt-3">
-          <AlertDescription>
-            We couldn’t change that just now. Nothing changed.
-          </AlertDescription>
-        </Alert>
+        <div className="mt-3">
+          <Notice tone="danger">We couldn’t change that just now. Nothing changed.</Notice>
+        </div>
       )}
-      <Dialog open={confirmRunCodeOff} onOpenChange={setConfirmRunCodeOff}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Turn off Run code for {name}?</DialogTitle>
-            <DialogDescription>
-              {RUN_CODE_OFF_WARNING} Anything that needs to run a script will
-              stop at that step. You can turn it back on any time.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmRunCodeOff(false)}
-            >
-              Keep it on
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirmRunCodeOff(false);
-                void change('runCode', false);
-              }}
-            >
-              Turn off
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmAction
+        open={confirmRunCodeOff}
+        onOpenChange={setConfirmRunCodeOff}
+        title={`Turn off Run code for ${name}?`}
+        description={`${RUN_CODE_OFF_WARNING} Anything that needs to run a script will stop at that step. You can turn it back on any time.`}
+        confirmLabel="Turn off"
+        // A refusal shows on the page ("We couldn't change that just now"), so the dialog closes either way.
+        onConfirm={() => change('runCode', false)}
+      />
     </>
   );
 }
@@ -395,49 +371,52 @@ function Permissions({
   rail,
   loading,
   error,
+  onRetry,
 }: {
   name: string;
   rail: AgentRailData | null;
   loading: boolean;
   error: string | null;
+  /** Re-reads the rail: the Try again for a rail that would not load. */
+  onRetry?: (() => void) | undefined;
 }) {
   if (loading && rail === null) {
-    return (
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-4 w-4/5" />
-        <Skeleton className="h-4 w-3/5" />
-      </div>
-    );
+    return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading what this agent can do" />;
   }
   if (rail === null) {
     return (
-      <Note>
-        {error === null
-          ? 'We can’t show this yet.'
-          : 'We couldn’t read this just now.'}{' '}
-        Until it loads, treat what {name} may do as unknown rather than empty.
-      </Note>
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Loading what this agent can do"
+        error={{
+          message: `${
+            error === null ? 'We can’t show this yet.' : 'We couldn’t read this just now.'
+          } Until it loads, treat what ${name} may do as unknown rather than empty.`,
+          ...(onRetry !== undefined ? { onRetry } : {}),
+        }}
+      />
     );
   }
   const { status, rows, incomplete, unrestrictedTools } = rail.permissions;
   if (status !== 'ok') {
     return (
-      <Note>
+      <Text role="meta">
         {status === 'unavailable'
           ? `This deployment doesn’t publish the rules that govern ${name}.`
           : `We couldn’t read the rules that govern ${name} just now.`}{' '}
         Treat this as unknown rather than empty — an agent with no list shown is
         not an agent with no reach.
-      </Note>
+      </Text>
     );
   }
   return (
     <div className="flex flex-col">
       {rows.length === 0 && (
-        <Note>
+        <Text role="meta">
           Nothing here describes {name}&apos;s reach yet. That means we
           can&apos;t tell you — not that there isn&apos;t any.
-        </Note>
+        </Text>
       )}
       {rows.length > 0 && (
         <div className="flex flex-col">
@@ -459,14 +438,13 @@ function Permissions({
         </div>
       )}
       {unrestrictedTools && (
-        <Alert className="mt-3">
-          <AlertTriangle aria-hidden="true" />
-          <AlertDescription>
+        <div className="mt-3">
+          <Notice tone="warning">
             Nothing limits which tools {name} can use — it can reach anything
             installed here, now or later. The rules above are what&apos;s
             installed today, not a boundary.
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       )}
       {incomplete && (
         <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
@@ -496,6 +474,7 @@ function Grants({
   revoking,
   notice,
   onRevoke,
+  onRetry,
 }: {
   rail: AgentRailData | null;
   name: string;
@@ -504,26 +483,38 @@ function Grants({
   loading: boolean;
   revoking: ReadonlySet<string>;
   notice: string | null;
-  onRevoke: (row: GrantRow) => void;
+  onRevoke: (row: GrantRow) => void | Promise<void>;
+  /** Re-reads the rail: offered as Try again when the grants read failed. */
+  onRetry?: (() => void) | undefined;
 }) {
   if (rail === null) {
-    if (loading) return <Note>Reading what you&apos;ve granted…</Note>;
+    if (loading) return <Text role="meta">Reading what you&apos;ve granted…</Text>;
+    // The raw detail is logged by `workspace-rail.ts` (TASK-288), never put in the sentence.
     return (
-      <Note>
-        {/*
-          The raw detail used to ride in a parenthetical here — `We couldn't
-          read this just now (workspace /agents/ag_… → 401).` A request path
-          inside a sentence is the one shape a grep for a raw status never
-          finds. `workspace-rail.ts` logs it now (TASK-288).
-        */}
-        We couldn&apos;t read this just now.
-      </Note>
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Reading what you've granted…"
+        error={{
+          message: 'We couldn’t read this just now.',
+          ...(onRetry !== undefined ? { onRetry } : {}),
+        }}
+      />
     );
   }
   const { status, incomplete } = rail.grants;
   if (status !== 'ok') {
     return (
-      <ReadFailure status={status} what="a record of what you've granted" />
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Reading what you've granted…"
+        error={{
+          message: readFailureCopy(status, "a record of what you've granted"),
+          tone: status === 'unavailable' ? 'info' : 'danger',
+          ...(status === 'failed' && onRetry !== undefined ? { onRetry } : {}),
+        }}
+      />
     );
   }
   const rows = filter(rail.grants.rows);
@@ -536,13 +527,13 @@ function Grants({
     (r) => r.ref.grant === 'site' && !r.revocable,
   );
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" tabIndex={-1} data-return-focus="grant-lines">
       {rows.length === 0 && moved === 0 && (
-        <Note>
+        <Text role="meta">
           {shared
             ? 'Nothing yet — nobody has granted anything beyond the rules above.'
             : "Nothing yet — you haven't granted anything beyond the rules above."}
-        </Note>
+        </Text>
       )}
       {rows.map((row, i) => (
         <GrantLine

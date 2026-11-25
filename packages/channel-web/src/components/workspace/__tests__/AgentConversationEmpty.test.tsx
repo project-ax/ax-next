@@ -109,7 +109,8 @@ describe('AgentConversation — the zero-turn thread', () => {
     */
     renderConversation({ thread: [], readOnly: false });
 
-    const pane = screen.getByText(EMPTY_TITLE).closest('[data-slot="empty"]');
+    // The EmptyState's own box: the title's parent holds the title and its description.
+    const pane = screen.getByText(EMPTY_TITLE).parentElement;
     expect(pane).not.toBeNull();
     const copy = pane?.textContent ?? '';
     expect(copy).not.toMatch(/\btry\b|for example|e\.g\.|such as|you can ask/i);
@@ -132,7 +133,6 @@ describe('AgentConversation — the zero-turn thread', () => {
     */
     const { rerender } = renderConversation({ thread: [], settling: true });
     expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
-    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
 
     rerender(
       <AgentConversation
@@ -167,8 +167,8 @@ describe('AgentConversation — the zero-turn thread', () => {
 
     expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
     expect(screen.queryByText(EMPTY_DESCRIPTION)).toBeNull();
-    // Nothing else crept in to fill the gap either: the pane really is blank.
-    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+    // Nothing else crept in to fill the gap either: not even the welcome's orb.
+    expect(document.querySelector('.ax-pearl')).toBeNull();
   });
 
   it('stands down for a grant, because the grant is what is actually waiting', () => {
@@ -190,7 +190,7 @@ describe('AgentConversation — the zero-turn thread', () => {
     // and not a component that failed to render.
     expect(screen.getByTestId('thread-grants')).toBeTruthy();
     expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
-    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+    expect(document.querySelector('.ax-pearl')).toBeNull();
   });
 
   it('comes back once that grant is answered', () => {
@@ -241,7 +241,7 @@ describe('AgentConversation — the zero-turn thread', () => {
     expect(screen.getByTestId('workspace-steps')).toBeTruthy();
     // My half: this thread has a turn in it, so it is not "nothing here yet".
     expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
-    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+    expect(document.querySelector('.ax-pearl')).toBeNull();
   });
 
   it('is gone the moment the thread has anything in it', () => {
@@ -255,6 +255,6 @@ describe('AgentConversation — the zero-turn thread', () => {
     // thread rather than a component that failed to mount.
     expect(screen.getByText('morning')).toBeTruthy();
     expect(screen.queryByText(EMPTY_TITLE)).toBeNull();
-    expect(document.querySelector('[data-slot="empty"]')).toBeNull();
+    expect(document.querySelector('.ax-pearl')).toBeNull();
   });
 });

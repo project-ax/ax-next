@@ -409,7 +409,7 @@ describe('segments and the admin ceiling', () => {
     await openDetails();
     await screen.findByText('Delete issue');
     fireEvent.click(within(rowGroup('Delete issue')).getByRole('radio', { name: 'Deny' }));
-    expect(await screen.findByText(/Saved\. We couldn’t refresh this list just now, so reload to confirm\./)).toBeTruthy();
+    const saved = await screen.findByText(/Saved\. We couldn’t refresh this list just now, so reload to confirm\./);
     expect(screen.queryByText(/Nothing changed/)).toBeNull();
     expect(
       within(rowGroup('Delete issue'))
@@ -425,7 +425,8 @@ describe('segments and the admin ceiling', () => {
     ).toBe('true');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[connector-tools]'));
     // The note is not an error alert.
-    expect(screen.getByTestId('verdict-unconfirmed').className).not.toMatch(/destructive/);
+    expect(saved.closest('[role="alert"]')).toBeNull();
+    expect(saved.closest('[role="status"]')).not.toBeNull();
     warn.mockRestore();
   });
 
@@ -551,7 +552,7 @@ describe('when the tool list cannot be read', () => {
     expect(screen.queryByText(/expired/)).toBeNull();
   });
 
-  it('says the connector could not be reached, offers Check again, and keeps saved choices', async () => {
+  it('says the connector could not be reached, offers Try again, and keeps saved choices', async () => {
     toolsMock.mockResolvedValue(
       read({
         status: 'unreachable',
@@ -560,12 +561,12 @@ describe('when the tool list cannot be read', () => {
     );
     renderTab();
     await openDetails();
-    expect(await screen.findByText('We couldn’t reach this connector to list its tools.')).toBeTruthy();
+    expect((await screen.findByRole('alert')).textContent).toContain('We couldn’t reach this connector to list its tools.');
     expect(screen.getByText('Can’t reach it')).toBeTruthy();
     expect(screen.queryByText(/signed in as you/)).toBeNull();
     // A choice the agent holds stays visible and editable.
     expect(screen.getByText('create_issue')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(toolsMock).toHaveBeenLastCalledWith('a-quill', 'linear', true));
   });
 
@@ -706,6 +707,21 @@ describe('access you approved', () => {
     expect(
       within(section).getByText(/couldn.t read the access you approved for Linear just now/),
     ).toBeTruthy();
+  });
+
+  it('Try again on a failed approved-access read re-reads the rail and shows what came back', async () => {
+    vi.mocked(workspaceApi.rail)
+      .mockResolvedValueOnce(rail({ grants: { status: 'failed', rows: [], incomplete: false, shared: false } }))
+      .mockResolvedValue(rail({ grants: { status: 'ok', rows: [LINEAR_GRANT], incomplete: false, shared: false } }));
+    renderTab();
+    await openDetails();
+    const section = await screen.findByRole('region', { name: 'Access you approved' });
+    fireEvent.click(within(section).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(vi.mocked(workspaceApi.rail)).toHaveBeenCalledTimes(2));
+    const after = await screen.findByRole('region', { name: 'Access you approved' });
+    expect(await within(after).findByRole('button', { name: /Revoke/ })).toBeTruthy();
+    expect(within(after).queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(vi.mocked(workspaceApi.rail)).toHaveBeenCalledTimes(2);
   });
 
   it('says the same when the whole rail read failed (TASK-757)', async () => {

@@ -427,7 +427,7 @@ column, not this numbering, decides what runs in parallel:
 **Other UI work during the rewrite (decided): no freeze; new code complies now.** From step 1, the UI lint rules
 are *errors* in channel-web. Existing violations are frozen in `eslint-suppressions.json` (ESLint bulk
 suppressions), and the CI ratchet (`scripts/ui-suppressions-ratchet.mjs`) only lets them go down; a rule's frozen
-total may rise only in the PR that switches the rule on. Feature cards that touch an
+total may rise only in the PR that switches the rule on or widens its options. Feature cards that touch an
 unmigrated file may leave its existing violations alone but must not add new ones. Rules switch on as their
 replacements ship (S1: arbitrary values and style; S2a: className on intrinsic elements only, and raw
 `div`/`span`/`p`/`h2`–`h6`; S3–S6: internal shadcn imports per area, and each area widens the raw-element list and

@@ -624,7 +624,7 @@ describe('task form save refusals', () => {
     fill('What should Caveman do?', 'Changed.');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('We couldn’t save this task. Try again.')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Retry save' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeVisible();
     expect(document.body.textContent).not.toMatch(/socket|routine/i);
   });
 });

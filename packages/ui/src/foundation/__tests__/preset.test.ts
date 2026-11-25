@@ -56,10 +56,12 @@ describe('renderUiCss', () => {
     const root = postcss.parse(css);
     const selectors: string[] = [];
     root.walkRules((r) => {
+      // Keyframe steps (`to`, `50%`) are not utility selectors.
+      if (r.parent?.type === 'atrule' && (r.parent as postcss.AtRule).name === 'keyframes') return;
       selectors.push(r.selector);
     });
     expect(selectors.length).toBeGreaterThan(0);
-    for (const sel of selectors) expect(sel, sel).toMatch(/^\.(?:[a-z]+\\:)?ax-/);
+    for (const sel of selectors) expect(sel, sel).toMatch(/^\.(?:[a-z-]+\\:)?ax-/);
     expect(selectors).toContain('.ax-m-none');
   });
 });

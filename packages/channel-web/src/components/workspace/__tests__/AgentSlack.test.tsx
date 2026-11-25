@@ -203,7 +203,8 @@ describe('the states', () => {
       expect(choose_dm).toHaveBeenCalledWith('a1');
       expect(fetchStatus).toHaveBeenCalledTimes(2);
       expect(document.activeElement).not.toBeNull();
-      expect(note.closest('[role="alert"]')?.contains(document.activeElement)).toBe(true);
+      expect(note.closest('[role="status"]')).not.toBeNull();
+      expect(note.closest('[tabindex="-1"]')?.contains(document.activeElement)).toBe(true);
       expect(screen.queryByRole('button')).toBeNull();
       // Today's sentence still stands under it.
       expect(screen.getByText(DM.answersHere('Quill', 'canopy'))).toBeInTheDocument();
@@ -382,7 +383,7 @@ describe("a cancelled bot request whose Slack app couldn't be deleted", () => {
     cancel.mockResolvedValueOnce({ appDeleted });
     const view = render(<AgentSlack agentId="a1" agentName="Quill" />);
     fireEvent.click(within(await openMenu('Quill Bot')).getByRole('menuitem', { name: 'Cancel request' }));
-    expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
+    expect(await screen.findByText('Loading Slack settings')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Actions for Quill Bot' })).toBeNull();
     reRead.resolve(after);
     return view;
@@ -485,7 +486,7 @@ describe("a team agent's own live bot", () => {
     render(<AgentSlack agentId="a1" agentName="Quill" />);
     await choose('@quill', 'Remove from Slack');
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Remove' }));
-    expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
+    expect(await screen.findByText('Loading Slack settings')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Actions for @quill' })).toBeNull();
     reRead.resolve(ready(true, NONE_STORED));
     expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
@@ -564,7 +565,7 @@ describe('a bot set up again (TASK-1173)', () => {
     const view = render(<AgentSlack agentId="a1" agentName="Quill" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
     fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Set up again' }));
-    expect(await screen.findByText('Loading Slack settings…')).toBeInTheDocument();
+    expect(await screen.findByText('Loading Slack settings')).toBeInTheDocument();
     reRead.resolve(ready(true, NONE_STORED));
     expect(await screen.findByRole('button', { name: 'Add to Slack' })).toBeInTheDocument();
     return view;
@@ -609,11 +610,12 @@ describe('a bot set up again (TASK-1173)', () => {
     expect(screen.getByLabelText('Bot name')).toHaveValue('Rook');
   });
 
-  it('no workspace: a gone approver still gets the alert, with no Set up again button (a request needs the shared app)', async () => {
+  it('no workspace: a gone approver still gets the notice, with no Set up again button (a request needs the shared app)', async () => {
     renderIt({ state: 'no-workspace', canManage: true, bot: GONE_BOT });
-    expect(await screen.findByRole('alert')).toHaveTextContent(
+    const notice = await screen.findByText(
       '@quill_bot needs to be set up again. The person who added it to Slack has left. You can do this here once Slack is connected again.',
     );
+    expect(notice.closest('[role="status"]')).not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Set up again' })).toBeNull();
   });
 });
@@ -822,7 +824,7 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
       ['a member', ready(false, { ...LIVE_BOT, approverGone: true, installId: null })],
     ])('the set-up-again row: %s', async (_, status) => {
       renderIt(status);
-      await screen.findByRole('alert');
+      await screen.findByText(/needs to be set up again/);
       expectClean();
     });
 
@@ -831,7 +833,7 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
       ['a member', ready(false, { ...LIVE_BOT, needsClaim: true, installId: null })],
     ])('the take-over row: %s', async (_, status) => {
       renderIt(status);
-      await screen.findByRole('alert');
+      await screen.findByText(/People outside the team/);
       expectClean();
     });
 
@@ -855,7 +857,7 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
     it.each([
       ['Rename', LIVE_BOT, 'Rename', 'Cancel'],
       ['Change picture', LIVE_BOT, 'Change picture', 'Cancel'],
-      ['Remove from Slack', LIVE_BOT, 'Remove from Slack', 'Keep it'],
+      ['Remove from Slack', LIVE_BOT, 'Remove from Slack', 'Cancel'],
     ])('the %s dialog', async (_, bot, item, decline) => {
       renderIt(ready(true, bot));
       await choose('@quill', item);
@@ -870,14 +872,14 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
       fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
       const first = await screen.findByRole('dialog');
       expectClean();
-      fireEvent.click(within(first).getByRole('button', { name: 'Keep it' }));
+      fireEvent.click(within(first).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       unmount();
       renderIt(ready(true, { ...LIVE_BOT, needsClaim: true }));
       fireEvent.click(await screen.findByRole('button', { name: 'Take over' }));
       const second = await screen.findByRole('dialog');
       expectClean();
-      fireEvent.click(within(second).getByRole('button', { name: 'Not now' }));
+      fireEvent.click(within(second).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     });
 
@@ -888,7 +890,7 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
       render(<AgentSlack agentId="a1" agentName="Quill" />);
       fireEvent.click(await screen.findByRole('button', { name: 'Set up again' }));
       fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Set up again' }));
-      await screen.findByText('Loading Slack settings…');
+      await screen.findByText('Loading Slack settings');
       reRead.resolve(ready(true, { state: 'none', configTokenStored: false }));
       await screen.findByText(/was removed from Slack/);
       await screen.findByText(/couldn.t confirm its Slack app was deleted/);

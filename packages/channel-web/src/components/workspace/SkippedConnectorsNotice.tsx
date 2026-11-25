@@ -39,9 +39,7 @@
  * the strip.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { X } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { Notice } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import { workspaceApi } from '@/lib/workspace-api';
 
@@ -151,23 +149,13 @@ export function SkippedConnectorsNotice({
 
   return (
     <div className="px-6 pt-4">
-      <Alert role="note">
-        <AlertDescription className="flex flex-wrap items-center gap-2">
-          <span className="min-w-0 flex-1 basis-56">{sentence}</span>
-          <Button variant="outline" size="sm" onClick={onOpenConnectors}>
-            Open Connectors
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-9"
-            aria-label="Dismiss"
-            onClick={() => setDismissedKey(key)}
-          >
-            <X aria-hidden="true" />
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <Notice
+        tone="info"
+        action={{ label: 'Open Connectors', onClick: onOpenConnectors }}
+        onDismiss={() => setDismissedKey(key)}
+      >
+        {sentence}
+      </Notice>
     </div>
   );
 }

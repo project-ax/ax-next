@@ -8,7 +8,7 @@
  * opposite answers and a bare empty state renders as the second one.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentRail } from '../AgentRail';
 import { AgentSettings } from '../AgentSettings';
@@ -737,6 +737,10 @@ describe('AgentSettings — "Granted by you"', () => {
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    // Asks first: nothing is revoked until the dialog's Revoke is clicked.
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this permission?' });
+    expect(revokeMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
     await waitFor(() => {
       expect(revokeMock).toHaveBeenCalledWith('a-quill', {
         grant: 'site',
@@ -754,6 +758,7 @@ describe('AgentSettings — "Granted by you"', () => {
       already running keeps it until it ends. A bare "Revoked." would let
       somebody believe they had stopped something mid-flight.
     */
+    expect(revokeMock).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(/Revoked\./)).toBeTruthy();
     expect(screen.getByText(/may still have it until it finishes/)).toBeTruthy();
   });
@@ -767,6 +772,7 @@ describe('AgentSettings — "Granted by you"', () => {
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Revoke' }));
     expect(await screen.findByText(/already gone/)).toBeTruthy();
   });
 
@@ -779,6 +785,7 @@ describe('AgentSettings — "Granted by you"', () => {
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Revoke' }));
     expect(await screen.findByText(/Nothing changed/)).toBeTruthy();
   });
 
@@ -887,6 +894,35 @@ describe('AgentSettings — "Granted by you"', () => {
         /Nothing yet — you haven.t granted anything beyond the rules above\./,
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('AgentSettings — "Granted by you" when the read did not work', () => {
+  it('a failed read is an alert with Try again, and Try again reads the rail again', async () => {
+    railMock.mockResolvedValueOnce(
+      rail({ grants: { status: 'failed', rows: [], incomplete: true, shared: false } }),
+    );
+    renderConnectorsSettings();
+    await openGrants();
+
+    const alert = await screen.findByRole('alert', {}, { timeout: 3000 });
+    expect(alert).toHaveTextContent(/couldn.t read a record of what you.ve granted just now/);
+    const calls = railMock.mock.calls.length;
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(railMock.mock.calls.length).toBeGreaterThan(calls));
+  });
+
+  it('a deployment with no record of grants says so quietly, with nothing to try again', async () => {
+    railMock.mockResolvedValue(
+      rail({ grants: { status: 'unavailable', rows: [], incomplete: true, shared: false } }),
+    );
+    renderConnectorsSettings();
+    await openGrants();
+
+    const note = await screen.findByText(/doesn.t keep a record of what you.ve granted/);
+    expect(note.closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
   });
 });
 

@@ -197,7 +197,9 @@ describe('AgentInstructions', () => {
   */
   it('does not dress a withheld editor up as something having gone wrong', () => {
     render(<AgentInstructions agentName="Quill" memory={failed()} onSaveRules={vi.fn()} />);
-    expect(screen.getByRole('alert').className).not.toContain('destructive');
+    // Neutral: a status, never an interrupting alert.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
   it('renders read-only when the caller has no write path', () => {
@@ -245,7 +247,8 @@ describe('AgentInstructions', () => {
         screen.getByText(UNAVAILABLE_COPY),
       ).toBeInTheDocument();
       // A setup choice on the server, not a malfunction: register stays neutral.
-      expect(screen.getByRole('alert').className).not.toContain('destructive');
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.getByRole('status')).toBeInTheDocument();
     });
   });
 

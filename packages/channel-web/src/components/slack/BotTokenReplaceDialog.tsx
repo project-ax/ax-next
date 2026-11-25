@@ -18,9 +18,8 @@
  * every opening (an empty field, no old error), and the dialog closes itself
  * before it calls back.
  */
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Button, Notice } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -30,7 +29,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { FieldGroup } from '@/components/ui/field';
-import { Spinner } from '@/components/ui/spinner';
 import { SlackAppsLink, TokenField } from './SlackConfigToken';
 
 /** What a refusal says, and whether it belongs under the token field. */
@@ -53,16 +51,6 @@ export interface BotTokenReplaceDialogProps {
   onCloseAutoFocus?: (event: Event) => void;
   /** The page is out of date: read it again. The dialog has closed. */
   onStale: () => void;
-}
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
 }
 
 export function BotTokenReplaceDialog({
@@ -184,17 +172,13 @@ function ReplaceForm({
           disabled={busy}
         />
       </FieldGroup>
-      {error !== null && error.field === null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
-      )}
+      {error !== null && error.field === null && <Notice tone="danger">{error.message}</Notice>}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <Button type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
         </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Replacing…</Busy> : 'Replace token'}
+        <Button type="submit" intent="primary" busy={busy}>
+          Replace token
         </Button>
       </DialogFooter>
     </form>

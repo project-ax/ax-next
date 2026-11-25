@@ -24,8 +24,8 @@
  * precedent).
  */
 import type { ReactNode } from 'react';
-import { Info, ShieldCheck } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ShieldCheck } from 'lucide-react';
+import { Notice } from '@project-ax/ui';
 import { badgeVariants } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
@@ -153,10 +153,7 @@ export function DirectoryListingRow({
             <DetailItem term="Listing">{listingLine(entry)}</DetailItem>
           </dl>
           {entry.deprecated && <p className="text-sm text-muted-foreground">{DEPRECATED_NOTE}</p>}
-          <Alert role="note">
-            <Info aria-hidden="true" className="size-4" />
-            <AlertDescription>{TRUST_NOTE}</AlertDescription>
-          </Alert>
+          <Notice tone="info">{TRUST_NOTE}</Notice>
           <div className="flex flex-wrap items-center justify-end gap-2">
             {added ? (
               <Button type="button" variant="outline" size="sm" disabled>

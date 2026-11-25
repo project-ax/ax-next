@@ -1945,9 +1945,7 @@ describe('controlPaint', () => {
  * it and these two.
  */
 const STATUS_CHIP_FILE = 'components/routines/StatusChip.tsx';
-const ROUTINES_LIST_FILE = 'components/routines/RoutinesList.tsx';
 const ADMIN_PANE_FILE = 'components/admin/AdminPane.tsx';
-const BUTTON_FILE = 'components/ui/button.tsx';
 
 /** One arm of StatusChip's `styles` record, comments stripped. */
 function statusChipArm(src: string, arm: string): string {
@@ -1975,7 +1973,7 @@ function ghostPaint(cls: string): { hover: { token: string; alpha: number; cls: 
 
 const routinesCasesRegistered: string[] = [];
 
-describe("Routines' error chip and banner clear AA in every state", () => {
+describe("Routines' error chip clears AA in every state", () => {
   const paneSource = readSource(ADMIN_PANE_FILE);
   expect(paneSource).toContain('ax-panel');
   // The shared ax-panel class owns the actual content surface.
@@ -1983,14 +1981,10 @@ describe("Routines' error chip and banner clear AA in every state", () => {
   const panelToken = panelRule.match(/background:\s*hsl\(var\((--[\w-]+)\)\)/)?.[1];
   if (!panelToken) throw new Error('ax-panel must paint an opaque semantic background');
   const surface = { token: panelToken, alpha: 1, cls: 'ax-panel' };
-  const listSrc = readSource(ROUTINES_LIST_FILE);
-  const dismiss = ghostPaint(variantClasses(readSource(BUTTON_FILE), 'ghost'));
+  // RoutinesList's error banner is a design-system Notice now: its contrast is the package's job
+  // (packages/ui), not a class this file can read off the page. The chip still paints its own arm.
   const chip = controlPaint(statusChipArm(readSource(STATUS_CHIP_FILE), 'error'));
-  const banner = controlPaint(classNameOf(listSrc, 'data-testid="routines-list-error"'));
-  const sites = [
-    ['StatusChip error', chip],
-    ['RoutinesList error banner', banner],
-  ] as const;
+  const sites = [['StatusChip error', chip]] as const;
 
   function fillColour(tokens: Map<string, string>, fill: { token: string; alpha: number }): Colour {
     const under = tokens.get(surface.token);
@@ -2016,22 +2010,6 @@ describe("Routines' error chip and banner clear AA in every state", () => {
       });
     }
 
-    routinesCasesRegistered.push(`${themeName}:Refresh`);
-    it(`${themeName}: the banner's ghost Refresh, on the banner at rest and on its own hover pair`, () => {
-      const tokens = tokensAfter(selector);
-      const rest = banner.fills.find((f) => f.state === 'rest');
-      expect(rest, 'the banner paints a resting fill').toBeDefined();
-      expect(
-        contrast(tokens.get(banner.text)!, fillColour(tokens, rest!)),
-        `resting: inherited ${banner.text} on ${rest!.cls}`,
-      ).toBeGreaterThanOrEqual(AA_NORMAL);
-      const hoverInk = tokens.get(dismiss.hoverText);
-      expect(hoverInk, `${dismiss.hoverText} missing`).toBeDefined();
-      expect(
-        contrast(hoverInk!, fillColour(tokens, dismiss.hover)),
-        `hover: ${dismiss.hover.cls}`,
-      ).toBeGreaterThanOrEqual(AA_NORMAL);
-    });
   }
 
   it('sits on an opaque page, and each error fill is one solid per-theme tint', () => {
@@ -2042,7 +2020,6 @@ describe("Routines' error chip and banner clear AA in every state", () => {
       expect(paint.fills.map((f) => f.state), `${label}: exactly one resting fill`).toEqual(['rest']);
       expect(paint.fills[0]!.alpha, `${label}: ${paint.fills[0]!.cls} must be solid`).toBe(1);
     }
-    expect(dismiss.hover.alpha, 'the ghost hover must stay solid').toBe(1);
   });
 
   it('measures the old `bg-destructive/10` under the floor in light mode', () => {
@@ -2070,7 +2047,7 @@ describe("Routines' error chip and banner clear AA in every state", () => {
   it('registers one case per theme per site', () => {
     expect(routinesCasesRegistered).toEqual(
       THEMES.flatMap(([name]) =>
-        ['StatusChip error', 'RoutinesList error banner', 'Refresh'].map((l) => `${name}:${l}`),
+        ['StatusChip error'].map((l) => `${name}:${l}`),
       ),
     );
   });

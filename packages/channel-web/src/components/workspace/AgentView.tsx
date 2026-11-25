@@ -18,10 +18,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Menu } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Inline, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
-import { Spinner } from '@/components/ui/spinner';
 import { usePanelPreference } from '@/lib/use-panel-preference';
 import { useIsCompact } from '@/lib/use-compact';
 import {
@@ -47,7 +46,7 @@ import {
   ConversationReadOnlyError,
 } from '@/lib/conversation-read-only';
 import {
-  readAlertVariant,
+  readNoticeTone,
   toReadOutcome,
   type ReadOutcome,
 } from '@/lib/read-register';
@@ -1680,35 +1679,31 @@ export function AgentView({
     */
     return (
       <div className="flex flex-1 items-start justify-center p-6">
-        <Alert variant={readAlertVariant(loadError)} className="max-w-[520px]">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            {/*
-              THIS PANE'S `h1` (TASK-446, review follow-up). This branch
-              replaces the WHOLE pane — header, agent name and Back button
-              included — so without it a reader whose agent will not load gets
-              a surface with no page title at all: the exact gap this card
-              closes for the happy path, left open on the state where someone
-              is most likely to be hunting for their bearings. It is the same
-              call `WorkspaceShell` already makes on its board-read failure,
-              where the sentence IS the heading.
+        <div className="max-w-[520px]">
+          {/*
+            THIS PANE'S `h1` (TASK-446, review follow-up). This branch
+            replaces the WHOLE pane — header, agent name and Back button
+            included — so without it a reader whose agent will not load gets
+            a surface with no page title at all: the exact gap this card
+            closes for the happy path, left open on the state where someone
+            is most likely to be hunting for their bearings. It is the same
+            call `WorkspaceShell` already makes on its board-read failure,
+            where the sentence IS the heading.
 
-              NOT `AlertTitle`: that primitive hardcodes an `h5`, which would
-              make this pane's only heading a level-5 one and skip four levels
-              to get there. A `<span>` swapped for an `<h1>` under preflight is
-              the same pixels.
-            */}
+            NOT the Notice's `title`: that renders a paragraph, and this pane
+            needs a real level-1 heading, so the sentence is an `h1` in the body.
+          */}
+          <Notice
+            tone={readNoticeTone(loadError)}
+            action={
+              loadError === 'failed'
+                ? { label: 'Try again', onClick: () => void load() }
+                : { label: 'Back to agents', onClick: onBack }
+            }
+          >
             <h1>{LOAD_COPY[loadError]}</h1>
-            {loadError === 'failed' ? (
-              <Button variant="secondary" size="sm" onClick={() => void load()}>
-                Try again
-              </Button>
-            ) : (
-              <Button variant="ghost" size="sm" onClick={onBack}>
-                Back to agents
-              </Button>
-            )}
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       </div>
     );
   }
@@ -1750,17 +1745,16 @@ export function AgentView({
         className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         {/*
-          A blank pane, then a small spinner — not skeleton bubbles. An agent
-          switch remounts this view, so the pane is on screen for a few
-          milliseconds on every switch, and a bubble-shaped placeholder that
-          flashes past reads as a broken chat. The spinner waits 300ms before
-          fading in, so a fast read shows nothing at all. The fade sits on the
-          wrapper because `animate-in` and the Spinner's own spin both set
-          `animation`.
+          A blank pane, then a skeleton — not bubbles. An agent switch remounts
+          this view, so the pane is on screen for a few milliseconds on every
+          switch, and a placeholder that flashes past reads as a broken chat.
+          The skeleton waits 300ms before fading in, so a fast read shows
+          nothing at all. The fade sits on the wrapper because `animate-in`
+          and the skeleton's own pulse both set `animation`.
         */}
-        <span className="animate-in fade-in-0 fill-mode-both delay-300 duration-200 motion-reduce:animate-none">
-          <Spinner aria-hidden="true" />
-        </span>
+        <div className="w-full max-w-sm animate-in fade-in-0 fill-mode-both delay-300 duration-200 motion-reduce:animate-none">
+          <AsyncState status="loading" skeleton="lines" loadingLabel="Loading agent" />
+        </div>
       </div>
     );
   }
@@ -2105,8 +2099,8 @@ export function AgentView({
                   request path and status on the other two alerts.
                 */
                 <div className="px-6 pt-4">
-                  <Alert variant={readAlertVariant(turnError.kind)}>
-                    <AlertDescription className="flex flex-col items-start gap-2">
+                  <Notice tone={readNoticeTone(turnError.kind)} onDismiss={() => setTurnError(null)}>
+                    <Stack gap="sm" align="start">
                       <span>
                         {/*
                           WHICH SENTENCE, in order of how specific it is:
@@ -2136,7 +2130,7 @@ export function AgentView({
                           {turnError.sentence}
                         </span>
                       )}
-                      <div className="flex items-center gap-2">
+                      <Inline gap="sm">
                         {/*
                           RESEND ONLY WHEN RESENDING CAN WORK. On `gone` the
                           conversation we aimed at is not there and on `expired`
@@ -2188,39 +2182,23 @@ export function AgentView({
                             Open Connectors
                           </Button>
                         )}
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setTurnError(null)}
-                        >
-                          Dismiss
-                        </Button>
-                      </div>
-                    </AlertDescription>
-                  </Alert>
+                      </Inline>
+                    </Stack>
+                  </Notice>
                 </div>
               )}
               {switchError !== null && (
                 <div className="px-6 pt-4">
-                  <Alert variant={readAlertVariant(switchError.outcome)}>
-                    <AlertDescription className="flex flex-col items-start gap-2">
-                      <span>{SWITCH_COPY[switchError.outcome]}</span>
-                      <div className="flex items-center gap-2">
-                        {/* Nothing brings a deleted chat back, and a signed-out retry cannot work. */}
-                        {switchError.outcome === 'failed' && (
-                          <Button
-                            size="sm"
-                            onClick={() => void switchTo(switchError.conversationId)}
-                          >
-                            Try again
-                          </Button>
-                        )}
-                        <Button variant="secondary" size="sm" onClick={() => setSwitchError(null)}>
-                          Dismiss
-                        </Button>
-                      </div>
-                    </AlertDescription>
-                  </Alert>
+                  <Notice
+                    tone={readNoticeTone(switchError.outcome)}
+                    onDismiss={() => setSwitchError(null)}
+                    {...(switchError.outcome === 'failed'
+                      ? /* Nothing brings a deleted chat back, and a signed-out retry cannot work. */
+                        { action: { label: 'Try again', onClick: () => void switchTo(switchError.conversationId) } }
+                      : {})}
+                  >
+                    {SWITCH_COPY[switchError.outcome]}
+                  </Notice>
                 </div>
               )}
               <AgentConversation

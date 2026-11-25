@@ -184,7 +184,7 @@ describe('Disconnect', () => {
     expect(
       within(dialog).getByText("Sales Desk leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app."),
     ).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Support Bot' }));
@@ -194,7 +194,7 @@ describe('Disconnect', () => {
       within(dialog).getByText("We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."),
     ).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Stop setting up' })).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep going' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(disconnect).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toMatch(/\bAX\b/);
@@ -366,13 +366,13 @@ describe('a bot that needs rebuilding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Sales Desk' }));
     let dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent(sentence);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Other Bot' }));
     dialog = await screen.findByRole('dialog');
     expect(dialog).not.toHaveTextContent(/approver has left/);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect Support Bot' }));

@@ -60,10 +60,22 @@ describe('AuthProvidersTab', () => {
   it('shows the empty state when no providers are configured', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     render(<AuthProvidersTab />);
-    await waitFor(() =>
-      expect(screen.getByText(/No identity providers configured/i)).toBeTruthy(),
-    );
+    expect(await screen.findByText('No identity providers configured')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Add provider/i })).toBeTruthy();
+  });
+
+  it('announces the load as a busy status, and a failed load as an alert with Try again', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
+    render(<AuthProvidersTab />);
+    const loading = screen.getByRole('status');
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    expect(loading).toHaveTextContent('Loading providers…');
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('We couldn’t load your sign-in methods.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No identity providers configured')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('clicking "Add provider" reveals the AddProviderForm', async () => {
@@ -165,6 +177,21 @@ describe('AuthProvidersTab', () => {
     expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
   });
 
+  it('a failed toggle is a plain error, not a loading state, and the rows stay', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry, githubEntry] }));
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 })); // PATCH fails
+
+    render(<AuthProvidersTab />);
+    await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
+    fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t change that sign-in method.');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.queryByText('Updating sign-in methods…')).toBeNull();
+    expect(screen.getByText('Google')).toBeTruthy();
+  });
+
   /**
    * TASK-342 / audit D5 — turning off the LAST enabled sign-in method locks
    * every user out of the deployment, the admin doing it included, with no way
@@ -193,7 +220,7 @@ describe('AuthProvidersTab', () => {
       render(<AuthProvidersTab />);
       await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
       fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
-      fireEvent.click(await screen.findByRole('button', { name: /keep it on/i }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 
       await waitFor(() =>
         expect(screen.queryByText(/turn off the only way to sign in\?/i)).toBeNull(),
@@ -344,8 +371,8 @@ describe('AuthProvidersTab', () => {
     await waitFor(() =>
       expect(screen.getByText(/client_id required/)).toBeTruthy(),
     );
-    // Form still open — Retry button visible.
-    expect(screen.getByRole('button', { name: /Retry/i })).toBeTruthy();
+    // Form still open — Try again button visible.
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 
   /**

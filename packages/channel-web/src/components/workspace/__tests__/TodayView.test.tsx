@@ -273,12 +273,14 @@ describe('a queue we were not allowed to read', () => {
   */
   it('does not dress a signed-out session up as something going wrong', () => {
     renderToday({ error: expired });
-    expect(screen.getByRole('alert').className).not.toContain('destructive');
+    // Neutral news is a status; only a failure is an alert.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText(DECISION_SESSION_EXPIRED).closest('[role="status"]')).not.toBeNull();
   });
 
   it('and a read that really did fail still reads as a failure', () => {
     renderToday({ error: { kind: 'failed', detail: 'boom' } });
-    expect(screen.getByRole('alert').className).toContain('destructive');
+    expect(screen.getByRole('alert')).toHaveTextContent(DECISION_READ_FAILED);
   });
 
   it('still refuses to claim nothing is waiting on you', () => {
@@ -667,7 +669,6 @@ describe('what tasks need from you (TASK-933)', () => {
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
     expect(screen.getByText(COULD_NOT_CHECK)).toBeInTheDocument();
     const box = alertWith(TASKS_FAILED);
-    expect(box.className).toContain('destructive');
     fireEvent.click(within(box).getByRole('button', { name: 'Try again' }));
     expect(onRetryTasks).toHaveBeenCalledTimes(1);
   });
@@ -677,7 +678,9 @@ describe('what tasks need from you (TASK-933)', () => {
     const { rerender } = renderToday({ tasksError: 'failed', tasksRefreshing: true, onRetryTasks });
     const button = () =>
       within(alertWith(TASKS_FAILED)).getByRole('button', { name: 'Try again' });
-    expect(button()).toBeDisabled();
+    // Busy, not disabled: it keeps its place and its label while the read runs.
+    expect(button()).toHaveAttribute('aria-busy', 'true');
+    expect(button()).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(button());
     expect(onRetryTasks).not.toHaveBeenCalled();
 
@@ -706,13 +709,18 @@ describe('what tasks need from you (TASK-933)', () => {
       onPollTasks={vi.fn()}
       />,
     );
-    expect(button()).toBeEnabled();
+    expect(button()).not.toHaveAttribute('aria-busy');
+    expect(button()).not.toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(button());
+    expect(onRetryTasks).toHaveBeenCalledTimes(1);
   });
 
   it('an ended session offers sign-in, not Try again', () => {
     renderToday({ tasksError: 'expired', onRetryTasks: vi.fn() });
-    const box = alertWith(DECISION_SESSION_EXPIRED);
-    expect(box.className).not.toContain('destructive');
+    // An ended session is neutral news (status), never a failure (alert).
+    const box = screen.getByText(DECISION_SESSION_EXPIRED).closest<HTMLElement>('[role="status"]')!;
+    expect(box).not.toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(within(box).getByRole('button', { name: 'Sign in' })).toBeInTheDocument();
     expect(within(box).queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
@@ -728,12 +736,23 @@ describe('what tasks need from you (TASK-933)', () => {
       onRetryTasks,
     });
     const box = alertWith('We couldn’t check tasks from Juniper and Quill, so some may be missing.');
-    expect(box.className).toContain('destructive');
     expect(screen.queryByText(TASKS_FAILED)).toBeNull();
     expect(screen.getByText(COULD_NOT_CHECK)).toBeInTheDocument();
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
     fireEvent.click(within(box).getByRole('button', { name: 'Try again' }));
     expect(onRetryTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it('says both failures as separate lines when the read failed and some agents are also missing', () => {
+    renderToday({
+      tasksError: 'failed',
+      unavailableTaskAgents: [{ agentId: 'a-juniper', agentName: 'Juniper' }],
+      onRetryTasks: vi.fn(),
+    });
+    expect(screen.getByText(TASKS_FAILED)).toBeInTheDocument();
+    expect(
+      screen.getByText('We couldn’t check tasks from Juniper, so some may be missing.'),
+    ).toBeInTheDocument();
   });
 
   it('a failed refresh keeps the tasks it has on screen', () => {

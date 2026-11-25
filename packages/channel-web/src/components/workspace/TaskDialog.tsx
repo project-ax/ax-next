@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
+import { AsyncState, EmptyState } from '@project-ax/ui';
 import { RoutineEditor } from '@/components/routines/RoutineEditor';
 import { workspaceApi } from '@/lib/workspace-api';
 
@@ -43,10 +42,10 @@ export function TaskDialog({ open, onOpenChange, agent, routineId, onWriteSuccee
       onInteractOutside={event => { if (pending) event.preventDefault(); }}
       onCloseAutoFocus={event => { event.preventDefault(); onClosed(); }}>
       <DialogHeader><DialogTitle>{routineId === undefined ? 'New task' : 'Edit task'}</DialogTitle></DialogHeader>
-      {failed ? <Alert variant="destructive"><AlertDescription>We couldn’t load available agents.
-        <Button variant="outline" onClick={() => setRetry(value => value + 1)}>Try again</Button></AlertDescription></Alert>
-        : chosen === undefined && agents === null ? <Spinner aria-label="Loading agents" />
-        : chosen === undefined ? <p>No agents are available for a new task. Join an agent or create one first.</p> : <>
+      {failed ? <AsyncState status="error" skeleton="rows" loadingLabel="Loading agents"
+        error={{ message: 'We couldn’t load available agents.', onRetry: () => setRetry(value => value + 1) }} />
+        : chosen === undefined && agents === null ? <AsyncState status="loading" skeleton="rows" loadingLabel="Loading agents" />
+        : chosen === undefined ? <EmptyState title="No agents are available for a new task" description="Join an agent or create one first." /> : <>
           <RoutineEditor taskMode mode={routineId === undefined ? 'create' : 'edit'}
             agentId={chosen.agentId} agentName={chosen.agentName}
             // The form's agent chip, shown only when there's a choice to make.

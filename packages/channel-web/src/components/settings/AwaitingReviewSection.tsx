@@ -18,8 +18,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Inline, Stack, Text } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Inline, Stack, Text } from '@project-ax/ui';
 import { listCatalogRequests } from '@/lib/catalog';
 import type { CatalogRequest } from '@ax/skills';
 import { BundleReviewDialog } from '@/components/admin/BundleReviewDialog';
@@ -58,13 +57,15 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
 
       {expanded && (
         <Stack gap="sm">
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          {requests === null ? (
-            <Text role="meta">Loading…</Text>
+          {error ? (
+            <AsyncState
+              status="error"
+              skeleton="lines"
+              loadingLabel="Loading requests awaiting review"
+              error={{ message: error, onRetry: () => void refresh() }}
+            />
+          ) : requests === null ? (
+            <AsyncState status="loading" skeleton="lines" loadingLabel="Loading requests awaiting review" />
           ) : requests.length === 0 ? (
             <Text role="meta">
               No pending requests. Cold-start and submit-to-workspace requests land

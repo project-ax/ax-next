@@ -30,7 +30,7 @@ import {
   grantResumedTitle,
 } from '@/lib/grant-copy';
 import { ConversationReadOnlyError } from '@/lib/conversation-read-only';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import type { StreamHandlers } from '@/lib/workspace-api';
 import type { PermissionRequest } from '@/server/types';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -144,7 +144,7 @@ let threads: Record<string, ThreadMessage[]>;
 /** `reqId` → what that stream does. An unscripted reqId is a bug, so it throws. */
 let scripts: Map<string, (h: StreamHandlers) => void | Promise<void>>;
 /** Did the shell announce the resume? See `beforeEach` for why this is a spy. */
-let toastSpy: MockInstance<typeof toastActions.show>;
+let toastSpy: MockInstance<typeof toast.show>;
 
 /*
   Held at `visible` for the whole file. Not something this file is pinning —
@@ -211,7 +211,7 @@ beforeEach(() => {
     decided to say something, not whether the toast component drew it. `<Toast />`
     is mounted by `App.tsx`, above this tree.
   */
-  toastSpy = vi.spyOn(toastActions, 'show');
+  toastSpy = vi.spyOn(toast, 'show');
 });
 
 afterEach(() => {

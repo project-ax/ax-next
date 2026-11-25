@@ -154,7 +154,9 @@ describe('AppsApprovePage', () => {
     await screen.findByRole('radio', { name: 'Scout' });
     pastArmDelay();
     fireEvent.click(allow());
-    expect(await screen.findByText('Done. You can close this tab and go back to the app.')).toBeTruthy();
+    const done = await screen.findByText('Done. You can close this tab and go back to the app.');
+    // The outcome is announced: it sits inside a status region.
+    expect(done.closest('[role="status"]')).not.toBeNull();
     const sent = posts();
     expect(sent).toHaveLength(1);
     expect(sent[0]?.url).toBe(URL_);

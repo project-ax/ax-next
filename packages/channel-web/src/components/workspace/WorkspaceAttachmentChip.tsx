@@ -18,7 +18,7 @@ import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
  * context, because the workspace surface mounts no such runtime. It also has
  * a third state the deleted chat UI's equivalent chip never needed: chat's
  * adapter could only be running or done, so a file the server refused had
- * nowhere to say so. Here it says so, in a sentence, with a Retry next to it.
+ * nowhere to say so. Here it says so, in a sentence, with a Try again next to it.
  */
 
 function pickIcon(mediaType: string) {
@@ -112,7 +112,7 @@ export const WorkspaceAttachmentChip: FC<WorkspaceAttachmentChipProps> = ({
               className="h-7 px-2"
               onClick={onRetry}
             >
-              Retry
+              Try again
             </Button>
             <Button
               type="button"

@@ -128,6 +128,15 @@ describe('connector list', () => {
     renderTab();
     expect(await screen.findByText(/couldn’t read Quill’s connectors/)).toBeTruthy();
     expect(screen.queryByText(/No connectors yet/)).toBeNull();
+    expect(screen.getByRole('alert')).toBeTruthy();
+  });
+
+  it('Try again after a failed list read re-reads it', async () => {
+    connectorsMock.mockRejectedValueOnce(new WorkspaceApiError('/agents/a-quill/connectors', 500));
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Linear')).toBeTruthy();
+    expect(connectorsMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -410,7 +419,7 @@ describe('remove', () => {
     expect(within(dialog).getByText('Remove Linear from Quill?')).toBeTruthy();
     // Remove deletes this agent's sign-in and keys for it too: it says so.
     expect(within(dialog).getByText(/including its sign-in and keys/)).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(removeMock).not.toHaveBeenCalled();
   });
@@ -578,16 +587,13 @@ describe('a member on a team agent', () => {
 });
 
 describe('empty state', () => {
-  it('is a dashed card with the plug, the title, the copy and "Add connector"', async () => {
+  it('says there are no connectors yet, with the copy and "Add connector"', async () => {
     connectorsMock.mockResolvedValue({ connectors: [], shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false });
-    const { container } = renderTab();
+    renderTab();
     expect(await screen.findByText('No connectors yet')).toBeTruthy();
     expect(
       screen.getByText('Connect a tool like Linear or Gmail and Quill can work in it for you.'),
     ).toBeTruthy();
-    const empty = container.querySelector('[data-slot="empty"]');
-    expect(empty?.className).toContain('border-dashed');
-    expect(empty?.querySelector('svg.lucide-plug')).not.toBeNull();
     // The empty state's own button, not a second "+ Add" in the header.
     expect(screen.getByRole('button', { name: 'Add connector' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Add connector' })).toHaveLength(1);

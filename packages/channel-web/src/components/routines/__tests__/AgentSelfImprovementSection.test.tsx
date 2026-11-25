@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { AgentSelfImprovementSection } from '../AgentSelfImprovementSection';
+import { AgentDefaultControls, AgentSelfImprovementSection } from '../AgentSelfImprovementSection';
 import { agentStoreActions } from '@/lib/agent-store';
 
 vi.mock('@/lib/routines', () => ({
@@ -125,7 +125,7 @@ describe('AgentSelfImprovementSection', () => {
 
     fireEvent.click(sw);
 
-    await screen.findByText(/Couldn't save: forbidden/);
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save: forbidden");
     // Rolled back to ON after the failure.
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
   });
@@ -149,6 +149,64 @@ describe('AgentSelfImprovementSection', () => {
   it('shows the empty state when the user has no agents', () => {
     seedAgents([]);
     render(<AgentSelfImprovementSection />);
-    expect(screen.getByText(/No agents yet/)).toBeInTheDocument();
+    expect(screen.getByText('No agents yet')).toBeInTheDocument();
+  });
+
+  it('a failed read says so (not "Couldn’t save") and Try again re-reads', async () => {
+    listAgentDefaults.mockRejectedValueOnce(new Error('offline'));
+    listAgentDefaults.mockResolvedValueOnce([
+      { defaultRoutineId: 'skill-reflection', name: 'skill-reflection', enabled: true },
+    ]);
+    seedAgents([{ id: 'a1', name: 'Research Bot' }]);
+
+    render(<AgentSelfImprovementSection />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent("Couldn't load this setting: offline");
+    expect(alert).not.toHaveTextContent(/save/i);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    const sw = await screen.findByRole('switch', { name: 'Skill self-improvement for Research Bot' });
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
+    expect(listAgentDefaults).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a failed save is a plain error with no retry button', async () => {
+    listAgentDefaults.mockResolvedValue([
+      { defaultRoutineId: 'skill-reflection', name: 'skill-reflection', enabled: true },
+    ]);
+    setAgentDefaultEnabled.mockRejectedValue(new Error('forbidden'));
+    seedAgents([{ id: 'a1', name: 'Research Bot' }]);
+    render(<AgentSelfImprovementSection />);
+    const sw = await screen.findByRole('switch', { name: 'Skill self-improvement for Research Bot' });
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
+    fireEvent.click(sw);
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't save: forbidden");
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.queryByText('Saving…')).toBeNull();
+  });
+});
+
+describe('AgentDefaultControls', () => {
+  it('a failed read offers Try again, which re-reads the defaults', async () => {
+    listAgentDefaults.mockRejectedValueOnce(new Error('nope'));
+    listAgentDefaults.mockResolvedValueOnce([
+      { defaultRoutineId: 'heartbeat', name: 'Heartbeat', enabled: true },
+    ]);
+    render(<AgentDefaultControls agentId="a1" />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Default routines are unavailable.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('switch', { name: 'Heartbeat' })).toBeInTheDocument();
+    expect(listAgentDefaults).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a failed change is an error Notice, not a loading state, and the list stays', async () => {
+    listAgentDefaults.mockResolvedValue([{ defaultRoutineId: 'heartbeat', name: 'Heartbeat', enabled: true }]);
+    setAgentDefaultEnabled.mockRejectedValue(new Error('x'));
+    render(<AgentDefaultControls agentId="a1" />);
+    fireEvent.click(await screen.findByRole('switch', { name: 'Heartbeat' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t change this default routine.');
+    expect(screen.getByRole('switch', { name: 'Heartbeat' })).toBeInTheDocument();
   });
 });

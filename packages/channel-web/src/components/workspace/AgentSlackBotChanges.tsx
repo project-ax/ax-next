@@ -34,10 +34,9 @@
  * Every sentence comes from `lib/agent-slack.ts`, `lib/slack-token-copy.ts`, the
  * shared dialog, or the pinned copy below.
  */
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { Button, Notice } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -48,7 +47,6 @@ import {
 } from '@/components/ui/dialog';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Spinner } from '@/components/ui/spinner';
 import {
   AGENT_SLACK_BOT_CHANGE_COPY,
   agentSlackBotChangeErrorCopy,
@@ -67,16 +65,6 @@ import { drawPickedSlackAvatar } from '@/lib/slack-avatar';
 
 type Live = Extract<Bot, { state: 'live' }>;
 type ChangeError = { field: 'botName' | null; message: string };
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
 
 export function ReconnectDialog({
   open,
@@ -242,16 +230,14 @@ function RenameForm({
         </Field>
       </FieldGroup>
       {error !== null && error.field === null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error.message}</Notice>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <Button type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
         </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Renaming…</Busy> : 'Rename'}
+        <Button type="submit" intent="primary" busy={busy}>
+          Rename
         </Button>
       </DialogFooter>
     </form>
@@ -378,7 +364,7 @@ function PictureForm({
             e.target.value = '';
           }}
         />
-        <Button type="button" variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}>
+        <Button type="button" intent="secondary" onClick={() => fileRef.current?.click()} disabled={busy}>
           {png === undefined ? 'Choose an image' : 'Choose another'}
         </Button>
         {typeof png === 'string' && (
@@ -390,16 +376,14 @@ function PictureForm({
         )}
       </div>
       {(png === null || error !== null) && (
-        <Alert variant="destructive">
-          <AlertDescription>{error !== null ? error.message : AGENT_SLACK_BOT_CHANGE_COPY.badPicture}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error !== null ? error.message : AGENT_SLACK_BOT_CHANGE_COPY.badPicture}</Notice>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <Button type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
         </Button>
-        <Button type="submit" disabled={busy || typeof png !== 'string'}>
-          {busy ? <Busy>Saving…</Busy> : 'Save picture'}
+        <Button type="submit" intent="primary" busy={busy} disabled={typeof png !== 'string'}>
+          Save picture
         </Button>
       </DialogFooter>
     </form>

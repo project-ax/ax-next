@@ -10,7 +10,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { artifactTypeLine } from '@/lib/artifact-labels';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { ThreadArtifact } from '@/lib/workspace-types';
 import { KIND_ICONS } from './AgentArtifacts';
@@ -33,7 +33,7 @@ export function ArtifactCard({ artifact, onOpen }: {
       saveFromContentOrigin((await workspaceApi.artifactToken(artifact.artifactId, artifact.version, 'download')).url);
     } catch (e) {
       logRequestFailure(e, 'artifact-download');
-      toastActions.error('That download didn’t start, so nothing was saved. Try again in a moment.');
+      toast.show({ title: 'That download didn’t start, so nothing was saved. Try again in a moment.', tone: 'danger' });
     } finally {
       setDownloading(false);
     }

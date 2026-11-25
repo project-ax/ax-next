@@ -125,11 +125,11 @@ describe('useMarkDone', () => {
     const onDone = vi.fn();
     render(<Harness unticked={n} onDone={onDone} />);
     press();
-    expect(screen.getByRole('alert').textContent).toContain(line);
+    expect(screen.getByRole('status').textContent).toContain(line);
     expect(completeMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
     expect(completeMock).not.toHaveBeenCalled();
 
     press();
@@ -274,7 +274,7 @@ describe('useMarkDone', () => {
     const view = render(<Harness unticked={2} onDone={onDone} />);
     press();
     view.rerender(<Harness unticked={1} onDone={onDone} />);
-    expect(screen.getByRole('alert').textContent).toContain('1 step isn’t ticked. It’ll stay on the task as it is.');
+    expect(screen.getByRole('status').textContent).toContain('1 step isn’t ticked. It’ll stay on the task as it is.');
     view.rerender(<Harness unticked={0} onDone={onDone} />);
     expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
     expect(screen.queryByText(/ticked/)).toBeNull();
@@ -360,11 +360,11 @@ describe('MarkDoneConfirmation', () => {
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
   });
 
-  it('disables the buttons while busy', () => {
+  it('shows the confirm button busy (label kept) and disables Cancel while busy', () => {
     render(<MarkDoneConfirmation unticked={1} primary busy onConfirm={() => {}} onCancel={() => {}} />);
-    expect(
-      (screen.getByRole('button', { name: 'Mark done anyway' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    const confirm = screen.getByRole('button', { name: 'Mark done anyway' });
+    expect(confirm).toHaveAttribute('aria-busy', 'true');
+    expect(confirm).toHaveTextContent('Mark done anyway');
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

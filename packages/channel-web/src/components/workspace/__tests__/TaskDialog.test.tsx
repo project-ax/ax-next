@@ -21,6 +21,20 @@ async function fill() {
   fireEvent.change(screen.getByLabelText('Going well when'), { target: { value: 'No question waits a day.' } });
 }
 describe('shared task dialog', () => {
+  it('offers Try again when the agents cannot be loaded, and reads them again on click', async () => {
+    vi.mocked(workspaceApi.taskAgents).mockRejectedValueOnce(new Error('boom'));
+    show();
+    expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t load available agents.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByLabelText('What should Caveman do?');
+    expect(workspaceApi.taskAgents).toHaveBeenCalledTimes(2);
+  });
+  it('says so plainly when there is no agent to give a task to', async () => {
+    vi.mocked(workspaceApi.taskAgents).mockResolvedValue({ agents: [] });
+    show();
+    expect(await screen.findByText('No agents are available for a new task')).toBeVisible();
+    expect(screen.getByText('Join an agent or create one first.')).toBeVisible();
+  });
   it('uses its sole eligible agent, announces a landed write first, and opens the real saved ID', async () => {
     const h = show(); await fill();
     expect(screen.queryByRole('button', { name: /^Agent:/ })).not.toBeInTheDocument();
@@ -62,7 +76,7 @@ describe('shared task dialog', () => {
   it('keeps an uncertain retry on one logical request and freezes dialog dismissal', async () => {
     vi.mocked(routineApi.create).mockRejectedValueOnce(new RoutineApiError(500, 'unavailable')).mockResolvedValue(saved);
     const h = show(); await fill(); fireEvent.click(screen.getByRole('button', { name: 'Start task' }));
-    const retry = await screen.findByRole('button', { name: 'Retry save' });
+    const retry = await screen.findByRole('button', { name: 'Try again' });
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.click(retry);
     await waitFor(() => expect(h.onSaved).toHaveBeenCalledTimes(1));

@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { SettingsRow } from '../settings/SettingsLayout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import type { Destination } from '@ax/credentials';
 import { CredentialSlotForm } from './CredentialSlotForm';
@@ -80,12 +80,9 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
       </div>
       <Button size="sm" variant="outline" className="shrink-0" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>
     </div>}
-    {status === 'error' && <Alert variant="destructive">
-      <AlertDescription>
-        {destination.kind === 'routine-hmac' ? 'Could not check the signing secret.' : 'Could not check this key.'}
-        <Button size="sm" variant="outline" onClick={() => void refresh()}>Retry</Button>
-      </AlertDescription>
-    </Alert>}
+    {status === 'error' && <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>
+      {destination.kind === 'routine-hmac' ? 'Could not check the signing secret.' : 'Could not check this key.'}
+    </Notice>}
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetContent {...(destinationAddsInfo ? {} : { 'aria-describedby': undefined })}>
         <SheetHeader>

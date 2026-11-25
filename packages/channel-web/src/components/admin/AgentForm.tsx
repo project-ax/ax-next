@@ -52,14 +52,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { ConfirmAction, Notice, EmptyState, Stack } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 
 type FormState = {
@@ -181,6 +175,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [models, setModels] = useState<AgentModelOption[] | null>(null);
   const [defaultModel, setDefaultModel] = useState<string | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsTick, setModelsTick] = useState(0);
+  const [toolsTick, setToolsTick] = useState(0);
   // The tool names the picker offers (GET /admin/agents/tools, TASK-1214).
   // Save never drops a saved name on its own; only the picker's Remove does.
   const [toolCatalog, setToolCatalog] = useState<ToolCatalogState>({ status: 'loading' });
@@ -198,18 +194,18 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // identity write: blank fields written back over text we never read would
   // erase it. The rest of the form still saves.
   const [identityLoadFailed, setIdentityLoadFailed] = useState(false);
+  const [identityTick, setIdentityTick] = useState(0);
   const identityFieldsLocked =
     editing !== 'new' && (identityLoading || identityLoadFailed);
-  // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
-  // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
-  const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
 
+  const [listError, setListError] = useState<string | null>(null);
   const refresh = async () => {
+    setListError(null);
     try {
       const list = await listAdminAgents();
       setAgents(list);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setListError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -227,6 +223,10 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     void listTeams()
       .then((t) => setTeams(t ?? []))
       .catch(() => setTeams([]));
+  }, [editing]);
+
+  useEffect(() => {
+    if (editing === null) return;
     // The model list is NOT best-effort-empty: an empty picker with no
     // explanation is how someone ends up staring at a form they can't submit.
     // A failure is surfaced in the form (see the Model field below).
@@ -237,7 +237,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         setModels([]);
         setModelsError(err instanceof Error ? err.message : String(err));
       });
-  }, [editing]);
+  }, [editing, modelsTick]);
 
   // TASK-1214 — read the tool list each time the form OPENS, so "close and
   // reopen this form" really retries a failed read. Keyed on the form being
@@ -262,7 +262,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       cancelled = true;
       setToolCatalog({ status: 'loading' });
     };
-  }, [formOpen]);
+  }, [formOpen, toolsTick]);
 
   // TASK-142 — load the agent's identity and soul when editing an existing
   // agent. A new agent has none yet (its first save writes them), so we skip
@@ -271,6 +271,9 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // splice one agent's identity into another's form.
   useEffect(() => {
     setIdentityLoadFailed(false);
+  }, [editing]);
+
+  useEffect(() => {
     if (editing === null || editing === 'new') return;
     const agentId = editing.id;
     let cancelled = false;
@@ -283,6 +286,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
           identity: loaded.identity,
           soul: loaded.soul,
         }));
+        setIdentityLoadFailed(false);
       })
       .catch(() => {
         // Not best-effort (TASK-989): the fields stay disabled and the save
@@ -296,7 +300,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [editing]);
+  }, [editing, identityTick]);
 
   const startNew = () => {
     editRequest.current += 1;
@@ -394,7 +398,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         toolCatalog.status === 'loading'
           ? 'We’re still loading the list of tools. Give it a second and try again.'
           : toolCatalog.status === 'failed'
-            ? 'We couldn’t load the list of tools, so there’s nothing to pick yet. Close and reopen this form to try again.'
+            ? 'We couldn’t load the list of tools, so there’s nothing to pick yet. Use Try again on the tool list above, then save.'
             : 'Pick at least one tool for this agent — “Files and commands” is a safe start.',
       );
       return;
@@ -473,38 +477,27 @@ if (base.model !== editing.model) patch.model = base.model;
     }
   };
 
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    try {
-      await deleteAgent(pendingDelete.id);
-      await refresh();
-      setPendingDelete(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
-    }
-  };
-
   // ── List view ──────────────────────────────────────────────────────────
   if (editing === null) {
     return (
       <div className="font-sans">
-        <SettingsActions><Button onClick={startNew}>New agent</Button></SettingsActions>
+        <SettingsActions><Button data-return-focus="admin-agents" onClick={startNew}>New agent</Button></SettingsActions>
 
-        {/* (D2) Was a hand-rolled destructive div. `Alert` is installed, this
-            file already imports it, and one of the two copies had different
-            padding from the other — which is the whole argument for the
-            primitive. */}
-        {error && (
-          <Alert variant="destructive" className="mb-4">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+        {(error || listError) && (
+          <div className="mb-4">
+            <Stack gap="sm">
+              {error && <Notice tone="danger">{error}</Notice>}
+              {listError && (
+                <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>
+                  {listError}
+                </Notice>
+              )}
+            </Stack>
+          </div>
         )}
 
         {agents.length === 0 ? (
-          <div className="text-sm text-muted-foreground">
-            No agents yet. Make one.
-          </div>
+          listError ? null : <EmptyState title="No agents yet." description="Make one." />
         ) : (
           <div className="flex flex-col">
             {agents.map((a) => (
@@ -517,57 +510,28 @@ if (base.model !== editing.model) patch.model = base.model;
                   >
                     edit
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPendingDelete(a)}
-                  >
-                    delete
-                  </Button>
+                  {/* TASK-718: say what goes with the agent. Every item named here
+                      is really deleted (conversations and their attachments, the
+                      agent's saved files, its routines) -- do not add a claim
+                      without the code behind it, and do not promise anything is
+                      kept. Data loss, so plain and direct: no jokes. */}
+                  <ConfirmAction
+                    trigger={{ label: 'delete', intent: 'quiet', size: 'sm' }}
+                    title="Delete agent?"
+                    description={`Delete ${a.displayName}? We will delete its conversations, the files in them, the files it saved and its routines along with it. This cannot be undone.`}
+                    confirmLabel="Delete agent"
+                    errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+                    onConfirm={async () => {
+                      await deleteAgent(a.id);
+                      await refresh();
+                      // The row that opened this is gone; park focus on the list's primary action.
+                      focusAfterRemoval('[data-return-focus="admin-agents"]');
+                    }}
+                  />
                 </div>
               </SettingsDetailRow>
             ))}
           </div>
-        )}
-
-        {/* Delete confirmation dialog (styled — no OS confirm). */}
-        {pendingDelete !== null && (
-          <Dialog
-            open={true}
-            onOpenChange={(v) => {
-              if (!v) setPendingDelete(null);
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete agent?</DialogTitle>
-              </DialogHeader>
-              {/* TASK-718: say what goes with the agent. Every item named here
-                  is really deleted (conversations and their attachments, the
-                  agent's saved files, its routines) -- do not add a claim
-                  without the code behind it, and do not promise anything is
-                  kept. Data loss, so plain and direct: no jokes. */}
-              <DialogDescription>
-                Delete{' '}
-                <span className="font-medium text-foreground">
-                  {pendingDelete.displayName}
-                </span>
-                ? We will delete its conversations, the files in them, the files
-                it saved and its routines along with it. This cannot be undone.
-              </DialogDescription>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setPendingDelete(null)}
-                >
-                  Cancel
-                </Button>
-                <Button variant="destructive" onClick={() => void confirmDelete()}>
-                  Delete
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
         )}
       </div>
     );
@@ -685,16 +649,19 @@ if (base.model !== editing.model) patch.model = base.model;
           <div className="flex flex-col gap-2">
             <Label htmlFor="agent-model">Model</Label>
             {editing !== null && editing !== 'new' && editing.requestedModel !== undefined && (
-              <Alert><AlertDescription>{movedNotice(modelOptions.find((o) => o.id === editing.model)?.label ?? editing.model)}</AlertDescription></Alert>
+              <Notice tone="info">{movedNotice(modelOptions.find((o) => o.id === editing.model)?.label ?? editing.model)}</Notice>
             )}
             {models !== null && modelOptions.length === 0 ? (
-              <Alert variant="destructive">
-                <AlertDescription>
-                  {modelsError === null
-                    ? 'No models are available yet. That usually means no model provider is configured — add a provider key on the Model config tab, then reopen this form.'
-                    : `We couldn’t load the model list (${modelsError}). Close and reopen this form to try again.`}
-                </AlertDescription>
-              </Alert>
+              <Notice
+                tone="danger"
+                {...(modelsError === null
+                  ? {}
+                  : { action: { label: 'Try again', onClick: () => { setModels(null); setModelsTick((n) => n + 1); } } })}
+              >
+                {modelsError === null
+                  ? 'No models are available yet. That usually means no model provider is configured — add a provider key on the Model config tab, then reopen this form.'
+                  : `We couldn’t load the model list (${modelsError}).`}
+              </Notice>
             ) : (
               <select
                 id="agent-model"
@@ -733,13 +700,20 @@ if (base.model !== editing.model) patch.model = base.model;
                 setForm((f) => ({ ...f, identity: e.target.value }))
               }
             />
-            <p className="text-xs text-muted-foreground">
-              {editing !== 'new' && identityLoading
-                ? 'Loading the agent’s identity…'
-                : editing !== 'new' && identityLoadFailed
-                  ? 'We couldn’t load this agent’s identity, so saving leaves it as it is.'
+            {editing !== 'new' && identityLoadFailed ? (
+              <Notice
+                tone="danger"
+                action={{ label: 'Try again', busy: identityLoading, onClick: () => setIdentityTick((n) => n + 1) }}
+              >
+                We couldn’t load this agent’s identity, so saving leaves it as it is.
+              </Notice>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {editing !== 'new' && identityLoading
+                  ? 'Loading the agent’s identity…'
                   : 'How this agent describes itself. It can update this as it grows.'}
-            </p>
+              </p>
+            )}
           </div>
 
           {/* Soul */}
@@ -764,6 +738,7 @@ if (base.model !== editing.model) patch.model = base.model;
               deployment really has. `unrestricted`: an existing agent saved
               with no tools at all (the wildcard) and still nothing picked. */}
           <AgentToolPicker
+            onRetry={() => setToolsTick((n) => n + 1)}
             catalog={toolCatalog}
             selected={form.allowedTools}
             onChange={(next) => setForm((f) => ({ ...f, allowedTools: next }))}
@@ -776,9 +751,7 @@ if (base.model !== editing.model) patch.model = base.model;
           />
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
 
           <div className="flex items-center gap-2">

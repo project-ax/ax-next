@@ -55,7 +55,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button as AxButton, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -63,8 +63,8 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
-import { Spinner } from '@/components/ui/spinner';
 import { returnFocusToConsentRegion } from '@/lib/consent-focus';
+import { registerNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS, type TodayTaskReason } from '@/lib/task-groups';
 import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
@@ -296,17 +296,17 @@ export function TodayTaskGroup({
               <div className="flex flex-wrap items-center gap-2">
                 {/* Outline: Approve stays the one primary action on Today. */}
                 {claimed && (
-                  <Button
+                  <AxButton
                     ref={markDone.buttonRef}
-                    variant="outline"
+                    intent="secondary"
                     size="sm"
-                    disabled={!mayMarkDone || markDone.busy}
+                    busy={markDone.busy}
+                    disabled={!mayMarkDone}
                     aria-describedby={mayMarkDone ? undefined : whyId}
                     onClick={markDone.press}
                   >
-                    {markDone.busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
                     Mark done
-                  </Button>
+                  </AxButton>
                 )}
                 {boxRow !== null && (
                   <CollapsibleTrigger asChild>
@@ -340,9 +340,7 @@ export function TodayTaskGroup({
               </p>
             )}
             {claimed && markDone.failure !== null && (
-              <Alert variant={markDone.failure.register}>
-                <AlertDescription>{markDone.failure.text}</AlertDescription>
-              </Alert>
+              <Notice tone={registerNoticeTone(markDone.failure.register)}>{markDone.failure.text}</Notice>
             )}
           </div>
           {boxRow !== null && (

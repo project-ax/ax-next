@@ -92,6 +92,8 @@ export interface AgentUserFilesState {
   fileError: UserFilesError | null;
 
   reload: () => void;
+  /** Read the open file again, after it failed to open. */
+  reloadFile: () => void;
 }
 
 export function useAgentUserFiles(agentId: string): AgentUserFilesState {
@@ -105,6 +107,8 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
   const [file, setFile] = useState<UserFileBody | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<UserFilesError | null>(null);
+  // Bumped by `reloadFile` to read the same file again.
+  const [fileReads, setFileReads] = useState(0);
 
   /**
    * Bumped on every fetch; a response is applied only when it is still the most
@@ -196,7 +200,7 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
         if (bodyRequest.current === id) setFileLoading(false);
       }
     })();
-  }, [agentId, filePath]);
+  }, [agentId, filePath, fileReads]);
 
   const openDir = useCallback(
     (path: string) => {
@@ -214,6 +218,8 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
     loadDir(dirPath);
   }, [loadDir, dirPath]);
 
+  const reloadFile = useCallback(() => setFileReads((n) => n + 1), []);
+
   return {
     dirPath,
     entries,
@@ -227,6 +233,7 @@ export function useAgentUserFiles(agentId: string): AgentUserFilesState {
     fileLoading,
     fileError,
     reload,
+    reloadFile,
   };
 }
 

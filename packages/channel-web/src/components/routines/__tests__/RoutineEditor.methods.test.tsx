@@ -169,7 +169,7 @@ describe('private task address controls', () => {
     mocks.receiver.mockRejectedValueOnce(new Error('private backend details'));
     await edit();
     fireEvent.change(screen.getByLabelText('Webhook path'), { target: { value: '/draft' } });
-    fireEvent.click(await screen.findByRole('button', { name: 'Retry app setup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
     expect((await screen.findByLabelText('Webhook URL') as HTMLInputElement).value).toContain('/draft');
     expect(screen.queryByText(/private backend/)).not.toBeInTheDocument();
     expect(mocks.receiver).toHaveBeenCalledTimes(2);
@@ -190,7 +190,7 @@ describe('private task address controls', () => {
     await edit();
     fireEvent.click(await screen.findByRole('button', { name: 'Replace address' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Replace address' }));
-    const retry = await screen.findByRole('button', { name: 'Retry app setup' });
+    const retry = await screen.findByRole('button', { name: 'Try again' });
     expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
     mocks.receiver.mockResolvedValue({ url: '/webhooks/landed-bearer', version: 'b'.repeat(64), legacyActive: false });
     fireEvent.click(retry);

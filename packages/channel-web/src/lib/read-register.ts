@@ -253,3 +253,22 @@ export function readAlertVariant(
   if (kind === 'gone') return 'destructive';
   return opts?.retrying === true ? 'default' : 'destructive';
 }
+
+/**
+ * The same ruling, spoken in `@project-ax/ui`'s words: `default` is the quiet
+ * `info` tone, `destructive` is `danger`. For `AsyncState`'s `error.tone` (and
+ * `Notice`) so the register stays one rule while the component changes.
+ */
+export function readNoticeTone(kind: ReadOutcome, opts?: { retrying?: boolean }): 'info' | 'danger' {
+  return registerNoticeTone(readAlertVariant(kind, opts));
+}
+
+/**
+ * A register somebody already holds (a failure object carrying `default` or
+ * `destructive`, such as a failed write's) spoken in `@project-ax/ui`'s words.
+ * Same two-way mapping as `readNoticeTone`, for callers that no longer have the
+ * outcome it was decided from.
+ */
+export function registerNoticeTone(register: AlertRegister): 'info' | 'danger' {
+  return register === 'default' ? 'info' : 'danger';
+}

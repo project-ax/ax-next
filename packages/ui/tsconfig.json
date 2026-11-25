@@ -1,1 +1,1 @@
-{"extends": "../../tsconfig.base.json", "compilerOptions": {"rootDir": "src", "outDir": "dist", "jsx": "react-jsx"}, "include": ["src/**/*"], "exclude": ["src/**/__tests__/**", "src/**/*.stories.tsx", "dist", "node_modules"], "references": []}
+{"extends": "../../tsconfig.base.json", "compilerOptions": {"rootDir": "src", "outDir": "dist", "jsx": "react-jsx", "lib": ["ES2023", "DOM"]}, "include": ["src/**/*"], "exclude": ["src/**/__tests__/**", "src/**/*.stories.tsx", "dist", "node_modules"], "references": []}

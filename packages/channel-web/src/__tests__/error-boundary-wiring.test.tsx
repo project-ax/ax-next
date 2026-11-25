@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../App';
-import { toastActions } from '../lib/toast-store';
+import { toast } from '@project-ax/ui';
 
 vi.mock('../components/workspace/WorkspaceShell', () => ({
   WorkspaceShell: () => {
@@ -58,7 +58,7 @@ describe('error-boundary wiring', () => {
     expect(screen.queryByText(/workspace render boom/)).toBeNull();
     // The toast stack sits OUTSIDE the boundary, so it still works.
     act(() => {
-      toastActions.error('toast after the crash');
+      toast.show({ title: 'toast after the crash', tone: 'danger' });
     });
     expect(await screen.findByText('toast after the crash')).toBeTruthy();
   });

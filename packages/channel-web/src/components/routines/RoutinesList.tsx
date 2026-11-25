@@ -4,7 +4,6 @@ import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Field, FieldLabel } from '@/components/ui/field';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -12,13 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Skeleton } from '@/components/ui/skeleton';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from '@/components/ui/empty';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Separator } from '@/components/ui/separator';
 import {
   routineApi,
@@ -40,6 +34,8 @@ function rowKey(row: Pick<Routine, 'agentId' | 'routineId'>): string {
 }
 /** What a delete needs of a row: a readable routine, or one the host can't read (TASK-913). */
 type DeleteTarget = Pick<Routine, 'agentId' | 'routineId' | 'revision' | 'name'>;
+const UNCONFIRMED = 'We couldn’t confirm this change. Try again.';
+const PENDING_FIRST = 'Try the unconfirmed change again before making another change.';
 const UNREADABLE_LINE = 'We can’t read this routine anymore, so it isn’t running.';
 const unreadableName = (r: Pick<UnreadableRoutine, 'name'>) => r.name || 'Untitled routine';
 
@@ -77,6 +73,7 @@ export function RoutinesList({
   const [expanded, setExpanded] = useState<string | null>(null);
   const [fires, setFires] = useState<Fire[] | null>(null);
   const [firesError, setFiresError] = useState(false);
+  const [firesTick, setFiresTick] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const [deleting, setDeleting] = useState<DeleteTarget | null>(null);
@@ -151,7 +148,7 @@ export function RoutinesList({
     return () => {
       active = false;
     };
-  }, [expanded, refreshKey, list]);
+  }, [expanded, refreshKey, list, firesTick]);
   const nameFor = (id: string) =>
     agentId === id && agentName
       ? agentName
@@ -162,17 +159,21 @@ export function RoutinesList({
     setCreating(null);
     setVersion((n) => n + 1);
   }
-  function mutate(row: Routine, kind: 'enabled'): Promise<void>;
-  function mutate(row: DeleteTarget, kind: 'delete'): Promise<void>;
+  // Resolves to why the change failed, or null when it went through (or was not started). With `inDialog` the
+  // failure is for the delete confirmation to show, so the page's own error line stays quiet behind it.
+  function mutate(row: Routine, kind: 'enabled'): Promise<string | null>;
+  function mutate(row: DeleteTarget, kind: 'delete', inDialog?: boolean): Promise<string | null>;
   async function mutate(
     row: DeleteTarget & { enabled?: boolean },
     kind: 'enabled' | 'delete',
-  ): Promise<void> {
-    if (flight.current || fireProtectedRef.current) return;
+    inDialog = false,
+  ): Promise<string | null> {
+    if (flight.current || fireProtectedRef.current) return inDialog ? UNCONFIRMED : null;
     const key = JSON.stringify([row.agentId, row.routineId, row.revision, kind]);
     if (operation.current && operation.current.key !== key) {
-      setError('Retry the unconfirmed change before making another change.');
-      return;
+      if (inDialog) return PENDING_FIRST;
+      setError(PENDING_FIRST);
+      return null;
     }
     operation.current ??= { key, requestId: crypto.randomUUID(), row, kind } as NonNullable<typeof operation.current>;
     flight.current = true;
@@ -196,29 +197,29 @@ export function RoutinesList({
       operation.current = null;
       setUncertain(false);
       setVersion((n) => n + 1);
+      return null;
     } catch (e) {
-      setError(
-        e instanceof RoutineApiError
-          ? e.message
-          : 'We couldn’t confirm this change. Try again.',
-      );
+      const message = e instanceof RoutineApiError ? e.message : UNCONFIRMED;
+      if (!inDialog) setError(message);
       if (e instanceof RoutineApiError && e.status > 0 && e.status < 500) {
         operation.current = null;
         setUncertain(false);
       } else setUncertain(true);
+      return message;
     } finally {
       flight.current = false;
       setBusy(null);
     }
   }
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4" tabIndex={-1} data-return-focus="routines-list">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">
           {origin === 'default' ? 'Run workspace defaults and inspect their recent runs.' : 'Work that runs when its trigger fires.'}
         </p>
         {origin === 'authored' && !hideCreateAction && (agentId ? (
           <Button
+            data-return-focus="routines-new"
             disabled={busy !== null || uncertain || fireProtected}
             onClick={() => setCreating(agentId)}
           >
@@ -230,6 +231,7 @@ export function RoutinesList({
               <Button
                 key={a.id}
                 variant="outline"
+                data-return-focus="routines-new"
                 disabled={busy !== null || uncertain || fireProtected}
                 onClick={() => setCreating(a.id)}
               >
@@ -240,52 +242,36 @@ export function RoutinesList({
         ))}
       </div>
       {error && (
-        <Alert
-          variant="destructive"
-          className="bg-destructive-soft text-destructive"
-          data-testid="routines-list-error"
+        <Notice
+          tone="danger"
+          action={{ label: 'Refresh', busy: fireProtected, onClick: () => setVersion((n) => n + 1) }}
         >
-          <AlertDescription>
-            {error}
-            <Button
-              variant="ghost"
-              disabled={fireProtected}
-              onClick={() => setVersion((n) => n + 1)}
-            >
-              Refresh
-            </Button>
-          </AlertDescription>
-        </Alert>
+          {error}
+        </Notice>
       )}
       {uncertain && (
-        <Alert>
-          <AlertDescription>
-            We couldn’t confirm this change. Retry sends the same change.
-            <Button
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() => {
-                const pending = operation.current;
-                if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
-                else if (pending) void mutate(pending.row, 'enabled');
-              }}
-            >
-              Retry change
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="info"
+          action={{
+            label: 'Try again',
+            busy: busy !== null,
+            onClick: () => {
+              const pending = operation.current;
+              if (pending?.kind === 'delete') void mutate(pending.row, 'delete');
+              else if (pending) void mutate(pending.row, 'enabled');
+            },
+          }}
+        >
+          We couldn’t confirm this change. Try again sends the same change.
+        </Notice>
       )}
       {list === null && !error ? (
-        <Skeleton aria-label="Loading routines" className="h-28 w-full" />
+        <AsyncState status="loading" skeleton="rows" loadingLabel="Loading routines" />
       ) : list?.length === 0 && unreadable.length === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyTitle>{origin === 'default' ? 'No active default routines' : 'No routines yet'}</EmptyTitle>
-            <EmptyDescription>
-              {origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <EmptyState
+          title={origin === 'default' ? 'No active default routines' : 'No routines yet'}
+          description={origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
+        />
       ) : (
         <>
         {list?.map((row) => (
@@ -370,9 +356,7 @@ export function RoutinesList({
                   )}
                 </div>
                 {row.lastError && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{row.lastError}</AlertDescription>
-                  </Alert>
+                  <Notice tone="danger">{row.lastError}</Notice>
                 )}
                 {row.webhook !== null &&
                   row.permissions.manageSecret && (
@@ -390,16 +374,11 @@ export function RoutinesList({
                     </>
                   )}
                 {firesError ? (
-                  <Alert variant="destructive">
-                    <AlertDescription>
-                      Recent runs are unavailable.
-                    </AlertDescription>
-                  </Alert>
+                  <Notice tone="danger" action={{ label: 'Try again', onClick: () => setFiresTick((n) => n + 1) }}>
+                    Recent runs are unavailable.
+                  </Notice>
                 ) : fires === null ? (
-                  <Skeleton
-                    aria-label="Loading recent runs"
-                    className="h-12 w-full"
-                  />
+                  <AsyncState status="loading" skeleton="lines" loadingLabel="Loading recent runs" />
                 ) : fires.length ? (
                   <FireRowsTable fires={fires} />
                 ) : (
@@ -474,39 +453,24 @@ export function RoutinesList({
           </DialogContent>
         </Dialog>
       )}
-      {deleting && (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (!open && !flight.current && !uncertain) setDeleting(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Delete {deleting.name}?</DialogTitle>
-              <DialogDescription>
-                This stops future runs. Existing Activity remains available.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="outline"
-                disabled={busy !== null || uncertain || fireProtected}
-                onClick={() => setDeleting(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                disabled={busy !== null}
-                onClick={() => void mutate(deleting, 'delete')}
-              >
-                Delete
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={deleting !== null}
+        onOpenChange={(open) => {
+          // A change we couldn't confirm stays pending (same request id) and the page's "Try again" resends it.
+          if (!open && !flight.current) setDeleting(null);
+        }}
+        title={`Delete ${deleting?.name ?? ''}?`}
+        description="This stops future runs. Existing Activity remains available."
+        confirmLabel="Delete"
+        errorMessage={(err) => (err instanceof Error ? err.message : UNCONFIRMED)}
+        onConfirm={async () => {
+          if (deleting === null) return;
+          const failure = await mutate(deleting, 'delete', true);
+          if (failure !== null) throw new Error(failure);
+          // The routine's row is gone; park focus on the page's primary action.
+          focusAfterRemoval('[data-return-focus="routines-new"]', '[data-return-focus="routines-list"]');
+        }}
+      />
     </div>
   );
 }

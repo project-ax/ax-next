@@ -17,7 +17,7 @@
  * shadcn primitives + semantic tokens only (invariant #6). No raw colors.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
@@ -144,9 +144,7 @@ export function ConnectorOAuthConnect({
 
       {/* Error from beginOAuth */}
       {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
 
       {/* (TASK-700) What signing in hands the assistant. Above the consent gate AND
@@ -157,11 +155,9 @@ export function ConnectorOAuthConnect({
       {/* Consent gate — blocks the Connect button until accepted */}
       {showConsentGate ? (
         <div className="flex flex-col gap-4">
-          <Alert>
-            <AlertDescription>
-              {`Signing in lets this agent use your ${serviceName} account for everyone who uses this agent. Only people already on it are affected.`}
-            </AlertDescription>
-          </Alert>
+          <Notice tone="info">
+            {`Signing in lets this agent use your ${serviceName} account for everyone who uses this agent. Only people already on it are affected.`}
+          </Notice>
           <div className="flex justify-end">
             <Button onClick={() => setConsented(true)}>Continue</Button>
           </div>

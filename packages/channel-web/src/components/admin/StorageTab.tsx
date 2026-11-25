@@ -28,9 +28,8 @@
  * to ask an admin for more room (the sentences live in `lib/storage-copy.ts`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge, type BadgeProps } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -38,14 +37,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { Progress } from '@/components/ui/progress';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
   TableBody,
@@ -169,30 +161,6 @@ const STATUS_VARIANT: ReadonlyMap<StorageStatus, BadgeProps['variant']> = new Ma
   ['full', 'destructive'],
 ]);
 
-function ReadError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <Alert variant="destructive">
-      <AlertDescription className="flex flex-col items-start gap-3">
-        <p>{message}</p>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
-  );
-}
-
-function LoadingRows({ label, rows }: { label: string; rows: number }) {
-  return (
-    <div role="status" className="flex flex-col gap-3">
-      <span className="sr-only">{label}</span>
-      {Array.from({ length: rows }, (_, i) => (
-        <Skeleton key={i} className="h-10 w-full" aria-hidden="true" />
-      ))}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Your storage (everyone)
 // ---------------------------------------------------------------------------
@@ -220,20 +188,14 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
         ))}
       </dl>
       {storage.status === 'near-limit' && (
-        <Alert>
-          <AlertDescription className="flex flex-col gap-1">
-            <p className="font-medium">{NEAR_LIMIT_TITLE}</p>
-            <p>{NEAR_LIMIT_BODY}</p>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="warning" title={NEAR_LIMIT_TITLE}>
+          {NEAR_LIMIT_BODY}
+        </Notice>
       )}
       {storage.status === 'full' && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col gap-1">
-            <p className="font-medium">{FULL_TITLE}</p>
-            <p>{FULL_BODY}</p>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger" title={FULL_TITLE}>
+          {FULL_BODY}
+        </Notice>
       )}
     </div>
   );
@@ -253,10 +215,15 @@ function MyStorageCard({ read }: { read: Read<MyStorage> }) {
       </CardHeader>
       <CardContent>
         {state.kind === 'loading' && (
-          <LoadingRows label="Loading your storage…" rows={3} />
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading your storage…" />
         )}
         {state.kind === 'error' && (
-          <ReadError message={state.message} onRetry={() => void load('first')} />
+          <AsyncState
+            status="error"
+            skeleton="rows"
+            loadingLabel="Loading storage…"
+            error={{ message: state.message, onRetry: () => void load('first') }}
+          />
         )}
         {state.kind === 'ready' && <MyStorageBody storage={state.data} />}
       </CardContent>
@@ -337,16 +304,12 @@ function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {admin === null ? (
-          <LoadingRows label="Loading everyone's storage…" rows={3} />
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading everyone's storage…" />
         ) : admin.owners.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No storage used yet</EmptyTitle>
-              <EmptyDescription>
-                When people start saving files and uploads, they'll show up here.
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <EmptyState
+            title="No storage used yet"
+            description="When people start saving files and uploads, they'll show up here."
+          />
         ) : (
           <>
             <Table>
@@ -395,7 +358,12 @@ function AdminStorageSection({ onLimitsSaved }: { onLimitsSaved: () => void }) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <ReadError message={state.message} onRetry={() => void load('first')} />
+          <AsyncState
+            status="error"
+            skeleton="rows"
+            loadingLabel="Loading storage…"
+            error={{ message: state.message, onRetry: () => void load('first') }}
+          />
         </CardContent>
       </Card>
     );

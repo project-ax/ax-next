@@ -49,6 +49,16 @@ describe('BundleReviewDialog', () => {
     expect(screen.getAllByText(/added/i).length).toBeGreaterThan(0);
   });
 
+  it('a failed bundle read offers Try again, which reads it again', async () => {
+    mockGetOrNull.mockRejectedValueOnce(new Error('catalog-down'));
+    mockGetOrNull.mockResolvedValueOnce(null);
+    render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
+    await screen.findByText('catalog-down');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('scripts/q.py')).toBeTruthy();
+    expect(mockGetOrNull).toHaveBeenCalledTimes(2);
+  });
+
   it('admits a share request', async () => {
     mockGetOrNull.mockResolvedValue(null);
     mockDecide.mockResolvedValue({ admitted: true, skillId: 'linear' });

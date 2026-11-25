@@ -29,7 +29,7 @@ describe('component classes are compiled into ui.css', () => {
       const text = readFileSync(file, 'utf8');
       const tokens = new Set<string>();
       for (const lit of text.match(/(['"`])(?:(?!\1).)*\1/g) ?? []) {
-        for (const m of lit.match(/\b(?:md|lg):ax-[\w-]+|\bax-[\w:-]+/g) ?? []) tokens.add(m);
+        for (const m of lit.match(/\b(?:[a-z-]+:)*ax-[\w-]+/g) ?? []) tokens.add(m);
       }
       for (const cls of tokens) expect(css, cls).toMatch(selectorRe(cls));
     });

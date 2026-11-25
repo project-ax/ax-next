@@ -216,7 +216,8 @@ describe('TaskFinishDate — setting and removing', () => {
     fireEvent.click(button('Add a finish date'));
     pick('2026-11-14');
     fireEvent.click(button('Save'));
-    expect(button('Save').disabled).toBe(true);
+    expect(button('Save').getAttribute('aria-busy')).toBe('true');
+    expect(button('Save').textContent).toBe('Save');
     expect(button('Cancel').disabled).toBe(true);
     fireEvent.click(button('Save'));
     await act(async () => resolve({ finishBy: FB }));

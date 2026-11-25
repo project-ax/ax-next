@@ -150,17 +150,6 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-/* `toast-in` / `toast-out` are referenced by Toast via Tailwind
-   arbitrary `animate-[toast-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]`
-   and `animate-[toast-out_180ms_ease_forwards]`. */
-@keyframes toast-in {
-  from { opacity: 0; transform: translateX(8px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-@keyframes toast-out {
-  to { opacity: 0; transform: translateX(8px); }
-}
-
 /* MARKDOWN OUTSIDE THE THREAD (`.ax-md`).
 
    The `prose-*` classes on the Markdown container emit NOTHING in this build —

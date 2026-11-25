@@ -86,7 +86,7 @@ describe('WorkspaceAttachmentChip — the three states', () => {
     // A bar still spinning on a finished upload reads as stuck.
     expect(screen.queryByRole('progressbar')).toBeNull();
     // No retry offered for something that worked.
-    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove notes.txt' }));
     expect(onRemove).toHaveBeenCalledTimes(1);
@@ -105,7 +105,7 @@ describe('WorkspaceAttachmentChip — the three states', () => {
     expect(screen.getByText(FAILURE)).toBeInTheDocument();
     expect(root.querySelector('[title]')).toBeNull();
 
-    const retry = screen.getByRole('button', { name: 'Retry' });
+    const retry = screen.getByRole('button', { name: 'Try again' });
     const remove = screen.getByRole('button', { name: 'Remove' });
     fireEvent.click(retry);
     expect(onRetry).toHaveBeenCalledTimes(1);

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
+import { AsyncState, Notice, Stack } from '@project-ax/ui';
 import {
   createConnector,
   patchConnector,
@@ -74,7 +74,6 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { ConnectorToolPermissions } from './ConnectorToolPermissions';
 import { RequestLeftOutNotice } from './RequestLeftOutNotice';
@@ -812,10 +811,10 @@ export function RemoteMcpConnectorForm({
                   )}
                 </FieldGroup>
                 {(addressChanged || retargeted) && (
-                  // TASK-790 — advice beside a field being typed in, not an
-                  // interruption: the shared Alert defaults to role="alert".
-                  <Alert data-testid="address-change-resets-tools" role="note">
-                    <AlertDescription className="flex flex-col gap-2">
+                  // TASK-790 / TASK-887 — what Save costs (permissions reset,
+                  // everyone signed out). A warning: it is about loss.
+                  <Notice tone="warning">
+                    <Stack gap="sm">
                       {retargeted && (
                         // TASK-887 — what Save costs: the server signs everyone
                         // out inside it.
@@ -839,37 +838,25 @@ export function RemoteMcpConnectorForm({
                           choose again.
                         </p>
                       )}
-                    </AlertDescription>
-                  </Alert>
+                    </Stack>
+                  </Notice>
                 )}
                 {awaitingDiscovery && (
-                  <p
-                    role="status"
-                    className="flex items-center gap-2 text-sm text-muted-foreground"
-                  >
-                    <Spinner aria-hidden="true" />
-                    Checking how this server signs in…
-                  </p>
+                  <AsyncState
+                    status="loading"
+                    skeleton="lines"
+                    loadingLabel="Checking how this server signs in"
+                  />
                 )}
                 {discoveryFailed && (
-                  <Alert>
-                    <AlertDescription className="flex flex-col gap-3">
-                      <p>
-                        {usingSavedSignIn
-                          ? 'We couldn’t reach this server to check how it signs in, so we’ll keep its saved settings.'
-                          : 'We couldn’t reach this server to check how it signs in. Check the URL and try again.'}
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="self-start"
-                        onClick={() => setRetry((n) => n + 1)}
-                      >
-                        Retry
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
+                  <Notice
+                    tone="danger"
+                    action={{ label: 'Try again', onClick: () => setRetry((n) => n + 1) }}
+                  >
+                    {usingSavedSignIn
+                      ? 'We couldn’t reach this server to check how it signs in, so we’ll keep its saved settings.'
+                      : 'We couldn’t reach this server to check how it signs in. Check the URL and try again.'}
+                  </Notice>
                 )}
                 {signInKnown && (
                   <>
@@ -887,13 +874,11 @@ export function RemoteMcpConnectorForm({
                         <FieldDescription>{signInDescription}</FieldDescription>
                       )}
                       {discovered?.auth === 'other' && (
-                        <Alert>
-                          <AlertDescription>
-                            This server asks for credentials but doesn’t
-                            support OAuth. Add the key it expects as a request
-                            header.
-                          </AlertDescription>
-                        </Alert>
+                        <Notice tone="info">
+                          This server asks for credentials but doesn’t
+                          support OAuth. Add the key it expects as a request
+                          header.
+                        </Notice>
                       )}
                       {signIn === 'oauth' &&
                         discovered &&
@@ -1328,9 +1313,7 @@ export function RemoteMcpConnectorForm({
                   <FieldError>{errors.workspace}</FieldError>
                 )}
                 {saveError && (
-                  <Alert variant="destructive">
-                    <AlertDescription>{saveError}</AlertDescription>
-                  </Alert>
+                  <Notice tone="danger">{saveError}</Notice>
                 )}
               </FieldGroup>
             </FieldSet>

@@ -114,6 +114,18 @@ describe('AgentForm — styled delete confirm', () => {
     mockDelete.mockResolvedValue(undefined);
   });
 
+  it('a failed agent-list read offers Try again (no empty state beside it) and reads again', async () => {
+    mockList.mockReset();
+    mockList.mockRejectedValueOnce(new Error('agents-down'));
+    mockList.mockResolvedValueOnce([AGENT]);
+    render(<AgentForm isAdmin />);
+    await screen.findByText('agents-down');
+    expect(screen.queryByText('No agents yet.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Research Bot')).toBeTruthy();
+    expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
   it('does not use the OS confirm; clicking delete opens a styled dialog', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
     render(<AgentForm isAdmin />);
@@ -130,7 +142,7 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.getByText('Delete agent?')).toBeTruthy();
     });
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Research Bot')).toBeTruthy();
+    expect(dialog).toHaveTextContent('Research Bot');
     expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
@@ -172,7 +184,7 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.getByText('Delete agent?')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete agent' }));
 
     await waitFor(() => {
       expect(mockDelete).toHaveBeenCalledWith('agent-1');
@@ -320,6 +332,25 @@ describe('AgentForm — identity editor (TASK-142, TASK-989)', () => {
     expect(putAgentIdentity).not.toHaveBeenCalled();
   });
 
+  it('a failed identity read offers Try again; on success the fields enable and the notice goes', async () => {
+    vi.mocked(getAgentIdentity)
+      .mockRejectedValueOnce(new Error('get agent identity: 503'))
+      .mockResolvedValueOnce({ identity: 'I am Ada.', soul: 'Kind.' });
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    openAgentDetails();
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await screen.findByText('We couldn’t load this agent’s identity, so saving leaves it as it is.');
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).value).toBe('I am Ada.'));
+    expect(getAgentIdentity).toHaveBeenCalledTimes(2);
+    expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).disabled).toBe(false);
+    expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).disabled).toBe(false);
+    expect(screen.queryByText(/We couldn’t load this agent’s identity/)).toBeNull();
+  });
+
   it('saves identity and soul only', async () => {
     vi.mocked(getAgentIdentity).mockResolvedValue({
       identity: 'I am Ada.',
@@ -445,8 +476,7 @@ describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () 
       ),
     ).toBeTruthy();
     const alert = screen.getByRole('alert');
-    expect(alert.className).toContain('border-destructive/50');
-    expect(alert.className).not.toContain('bg-destructive/10');
+    expect(alert).toBeVisible();
   });
 
   it('still blocks clearing the tool list on an agent that HAD tools (no silent demotion to wildcard)', async () => {
@@ -664,21 +694,40 @@ describe('AgentForm — tool picker (TASK-1214)', () => {
   it('a new agent cannot be saved when the tool list cannot load', async () => {
     vi.mocked(listAgentToolOptions).mockRejectedValue(new Error('list agent tools: 503'));
     await openNew('Fern');
-    await screen.findByText(/We couldn’t load the list of tools\. Close and reopen/);
+    await screen.findByText(/We couldn’t load the list of tools\./);
 
     save();
     await waitFor(() =>
       expect(
-        screen.getByText(/couldn’t load the list of tools, so there’s nothing to pick yet/),
+        screen.getByText(/couldn’t load the list of tools, so there’s nothing to pick yet.*Try again/),
       ).toBeTruthy(),
     );
     expect(createAgent).not.toHaveBeenCalled();
   });
 
-  it('closing and reopening the form reads the tool list again, as the failure line promises', async () => {
+  it('a failed model list offers Try again, which reads it again', async () => {
+    vi.mocked(listAgentModelOptions).mockRejectedValueOnce(new Error('models-503'));
+    await openNew('Fern');
+    await screen.findByText(/We couldn’t load the model list \(models-503\)\./);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText(/couldn’t load the model list/)).toBeNull());
+    expect(listAgentModelOptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed tool list offers Try again, which reads it again', async () => {
     vi.mocked(listAgentToolOptions).mockRejectedValueOnce(new Error('list agent tools: 503'));
     await openNew('Fern');
-    await screen.findByText(/We couldn’t load the list of tools\. Close and reopen/);
+    await screen.findByText(/We couldn’t load the list of tools\./);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('checkbox', { name: 'Bash' })).toBeTruthy();
+    expect(screen.queryByText(/couldn’t load the list of tools/)).toBeNull();
+    expect(listAgentToolOptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('closing and reopening the form reads the tool list again', async () => {
+    vi.mocked(listAgentToolOptions).mockRejectedValueOnce(new Error('list agent tools: 503'));
+    await openNew('Fern');
+    await screen.findByText(/We couldn’t load the list of tools\./);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     fireEvent.click(await screen.findByRole('button', { name: /new agent/i }));

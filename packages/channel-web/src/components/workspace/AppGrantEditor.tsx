@@ -22,7 +22,7 @@
 import { useEffect, useState } from 'react';
 import type { AppGrant, AppLink, AppMode } from '@ax/apps-bridge-contract';
 import { TOOL_KEY_RE } from '@ax/apps-bridge-contract';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Button as AxButton, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -44,8 +44,6 @@ import {
 } from '@/components/ui/field';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import { useHeldThroughClose } from './use-held-through-close';
 import { agentAppsErrorCopy, agentAppsStale, saveGrant } from '@/lib/agent-apps';
 import { useAgentConnectors } from '@/lib/agent-connectors';
@@ -195,12 +193,9 @@ function EditorBody({
             <FieldDescription>Every connector on this agent is already given to this app.</FieldDescription>
           )}
           {connectorsFailed && grant === null && (
-            <FieldDescription className="flex flex-wrap items-center gap-2" role="alert">
+            <Notice tone="danger" action={{ label: 'Try again', onClick: () => void connectors.refresh() }}>
               We couldn&apos;t load this agent&apos;s connectors.
-              <Button variant="outline" size="sm" onClick={() => void connectors.refresh()}>
-                Try again
-              </Button>
-            </FieldDescription>
+            </Notice>
           )}
         </Field>
         <FieldSet>
@@ -239,19 +234,19 @@ function EditorBody({
           />
         )}
       </FieldGroup>
-      {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      {error !== null && <Notice tone="danger">{error}</Notice>}
       <DialogFooter>
         <Button variant="outline" onClick={onClose} disabled={saving}>
           Cancel
         </Button>
-        <Button onClick={() => void save()} disabled={saving || connectorId === null || chosen.length === 0}>
-          {saving && <Spinner data-icon="inline-start" aria-hidden="true" />}
+        <AxButton
+          intent="primary"
+          busy={saving}
+          disabled={connectorId === null || chosen.length === 0}
+          onClick={() => void save()}
+        >
           Save
-        </Button>
+        </AxButton>
       </DialogFooter>
     </>
   );
@@ -292,19 +287,13 @@ function ToolPicker({
   return (
     <FieldSet>
       <FieldLegend variant="label">Tools</FieldLegend>
-      {status === 'loading' ? (
-        <div role="status" className="flex flex-col gap-2">
-          <span className="sr-only">Loading tools…</span>
-          <Skeleton className="h-8 w-full" aria-hidden="true" />
-          <Skeleton className="h-8 w-full" aria-hidden="true" />
-        </div>
-      ) : status !== 'ok' ? (
-        <FieldDescription className="flex flex-wrap items-center gap-2" role="alert">
-          We couldn&apos;t list this connector&apos;s tools just now.
-          <Button variant="outline" size="sm" onClick={() => reload()}>
-            Try again
-          </Button>
-        </FieldDescription>
+      {status !== 'ok' ? (
+        <AsyncState
+          status={status === 'loading' ? 'loading' : 'error'}
+          skeleton="rows"
+          loadingLabel="Loading tools"
+          error={{ message: "We couldn't list this connector's tools just now.", onRetry: () => reload() }}
+        />
       ) : tools.length === 0 && gone.length === 0 ? (
         <FieldDescription>This connector doesn&apos;t offer any tools right now.</FieldDescription>
       ) : (

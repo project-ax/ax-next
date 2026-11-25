@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { SetupShell } from '../setup/SetupShell';
 import {
@@ -255,9 +255,7 @@ export function FirstRunAutoCreate({
         }
       >
         <div className="flex flex-col gap-4">
-          <Alert variant="destructive">
-            <AlertDescription>{err}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{err}</Notice>
           {/* TASK-689: the card used to offer only "Try again". When the
               failure is not a blip that is a trap, and here `App.tsx`'s gate
               has replaced the workspace, so the page had no other exit. */}

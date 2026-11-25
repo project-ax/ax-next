@@ -204,7 +204,7 @@ describe('Approve', () => {
     });
     expect(document.body.innerHTML).not.toContain(fakeConfigRefreshToken());
     // The page is leaving, so it stays busy.
-    expect(within(dialog).getByRole('button', { name: 'Creating…' })).toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Approve and open Slack' })).toHaveAttribute('aria-busy', 'true');
   });
 
   it('no picture means no iconPng key at all', async () => {
@@ -328,7 +328,7 @@ describe('Decline', () => {
     render(<SlackBotRequests />);
     const row = (await screen.findByText('Quill Bot for Quill · Support')).closest('li') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Decline Quill Bot' }));
-    expect(await within(row).findByRole('button', { name: 'Declining…' })).toBeDisabled();
+    expect(await within(row).findByRole('button', { name: 'Decline Quill Bot' })).toHaveAttribute('aria-busy', 'true');
     await waitFor(() => expect(screen.queryByText('Quill Bot for Quill · Support')).toBeNull());
     expect(decline).toHaveBeenCalledWith(QUILL.requestId);
     expect(decline).toHaveBeenCalledTimes(1);

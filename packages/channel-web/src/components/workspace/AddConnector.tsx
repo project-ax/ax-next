@@ -36,8 +36,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, Search } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Button as AxButton, EmptyState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
@@ -45,7 +44,6 @@ import {
   InputGroupAddon,
   InputGroupInput,
 } from '@/components/ui/input-group';
-import { Skeleton } from '@/components/ui/skeleton';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import {
   addActionFor,
@@ -335,28 +333,31 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
         {load === 'ok' && <span className="tabular-nums">{shown.length}</span>}
       </h4>
       {load === 'loading' && (
-        <div className="flex flex-col gap-3" aria-busy="true">
-          <Skeleton className="h-4 w-3/5" />
-          <Skeleton className="h-4 w-1/2" />
-        </div>
+        <AsyncState status="loading" skeleton="rows" loadingLabel="Loading connectors to add" />
       )}
       {load === 'failed' && (
-        <div className="flex flex-col items-start gap-2">
-          <p className="text-[13px] leading-relaxed text-muted-foreground">
-            We couldn’t load what your workspace offers just now.
-          </p>
-          <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
-            Try again
-          </Button>
-        </div>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading connectors to add"
+          error={{
+            message: 'We couldn’t load what your workspace offers just now.',
+            onRetry: () => setAttempt((n) => n + 1),
+          }}
+        />
       )}
-      {load === 'ok' && shown.length === 0 && (
-        <p className="text-[13px] leading-relaxed text-muted-foreground">
-          {available.length === 0
-            ? `${name} already has every connector you can add.`
-            : 'Nothing matches that search.'}
-        </p>
-      )}
+      {/* One live region that stays mounted, so an empty result is announced as the search narrows. */}
+      <div role="status">
+        {load === 'ok' && shown.length === 0 && (
+          <EmptyState
+            title={
+              available.length === 0
+                ? `${name} already has every connector you can add.`
+                : 'Nothing matches that search.'
+            }
+          />
+        )}
+      </div>
       {/* Every available row stays MOUNTED and a search only hides it: a row
           owns its in-flight sign-in, and unmounting it would quietly cancel
           one the person is still finishing in the popup. */}
@@ -462,21 +463,24 @@ function AvailableRow({
     );
   } else if (attaching) {
     control = (
-      <Spinner
-        className="mr-2 text-muted-foreground"
-        aria-label={`Adding ${connector.name}`}
-      />
+      <AxButton intent="secondary" size="sm" busy disabled aria-label={`Adding ${connector.name}`}>
+        Add
+      </AxButton>
     );
   } else if (problem !== null && problem.retry) {
     // A plain Retry of the same Add — only ever a no-keys Add (a key Add's
     // failure stays in its form).
     control = (
       <Button variant="outline" size="sm" className="h-7 px-2.5 text-[12px]" onClick={onAdd}>
-        Retry
+        Try again
       </Button>
     );
   } else if (action === 'checking') {
-    control = <Skeleton className="mr-1 h-7 w-16" aria-label="Checking" />;
+    control = (
+      <AxButton intent="secondary" size="sm" busy disabled aria-label={`Checking ${connector.name}`}>
+        Add
+      </AxButton>
+    );
   } else if (action === 'unloaded') {
     control = (
       <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">{UNLOADED}</span>
@@ -515,21 +519,18 @@ function AvailableRow({
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="truncate text-[13px] font-medium">{connector.name}</span>
           {pending && (
-            <Spinner
-              className="size-3.5 shrink-0 text-muted-foreground"
-              aria-label="Waiting for sign-in"
-            />
+            <span role="status" className="shrink-0 text-[12px] text-muted-foreground">
+              Waiting for sign-in
+            </span>
           )}
         </span>
         {control}
       </div>
       {consenting && !pending && (
         <div className="flex flex-col gap-2 px-3 pb-3">
-          <Alert>
-            <AlertDescription className="text-[12px]">
-              {`Signing in here lets ${agentName} use your ${connector.name} account for everyone who uses this agent. Only people already on it are affected.`}
-            </AlertDescription>
-          </Alert>
+          <Notice tone="info">
+            {`Signing in here lets ${agentName} use your ${connector.name} account for everyone who uses this agent. Only people already on it are affected.`}
+          </Notice>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={() => setConsenting(false)}>
               Cancel
@@ -547,9 +548,9 @@ function AvailableRow({
         </div>
       )}
       {message !== null && (
-        <Alert variant="destructive" className="mx-3 mb-3 w-auto">
-          <AlertDescription className="text-[12px]">{message}</AlertDescription>
-        </Alert>
+        <div className="mx-3 mb-3">
+          <Notice tone="danger">{message}</Notice>
+        </div>
       )}
     </div>
   );

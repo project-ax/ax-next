@@ -52,7 +52,7 @@ function openConfirm(): HTMLElement {
 }
 
 function confirmButton(dialog: HTMLElement): HTMLElement {
-  return within(dialog).getByRole('button', { name: /^(Clear notes|Clearing…)$/ });
+  return within(dialog).getByRole('button', { name: 'Clear notes' });
 }
 
 /** Confirm, and wait for the dialog to close on a clear that went through. */
@@ -143,8 +143,9 @@ describe('TaskNotes (TASK-910)', () => {
     const dialog = openConfirm();
     fireEvent.click(confirmButton(dialog));
 
-    const busy = within(dialog).getByRole('button', { name: 'Clearing…' });
-    expect(busy).toBeDisabled();
+    // Busy keeps the verb (rule 5/7): the button says it is working through aria-busy, not a swapped label.
+    const busy = within(dialog).getByRole('button', { name: 'Clear notes' });
+    expect(busy).toHaveAttribute('aria-busy', 'true');
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.getByRole('dialog')).toBe(dialog);
@@ -160,15 +161,11 @@ describe('TaskNotes (TASK-910)', () => {
       what: 'a failure we can retry',
       failure: new WorkspaceApiError(NOTES_PATH, 500),
       says: 'We couldn’t clear the notes just now. Try again.',
-      red: true,
-      retry: true,
     },
     {
       what: 'a lost connection',
       failure: new TypeError('Failed to fetch'),
       says: 'We couldn’t clear the notes just now. Try again.',
-      red: true,
-      retry: true,
     },
     {
       // A session running out isn't a malfunction (`read-register.ts`,
@@ -176,8 +173,6 @@ describe('TaskNotes (TASK-910)', () => {
       what: 'an ended session',
       failure: new WorkspaceApiError(NOTES_PATH, 401),
       says: HTTP_SESSION_ENDED,
-      red: false,
-      retry: false,
     },
     {
       // The route answers 404 for a task that's gone or no longer theirs, and
@@ -185,10 +180,8 @@ describe('TaskNotes (TASK-910)', () => {
       what: 'a task that isn’t there any more',
       failure: new WorkspaceApiError(NOTES_PATH, 404),
       says: 'We couldn’t find this task any more. It may have been deleted.',
-      red: true,
-      retry: false,
     },
-  ])('a clear that fails says so and keeps the dialog open: $what', async ({ failure, says, red, retry }) => {
+  ])('a clear that fails says so and keeps the dialog open: $what', async ({ failure, says }) => {
     clearMock.mockRejectedValueOnce(failure);
     const { onCleared } = renderNotes();
     const dialog = openConfirm();
@@ -196,14 +189,12 @@ describe('TaskNotes (TASK-910)', () => {
 
     const alert = await within(dialog).findByRole('alert');
     expect(alert).toHaveTextContent(says);
-    if (red) expect(alert.className).toContain('destructive');
-    else expect(alert.className).not.toContain('destructive');
     expect(screen.getByRole('dialog')).toBe(dialog);
     expect(onCleared).not.toHaveBeenCalled();
     expect(screen.queryByText('Notes cleared.')).toBeNull();
     const again = within(dialog).getByRole('button', { name: 'Clear notes' });
-    if (retry) expect(again).toBeEnabled();
-    else expect(again).toBeDisabled();
+    // ConfirmAction keeps the confirm pressable after a failure; pressing it again says the same thing.
+    expect(again).toBeEnabled();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled();
   });
 

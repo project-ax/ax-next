@@ -18,7 +18,7 @@
  * dead end rather than an annoyance: there is nowhere else to go from here.
  */
 import { useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { HTTP_SESSION_ENDED } from '../lib/http';
@@ -54,14 +54,12 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
         {/* (B1) A session that ends mid-use swaps the whole app for this
             screen. Landing on a bare sign-in page with no explanation reads as
             "something broke and threw me out" — so say what happened. Not
-            `destructive`: nothing went wrong, and colouring it red would make a
+            `danger`: nothing went wrong, and colouring it red would make a
             routine, protective event look like a failure. The sentence is the
             shared `HTTP_SESSION_ENDED`, which `SignInAgainButton` already shows
             inline for the same event — one sentence for one thing. */}
         {sessionExpired && (
-          <Alert className="text-left" data-testid="session-expired">
-            <AlertDescription>{HTTP_SESSION_ENDED}</AlertDescription>
-          </Alert>
+          <Notice tone="info">{HTTP_SESSION_ENDED}</Notice>
         )}
         {/* (B3) This was a hand-rolled `<button>` with bespoke hover-translate,
             brightness and shadow — invariant 6, on the first button anyone ever
@@ -84,9 +82,7 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
           Sign in with Google
         </Button>
         {failed && (
-          <Alert variant="destructive" className="text-left">
-            <AlertDescription>{SIGN_IN_FAILED}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{SIGN_IN_FAILED}</Notice>
         )}
       </CardContent>
       </Card>

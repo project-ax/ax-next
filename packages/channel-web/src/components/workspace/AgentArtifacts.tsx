@@ -18,10 +18,8 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { ArtifactKind } from '@ax/ipc-protocol/content-blocks';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
 import { artifactTypeLine } from '@/lib/artifact-labels';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveFromUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
@@ -142,37 +140,20 @@ export function AgentArtifacts({
   }
 
   if (status === 'loading') {
-    return (
-      <div className="space-y-2 py-2" role="status">
-        <span className="sr-only">Loading…</span>
-        {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-12 w-full" />
-        ))}
-      </div>
-    );
+    return <AsyncState status="loading" skeleton="rows" loadingLabel="Loading artifacts" />;
   }
   if (status === 'failed') {
     return (
-      <Alert className="mt-2">
-        <AlertDescription className="flex flex-col items-start gap-2">
-          <span>We couldn’t load {agentName}’s artifacts just now. Nothing was lost.</span>
-          <Button size="sm" variant="outline" type="button" onClick={reload}>
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <AsyncState
+        status="error"
+        skeleton="rows"
+        loadingLabel="Loading artifacts"
+        error={{ message: `We couldn’t load ${agentName}’s artifacts just now. Nothing was lost.`, onRetry: reload }}
+      />
     );
   }
   if (artifacts.length === 0) {
-    return (
-      <Empty className="p-3 md:p-3">
-        <EmptyHeader>
-          <EmptyDescription>
-            Ask your agent to make you a report, page or spreadsheet — it’ll show up here.
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    );
+    return <EmptyState title="Ask your agent to make you a report, page or spreadsheet — it’ll show up here." />;
   }
   return (
     <div>
@@ -188,9 +169,9 @@ export function AgentArtifacts({
         </Button>
       </div>
       {note !== null && (
-        <Alert className="mb-2" role="status">
-          <AlertDescription>{note}</AlertDescription>
-        </Alert>
+        <div className="mb-2">
+          <Notice tone={note === DOWNLOAD_STARTED_NOTE ? 'success' : 'danger'}>{note}</Notice>
+        </div>
       )}
       <ul className="flex flex-col">
         {artifacts.map((a) => (

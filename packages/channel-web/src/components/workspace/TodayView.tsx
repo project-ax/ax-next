@@ -29,12 +29,11 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      failure already stops the empty sentence.
  */
 import { CheckCircle2 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { Notice, Stack } from '@project-ax/ui';
 import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
-import { readAlertVariant } from '@/lib/read-register';
+import { readNoticeTone } from '@/lib/read-register';
 import {
   isJustResolved,
   isOpenDecision,
@@ -398,48 +397,45 @@ export function TodayView({
           while an attempt is genuinely still coming — a state this page is
           never in.
         */
-        <Alert variant={readAlertVariant(error.kind)} className="mb-4">
-          <AlertDescription className="flex flex-col items-start gap-2.5">
-            {/*
-              NOTHING RAW IS RENDERED HERE ANY MORE.
+        <div className="mb-4">
+          {/*
+            NOTHING RAW IS RENDERED HERE ANY MORE.
 
-              This box used to end with `{error}` — the thrown message, in mono,
-              verbatim. On a 401 that read "workspace /decisions → 401" to a
-              person, which is a request path and a status code standing in for
-              a sentence, on the one screen whose own comment already forbade
-              exactly that. The message now goes to a `console.warn` and the
-              reader gets authored copy instead.
+            This box used to end with `{error}` — the thrown message, in mono,
+            verbatim. On a 401 that read "workspace /decisions → 401" to a
+            person, which is a request path and a status code standing in for
+            a sentence, on the one screen whose own comment already forbade
+            exactly that. The message now goes to a `console.warn` and the
+            reader gets authored copy instead.
 
-              Two branches, because the two need different people to act. A blip
-              is ours to retry. An expired session is not retryable at all —
-              every retry returns the same 401 — so the offer is to sign in.
-            */}
-            <span className="text-[13px] leading-relaxed">
-              {error.kind === 'expired'
-                ? DECISION_SESSION_EXPIRED
-                : DECISION_READ_FAILED}
-            </span>
+            Two branches, because the two need different people to act. A blip
+            is ours to retry. An expired session is not retryable at all —
+            every retry returns the same 401 — so the offer is to sign in.
+          */}
+          <Notice
+            tone={readNoticeTone(error.kind)}
+            {...(error.kind !== 'expired' && onRetry ? { action: { label: 'Try again', onClick: onRetry } } : {})}
+          >
             {error.kind === 'expired' ? (
-              /*
-                A console line was all a failed sign-in used to produce, on the
-                one screen where this is the only way forward (TASK-288). The
-                shared button owns the failure now.
+              <Stack gap="sm" align="start">
+                {DECISION_SESSION_EXPIRED}
+                {/*
+                  A console line was all a failed sign-in used to produce, on the
+                  one screen where this is the only way forward (TASK-288). The
+                  shared button owns the failure now.
 
-                Rendered directly rather than through an `onSignIn` prop: there
-                is exactly one way into this app, the in-thread card uses the
-                same component, and an optional prop would be how a no-op
-                default gets added later and swallows the click.
-              */
-              <SignInAgainButton variant="secondary" />
+                  Rendered directly rather than through an `onSignIn` prop: there
+                  is exactly one way into this app, the in-thread card uses the
+                  same component, and an optional prop would be how a no-op
+                  default gets added later and swallows the click.
+                */}
+                <SignInAgainButton variant="secondary" />
+              </Stack>
             ) : (
-              onRetry && (
-                <Button variant="secondary" size="sm" onClick={onRetry}>
-                  Try again
-                </Button>
-              )
+              DECISION_READ_FAILED
             )}
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       )}
 
       {grantsError !== null && (
@@ -456,24 +452,23 @@ export function TodayView({
           is the session running out, and every retry returns the same 401, so
           the offer there is sign-in rather than a button that cannot move.
         */
-        <Alert variant={readAlertVariant(grantsError)} className="mb-4">
-          <AlertDescription className="flex flex-col items-start gap-2.5">
-            <span className="text-[13px] leading-relaxed">
-              {grantsError === 'expired'
-                ? DECISION_SESSION_EXPIRED
-                : GRANT_READ_FAILED}
-            </span>
+        <div className="mb-4">
+          <Notice
+            tone={readNoticeTone(grantsError)}
+            {...(grantsError !== 'expired' && onRetryGrants
+              ? { action: { label: 'Try again', onClick: onRetryGrants } }
+              : {})}
+          >
             {grantsError === 'expired' ? (
-              <SignInAgainButton variant="secondary" />
+              <Stack gap="sm" align="start">
+                {DECISION_SESSION_EXPIRED}
+                <SignInAgainButton variant="secondary" />
+              </Stack>
             ) : (
-              onRetryGrants && (
-                <Button variant="secondary" size="sm" onClick={onRetryGrants}>
-                  Try again
-                </Button>
-              )
+              GRANT_READ_FAILED
             )}
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       )}
 
       {tasksUnknown && (
@@ -485,39 +480,32 @@ export function TodayView({
           draws the same failure the same way. Tasks we did read still show
           below; this says which part we couldn't check.
         */
-        <Alert variant={readAlertVariant(tasksError ?? 'failed')} className="mb-4">
-          <AlertDescription className="flex flex-col items-start gap-2.5">
+        <div className="mb-4">
+          <Notice
+            tone={readNoticeTone(tasksError ?? 'failed')}
+            {...(tasksError !== 'expired'
+              ? { action: { label: 'Try again', onClick: onRetryTasks, busy: tasksRefreshing } }
+              : {})}
+          >
             {tasksError === 'expired' ? (
-              <>
-                <span className="text-[13px] leading-relaxed">{DECISION_SESSION_EXPIRED}</span>
+              <Stack gap="sm" align="start">
+                {DECISION_SESSION_EXPIRED}
                 <SignInAgainButton variant="secondary" />
-              </>
+              </Stack>
             ) : (
-              <>
-                {tasksError === 'failed' && (
-                  <span className="text-[13px] leading-relaxed">
-                    We couldn’t check your tasks just now.
-                  </span>
-                )}
+              <Stack gap="sm" align="start">
+                {tasksError === 'failed' && <span>We couldn’t check your tasks just now.</span>}
                 {unavailableTaskAgents.length > 0 && (
-                  <span className="break-words text-[13px] leading-relaxed">
+                  <span>
                     {`We couldn’t check tasks from ${AGENT_LIST.format(
                       unavailableTaskAgents.map((a) => a.agentName),
                     )}, so some may be missing.`}
                   </span>
                 )}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={onRetryTasks}
-                  disabled={tasksRefreshing}
-                >
-                  Try again
-                </Button>
-              </>
+              </Stack>
             )}
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </div>
       )}
 
       {/*

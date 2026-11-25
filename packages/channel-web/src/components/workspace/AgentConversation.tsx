@@ -22,34 +22,26 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type Ref,
 } from 'react';
 import {
   AlertTriangle,
   ChevronRight,
-  CircleStop,
   Hand,
   Layers,
   Plus,
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, EmptyState, Inline, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { workspaceApi } from '@/lib/workspace-api';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import {
   stepsTitle,
@@ -58,7 +50,7 @@ import {
   type WorkspaceStepStatus,
 } from '@/lib/workspace-steps';
 import { signInWithGoogle } from '@/lib/auth';
-import { readAlertVariant } from '@/lib/read-register';
+import { readNoticeTone } from '@/lib/read-register';
 import { turnErrorText } from '@/lib/turn-error-labels';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
@@ -101,7 +93,6 @@ import pearlOrb from '@/assets/design/pearl-orb.svg';
 import { AttachmentChip } from '@/components/AttachmentChip';
 import { GeneratedFileChip } from './GeneratedFileChip';
 import { AGENT_CONVERSATION_ATTR } from '@/lib/new-agent-return-focus';
-import { VISUAL_DEFAULT_HEIGHT } from './visual/visual-doc';
 
 /*
   LAZY on purpose. The frame carries ~355 KB of vendored strings (chart.js,
@@ -388,6 +379,36 @@ interface Props {
   fileRecheckKey?: number;
   /** Open an artifact in the viewer (owned by `AgentView`). Cards need it. */
   onOpenArtifact?: (artifactId: string) => void;
+}
+
+/**
+ * A note in the thread (`role="note"`, not an assertive alert): the read-only
+ * note in the composer's slot, and the "you stopped this reply" line. The first
+ * is a focus target (`tabIndex={-1}`), because that is where focus lands after
+ * Stop; the second is not.
+ */
+function NoteBox({
+  ref,
+  focusable = false,
+  className,
+  children,
+}: {
+  ref?: Ref<HTMLDivElement>;
+  focusable?: boolean;
+  /** The width cap, written at the call site so the lint rules can read it. */
+  className: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      ref={ref}
+      role="note"
+      {...(focusable ? { tabIndex: -1 } : {})}
+      className={cn(className, focusable && RESOLUTION_FOCUS_RING)}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function AgentConversation({
@@ -713,18 +734,13 @@ export function AgentConversation({
             for, and stops there.
           */}
           {welcome && (
-            <Empty className="border-0 py-6">
-              <EmptyHeader className="max-w-lg gap-4">
-                <EmptyMedia>
-                  <span className="ax-pearl" aria-hidden="true"><img src={pearlOrb} width={138} height={138} alt="" /></span>
-                </EmptyMedia>
-                <EmptyTitle className="text-[30px] font-semibold leading-[1.35] tracking-[-0.02em]">Nothing here yet</EmptyTitle>
-                <EmptyDescription>
-                  This is where you and {agent.name} talk. Send something below
-                  — {agent.name} picks it up from there.
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <Stack gap="md" align="center">
+              <span className="ax-pearl" aria-hidden="true"><img src={pearlOrb} width={138} height={138} alt="" /></span>
+              <EmptyState
+                title="Nothing here yet"
+                description={`This is where you and ${agent.name} talk. Send something below — ${agent.name} picks it up from there.`}
+              />
+            </Stack>
           )}
 
           {/*
@@ -749,19 +765,18 @@ export function AgentConversation({
               out. And the offer follows the fact too: a blip is ours to retry,
               an expired session is not retryable at all.
 
-              `readAlertVariant` owns the branch since TASK-290; behaviour here
+              `readNoticeTone` owns the branch since TASK-290; behaviour here
               is unchanged. No `retrying` is passed because there is no
               automatic retry behind this read — `useDecisionQueue` never got
               one — so the failure is terminal until the reader clicks.
             */
-            <Alert variant={readAlertVariant(approvalRead)}>
-              <AlertDescription className="flex flex-col items-start gap-2.5">
-                <span className="text-[13px] leading-relaxed">
-                  {approvalRead === 'expired'
-                    ? DECISION_SESSION_EXPIRED
-                    : DECISION_THREAD_READ_FAILED}
-                </span>
-                {approvalRead === 'expired' ? (
+            <Notice
+              tone={readNoticeTone(approvalRead)}
+              {...(approvalRead === 'failed' ? { action: { label: 'Try again', onClick: onRetryApprovals } } : {})}
+            >
+              {approvalRead === 'expired' ? (
+                <Stack gap="sm" align="start">
+                  <span>{DECISION_SESSION_EXPIRED}</span>
                   <Button
                     variant="secondary"
                     size="sm"
@@ -778,13 +793,11 @@ export function AgentConversation({
                   >
                     Sign in
                   </Button>
-                ) : (
-                  <Button variant="secondary" size="sm" onClick={onRetryApprovals}>
-                    Try again
-                  </Button>
-                )}
-              </AlertDescription>
-            </Alert>
+                </Stack>
+              ) : (
+                DECISION_THREAD_READ_FAILED
+              )}
+            </Notice>
           )}
         </div>
       </div>
@@ -870,12 +883,7 @@ export function AgentConversation({
           took away a control that worked.
         */
         <div className={cn(CHAT_CONTENT_CLASS, "pb-6 pt-3.5")}>
-          <Alert
-            ref={noteRef}
-            role="note"
-            tabIndex={-1}
-            className={cn("max-w-[720px]", RESOLUTION_FOCUS_RING)}
-          >
+          <NoteBox ref={noteRef} focusable className="max-w-[720px]">
             {/*
               The composer announcer's twin, for the composer's Stop that lives
               here now: in the DOM for as long as the note is, so "Stopping."
@@ -887,39 +895,42 @@ export function AgentConversation({
             <span className="sr-only" role="status" aria-live="polite">
               {stopping ? 'Stopping.' : stoppedShown ? 'Stopped.' : ''}
             </span>
-            <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
-              <span>{readOnlyNote}</span>
-              <span className="flex gap-2">
-                {showStop && onStop !== undefined && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={stopping}
-                    onClick={() => {
-                      stopClicked.current = true;
-                      onStop();
-                    }}
-                  >
-                    <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
-                    {stopping ? 'Stopping' : 'Stop'}
-                  </Button>
-                )}
-                {onNewChat !== undefined && (
-                  <Button
-                    ref={noteNewChatRef}
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onNewChat()}
-                  >
-                    <Plus aria-hidden="true" data-icon="inline-start" />
-                    New chat
-                  </Button>
-                )}
-              </span>
-            </AlertDescription>
-          </Alert>
+            {/* No live role of its own: the note is not news on every open, and the status above speaks Stop. */}
+            <Notice tone="info" announce={false}>
+              <Stack gap="sm" align="start">
+                <span>{readOnlyNote}</span>
+                <Inline gap="sm" wrap>
+                  {showStop && onStop !== undefined && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={stopping}
+                      onClick={() => {
+                        stopClicked.current = true;
+                        onStop();
+                      }}
+                    >
+                      <Square fill="currentColor" aria-hidden="true" data-icon="inline-start" />
+                      {stopping ? 'Stopping' : 'Stop'}
+                    </Button>
+                  )}
+                  {onNewChat !== undefined && (
+                    <Button
+                      ref={noteNewChatRef}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onNewChat()}
+                    >
+                      <Plus aria-hidden="true" data-icon="inline-start" />
+                      New chat
+                    </Button>
+                  )}
+                </Inline>
+              </Stack>
+            </Notice>
+          </NoteBox>
         </div>
       )}
       {!readOnly && (
@@ -1247,12 +1258,11 @@ function Message({
       message to carry on" is the whole instruction.
     */
     return (
-      <Alert role="note" className="max-w-[600px]">
-        <CircleStop size={14} aria-hidden="true" />
-        <AlertDescription className="text-[13px] leading-relaxed">
+      <NoteBox className="max-w-[600px]">
+        <Notice tone="info" announce={false}>
           {m.text}
-        </AlertDescription>
-      </Alert>
+        </Notice>
+      </NoteBox>
     );
   }
 
@@ -1304,13 +1314,8 @@ function Message({
     return (
       <div className="flex gap-3">
         <AgentTile agent={agent} size={24} />
-        <div className="min-w-0 flex-1">
-          <Alert variant="destructive" className="max-w-[600px]">
-            <AlertTriangle size={14} />
-            <AlertDescription className="whitespace-pre-line">
-              {turnErrorText(m.reason, m.detail)}
-            </AlertDescription>
-          </Alert>
+        <div className="min-w-0 max-w-[600px] flex-1 whitespace-pre-line">
+          <Notice tone="danger">{turnErrorText(m.reason, m.detail)}</Notice>
           {failedAt !== null && (
             <div className="mt-1.5 text-[11.5px] text-muted-foreground">
               {failedAt}
@@ -1527,12 +1532,7 @@ function AgentReply({
             {r.visuals.map((v) => (
               <Suspense
                 key={v.artifactId}
-                fallback={
-                  <Skeleton
-                    className="w-full max-w-[604px]"
-                    style={{ height: VISUAL_DEFAULT_HEIGHT }}
-                  />
-                }
+                fallback={<AsyncState status="loading" skeleton="block" loadingLabel="Loading visual" />}
               >
                 <VisualFrame conversationId={conversationId} visual={v} />
               </Suspense>

@@ -81,7 +81,7 @@ describe('private task app setup', () => {
   it('reloads setup after a transient error without drawing provider details', async () => {
     vi.mocked(routineApi.get).mockRejectedValueOnce(new Error('PRIVATE-provider-detail'));
     show();
-    fireEvent.click(await screen.findByRole('button', { name: 'Reload app setup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
     await screen.findByLabelText('Webhook URL');
     expect(document.body).not.toHaveTextContent('PRIVATE-provider-detail');
   });
@@ -91,7 +91,7 @@ describe('private task app setup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Replace address' }));
     fireEvent.click(screen.getByRole('button', { name: 'Replace address' }));
     await waitFor(() => expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument());
-    expect(await screen.findByRole('button', { name: 'Retry app setup' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeVisible();
     expect(document.body).not.toHaveTextContent('PRIVATE-response');
   });
 });

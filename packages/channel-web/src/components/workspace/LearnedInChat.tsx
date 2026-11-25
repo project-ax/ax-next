@@ -16,6 +16,7 @@ import { ChevronRight } from 'lucide-react';
  * `useConversationMemory`, owned by `AgentView` (see that hook for why).
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { Text } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -95,11 +96,6 @@ interface Props {
    * just asked for must never be blank.
    */
   panel?: boolean;
-}
-
-/** One muted line — the same shape the rail's other blocks use. */
-function Note({ children }: { children: React.ReactNode }) {
-  return <p className="text-[13px] leading-relaxed text-muted-foreground">{children}</p>;
 }
 
 export function LearnedInChat({
@@ -209,7 +205,7 @@ export function LearnedInChat({
     return (
       <section aria-labelledby="learned-in-chat-title" className="flex flex-col gap-2 px-2 py-2">
         <h3 id="learned-in-chat-title" className="text-xs font-medium">{LEARNED_TITLE}</h3>
-        <Note>{LEARNED_NOTHING_NEW}</Note>
+        <Text role="meta">{LEARNED_NOTHING_NEW}</Text>
         <div className="flex justify-end">
           <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[11.5px]" onClick={onSeeAll}>
             {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
@@ -263,7 +259,6 @@ export function LearnedInChat({
                     now={receipt.now}
                     onUndo={(row) => void receipt.undo(row)}
                     onUndoFix={(fix) => void receipt.undoFix(fix)}
-                    className="px-2.5 py-1.5 text-[12px]"
                   />
                 );
               }
@@ -299,8 +294,7 @@ export function LearnedInChat({
                       now={receipt.now}
                       onUndo={(row) => void receipt.undo(row)}
                       onUndoFix={(fix) => void receipt.undoFix(fix)}
-                      className="px-2.5 py-1.5 text-[12px]"
-                    />
+                      />
                   </div>
                 );
               }
@@ -367,12 +361,12 @@ function Body({
   onOpenModelKeys: (() => void) | undefined;
   renderRow: (r: LearnedRow) => React.ReactNode;
 }) {
-  if (memory.status === 'not-enabled') return <Note>{LEARNED_NOT_ENABLED}</Note>;
-  if (memory.status === 'loading') return <Note>{LEARNED_LOADING}</Note>;
+  if (memory.status === 'not-enabled') return <Text role="meta">{LEARNED_NOT_ENABLED}</Text>;
+  if (memory.status === 'loading') return <Text role="meta">{LEARNED_LOADING}</Text>;
   if (memory.status === 'read-failed') {
     return (
       <div className="flex flex-col items-start gap-2">
-        <Note>{LEARNED_READ_FAILED}</Note>
+        <Text role="meta">{LEARNED_READ_FAILED}</Text>
         <Button type="button" variant="secondary" size="sm" onClick={memory.retry}>
           {LEARNED_READ_FAILED_ACTION}
         </Button>
@@ -392,7 +386,7 @@ function Body({
     <>
       {paused && (
         <div className="flex flex-col items-start gap-2">
-          <Note>{LEARNED_PAUSED}</Note>
+          <Text role="meta">{LEARNED_PAUSED}</Text>
           {onOpenModelKeys !== undefined && (
             <Button type="button" variant="secondary" size="sm" onClick={onOpenModelKeys}>
               {LEARNED_PAUSED_ACTION}
@@ -407,12 +401,12 @@ function Body({
             aria-hidden="true"
             className="size-1.5 shrink-0 rounded-full bg-primary motion-safe:animate-pulse"
           />
-          <Note>{LEARNED_EXTRACTING}</Note>
+          <Text role="meta">{LEARNED_EXTRACTING}</Text>
         </div>
       )}
-      {failed && <Note>{LEARNED_SAVE_FAILED}</Note>}
+      {failed && <Text role="meta">{LEARNED_SAVE_FAILED}</Text>}
       {rows.length === 0 && !paused && !extracting && !failed && (
-        <Note>{LEARNED_NOTHING_NEW}</Note>
+        <Text role="meta">{LEARNED_NOTHING_NEW}</Text>
       )}
       {visible.length > 0 && (
         <ul className="flex flex-col gap-2.5">

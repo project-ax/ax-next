@@ -20,6 +20,8 @@ export interface AgentAbilitiesState {
   pending: ReadonlySet<AgentAbility>;
   /** Flip one switch. Resolves `true` once the server holds the new state. */
   set: (ability: AgentAbility, enabled: boolean) => Promise<boolean>;
+  /** Read the switches again (after a failed read). */
+  reload: () => void;
 }
 
 export function useAgentAbilities(agentId: string): AgentAbilitiesState {
@@ -29,6 +31,9 @@ export function useAgentAbilities(agentId: string): AgentAbilitiesState {
   // Switching agents quickly must not paint one agent's switches under
   // another's name: only the newest scope's answers land.
   const scope = useRef(0);
+  // Bumped by `reload` to re-run the read after a failure.
+  const [reads, setReads] = useState(0);
+  const reload = useCallback(() => setReads((n) => n + 1), []);
 
   useEffect(() => {
     const id = ++scope.current;
@@ -47,7 +52,7 @@ export function useAgentAbilities(agentId: string): AgentAbilitiesState {
         setStatus(e instanceof HttpError && e.status === 503 ? 'unavailable' : 'failed');
       }
     })();
-  }, [agentId]);
+  }, [agentId, reads]);
 
   const set = useCallback(
     async (ability: AgentAbility, enabled: boolean): Promise<boolean> => {
@@ -74,5 +79,5 @@ export function useAgentAbilities(agentId: string): AgentAbilitiesState {
     [agentId],
   );
 
-  return { abilities, status, pending, set };
+  return { abilities, status, pending, set, reload };
 }

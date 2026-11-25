@@ -24,7 +24,7 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useEffect, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -49,6 +49,8 @@ export interface AddKeyDialogProps {
   connectorName?: string;
   /** The connector didn't load: say so, with no form. */
   failed?: boolean;
+  /** Read the connector again after it failed to load. */
+  onRetry?: () => void;
   /** `'add'` (default): the Add subview. `'add-key'`: a row's Add key. */
   purpose?: 'add' | 'add-key';
   /** The agent's display name. */
@@ -68,6 +70,7 @@ export function AddKeyDialog({
   connector,
   connectorName,
   failed = false,
+  onRetry,
   purpose = 'add',
   agentName,
   teamAgent,
@@ -135,11 +138,14 @@ export function AddKeyDialog({
           </DialogDescription>
         </DialogHeader>
         {failed ? (
-          <Alert variant="destructive">
-            <AlertDescription>We couldn’t open {name} just now. Please try again.</AlertDescription>
-          </Alert>
+          <AsyncState
+            status="error"
+            skeleton="rows"
+            loadingLabel={`Loading ${name}`}
+            error={{ message: `We couldn’t open ${name} just now.`, ...(onRetry ? { onRetry } : {}) }}
+          />
         ) : connector === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <AsyncState status="loading" skeleton="rows" loadingLabel={`Loading ${name}`} />
         ) : (
           <form className="flex flex-col gap-5" onSubmit={(e) => void submit(e)}>
             <ConnectorAccessNotice kind="key" />
@@ -160,11 +166,7 @@ export function AddKeyDialog({
                 );
               })}
             </FieldGroup>
-            {error !== null && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
+            {error !== null && <Notice tone="danger">{error}</Notice>}
             <DialogFooter>
               <Button
                 type="button"

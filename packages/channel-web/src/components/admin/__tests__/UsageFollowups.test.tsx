@@ -102,10 +102,22 @@ describe('Usage follow-ups', () => {
     });
   });
   it('offers retry instead of crashing on an unexpected successful response', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
     render(<PersonalUsageLine />);
     expect(await screen.findByText('Usage unavailable')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    // Try again re-reads, and a good answer replaces the failure.
+    fetchMock.mockImplementation(async () =>
+      new Response(
+        JSON.stringify({ spendUsd: 0.3, turnsLastHour: 2, limits: { dailySpendUsd: 10, turnsPerHour: 100 } }),
+        { status: 200 },
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('$0.30 of $10.00 used in the last 24 hours')).toBeInTheDocument();
+    expect(screen.queryByText('Usage unavailable')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
   it('shows the signed-in person’s spend against their effective cap', async () => {
     const calls = wire();

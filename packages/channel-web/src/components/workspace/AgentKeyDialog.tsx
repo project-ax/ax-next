@@ -57,6 +57,7 @@ export function AgentKeyDialog({
   const base = isAdmin ? '/admin/connectors' : '/settings/connectors';
   const [connector, setConnector] = useState<Connector | null>(null);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,7 +73,7 @@ export function AgentKeyDialog({
     return () => {
       cancelled = true;
     };
-  }, [connectorId, base]);
+  }, [connectorId, base, attempt]);
 
   async function save(keys: AgentConnectorKey[]) {
     try {
@@ -97,6 +98,7 @@ export function AgentKeyDialog({
       connector={connector}
       connectorName={connectorName}
       failed={failed}
+      onRetry={() => setAttempt((n) => n + 1)}
       agentName={agentName}
       teamAgent={teamAgent}
       open

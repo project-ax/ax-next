@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -101,11 +101,7 @@ export function StepAdmin({ onCreated }: Props) {
             required
           />
         </div>
-        {err !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{err}</AlertDescription>
-          </Alert>
-        )}
+        {err !== null && <Notice tone="danger">{err}</Notice>}
         <Button
           type="submit"
           disabled={busy || name.length === 0 || email.length === 0}

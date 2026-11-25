@@ -11,15 +11,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronLeft, Download, Link as LinkIcon, X } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import { artifactTypeLine, versionLabel } from '@/lib/artifact-labels';
 import { copyShareLink } from '@/lib/copy-share-link';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { AsyncState, Button as AxButton, toast } from '@project-ax/ui';
 import { useResolvedTheme } from '@/lib/theme';
 import { useArtifact } from '@/lib/use-artifact';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -89,7 +86,7 @@ export function ArtifactViewer({
         saveFromContentOrigin((await loadToken('download')).url);
       } catch (e) {
         logRequestFailure(e, 'artifact-download');
-        toastActions.error(DOWNLOAD_FAILED);
+        toast.show({ title: DOWNLOAD_FAILED, tone: 'danger' });
       } finally {
         downloadInFlight.current = false;
         setDownloading(false);
@@ -113,12 +110,12 @@ export function ArtifactViewer({
     setRestoring(true);
     try {
       await workspaceApi.restoreArtifact(artifactId, picked);
-      toastActions.show({ title: `Restored v${picked}` });
+      toast.show({ title: `Restored v${picked}` });
       setPicked(null);
       refresh();
     } catch (e) {
       logRequestFailure(e, 'artifact-restore');
-      toastActions.error(RESTORE_FAILED);
+      toast.show({ title: RESTORE_FAILED, tone: 'danger' });
     } finally {
       setRestoring(false);
     }
@@ -134,28 +131,18 @@ export function ArtifactViewer({
           {back}
           {close}
         </div>
-        {status === 'loading' ? (
-          <div role="status" className="flex flex-col gap-2">
-            <span className="sr-only">Loading…</span>
-            <Skeleton className="h-8 w-2/3" />
-            <Skeleton className="h-[320px] w-full" />
-          </div>
-        ) : (
-          <Alert>
-            <AlertDescription className="flex flex-col items-start gap-2">
-              {status === 'gone' ? (
-                <span>We couldn’t find this artifact. It may have been deleted.</span>
-              ) : (
-                <>
-                  <span>We couldn’t open {agentName}’s artifact just now. Nothing was lost.</span>
-                  <Button size="sm" variant="outline" type="button" onClick={reload}>
-                    Try again
-                  </Button>
-                </>
-              )}
-            </AlertDescription>
-          </Alert>
-        )}
+        <AsyncState
+          status={status === 'loading' ? 'loading' : 'error'}
+          skeleton="block"
+          loadingLabel="Loading artifact"
+          error={{
+            message:
+              status === 'gone'
+                ? 'We couldn’t find this artifact. It may have been deleted.'
+                : `We couldn’t open ${agentName}’s artifact just now. Nothing was lost.`,
+            ...(status === 'gone' ? {} : { onRetry: reload }),
+          }}
+        />
       </div>
     );
   }
@@ -216,10 +203,9 @@ export function ArtifactViewer({
             <Button type="button" size="sm" variant="ghost" onClick={() => setPicked(null)}>
               Back to latest
             </Button>
-            <Button type="button" size="sm" variant="outline" disabled={restoring} onClick={() => void restore()}>
-              {restoring && <Spinner data-icon="inline-start" />}
+            <AxButton intent="secondary" size="sm" busy={restoring} onClick={() => void restore()}>
               Restore this version
-            </Button>
+            </AxButton>
           </div>
         </div>
       )}
