@@ -1172,29 +1172,24 @@ describe('restart_with_services: a failed services open is told to the agent (TA
   it('a sandbox that folds the failed set again is not told it has none of its services, and the notice goes', async () => {
     const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
     await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the set's sandbox fails to open
-    // An outsider's turn turns the set back on (it hears nothing, and leaves the notice).
-    const outsider = await spawnTurn(t, 'req-2', 'external');
-    expect((await t.tool(RESTART_WITH_SERVICES, outsider.open.sessionId, 'conv-1', { set: 'e2e' }, 'external')).ok).toBe(true);
-    await t.endSegment(outsider.open.sessionId, 'conv-1', 'req-2');
-    await waitFor(() => t.notes().length === 1, 'the restart note');
-    const restarted = t.opens.at(-1)!;
-    expect(restarted.services?.map((s) => s.name)).toEqual(['mongo']);
-    expect(restarted.augment).not.toContain(NOTICE);
-    await endTurn(t, restarted.sessionId, 'req-2', outsider.p);
+    expect(t.row('conv-1').serviceSet).toBeNull();
+    // The write that turns the set off didn't land (or a restart turned it back
+    // on): the member's next sandbox folds `e2e` while the notice is stored.
+    t.row('conv-1').serviceSet = 'e2e';
 
     // A member's sandbox folds the set and opens fine: telling it "this sandbox
     // has none of its services" would be false. The set starts now, so the
     // notice is gone for good.
-    const member = await spawnTurn(t, 'req-3');
+    const member = await spawnTurn(t, 'req-2');
     expect(member.open.services?.map((s) => s.name)).toEqual(['mongo']);
     expect(member.open.augment).not.toContain(NOTICE);
     expect((await t.tool(STOP_SERVICES, member.open.sessionId, 'conv-1', {})).ok).toBe(true);
-    await endTurn(t, member.open.sessionId, 'req-3', member.p);
+    await endTurn(t, member.open.sessionId, 'req-2', member.p);
 
-    const plain = await spawnTurn(t, 'req-4'); // the set is off again: a fresh sandbox without it
+    const plain = await spawnTurn(t, 'req-3'); // the set is off again: a fresh sandbox without it
     expect(plain.open.services).toBeUndefined();
     expect(plain.open.augment).not.toContain(NOTICE);
-    await endTurn(t, plain.open.sessionId, 'req-4', plain.p);
+    await endTurn(t, plain.open.sessionId, 'req-3', plain.p);
   });
 
   it('an outsider\'s successful open of the failed set retires the notice for every later turn', async () => {

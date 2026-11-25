@@ -358,7 +358,15 @@ describe('lifecycle.diagnoseServiceSidecars (TASK-160)', () => {
       expect(diagnosis).toBeUndefined();
     });
 
-    it.each(['ImagePullBackOff', 'RegistryUnavailable'])(
+    it.each([
+      'ErrImagePull',
+      'ImagePullBackOff',
+      'InvalidImageName',
+      'ErrImageNeverPull',
+      'ImageInspectError',
+      'RegistryUnavailable',
+      'SignatureValidationFailed',
+    ])(
       'names a service whose image cannot be pulled (%s)',
       async (reason) => {
         const diagnosis = await diagnose(makeMockK8sApi(), [
