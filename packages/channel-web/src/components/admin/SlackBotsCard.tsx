@@ -45,16 +45,8 @@ import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog'
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Button as AxButton } from '@project-ax/ui';
+import { ConfirmAction } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table,
@@ -306,9 +298,6 @@ function DisconnectBotDialog({
   /** Someone got there first: the row is out of date. */
   onStale: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   // The last bot asked about, so the words stay put while the dialog closes.
   const shown = useRef<AdminSlackBot | null>(null);
   if (bot !== null) shown.current = bot;
@@ -317,60 +306,41 @@ function DisconnectBotDialog({
   const name = b?.botName ?? '';
   const needsRebuilding = b?.state === 'live' && b.approver === null;
 
-  const close = (open: boolean) => {
-    if (busy || open) return;
-    setError(null);
-    onClose();
-  };
-
   async function confirm() {
-    if (bot === null || busy) return;
-    setBusy(true);
-    setError(null);
+    if (bot === null) return;
     try {
       const { appDeleted } = await disconnectTeamBot(bot.installId);
       onGone(bot, appDeleted);
     } catch (err) {
       logRequestFailure(err, 'slack-bots-admin');
+      // Someone got there first: the row is out of date. Refresh it and let the dialog close.
       if (teamBotGone(err)) {
         onStale();
-      } else {
-        setError(GENERIC_FAILURE);
+        return;
       }
-    } finally {
-      setBusy(false);
+      throw err;
     }
   }
 
   return (
-    <Dialog open={bot !== null} onOpenChange={close}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{pending ? `Stop setting up ${name}?` : `Disconnect ${name}?`}</DialogTitle>
-          <DialogDescription>
-            {pending
-              ? "We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."
-              : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
-                  needsRebuilding
-                    ? " Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again."
-                    : ''
-                }`}
-          </DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <AxButton intent="secondary" onClick={() => close(false)} disabled={busy}>
-            {pending ? 'Keep going' : 'Keep it'}
-          </AxButton>
-          <AxButton intent="secondary" onClick={() => void confirm()} busy={busy}>
-            {pending ? 'Stop setting up' : 'Disconnect'}
-          </AxButton>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={bot !== null}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={pending ? `Stop setting up ${name}?` : `Disconnect ${name}?`}
+      description={
+        pending
+          ? "We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."
+          : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
+              needsRebuilding
+                ? " Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again."
+                : ''
+            }`
+      }
+      confirmLabel={pending ? 'Stop setting up' : 'Disconnect'}
+      errorMessage={() => GENERIC_FAILURE}
+      onConfirm={confirm}
+    />
   );
 }

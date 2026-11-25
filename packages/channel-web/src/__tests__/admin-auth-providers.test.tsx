@@ -205,7 +205,7 @@ describe('AuthProvidersTab', () => {
       render(<AuthProvidersTab />);
       await waitFor(() => screen.getByRole('switch', { name: /Disable Google/i }));
       fireEvent.click(screen.getByRole('switch', { name: /Disable Google/i }));
-      fireEvent.click(await screen.findByRole('button', { name: /keep it on/i }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 
       await waitFor(() =>
         expect(screen.queryByText(/turn off the only way to sign in\?/i)).toBeNull(),

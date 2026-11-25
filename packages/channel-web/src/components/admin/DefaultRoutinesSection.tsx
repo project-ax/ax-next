@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Pencil, Plus } from 'lucide-react';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -54,7 +56,6 @@ export function DefaultRoutinesSection() {
   const [editingInitial, setEditingInitial] =
     useState<RoutineDefinition | null>(null);
   const [editLoadError, setEditLoadError] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   async function refresh() {
     setError(null);
@@ -100,17 +101,6 @@ export function DefaultRoutinesSection() {
     };
   }, [editingId]);
 
-  async function handleDelete(id: string) {
-    try {
-      await deleteDefaultRoutine(id);
-      setPendingDelete(null);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
-    }
-  }
-
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -122,7 +112,7 @@ export function DefaultRoutinesSection() {
           }}
         >
           <DialogTrigger asChild>
-            <Button size="sm">
+            <Button size="sm" data-return-focus="default-routines">
               <Plus className="h-3.5 w-3.5 mr-1" />
               New default routine
             </Button>
@@ -200,14 +190,19 @@ export function DefaultRoutinesSection() {
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setPendingDelete(d.defaultRoutineId)}
-                      aria-label={`Delete ${d.name}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <ConfirmAction
+                      trigger={{ label: `Delete ${d.name}`, intent: 'quiet', size: 'sm', icon: Trash2, iconOnly: true }}
+                      title="Delete default routine?"
+                      description={`Delete ${d.defaultRoutineId}? This cascades to every agent that materialized this template. The next tick will not re-create them.`}
+                      confirmLabel="Delete"
+                      errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+                      onConfirm={async () => {
+                        await deleteDefaultRoutine(d.defaultRoutineId);
+                        await refresh();
+                        // The row that opened this is gone; park focus on the list's primary action.
+                        focusAfterRemoval('[data-return-focus="default-routines"]');
+                      }}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
@@ -247,40 +242,6 @@ export function DefaultRoutinesSection() {
                   onCancel={() => setEditingId(null)}
                 />
               )}
-            </DialogContent>
-          </Dialog>
-        )}
-
-        {pendingDelete !== null && (
-          <Dialog
-            open={true}
-            onOpenChange={(o) => {
-              if (!o) setPendingDelete(null);
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete default routine?</DialogTitle>
-              </DialogHeader>
-              <p className="text-sm text-muted-foreground">
-                Delete <code className="font-mono">{pendingDelete}</code>? This
-                cascades to every agent that materialized this template. The
-                next tick will not re-create them.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setPendingDelete(null)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => void handleDelete(pendingDelete)}
-                >
-                  Delete
-                </Button>
-              </div>
             </DialogContent>
           </Dialog>
         )}

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { CredentialSlotForm } from '../CredentialSlotForm';
 
 describe('CredentialSlotForm', () => {
@@ -112,5 +112,26 @@ describe('CredentialSlotForm', () => {
     fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(message)).toBeNull();
+  });
+
+  it('Remove key asks first, and removes the signing secret only on confirm', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+    const onSaved = vi.fn();
+    render(
+      <CredentialSlotForm
+        destination={{ kind: 'routine-hmac', agentId: 'a', routineId: 'r1' }}
+        slot={{ label: 'Signing secret', kind: 'api-key' }}
+        scope={{ scope: 'agent', ownerId: 'a' }}
+        current={{ set: true }}
+        expectedRevision="rev7"
+        onSaved={onSaved}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove this key?' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove key' }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
   });
 });

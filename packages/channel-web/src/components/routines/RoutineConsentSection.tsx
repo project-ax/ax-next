@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ALWAYS_ALLOW_STILL_ASKS } from '@/components/workspace/decision-copy';
 import { routineApi, type RoutineConsent } from '@/lib/routines';
@@ -14,8 +15,6 @@ export function RoutineConsentSection({
 }) {
   const [consent, setConsent] = useState<RoutineConsent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const flight = useRef(false);
   const readVersion = useRef(0);
   useEffect(() => {
     let active = true;
@@ -54,28 +53,20 @@ export function RoutineConsentSection({
     };
   }, [agentId]);
   async function revoke() {
-    if (flight.current) return;
-    flight.current = true;
-    setBusy(true);
-    setError(null);
-    try {
-      const revoked = await routineApi.revokeConsent(agentId);
-      ++readVersion.current;
-      setConsent(revoked);
-      window.dispatchEvent(
-        new CustomEvent('ax:routine-permissions-changed', {
-          detail: { agentId },
-        }),
-      );
-    } catch {
-      setError('We couldn’t revoke task permission. Try again.');
-    } finally {
-      flight.current = false;
-      setBusy(false);
-    }
+    // A failure is shown inside the confirmation, and the grant stays.
+    const revoked = await routineApi.revokeConsent(agentId);
+    ++readVersion.current;
+    setConsent(revoked);
+    window.dispatchEvent(
+      new CustomEvent('ax:routine-permissions-changed', {
+        detail: { agentId },
+      }),
+    );
+    // The Revoke button leaves with the grant; park focus on this section.
+    focusAfterRemoval('[data-return-focus="routine-consent"]');
   }
   return (
-    <section aria-label="Task permissions" className="flex flex-col gap-2">
+    <section aria-label="Task permissions" className="flex flex-col gap-2" tabIndex={-1} data-return-focus="routine-consent">
       {consent === null && error === null && (
         <Skeleton
           aria-label="Loading task permissions"
@@ -97,14 +88,14 @@ export function RoutineConsentSection({
             </p>
           </div>
           {consent.enabled && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => void revoke()}
-            >
-              {busy ? 'Revoking…' : 'Revoke'}
-            </Button>
+            <ConfirmAction
+              trigger={{ label: 'Revoke', intent: 'secondary', size: 'sm' }}
+              title="Revoke this permission?"
+              description={`${agentName} will ask before creating or editing tasks again. Anything already running may still have it until it finishes.`}
+              confirmLabel="Revoke"
+              errorMessage={() => 'We couldn’t revoke task permission. Try again.'}
+              onConfirm={revoke}
+            />
           )}
         </div>
       )}

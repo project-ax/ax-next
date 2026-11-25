@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -90,12 +92,11 @@ export function AllowedSitesPanel() {
     agents.length > 0 && agents.every((a) => ids.includes(a.agentId));
 
   const removeHost = async (host: string): Promise<void> => {
-    try {
-      await setSiteAgents(host, [], byHost.get(host) ?? []);
-      await refresh();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    // A failure is shown inside the confirmation, and the site stays listed.
+    await setSiteAgents(host, [], byHost.get(host) ?? []);
+    await refresh();
+    // The site's row is gone; park focus on the panel's primary action.
+    focusAfterRemoval('[data-return-focus="allowed-sites"]');
   };
 
   return (
@@ -115,7 +116,7 @@ export function AllowedSitesPanel() {
             Connectors.
           </p>
         </div>
-        <Button size="sm" disabled={agents.length === 0} onClick={() => setAdding(true)}>
+        <Button size="sm" data-return-focus="allowed-sites" disabled={agents.length === 0} onClick={() => setAdding(true)}>
           Add a site
         </Button>
       </div>
@@ -164,9 +165,14 @@ export function AllowedSitesPanel() {
               <Button variant="outline" size="sm" onClick={() => setEditingHost(host)}>
                 Edit
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => void removeHost(host)}>
-                Remove
-              </Button>
+              <ConfirmAction
+                trigger={{ label: 'Remove', intent: 'quiet', size: 'sm' }}
+                title={`Remove ${host}?`}
+                description={`Your agents can no longer reach ${host} until you allow it again.`}
+                confirmLabel="Remove site"
+                errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
+                onConfirm={() => removeHost(host)}
+              />
             </div>
           );
         })}

@@ -130,7 +130,7 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.getByText('Delete agent?')).toBeTruthy();
     });
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Research Bot')).toBeTruthy();
+    expect(dialog).toHaveTextContent('Research Bot');
     expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });

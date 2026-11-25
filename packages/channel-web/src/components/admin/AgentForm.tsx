@@ -53,13 +53,8 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 
 type FormState = {
@@ -200,9 +195,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [identityLoadFailed, setIdentityLoadFailed] = useState(false);
   const identityFieldsLocked =
     editing !== 'new' && (identityLoading || identityLoadFailed);
-  // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
-  // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
-  const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
 
   const refresh = async () => {
     try {
@@ -473,23 +465,11 @@ if (base.model !== editing.model) patch.model = base.model;
     }
   };
 
-  const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    try {
-      await deleteAgent(pendingDelete.id);
-      await refresh();
-      setPendingDelete(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
-    }
-  };
-
   // ── List view ──────────────────────────────────────────────────────────
   if (editing === null) {
     return (
       <div className="font-sans">
-        <SettingsActions><Button onClick={startNew}>New agent</Button></SettingsActions>
+        <SettingsActions><Button data-return-focus="admin-agents" onClick={startNew}>New agent</Button></SettingsActions>
 
         {/* (D2) Was a hand-rolled destructive div. `Alert` is installed, this
             file already imports it, and one of the two copies had different
@@ -517,57 +497,28 @@ if (base.model !== editing.model) patch.model = base.model;
                   >
                     edit
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPendingDelete(a)}
-                  >
-                    delete
-                  </Button>
+                  {/* TASK-718: say what goes with the agent. Every item named here
+                      is really deleted (conversations and their attachments, the
+                      agent's saved files, its routines) -- do not add a claim
+                      without the code behind it, and do not promise anything is
+                      kept. Data loss, so plain and direct: no jokes. */}
+                  <ConfirmAction
+                    trigger={{ label: 'delete', intent: 'quiet', size: 'sm' }}
+                    title="Delete agent?"
+                    description={`Delete ${a.displayName}? We will delete its conversations, the files in them, the files it saved and its routines along with it. This cannot be undone.`}
+                    confirmLabel="Delete"
+                    errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+                    onConfirm={async () => {
+                      await deleteAgent(a.id);
+                      await refresh();
+                      // The row that opened this is gone; park focus on the list's primary action.
+                      focusAfterRemoval('[data-return-focus="admin-agents"]');
+                    }}
+                  />
                 </div>
               </SettingsDetailRow>
             ))}
           </div>
-        )}
-
-        {/* Delete confirmation dialog (styled — no OS confirm). */}
-        {pendingDelete !== null && (
-          <Dialog
-            open={true}
-            onOpenChange={(v) => {
-              if (!v) setPendingDelete(null);
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete agent?</DialogTitle>
-              </DialogHeader>
-              {/* TASK-718: say what goes with the agent. Every item named here
-                  is really deleted (conversations and their attachments, the
-                  agent's saved files, its routines) -- do not add a claim
-                  without the code behind it, and do not promise anything is
-                  kept. Data loss, so plain and direct: no jokes. */}
-              <DialogDescription>
-                Delete{' '}
-                <span className="font-medium text-foreground">
-                  {pendingDelete.displayName}
-                </span>
-                ? We will delete its conversations, the files in them, the files
-                it saved and its routines along with it. This cannot be undone.
-              </DialogDescription>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setPendingDelete(null)}
-                >
-                  Cancel
-                </Button>
-                <Button variant="destructive" onClick={() => void confirmDelete()}>
-                  Delete
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
         )}
       </div>
     );

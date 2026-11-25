@@ -585,7 +585,7 @@ describe('Disconnect', () => {
     expect(dialog).toHaveTextContent(
       "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
     );
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep connected' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(disconnect).not.toHaveBeenCalled();
   });

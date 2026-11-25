@@ -6,19 +6,14 @@
  * Each mutation triggers `auth:providers-changed` server-side and the
  * better-auth handler hot-reloads — no kernel restart needed (I10).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { SettingsActions } from '../settings/SettingsLayout';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { AsyncState } from '@project-ax/ui';
+import { AsyncState, ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthProviders,
   setAuthProviderEnabled,
@@ -64,6 +59,12 @@ export function AuthProvidersTab() {
   const [pendingDelete, setPendingDelete] = useState<AuthProviderEntry | null>(
     null,
   );
+
+  // The last provider asked about, so the dialog's words stay put while it closes.
+  const lastDisable = useRef<AuthProviderEntry | null>(null);
+  if (pendingDisable !== null) lastDisable.current = pendingDisable;
+  const lastDelete = useRef<AuthProviderEntry | null>(null);
+  if (pendingDelete !== null) lastDelete.current = pendingDelete;
 
   const fetchProviders = async () => {
     setLoading(true);
@@ -123,27 +124,22 @@ export function AuthProvidersTab() {
 
   const confirmDisable = async () => {
     if (!pendingDisable) return;
-    const p = pendingDisable;
-    setPendingDisable(null);
-    await applyToggle(p);
+    // applyToggle reports its own failure on the page, so the dialog always closes.
+    await applyToggle(pendingDisable);
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setActionError(null);
-    try {
-      await deleteAuthProvider(pendingDelete.kind);
-      await fetchProviders();
-      setPendingDelete(null);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
-    }
+    await deleteAuthProvider(pendingDelete.kind);
+    await fetchProviders();
+    // The provider's row is gone with it; park focus on the page's primary action.
+    focusAfterRemoval('[data-return-focus="auth-providers"]');
   };
 
   return (
     <div className="font-sans">
-      <SettingsActions><Button type="button" onClick={() => setAdding(true)}>Add provider</Button></SettingsActions>
+      <SettingsActions><Button type="button" data-return-focus="auth-providers" onClick={() => setAdding(true)}>Add provider</Button></SettingsActions>
 
       {loading && <AsyncState status="loading" skeleton="rows" loadingLabel="Loading providers…" />}
 
@@ -241,67 +237,28 @@ export function AuthProvidersTab() {
 
       {/* (D5) The last sign-in method asks before it goes. Nothing else on this
           page can lock every user, including this admin, out of the product. */}
-      {pendingDisable !== null && (
-        <Dialog
-          open={true}
-          onOpenChange={(v) => {
-            if (!v) setPendingDisable(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Turn off the only way to sign in?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">
-                {labelFor(pendingDisable.kind)}
-              </span>{' '}
-              is the only sign-in method still switched on. Turning it off will
-              lock everyone out — including you, and including this page. Add
-              another method first if you can.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDisable(null)}>
-                Keep it on
-              </Button>
-              <Button variant="destructive" onClick={() => void confirmDisable()}>
-                Turn it off anyway
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDisable !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDisable(null);
+        }}
+        title="Turn off the only way to sign in?"
+        description={`${labelFor((pendingDisable ?? lastDisable.current)?.kind ?? '')} is the only sign-in method still switched on. Turning it off will lock everyone out — including you, and including this page. Add another method first if you can.`}
+        confirmLabel="Turn it off anyway"
+        onConfirm={confirmDisable}
+      />
 
-      {/* Delete confirmation dialog (styled — no OS confirm). */}
-      {pendingDelete !== null && (
-        <Dialog
-          open={true}
-          onOpenChange={(v) => {
-            if (!v) setPendingDelete(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Remove provider?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Remove the{' '}
-              <span className="font-medium text-foreground">
-                {labelFor(pendingDelete.kind)}
-              </span>{' '}
-              identity provider? Users will no longer be able to sign in with it.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDelete(null)}>
-                Cancel
-              </Button>
-              <Button variant="destructive" onClick={() => void confirmDelete()}>
-                Remove
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDelete(null);
+        }}
+        title="Remove provider?"
+        description={`Remove the ${labelFor((pendingDelete ?? lastDelete.current)?.kind ?? '')} identity provider? Users will no longer be able to sign in with it.`}
+        confirmLabel="Remove"
+        errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

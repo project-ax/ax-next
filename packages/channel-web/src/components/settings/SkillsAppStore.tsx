@@ -36,6 +36,8 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   Trash2,
   Pencil,
@@ -183,6 +185,13 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   // in flight (its `agentId/skillId` key) — mirrors pendingDelete / adopting.
   const [pendingDismiss, setPendingDismiss] = useState<AuthoredSkillListing | null>(null);
   const [dismissing, setDismissing] = useState<string | null>(null);
+  // The last skill asked about, so each confirmation's words stay put while it closes.
+  const lastDelete = useRef(pendingDelete);
+  if (pendingDelete !== null) lastDelete.current = pendingDelete;
+  const shownDelete = pendingDelete ?? lastDelete.current;
+  const lastDismiss = useRef(pendingDismiss);
+  if (pendingDismiss !== null) lastDismiss.current = pendingDismiss;
+  const shownDismiss = pendingDismiss ?? lastDismiss.current;
 
   // ---- data loads -------------------------------------------------------
 
@@ -308,18 +317,15 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   }
 
   async function handleDelete(skillId: string, scope: 'user' | 'workspace'): Promise<void> {
-    try {
-      if (scope === 'user') {
-        await deleteUserSkill(skillId);
-      } else {
-        await deleteCatalogSkill(skillId);
-      }
-      setPendingDelete(null);
-      await Promise.all([refreshInstalled(agentId), refreshCatalog(), refreshOwn()]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
+    // A failure is shown inside the confirmation and leaves the skill listed.
+    if (scope === 'user') {
+      await deleteUserSkill(skillId);
+    } else {
+      await deleteCatalogSkill(skillId);
     }
+    await Promise.all([refreshInstalled(agentId), refreshCatalog(), refreshOwn()]);
+    // The row that opened the confirmation is gone; park focus on the page's primary action.
+    focusAfterRemoval('[data-return-focus="skills-create"]');
   }
 
   async function handleShare(skillId: string): Promise<void> {
@@ -407,14 +413,11 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   async function handleDismiss(a: AuthoredSkillListing): Promise<void> {
     const key = `${a.agentId}/${a.skillId}`;
     setDismissing(key);
-    setError(null);
     try {
       await deleteAuthoredSkill(a.agentId, a.skillId);
-      setPendingDismiss(null);
       await refreshOwn();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDismiss(null);
+      // The draft's row is gone; park focus on the page's primary action.
+      focusAfterRemoval('[data-return-focus="skills-create"]');
     } finally {
       setDismissing(null);
     }
@@ -533,11 +536,11 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
               <TabsTrigger variant="quiet" value="browse">Browse</TabsTrigger>
               <TabsTrigger variant="quiet" value="review">Review</TabsTrigger>
             </TabsList>
-            <Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button>
+            <Button data-return-focus="skills-create" onClick={() => setEditor({ mode: 'create-user' })}>Create</Button>
           </div>
         ) : (
           <>
-            <SettingsActions><Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
+            <SettingsActions><Button data-return-focus="skills-create" onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
             {agents.length > 1 && (
               <div className="flex items-center justify-end gap-3">
                 <Select value={agentId} onValueChange={setAgentId}>
@@ -999,76 +1002,33 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
         </Dialog>
       )}
 
-      {pendingDelete !== null && (
-        <Dialog open onOpenChange={(o) => { if (!o) setPendingDelete(null); }}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {pendingDelete.scope === 'user'
-                  ? 'Delete skill?'
-                  : 'Remove from workspace?'}
-              </DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              {pendingDelete.scope === 'user' ? (
-                <>
-                  Delete <code className="font-mono">{pendingDelete.skillId}</code>?
-                  This cannot be undone. If it's attached to any agent, the delete
-                  will fail and you'll need to remove it first.
-                </>
-              ) : (
-                <>
-                  Remove <code className="font-mono">{pendingDelete.skillId}</code>{' '}
-                  from the workspace catalog? It will no longer be available for
-                  anyone to install.
-                </>
-              )}
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDelete(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() =>
-                  void handleDelete(pendingDelete.skillId, pendingDelete.scope)
-                }
-              >
-                {pendingDelete.scope === 'user' ? 'Delete' : 'Remove'}
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        title={shownDelete?.scope === 'workspace' ? 'Remove from workspace?' : 'Delete skill?'}
+        description={
+          shownDelete?.scope === 'workspace'
+            ? `Remove ${shownDelete.skillId} from the workspace catalog? It will no longer be available for anyone to install.`
+            : `Delete ${shownDelete?.skillId ?? ''}? This cannot be undone. If it's attached to any agent, the delete will fail and you'll need to remove it first.`
+        }
+        confirmLabel={shownDelete?.scope === 'workspace' ? 'Remove' : 'Delete'}
+        errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+        onConfirm={() => (pendingDelete ? handleDelete(pendingDelete.skillId, pendingDelete.scope) : undefined)}
+      />
 
-      {pendingDismiss !== null && (
-        <Dialog open onOpenChange={(o) => { if (!o) setPendingDismiss(null); }}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Delete authored draft?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Delete the draft{' '}
-              <code className="font-mono">{pendingDismiss.skillId}</code> authored
-              by your agent? This removes the draft only — it doesn't touch any
-              editable copy you've already adopted. If the agent authors it again
-              later, it can re-appear here.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDismiss(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                disabled={dismissing !== null}
-                onClick={() => void handleDismiss(pendingDismiss)}
-              >
-                Delete
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDismiss !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDismiss(null);
+        }}
+        title="Delete authored draft?"
+        description={`Delete the draft ${shownDismiss?.skillId ?? ''} authored by your agent? This removes the draft only — it doesn't touch any editable copy you've already adopted. If the agent authors it again later, it can re-appear here.`}
+        confirmLabel="Delete"
+        errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+        onConfirm={() => (pendingDismiss ? handleDismiss(pendingDismiss) : undefined)}
+      />
 
       {pendingShare !== null && (
         <Dialog

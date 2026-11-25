@@ -47,7 +47,7 @@ import { MessageSquare } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Button as AxButton } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, ConfirmAction } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -402,14 +402,12 @@ const DIALOG_COPY = {
   connected: {
     title: 'Disconnect Slack?',
     body: "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
-    keep: 'Keep connected',
     confirm: 'Disconnect',
   },
   // Nobody could reach an agent yet, so the words are about the app we started.
   pending: {
     title: 'Stop connecting Slack?',
     body: "We'll delete the Slack app we started. You can connect again any time.",
-    keep: 'Keep going',
     confirm: 'Stop connecting',
   },
 } as const;
@@ -426,54 +424,31 @@ function DisconnectDialog({
   kind: keyof typeof DIALOG_COPY;
 } & Actions) {
   const copy = DIALOG_COPY[kind];
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const close = (next: boolean) => {
-    if (busy) return;
-    setError(null);
-    onOpenChange(next);
-  };
 
   async function confirm() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
     try {
       const { tokenKept } = await disconnectSlack();
       onDisconnected(tokenKept);
     } catch (err) {
-      setBusy(false);
+      // The state moved under us: re-read it and let the dialog close.
       if (slackStateChanged(err)) {
         onChanged();
         return;
       }
-      setError(slackErrorCopy(err).message);
+      throw err;
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogDescription>{copy.body}</DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <AxButton intent="secondary" onClick={() => close(false)} disabled={busy}>
-            {copy.keep}
-          </AxButton>
-          <AxButton intent="secondary" onClick={() => void confirm()} busy={busy}>
-            {copy.confirm}
-          </AxButton>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={open}
+      onOpenChange={onOpenChange}
+      title={copy.title}
+      description={copy.body}
+      confirmLabel={copy.confirm}
+      errorMessage={(err) => slackErrorCopy(err).message}
+      onConfirm={confirm}
+    />
   );
 }
 

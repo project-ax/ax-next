@@ -80,6 +80,11 @@ describe('AllowedSitesPanel', () => {
     const allRow = await screen.findByTestId('allowed-site-all.example.com');
     fireEvent.click(within(allRow).getByRole('button', { name: 'Remove' }));
 
+    // Asks first: nothing is revoked until the dialog's "Remove site" is clicked.
+    const dialog = await screen.findByRole('dialog', { name: 'Remove all.example.com?' });
+    expect(connLib.setSiteAgents).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove site' }));
+
     await waitFor(() =>
       expect(connLib.setSiteAgents).toHaveBeenCalledWith(
         'all.example.com',
@@ -87,6 +92,17 @@ describe('AllowedSitesPanel', () => {
         expect.arrayContaining(['a1', 'a2']),
       ),
     );
+    expect(connLib.setSiteAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel on the remove dialog revokes nothing', async () => {
+    render(<AllowedSitesPanel />);
+    const allRow = await screen.findByTestId('allowed-site-all.example.com');
+    fireEvent.click(within(allRow).getByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove all.example.com?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(connLib.setSiteAgents).not.toHaveBeenCalled();
   });
 
   it('disables Add when the user has no agents', async () => {
@@ -131,6 +147,7 @@ describe('AllowedSitesPanel', () => {
       render(<AllowedSitesPanel />);
       const row = await screen.findByTestId('allowed-site-all.example.com');
       fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove site' }));
       await waitFor(() =>
         expect(connLib.setSiteAgents).toHaveBeenCalledWith('all.example.com', [], ['a1']),
       );

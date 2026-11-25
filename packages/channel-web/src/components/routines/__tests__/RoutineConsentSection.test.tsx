@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { RoutineConsentSection } from '../RoutineConsentSection';
 import { routineApi } from '@/lib/routines';
 vi.mock('@/lib/routines', () => ({
@@ -70,21 +70,35 @@ describe('routine permissions', () => {
     window.addEventListener('ax:routine-permissions-changed', changed);
     render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this permission?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
+    // The failure is said inside the confirmation, and the grant stays.
     expect(
-      await screen.findByText(
+      await within(dialog).findByText(
         'We couldn’t revoke task permission. Try again.',
       ),
     ).toBeVisible();
-    expect(screen.getByText('Always allow for this agent')).toBeVisible();
+    expect(screen.getByText('Always allow for this agent')).toBeInTheDocument();
     vi.mocked(routineApi.getConsent).mockResolvedValue({
       enabled: false,
       revision: 'v2',
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
     expect(
       await screen.findByText('Ask before creating or editing tasks'),
     ).toBeVisible();
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     window.removeEventListener('ax:routine-permissions-changed', changed);
+  });
+  it('asks before revoking: nothing is called until the dialog is confirmed, then once', async () => {
+    vi.mocked(routineApi.getConsent).mockResolvedValue({ enabled: true, revision: 'v1' });
+    vi.mocked(routineApi.revokeConsent).mockResolvedValue({ enabled: false, revision: 'v2' });
+    render(<RoutineConsentSection agentId="a" agentName="Caveman" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this permission?' });
+    expect(routineApi.revokeConsent).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(routineApi.revokeConsent).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });

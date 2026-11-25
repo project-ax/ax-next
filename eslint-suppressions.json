@@ -216,10 +216,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 27
+      "count": 25
     },
     "ax-ui/no-raw-elements": {
-      "count": 22
+      "count": 20
     }
   },
   "packages/channel-web/src/components/admin/AgentToolPicker.tsx": {
@@ -235,18 +235,18 @@
       "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 14
+      "count": 8
     },
     "ax-ui/no-raw-elements": {
-      "count": 12
+      "count": 6
     }
   },
   "packages/channel-web/src/components/admin/AuthoredSkillsSection.tsx": {
     "ax-ui/no-classname": {
-      "count": 24
+      "count": 23
     },
     "ax-ui/no-raw-elements": {
-      "count": 22
+      "count": 21
     }
   },
   "packages/channel-web/src/components/admin/BrandingTab.tsx": {
@@ -298,10 +298,10 @@
       "count": 4
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 4
     }
   },
   "packages/channel-web/src/components/admin/KeyForm.tsx": {
@@ -615,10 +615,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 22
+      "count": 21
     },
     "ax-ui/no-raw-elements": {
-      "count": 22
+      "count": 21
     }
   },
   "packages/channel-web/src/components/routines/RoutinesTab.tsx": {
@@ -731,10 +731,10 @@
   },
   "packages/channel-web/src/components/settings/ConnectorsTab.tsx": {
     "ax-ui/no-classname": {
-      "count": 16
+      "count": 13
     },
     "ax-ui/no-raw-elements": {
-      "count": 17
+      "count": 14
     }
   },
   "packages/channel-web/src/components/settings/DirectoryListingRow.tsx": {
@@ -837,10 +837,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 54
+      "count": 47
     },
     "ax-ui/no-raw-elements": {
-      "count": 50
+      "count": 46
     }
   },
   "packages/channel-web/src/components/settings/SkillsTab.tsx": {
