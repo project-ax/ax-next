@@ -52,6 +52,7 @@ import { getConnector, type Connector, type ConnectorSummary } from '@/lib/conne
 import { logRequestFailure } from '@/lib/http';
 import { timeAgo } from '@/lib/workspace-time';
 import { DirectoryListingRow } from './DirectoryListingRow';
+import { Heading, Stack, Text } from '@project-ax/ui';
 
 /** How long the box waits for typing to pause before it searches. */
 export const SEARCH_DEBOUNCE_MS = 300;
@@ -446,8 +447,8 @@ export function ConnectorDirectory({
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col items-start gap-1">
+    <Stack gap="xl">
+      <Stack gap="xs" align="start">
         <Button
           type="button"
           variant="ghost"
@@ -459,10 +460,10 @@ export function ConnectorDirectory({
           <ChevronLeft data-icon="inline-start" aria-hidden="true" />
           Connectors
         </Button>
-        <h2 className="text-base font-medium">Find a connector</h2>
-        <p className="text-sm text-muted-foreground">{INTRO}</p>
-      </div>
+        <Heading>Find a connector</Heading>
+        <Text role="meta">{INTRO}</Text>
+      </Stack>
       {body}
-    </div>
+    </Stack>
   );
 }

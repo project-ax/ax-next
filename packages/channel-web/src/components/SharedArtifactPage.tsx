@@ -16,9 +16,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyContent, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
-import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
+import { Divider, Text } from '@project-ax/ui';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { sharedArtifactsApi } from '@/lib/shared-artifacts-api';
@@ -118,16 +118,16 @@ function Shared({ code, artifact }: { code: string; artifact: SharedArtifactView
       <header className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="truncate text-xl font-semibold text-foreground">{artifact.title}</h1>
-          <p className="text-sm text-muted-foreground">
+          <Text role="meta">
             Made by {artifact.agentName ?? 'an agent'} · updated {when}
-          </p>
+          </Text>
         </div>
         <Button type="button" variant="outline" disabled={downloading} onClick={download}>
           {downloading ? <Spinner data-icon="inline-start" /> : <Download data-icon="inline-start" aria-hidden />}
           Download
         </Button>
       </header>
-      <Separator />
+      <Divider />
       <main className="flex min-h-0 flex-1 flex-col">
         <ArtifactPreview
           preview={artifactPreviewKind(artifact.preview)}
