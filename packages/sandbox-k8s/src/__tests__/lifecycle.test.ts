@@ -325,4 +325,88 @@ describe('lifecycle.diagnoseServiceSidecars (TASK-160)', () => {
     });
     expect(diagnosis).toEqual({ service: 'kafka', reason: 'startup failed' });
   });
+
+  describe('a service that never became ready (TASK-1240)', () => {
+    const diagnose = (
+      api: ReturnType<typeof makeMockK8sApi>,
+      initContainerStatuses: NonNullable<MockPod['status']>['initContainerStatuses'],
+    ) =>
+      diagnoseServiceSidecars({
+        api,
+        pod: { status: { phase: 'Pending', initContainerStatuses } },
+        podName: 'p',
+        namespace: 'n',
+        podLog: silentLogger,
+      });
+
+    it('names the first service that is running but never became ready', async () => {
+      const api = makeMockK8sApi();
+      const diagnosis = await diagnose(api, [
+        { name: 'sdk-scaffold', ready: true, state: { terminated: { exitCode: 0 } } },
+        { name: 'svc-redis', ready: true, started: true, state: { running: {} } },
+        { name: 'svc-postgres', ready: false, started: false, state: { running: {} } },
+        { name: 'svc-seed', ready: false, state: { waiting: { reason: 'PodInitializing' } } },
+      ]);
+      expect(diagnosis).toEqual({ service: 'postgres', reason: 'not ready in time' });
+      expect(api.logReads).toHaveLength(0);
+    });
+
+    it('never blames a container that has started', async () => {
+      const diagnosis = await diagnose(makeMockK8sApi(), [
+        { name: 'svc-redis', ready: false, started: true, state: { running: {} } },
+      ]);
+      expect(diagnosis).toBeUndefined();
+    });
+
+    it('names a service whose image cannot be pulled', async () => {
+      const diagnosis = await diagnose(makeMockK8sApi(), [
+        { name: 'svc-kafka', ready: false, state: { waiting: { reason: 'ImagePullBackOff' } } },
+      ]);
+      expect(diagnosis).toEqual({ service: 'kafka', reason: 'image pull failed' });
+    });
+
+    it.each(['PodInitializing', 'ContainerCreating'])(
+      'stays generic while the pod is still setting up (%s)',
+      async (reason) => {
+        const diagnosis = await diagnose(makeMockK8sApi(), [
+          { name: 'svc-kafka', ready: false, state: { waiting: { reason } } },
+        ]);
+        expect(diagnosis).toBeUndefined();
+      },
+    );
+
+    it('never blames a service when a non-service init container is stuck', async () => {
+      const diagnosis = await diagnose(makeMockK8sApi(), [
+        { name: 'chown-user-files', ready: false, started: false, state: { running: {} } },
+        { name: 'svc-redis', ready: false, state: { waiting: { reason: 'PodInitializing' } } },
+      ]);
+      expect(diagnosis).toBeUndefined();
+    });
+
+    it('a finished job is not what the pod waits on', async () => {
+      const diagnosis = await diagnose(makeMockK8sApi(), [
+        { name: 'svc-seed', state: { terminated: { exitCode: 0 } } },
+        { name: 'svc-web', ready: false, started: false, state: { running: {} } },
+      ]);
+      expect(diagnosis).toEqual({ service: 'web', reason: 'not ready in time' });
+    });
+
+    it('a crashing sidecar still wins', async () => {
+      const api = makeMockK8sApi();
+      const diagnosis = await diagnose(api, [
+        { name: 'svc-redis', ready: false, started: false, state: { running: {} } },
+        { name: 'svc-postgres', state: { waiting: { reason: 'CrashLoopBackOff' } } },
+      ]);
+      expect(diagnosis).toEqual({ service: 'postgres', reason: 'startup failed' });
+    });
+
+    it('all ready: no diagnosis', async () => {
+      const diagnosis = await diagnose(makeMockK8sApi(), [
+        { name: 'sdk-scaffold', ready: true, state: { terminated: { exitCode: 0 } } },
+        { name: 'svc-redis', ready: true, started: true, state: { running: {} } },
+        { name: 'svc-postgres', ready: true, started: true, state: { running: {} } },
+      ]);
+      expect(diagnosis).toBeUndefined();
+    });
+  });
 });
