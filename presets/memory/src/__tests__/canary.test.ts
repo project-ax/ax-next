@@ -786,6 +786,82 @@ describe('@ax/preset-memory canary', () => {
     expect(badBody.status).toBe(400);
   });
 
+  // TASK-1248: the real `agents:resolve` answer (`shared: true`) reaches real
+  // memory, channel-web and channel-slack. Without that, a sharee's k8s session
+  // failed at `memory_mounts_failed`.
+  it('a personal agent shared with everyone: someone it is shared with uses its memory, and loses it when it is Just me again (TASK-1248)', async () => {
+    const value = `canary-1248-${randomBytes(4).toString('hex')}`;
+    const audience = `/admin/agents/${aliceAgentId}/audience`;
+    const slack = `/settings/slack/${aliceAgentId}`;
+    const recallFor = (user: string) =>
+      apiJson('POST', `/api/workspace/agents/${aliceAgentId}/memory/recall`, user, { query: value });
+    const found = (r: { json: Record<string, unknown> }): boolean =>
+      (r.json.statements as Array<{ value: string }>).some((s) => s.value === value);
+    const mounts = () =>
+      bus.call<unknown, { mounts: Array<Record<string, unknown>> }>(
+        'sandbox:memory-mounts',
+        ctxFor(aliceAgentId, BOB),
+        { owner: { agentId: aliceAgentId, userId: BOB } },
+      );
+
+    try {
+      // Just me: nothing is connected in this canary, so even Alice's own agent reads
+      // `no-workspace`; `canManage` is what tells a Just-me agent from a shared one.
+      expect(await apiJson('GET', slack, ALICE)).toMatchObject({
+        status: 200,
+        json: { state: 'no-workspace', canManage: false },
+      });
+      expect((await apiJson('GET', slack, BOB)).status).toBe(404);
+
+      expect((await apiJson('PUT', audience, ALICE, { kind: 'everyone' })).status).toBe(200);
+
+      // Bob can open it, and it says its memory is shared.
+      const detail = await apiJson('GET', `/api/workspace/agents/${aliceAgentId}`, BOB);
+      expect(detail.status).toBe(200);
+      expect((detail.json.memory as { factsVisibility?: string }).factsVisibility).toBe('team');
+
+      // What Bob teaches it, Alice's recall finds.
+      const remembered = await apiJson(
+        'POST',
+        `/api/workspace/agents/${aliceAgentId}/memory/remember`,
+        BOB,
+        { about: 'user', relation: 'likes', value },
+      );
+      expect(remembered.status).toBe(200);
+      const alices = await recallFor(ALICE);
+      expect(alices.status).toBe(200);
+      expect(found(alices)).toBe(true);
+      expect(found(await recallFor(BOB))).toBe(true);
+
+      // Bob's session gets the agent's /memory mount (the k8s `memory_mounts_failed` gap).
+      const bobMounts = await mounts();
+      expect(bobMounts.mounts).toHaveLength(1);
+      expect(bobMounts.mounts[0]).toMatchObject({ role: 'memory', mountPath: '/memory', readOnly: true });
+
+      // An owner manages a shared agent's bot; the person it is shared with can only look.
+      expect(await apiJson('GET', slack, ALICE)).toMatchObject({
+        status: 200,
+        json: { state: 'no-workspace', canManage: true },
+      });
+      expect(await apiJson('GET', slack, BOB)).toMatchObject({
+        status: 200,
+        json: { state: 'no-workspace', canManage: false },
+      });
+    } finally {
+      // Whatever happened above, narrowing is the last step and every other case sees a Just-me agent.
+      const narrowed = await apiJson('PUT', audience, ALICE, { kind: 'just-me' });
+      expect(narrowed.status).toBe(200);
+    }
+
+    // Just me again: Bob is out, and Alice no longer sees what he taught it.
+    expect([403, 404]).toContain((await recallFor(BOB)).status);
+    await expect(mounts()).rejects.toMatchObject({ code: 'forbidden' });
+    const afterNarrow = await recallFor(ALICE);
+    expect(afterNarrow.status).toBe(200);
+    expect(found(afterNarrow)).toBe(false);
+    expect((await apiJson('GET', slack, BOB)).status).toBe(404);
+  });
+
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
