@@ -399,7 +399,9 @@ walk (§6.5). A behavior change that goes *beyond* these rules goes to Needs Inp
 callers (CLAUDE.md "Half-Wired Code Policy"). So workstreams 1 and 2 interleave; there is no "build the whole
 library first" phase. The only exception is the foundation slice, whose consumer is channel-web's theme.
 
-Order (each step = one or a few PRs; each is a `(ds)` card):
+Order (each step = one or a few PRs; each is a `(ds)` card). The numbering is the logical order; the roadmap
+(`docs/superpowers/plans/2026-11-24-project-ax-ui-roadmap.md`) splits these into cards, and its dependency
+column, not this numbering, decides what runs in parallel:
 
 1. **Foundation:** scaffold `packages/ui`, tokens → `theme.css`/`ui.css`, contrast test, Storybook + axe +
    screenshot CI, lint plugin (error for new files, warn for unmigrated ones — see below), import boundary,
