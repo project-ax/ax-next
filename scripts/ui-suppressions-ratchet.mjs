@@ -32,13 +32,19 @@
 // would launder the entries: off + prune, then back on higher). There is no
 // in-PR waiver; changing this script is the reviewed way (CODEOWNERS).
 //
+// It also counts `eslint-disable` / `-next-line` / `-line` directives that name
+// an `ax-ui/` rule in tracked files under packages/channel-web/src, base vs
+// HEAD. Such a comment is a suppression the JSON file never sees, so the same
+// one-way rule applies: if the total rose, it fails and names the files.
+//
 // Usage:
 //   node scripts/ui-suppressions-ratchet.mjs <base-ref>
 //   BASE_SHA=<sha> node scripts/ui-suppressions-ratchet.mjs
 //
 // Exit codes:
 //   0  totals held or went down (or the base has no suppressions file)
-//   1  a rule's total went up, or a key names a missing path (all printed)
+//   1  a rule's total or the ax-ui disable-directive count went up, or a key
+//      names a missing path (all printed)
 //   2  usage error, or the base could not be resolved (fail CLOSED)
 import { spawnSync } from 'node:child_process';
 
@@ -99,6 +105,31 @@ function suppressScriptRules(ref) {
   return new Set(
     [...script.matchAll(/--suppress-rule[=\s]+(\S+)/g)].map((m) => m[1].replace(/^(["'])(.*)\1$/, '$2')),
   );
+}
+
+const DISABLE_DIR = 'packages/channel-web/src';
+const DISABLE_RE = /eslint-disable(?:-next-line|-line)?[^\n]*\bax-ui\//g;
+
+/**
+ * Per-file counts of `eslint-disable…` directives naming an `ax-ui/` rule in
+ * tracked files under channel-web's src at `ref`. A disable comment is a
+ * suppression the JSON file never sees, so it is ratcheted the same way.
+ */
+function disableCounts(ref) {
+  const out = new Map();
+  const r = spawnSync('git', ['grep', '-l', '-F', 'eslint-disable', ref, '--', DISABLE_DIR], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (r.status === 1) return out; // no matches
+  if (r.status !== 0) die(`git grep failed at ${ref}: ${(r.stderr ?? '').trim()}`);
+  for (const line of r.stdout.split('\n')) {
+    if (line === '') continue;
+    const file = line.slice(ref.length + 1); // "<ref>:<path>"
+    const n = (show(ref, file) ?? '').match(DISABLE_RE)?.length ?? 0;
+    if (n > 0) out.set(file, n);
+  }
+  return out;
 }
 
 /** `text` with // and /* *\/ comments blanked out; string literals are left alone. */
@@ -262,6 +293,24 @@ if (baseText === null) {
     problems.push(
       `${rule}: total went up — base ${b}, head ${h}. Frozen violations may only go down; ` +
         `fix the new ones instead of re-running lint:ui:suppress.`,
+    );
+  }
+}
+
+// eslint-disable directives naming an ax-ui rule: the total may only go down.
+{
+  const before = disableCounts(base);
+  const after = disableCounts('HEAD');
+  const sum = (m) => [...m.values()].reduce((a, n) => a + n, 0);
+  const b = sum(before);
+  const h = sum(after);
+  if (h > b) {
+    const rose = [...after]
+      .filter(([file, n]) => n > (before.get(file) ?? 0))
+      .map(([file, n]) => `${file} (${before.get(file) ?? 0} -> ${n})`);
+    problems.push(
+      `eslint-disable directives naming an ax-ui/ rule under ${DISABLE_DIR} went up — base ${b}, head ${h}: ` +
+        `${rose.join(', ')}. Fix the violation instead of disabling the rule.`,
     );
   }
 }

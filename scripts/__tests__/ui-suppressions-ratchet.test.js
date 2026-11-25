@@ -56,7 +56,7 @@ function supp(entries) {
 }
 
 /**
- * Commit `base` then `head` (each `{ suppressions?: object|null, script?: string, rules?: {rule: severity}, configText?: string, decoy?: string, message?: string, files?: string[] }`)
+ * Commit `base` then `head` (each `{ contents?: {path: text}, suppressions?: object|null, script?: string, rules?: {rule: severity}, configText?: string, decoy?: string, message?: string, files?: string[] }`)
  * and return { repo, baseSha }.
  */
 function repoWith(base, head) {
@@ -69,7 +69,7 @@ function repoWith(base, head) {
   const commit = (state, msg) => {
     for (const f of state.files ?? [A, B]) {
       mkdirSync(join(repo, dirname(f)), { recursive: true });
-      writeFileSync(join(repo, f), `// ${f}\n`);
+      writeFileSync(join(repo, f), state.contents?.[f] ?? `// ${f}\n`);
     }
     for (const f of state.remove ?? []) rmSync(join(repo, f), { force: true });
     writeFileSync(
@@ -468,6 +468,84 @@ describe('ui-suppressions-ratchet', () => {
       expect(r.status, raw).toBe(1);
       expect(r.out, raw).toContain('cannot be read');
     }
+  });
+
+  describe('eslint-disable directives naming ax-ui rules', () => {
+    const SUPP = { [A]: { 'ax-ui/no-style-prop': 2 } };
+    const DIS = '// eslint-disable-next-line ax-ui/no-classname -- legacy\n<div className="x" />\n';
+    const DIS2 = `${DIS}/* eslint-disable ax-ui/no-raw-elements */\n`;
+
+    it('a rise fails, naming the file', () => {
+      const { repo, baseSha } = repoWith(
+        { suppressions: SUPP, contents: { [A]: DIS } },
+        { suppressions: SUPP, contents: { [A]: DIS, [B]: '<p /> // eslint-disable-line ax-ui/no-raw-elements\n' } },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('eslint-disable');
+      expect(r.out).toContain('base 1, head 2');
+      expect(r.out).toContain(B);
+      expect(r.out).not.toContain(`${A} (`);
+    });
+
+    it('a second directive in the same file is a rise', () => {
+      const { repo, baseSha } = repoWith(
+        { suppressions: SUPP, contents: { [A]: DIS } },
+        { suppressions: SUPP, contents: { [A]: DIS2 } },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(A);
+    });
+
+    it('the same count passes, even moved between files', () => {
+      const { repo, baseSha } = repoWith(
+        { suppressions: SUPP, contents: { [A]: DIS } },
+        { suppressions: SUPP, contents: { [B]: DIS } },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('a fall passes', () => {
+      const { repo, baseSha } = repoWith(
+        { suppressions: SUPP, contents: { [A]: DIS2 } },
+        { suppressions: SUPP, contents: { [A]: DIS } },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('a comment mentioning ax-ui without a directive, or a directive for another rule, does not count', () => {
+      const { repo, baseSha } = repoWith(
+        { suppressions: SUPP },
+        {
+          suppressions: SUPP,
+          contents: {
+            [A]: '// ax-ui/no-classname flags this; see the roadmap\n// eslint-disable-next-line react/no-danger\n',
+            [B]: "const rule = 'ax-ui/no-raw-elements';\n",
+          },
+        },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('a directive outside packages/channel-web/src does not count', () => {
+      const other = 'packages/ui/src/X.tsx';
+      const { repo, baseSha } = repoWith(
+        { suppressions: SUPP },
+        { suppressions: SUPP, files: [A, B, other], contents: { [other]: DIS } },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('a rise counts even when the base has no suppressions file', () => {
+      const { repo, baseSha } = repoWith(
+        { suppressions: null },
+        { suppressions: SUPP, contents: { [A]: DIS } },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(A);
+    });
   });
 
   it('fails closed on an unresolvable base or none at all', () => {
