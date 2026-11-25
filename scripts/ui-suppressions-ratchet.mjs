@@ -30,7 +30,9 @@
 // but unreadable (or given twice, or in two matching blocks) fails closed. A
 // rule that has frozen entries may not go from 'error' to anything else (that
 // would launder the entries: off + prune, then back on higher). There is no
-// in-PR waiver; changing this script is the reviewed way (CODEOWNERS).
+// in-PR waiver. A downgrade is a design-system decision, made by editing this
+// script in a PR the design owner reviews (CODEOWNERS requests that review;
+// this script does not check who approved).
 //
 // It also counts `eslint-disable` / `-next-line` / `-line` directives that name
 // an `ax-ui/` rule in tracked files under packages/channel-web/src, base vs
@@ -259,8 +261,9 @@ if (baseText === null) {
     if (b > 0 && was === 'error' && now !== 'error') {
       problems.push(
         `${rule}: severity went from 'error' to '${now}' while ${b} violations are frozen. ` +
-          `Switching off a rule that still has frozen suppressions is a design-system decision: ` +
-          `do it by changing scripts/ui-suppressions-ratchet.mjs in a reviewed PR.`,
+          `Switching off a rule that still has frozen suppressions is a design-system decision, ` +
+          `made by editing scripts/ui-suppressions-ratchet.mjs in a PR the design owner reviews ` +
+          `(CODEOWNERS requests that review).`,
       );
     }
 

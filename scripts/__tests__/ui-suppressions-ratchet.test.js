@@ -309,7 +309,9 @@ describe('ui-suppressions-ratchet', () => {
     expect(r.status).toBe(1);
     expect(r.out).toContain('ax-ui/no-classname');
     expect(r.out).toContain('design-system decision');
-    expect(r.out).toContain('scripts/ui-suppressions-ratchet.mjs in a reviewed PR');
+    expect(r.out).toContain('editing scripts/ui-suppressions-ratchet.mjs in a PR the design owner reviews');
+    expect(r.out).toContain('CODEOWNERS requests that review');
+    expect(r.out).not.toContain('reviewed PR');
     expect(r.out).not.toContain('UI-Ratchet-Override');
   });
 
