@@ -346,6 +346,96 @@ describe('HookBus — service-boundary enforcement', () => {
       expect(thrown).toMatchObject({ name: 'PluginError', code: 'invalid-payload', hookName: `h-${bad}` });
     }
   });
+
+  // TASK-1240: a hook whose legitimate duration grows with what was asked
+  // (`sandbox:open-session` on k8s waits longer per dev service) derives its
+  // timeout from each call's input. The bus still enforces it, and a policy
+  // that cannot produce a valid timeout fails the call: it never becomes a
+  // call with no timer.
+  it('derives the timeout from each call\'s input when timeoutMs is a function (TASK-1240)', async () => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 10_000 });
+    bus.registerService(
+      'policy',
+      'p',
+      (_c, i) => new Promise<string>((r) => setTimeout(() => r('done'), (i as { takes: number }).takes)),
+      { timeoutMs: (i) => (i as { limit: number }).limit },
+    );
+    await expect(bus.call('policy', silentCtx(), { takes: 200, limit: 20 })).rejects.toMatchObject({
+      name: 'PluginError', code: 'timeout', hookName: 'policy', message: expect.stringContaining('exceeded 20ms'),
+    });
+    await expect(bus.call('policy', silentCtx(), { takes: 20, limit: 500 })).resolves.toBe('done');
+  });
+
+  it('hands the timeout policy the exact call input, once per call (TASK-1240)', async () => {
+    const policy = vi.fn((_input: unknown) => 1_000);
+    const bus = new HookBus();
+    bus.registerService('policy', 'p', async () => 'ok', { timeoutMs: policy });
+    const input = { services: ['db'] };
+    await expect(bus.call('policy', silentCtx(), input)).resolves.toBe('ok');
+    expect(policy).toHaveBeenCalledTimes(1);
+    expect(policy.mock.calls[0]![0]).toBe(input);
+
+    // Asked again on the next call, never remembered from the first. And
+    // `callJoined` goes through `call`, so it asks exactly once as well.
+    const next = { services: [] };
+    await expect(bus.callJoined('policy', silentCtx(), next)).resolves.toBe('ok');
+    expect(policy).toHaveBeenCalledTimes(2);
+    expect(policy.mock.calls[1]![0]).toBe(next);
+  });
+
+  it('a timeout policy that throws fails the call (invalid-payload) and never runs the handler (TASK-1240)', async () => {
+    const bug = new Error('policy bug');
+    const handler = vi.fn(async () => 'ran');
+    const bus = new HookBus();
+    bus.registerService('policy', 'p', handler, {
+      timeoutMs: () => {
+        throw bug;
+      },
+    });
+    const err = await bus.call('policy', silentCtx(), {}).catch((e: unknown) => e);
+    expect(err).toMatchObject({ name: 'PluginError', code: 'invalid-payload', plugin: 'p', hookName: 'policy' });
+    expect((err as Error).cause).toBe(bug);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([Number.NaN, -1, Number.NEGATIVE_INFINITY])(
+    'a timeout policy returning %s fails the call loudly, never a silent no-timeout (TASK-1240)',
+    async (bad) => {
+      const handler = vi.fn(async () => 'ran');
+      const bus = new HookBus();
+      bus.registerService('policy', 'p', handler, { timeoutMs: () => bad });
+      await expect(bus.call('policy', silentCtx(), {})).rejects.toMatchObject({
+        name: 'PluginError', code: 'invalid-payload', plugin: 'p', hookName: 'policy',
+      });
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a timeout policy returning a non-number fails the call too (TASK-1240)', async () => {
+    // Only reachable past the type system (a cast, plain JS), and exactly the
+    // shape that would slip through a check written as "not NaN, not
+    // negative": `withTimeout` reads a non-finite delay as "no timer".
+    for (const bad of [undefined, '500']) {
+      const handler = vi.fn(async () => 'ran');
+      const bus = new HookBus();
+      bus.registerService('policy', 'p', handler, { timeoutMs: () => bad as unknown as number });
+      await expect(bus.call('policy', silentCtx(), {})).rejects.toMatchObject({
+        name: 'PluginError', code: 'invalid-payload', plugin: 'p', hookName: 'policy',
+      });
+      expect(handler).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a timeout policy may return Infinity (no timeout for that call) (TASK-1240)', async () => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 10 });
+    bus.registerService(
+      'slow',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 40)),
+      { timeoutMs: () => Number.POSITIVE_INFINITY },
+    );
+    await expect(bus.call('slow', silentCtx(), {})).resolves.toBe('done');
+  });
 });
 
 describe('HookBus — a rejection’s extra fields survive the fire', () => {
@@ -625,6 +715,20 @@ describe('HookBus — stall watch (TASK-505)', () => {
       typeof silentCtx
     >;
     await expect(bus.call('slow', loggerless, {})).resolves.toBe('done');
+  });
+
+  it('arms no stall watch for a call its timeout policy refuses (TASK-1240)', async () => {
+    // The policy runs before the watch. A watch armed first and never settled
+    // would leave a `_stalled` with no `_slow`, which reads as a hang, for a
+    // call that already failed.
+    const logged: Logged[] = [];
+    const bus = new HookBus({ stallWarnMs: 0 });
+    bus.registerService('policy', 'p', async () => 'ran', { timeoutMs: () => Number.NaN });
+    await expect(bus.call('policy', capturingCtx(logged), {})).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+    await tick(20);
+    expect(logged).toEqual([]);
   });
 });
 

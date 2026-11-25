@@ -153,6 +153,8 @@ Two primitives, deliberately distinct.
 > });
 > ```
 > See `docs/plans/2026-05-20-hook-bus-enforcement-design.md`.
+>
+> - `timeoutMs` may also be a function of the call's input (`(input: unknown) => number`, TASK-1240), for a hook whose legitimate duration grows with what was asked (`sandbox:open-session` on k8s waits longer per dev service). It runs before the handler on the raw input, so it must be total; a throw or an invalid result fails the call with `invalid-payload`.
 
 ### `hooks.fire(event, ctx, payload) → modified` — subscriber hooks
 

@@ -55,6 +55,25 @@ export type SubscriberHandler<P = unknown> = (
 export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
 
 /**
+ * A service hook's own timeout (TASK-1240): a fixed number, or a policy that
+ * derives one from each call's input.
+ *
+ * Use the policy only when the hook's legitimate duration grows with what the
+ * call asks for. `sandbox:open-session` on k8s waits longer per dev service,
+ * so its backstop stays at the usual few minutes for a service-less spawn and
+ * still outlasts the plugin's own readiness deadline for a large stack.
+ *
+ * The bus runs the policy synchronously, once per `call()`, on the RAW input,
+ * before the stall watch and before the handler. Nothing has validated that
+ * input yet, so the policy must be total. Its result is held to the same rule
+ * as a fixed value, and `Infinity` is still the only "no timeout". A policy
+ * that throws, or returns NaN, a negative, `-Infinity` or a non-number, fails
+ * the call with `invalid-payload` and the handler never runs. It never becomes
+ * a call with no timer.
+ */
+export type ServiceTimeoutMs = number | ((input: unknown) => number);
+
+/**
  * How long a single service call or subscriber may stay in flight before the
  * bus says so, out loud, WHILE IT IS STILL RUNNING.
  *
@@ -88,11 +107,11 @@ export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
  * their own `stallWarnMs` at registration.
  *
  * "Normal", not "possible", is the test, and it is why a long declared
- * `timeoutMs` alone does not earn an override. `sandbox:open-session` declares
- * 300 s too, but its warm path is a couple of seconds and that 300 s is a
- * worst-case backstop for a cold image pull. A spawn still running at 15 s is
- * a fact worth a line, so it keeps the default on purpose — see the note at
- * its registration.
+ * `timeoutMs` alone does not earn an override. `sandbox:open-session` on k8s
+ * declares a timeout that grows with the dev services a session asks for
+ * (minutes when it has some), but a warm service-less spawn takes seconds, so
+ * a spawn still running at 15 s is a fact worth a line. It keeps the default
+ * on purpose — see the note at its registration.
  */
 export const DEFAULT_STALL_WARN_MS = 15_000;
 
@@ -122,7 +141,7 @@ interface RegisteredService {
   plugin: string;
   handler: ServiceHandler;
   returns?: ZodType;
-  timeoutMs?: number;
+  timeoutMs?: ServiceTimeoutMs;
   stallWarnMs?: number;
 }
 
@@ -286,13 +305,61 @@ export class HookBus {
     };
   }
 
+  /**
+   * The timeout for ONE call: what the hook's policy says for this input
+   * (TASK-1240), or its fixed value, or the bus default when it declared
+   * neither.
+   *
+   * A policy that throws or returns an invalid value fails the call here,
+   * before anything has started. Falling back to the default instead would
+   * quietly loosen or tighten the backstop, and handing `withTimeout` a NaN
+   * would quietly remove it. See `ServiceTimeoutMs`.
+   */
+  private resolveTimeoutMs(
+    registered: RegisteredService,
+    hookName: string,
+    input: unknown,
+  ): number {
+    const declared = registered.timeoutMs;
+    if (typeof declared !== 'function') return declared ?? this.defaultServiceTimeoutMs;
+    let resolved: number;
+    try {
+      resolved = declared(input);
+    } catch (err) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: registered.plugin,
+        hookName,
+        message: `service hook '${hookName}' timeoutMs policy threw: ${err instanceof Error ? err.message : String(err)}`,
+        cause: err,
+      });
+    }
+    if (!isValidTimeoutMs(resolved)) {
+      // A non-number (reachable only past the types) is named by its type.
+      // Printing one can throw (a Symbol, an object with no `toString`) or
+      // say nothing ('[object Object]').
+      const got = typeof resolved === 'number' ? String(resolved) : typeof resolved;
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: registered.plugin,
+        hookName,
+        message: `service hook '${hookName}' timeoutMs policy must return a non-negative finite number or Infinity (got ${got})`,
+      });
+    }
+    return resolved;
+  }
+
   registerService<I, O>(
     hookName: string,
     plugin: string,
     handler: ServiceHandler<I, O>,
     opts?: {
       returns?: ZodType<O>;
-      timeoutMs?: number;
+      /**
+       * This hook's timeout, overriding the bus default: a number, or a policy
+       * that derives one from each call's input. See `ServiceTimeoutMs`.
+       */
+      timeoutMs?: ServiceTimeoutMs;
       /**
        * Override the bus-wide stall threshold for THIS hook. Pass it when the
        * hook legitimately runs long — a whole turn, a whole generation — so the
@@ -314,7 +381,9 @@ export class HookBus {
     const record: RegisteredService = { plugin, handler: handler as ServiceHandler };
     if (opts?.returns !== undefined) record.returns = opts.returns as ZodType;
     if (opts?.timeoutMs !== undefined) {
-      if (!isValidTimeoutMs(opts.timeoutMs)) {
+      // A fixed value is checked once, here. A policy can only be checked per
+      // call, against what it returns (`resolveTimeoutMs`).
+      if (typeof opts.timeoutMs !== 'function' && !isValidTimeoutMs(opts.timeoutMs)) {
         throw new PluginError({
           code: 'invalid-payload',
           plugin,
@@ -386,7 +455,9 @@ export class HookBus {
         message: `no plugin registered for service hook '${hookName}'`,
       });
     }
-    const timeoutMs = registered.timeoutMs ?? this.defaultServiceTimeoutMs;
+    // Before the stall watch and the handler: a call whose policy refuses it
+    // never starts, so there is nothing to watch and nothing to wait for.
+    const timeoutMs = this.resolveTimeoutMs(registered, hookName, input);
     // Report a call that is TAKING too long while it still is, not only if it
     // eventually blows the timeout. See DEFAULT_STALL_WARN_MS.
     const settleStallWatch = this.watchStall(
