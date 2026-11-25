@@ -86,8 +86,9 @@ interface Props {
    * because there would be nothing to jump to.
    */
   sourceOf: (turnId: string) => TurnSource | undefined;
-  /** Open the settings Memory section. */
-  onSeeAll: () => void;
+  /** Open the settings Memory section. Left out for someone the agent is only
+   *  shared with (TASK-1247): they have no settings to open. */
+  onSeeAll?: (() => void) | undefined;
   /**
    * Drawn as the side panel's whole Memory view (opened from the chat's
    * brain icon) rather than as one block among others: it starts open, and
@@ -210,11 +211,13 @@ export function LearnedInChat({
       <section aria-labelledby="learned-in-chat-title" className="flex flex-col gap-2 px-2 py-2">
         <h3 id="learned-in-chat-title" className="text-xs font-medium">{LEARNED_TITLE}</h3>
         <Note>{LEARNED_NOTHING_NEW}</Note>
-        <div className="flex justify-end">
-          <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[11.5px]" onClick={onSeeAll}>
-            {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
-          </Button>
-        </div>
+        {onSeeAll && (
+          <div className="flex justify-end">
+            <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[11.5px]" onClick={onSeeAll}>
+              {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
+            </Button>
+          </div>
+        )}
       </section>
     );
   }
@@ -307,17 +310,19 @@ export function LearnedInChat({
               return line;
             }}
           />
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-[11.5px]"
-              onClick={onSeeAll}
-            >
-              {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
-            </Button>
-          </div>
+          {onSeeAll && (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-[11.5px]"
+                onClick={onSeeAll}
+              >
+                {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
+              </Button>
+            </div>
+          )}
         </CollapsibleContent>
       </Collapsible>
       <MemoryFixDialog
