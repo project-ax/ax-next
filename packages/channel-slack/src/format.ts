@@ -1,5 +1,6 @@
 import { clampCodeUnits } from '@ax/core';
 import { replaceSurfaceRewriters } from '@ax/core/surface-text';
+import { MAX_DETAIL_CHARS } from '@ax/core/turn-error-text';
 import { cleanChannelName } from './label.js';
 import { PROMPT_SUBJECT_MAX, SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.js';
 
@@ -9,7 +10,8 @@ import { PROMPT_SUBJECT_MAX, SENDER_NAME_MAX, STATUS_TITLE_MAX } from './limits.
  * own. Replies go out as Markdown (`markdown_text`), which Slack renders
  * itself, so nothing here converts formatting; it only takes away the power
  * to ping people or a whole channel and keeps every message under Slack's
- * caps.
+ * caps. A failed turn's detail line also loses the power to link or to start
+ * a Markdown block (`cleanDetailLine`).
  *
  * And for text coming IN: `inboundText`, so the agent reads a message as
  * its sender typed it, with the people it mentions named (TASK-1190), and
@@ -172,6 +174,44 @@ export function cleanStatusTitle(text: string): string {
  */
 export function cleanPromptSubject(raw: string): string {
   return cleanLine(raw, PROMPT_SUBJECT_MAX);
+}
+
+/**
+ * A failed turn's detail line (TASK-1250): the host's one line of specifics
+ * under the turn's failure sentence, such as which dev service couldn't write
+ * where, or which connectors need signing in again. Untrusted: a dev
+ * service's path comes from the service's own log output, and a connector's
+ * name from whoever named it.
+ *
+ * `neutralizeSlackControls` alone isn't enough here. It marks a `<` only
+ * before `!`, `@`, `#` or `&`, so `<http://…|…>` and `[x](y)` would go out
+ * whole, and a reply is `markdown_text`, where `[Sign in again](https://…)`
+ * is a link whose words hide where it goes. (TASK-1093 noted that
+ * `<url|label>` shows literally there, yet `<!channel>` broadcast there in
+ * TASK-1134's walk: which of its own tokens Slack reads is Slack's to
+ * change.) So every `<` and every `](` gets a zero-width space after it too,
+ * and no Slack token, autolink, HTML tag, or Markdown link or image can form.
+ * A bare URL stays clickable: it shows its own target, as it does in model
+ * text.
+ *
+ * The order matters. The cut comes first, at the web's cap (the shared
+ * MAX_DETAIL_CHARS; never half an emoji), so Slack shows no more of the line
+ * than the web does. Every mark comes after the cut and is judged on the text
+ * that goes out: a cut can't leave a broadcast word unmarked (`@heres` cut to
+ * `@here`) or cut a mark off. Last, one more mark at the start, so the line
+ * can't start a Markdown block (a heading, a quote, a list, or a `---` that
+ * would turn the sentence above into a heading). Every mark is invisible, so
+ * the line reads as written; each is one code unit past the cap.
+ *
+ * Empty when nothing printable is left. Not idempotent, like `cleanLine`: a
+ * second pass turns the marks into spaces. The reply's own
+ * `neutralizeSlackControls` pass changes nothing in it.
+ */
+export function cleanDetailLine(raw: string): string {
+  const line = replaceSurfaceRewriters(clampCodeUnits(raw, MAX_DETAIL_CHARS)).replace(/\s+/g, ' ').trim();
+  if (line.length === 0) return '';
+  const unlinked = line.replace(/</g, `<${ZERO_WIDTH_SPACE}`).replace(/\]\(/g, `]${ZERO_WIDTH_SPACE}(`);
+  return ZERO_WIDTH_SPACE + neutralizeSlackControls(unlinked);
 }
 
 function isHighSurrogate(code: number): boolean {
