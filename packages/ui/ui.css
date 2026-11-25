@@ -228,6 +228,10 @@
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-action) / var(--tw-bg-opacity, 1))
 }
+.ax-bg-muted {
+    --tw-bg-opacity: 1;
+    background-color: hsl(var(--ax-bg-muted) / var(--tw-bg-opacity, 1))
+}
 .ax-bg-overlay {
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-bg-overlay) / var(--tw-bg-opacity, 1))

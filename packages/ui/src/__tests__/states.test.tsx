@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { Inbox } from 'lucide-react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { AsyncState, EmptyState, Notice } from '../index.js';
+import { AsyncState, EmptyState, Notice, Stack } from '../index.js';
 
 afterEach(cleanup);
 
@@ -52,6 +52,22 @@ describe('Notice', () => {
   });
 });
 
+describe('Notice body', () => {
+  it('accepts block content without invalid-nesting console errors', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    render(
+      <Notice tone="info">
+        <Stack>
+          <div data-testid="block">block body</div>
+        </Stack>
+      </Notice>,
+    );
+    expect(screen.getByRole('status').contains(screen.getByTestId('block'))).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
 describe('EmptyState', () => {
   it('title is a heading', () => {
     render(<EmptyState title="Nothing here" description="Add one" icon={Inbox} />);
@@ -88,6 +104,19 @@ describe('AsyncState', () => {
       return n;
     };
     expect([count('rows'), count('lines'), count('block')]).toEqual([3, 3, 1]);
+  });
+
+  it('skeleton bars use the muted fill (surface-raised is invisible on the light page)', () => {
+    for (const shape of ['rows', 'lines', 'block'] as const) {
+      const { container, unmount } = render(<AsyncState status="loading" skeleton={shape} loadingLabel="l" />);
+      const bars = container.querySelectorAll('.ax-animate-pulse');
+      expect(bars.length).toBeGreaterThan(0);
+      for (const b of bars) {
+        expect(b.classList.contains('ax-bg-muted')).toBe(true);
+        expect(b.classList.contains('ax-bg-surface-raised')).toBe(false);
+      }
+      unmount();
+    }
   });
 
   it('error with onRetry shows exactly "Try again"; without onRetry shows no button', () => {

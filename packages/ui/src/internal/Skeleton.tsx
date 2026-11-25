@@ -2,7 +2,7 @@ import { cx } from './cx.js';
 
 export type SkeletonShape = 'rows' | 'lines' | 'block';
 
-const BAR = 'ax-bg-surface-raised ax-rounded-md ax-animate-pulse motion-reduce:ax-animate-none';
+const BAR = 'ax-bg-muted ax-rounded-md ax-animate-pulse motion-reduce:ax-animate-none';
 
 // Placeholder shaped like the content it stands in for (rule 7). Decorative: AsyncState supplies the accessible label.
 export function Skeleton({ shape }: { shape: SkeletonShape }) {

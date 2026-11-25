@@ -43,7 +43,7 @@ export function Notice({ tone, title, children, action, onDismiss }: NoticeProps
       <Icon aria-hidden="true" className="ax-h-lg ax-w-lg ax-shrink-0 ax-mt-xs" />
       <div className="ax-flex ax-min-w-none ax-flex-1 ax-flex-col ax-items-start ax-gap-sm">
         {title ? <p className="ax-m-none ax-break-words ax-text-body-strong ax-font-sans">{title}</p> : null}
-        {children ? <p className="ax-m-none ax-break-words ax-text-meta ax-font-sans">{children}</p> : null}
+        {children ? <div className="ax-m-none ax-break-words ax-text-meta ax-font-sans">{children}</div> : null}
         {action ? (
           <Button intent="secondary" size="sm" onClick={action.onClick}>
             {action.label}
