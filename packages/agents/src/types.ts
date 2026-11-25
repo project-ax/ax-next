@@ -427,9 +427,11 @@ export interface RotateWebhookTokenOutput {
 /**
  * Idempotent token access: returns the existing token if one is already set,
  * generates + stores + returns a fresh one if null. Same ACL as
- * `agents:rotate-webhook-token` (owner OR admin). Used by privileged
- * in-process callers (e.g., the routines sync subscriber) that need a stable
- * token without forcing a rotation.
+ * `agents:rotate-webhook-token`: a personal agent's creator (never a co-owner,
+ * TASK-1246: the token fires routines that run as the creator), a team
+ * agent's team admin, or a workspace admin. Used by privileged in-process
+ * callers (e.g., the routines sync subscriber) that need a stable token
+ * without forcing a rotation.
  */
 export interface EnsureWebhookTokenInput {
   actor: Actor;
@@ -462,10 +464,11 @@ export interface ListPersonalOwnersOutput {
 // Single-connector edits, each ONE row-locked read-modify-write so two
 // concurrent edits of the same agent never lose a write. These two hooks are
 // the ONLY write path for `connectorAttachments` (TASK-799). ACL (TASK-765,
-// widened by TASK-798): the agent's owner (a personal agent) / a team admin (a
-// team agent) / a workspace admin — the same answer
-// agents:can-manage-connectors gives. A plain team member may not attach
-// or detach anything: whatever a team agent reaches, every member's runs reach.
+// widened by TASK-798): the agent's owners (a personal agent: its creator and
+// co-owners, TASK-1246) / a team admin (a team agent) / a workspace admin —
+// the same answer agents:can-manage-connectors gives. Someone a personal agent
+// is only shared with may not attach or detach anything, nor may a plain team
+// member: whatever a team agent reaches, every member's runs reach.
 // TASK-827 — there is no keyMode guard on attach: a shared-key (workspace)
 // connector is one anyone may add to their own agent. Attaching grants no read
 // of the shared key by itself; @ax/connectors decides that at read time
@@ -503,16 +506,20 @@ export interface DetachConnectorOutput {
 // --- agents:can-manage-connectors (TASK-765, renamed TASK-803) ---------------
 //
 // Can `actor` change this agent's connectors — attach, detach, exclude a
-// legacy-owned connector? (Signing in ON the agent was asked here from TASK-798
-// until TASK-813 moved it to agents:can-set-shared-credential, below.) The
-// same predicate `agents:attach-connector` / `agents:detach-connector`
-// enforce, exposed so a caller can show the affordance only to someone it
-// will work for. (TASK-803: renamed from its TASK-765 name, which was about
-// exclusions only, once the question grew to this.) `allowed` is `false` —
-// not an error — for an actor who cannot reach the agent at all, and that is
-// the ONLY way this hook says no. A rejection is a fault, not a denial: a
-// caller fails closed on it but must not report it to the person as
-// "forbidden". `not-found` when the agent does not exist.
+// legacy-owned connector? Yes for the agent's owners (a personal agent: its
+// creator and co-owners, TASK-1246), a team admin (a team agent) and a
+// workspace admin. On a personal agent it also answers who may choose the
+// sign-in or key stored ON it (its owners). (Signing in ON a team agent was
+// asked here from TASK-798 until TASK-813 moved it to
+// agents:can-set-shared-credential, below.) The same predicate
+// `agents:attach-connector` / `agents:detach-connector` enforce, exposed so a
+// caller can show the affordance only to someone it will work for. (TASK-803:
+// renamed from its TASK-765 name, which was about exclusions only, once the
+// question grew to this.) `allowed` is `false` — not an error — for an actor
+// who cannot reach the agent at all, and that is the ONLY way this hook says
+// no. A rejection is a fault, not a denial: a caller fails closed on it but
+// must not report it to the person as "forbidden". `not-found` when the agent
+// does not exist.
 
 export interface CanManageConnectorsInput {
   actor: Actor;
@@ -532,10 +539,14 @@ export interface CanManageConnectorsOutput {
 // is a team agent, the actor can reach it, and teams:is-member says they are a
 // member with role `admin`. `actor.isAdmin` is IGNORED — a workspace admin who
 // is not a team admin gets `false` (unlike agents:can-manage-connectors). A
-// personal agent is always `false`: it has no shared credential (its sign-in or
-// key is stored on the person). A missing teams plugin is `false`; any other
-// lookup fault rejects, and callers treat a rejection as "no" (fail closed).
-// `not-found` when the agent does not exist.
+// personal agent is always `false` here, though its sign-in or key is stored
+// ON THE AGENT too (agent scope since slice 5:
+// connectors/src/credential-plan.ts), so everyone who can use the agent spends
+// it, its audience included. Choosing it there is
+// agents:can-manage-connectors' question (the agent's owners), not this one.
+// A missing teams plugin is `false`; any other lookup fault rejects, and
+// callers treat a rejection as "no" (fail closed). `not-found` when the agent
+// does not exist.
 
 export interface CanSetSharedCredentialInput {
   actor: Actor;
@@ -566,10 +577,13 @@ export interface CanSetSharedCredentialOutput {
 //
 // ACL on all three: `input.agentId` must equal `ctx.agentId`, and `ctx.userId`
 // must reach the agent (`checkAccess`: one of a personal agent's owners or its
-// audience (TASK-1246), or a member of the owning team). Malformed input is
-// `invalid-payload`, an unknown agent `not-found`, an unreachable one
-// `forbidden`; every other answer is an outcome, never a throw, so callers
-// map it without parsing error text.
+// audience (TASK-1246), or a member of the owning team). A person's `set`
+// (`author` absent or 'person') on a personal agent also needs `ctx.userId` to
+// be one of its owners: its audience reads it but doesn't change it. The
+// agent's own write (`author: 'agent'`) needs only the reach. Malformed input
+// is `invalid-payload`, an unknown agent `not-found`, an unreachable one (or a
+// person's write by a non-owner) `forbidden`; every other answer is an
+// outcome, never a throw, so callers map it without parsing error text.
 //
 // Storage-agnostic: `revision` is an opaque change counter (callers only hand
 // it back as `expectedRevision`), not a version id; no field names a file,
