@@ -498,6 +498,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
     ).toBeInTheDocument();
     expect(within(transcript()).getByText('Checking the queue.')).toBeInTheDocument();
     const alert = line.closest('[role="alert"]') as HTMLElement;
+    expect(alert.className).toContain('destructive');
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(checkinMock).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(screen.queryByText(REFRESH_FAILED)).toBeNull());

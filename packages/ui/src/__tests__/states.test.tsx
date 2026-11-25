@@ -69,9 +69,10 @@ describe('Notice body', () => {
 });
 
 describe('EmptyState', () => {
-  it('title is a heading', () => {
+  it('renders the title as text, not a heading', () => {
     render(<EmptyState title="Nothing here" description="Add one" icon={Inbox} />);
-    expect(screen.getByRole('heading', { name: 'Nothing here' })).toBeTruthy();
+    expect(screen.getByText('Nothing here')).toBeTruthy();
+    expect(screen.queryByRole('heading')).toBeNull();
     expect(screen.getByText('Add one')).toBeTruthy();
   });
 
@@ -151,7 +152,7 @@ describe('AsyncState', () => {
         <p>content</p>
       </AsyncState>,
     );
-    expect(screen.getByRole('heading', { name: 'No sites yet' })).toBeTruthy();
+    expect(screen.getByText('No sites yet')).toBeTruthy();
     expect(screen.queryByText('content')).toBeNull();
     unmount();
     const r = render(<AsyncState status="empty" skeleton="rows" loadingLabel="l" />);

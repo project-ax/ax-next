@@ -7,7 +7,7 @@ import {
   Link as LinkIcon,
   Terminal,
 } from 'lucide-react';
-import { AsyncState, EmptyState, Text } from '@project-ax/ui';
+import { AsyncState, Text } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -428,10 +428,10 @@ function Permissions({
   return (
     <div className="flex flex-col">
       {rows.length === 0 && (
-        <EmptyState
-          title={`Nothing here describes ${name}'s reach yet`}
-          description="That means we can't tell you — not that there isn't any."
-        />
+        <Text role="meta">
+          Nothing here describes {name}&apos;s reach yet. That means we
+          can&apos;t tell you — not that there isn&apos;t any.
+        </Text>
       )}
       {rows.length > 0 && (
         <div className="flex flex-col">
@@ -544,14 +544,11 @@ function Grants({
   return (
     <div className="flex flex-col">
       {rows.length === 0 && moved === 0 && (
-        <EmptyState
-          title="Nothing yet"
-          description={
-            shared
-              ? 'Nobody has granted anything beyond the rules above.'
-              : "You haven't granted anything beyond the rules above."
-          }
-        />
+        <Text role="meta">
+          {shared
+            ? 'Nothing yet — nobody has granted anything beyond the rules above.'
+            : "Nothing yet — you haven't granted anything beyond the rules above."}
+        </Text>
       )}
       {rows.map((row, i) => (
         <GrantLine

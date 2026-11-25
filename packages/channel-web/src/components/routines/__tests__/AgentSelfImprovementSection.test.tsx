@@ -149,6 +149,6 @@ describe('AgentSelfImprovementSection', () => {
   it('shows the empty state when the user has no agents', () => {
     seedAgents([]);
     render(<AgentSelfImprovementSection />);
-    expect(screen.getByRole('heading', { name: 'No agents yet' })).toBeInTheDocument();
+    expect(screen.getByText('No agents yet')).toBeInTheDocument();
   });
 });

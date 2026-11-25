@@ -851,8 +851,11 @@ describe('AgentSettings — "Granted by you"', () => {
     renderConnectorsSettings();
     await openGrants();
 
-    expect(await screen.findByRole('heading', { name: 'Nothing yet' })).toBeTruthy();
-    expect(screen.getByText('Nobody has granted anything beyond the rules above.')).toBeTruthy();
+    expect(
+      await screen.findByText(
+        'Nothing yet — nobody has granted anything beyond the rules above.',
+      ),
+    ).toBeTruthy();
   });
 
   it('a personal agent: the heading and notes are unchanged', async () => {
@@ -879,8 +882,11 @@ describe('AgentSettings — "Granted by you"', () => {
   it('a personal agent with nothing granted keeps its own empty note', async () => {
     renderConnectorsSettings();
     await openGrants();
-    expect(await screen.findByRole('heading', { name: 'Nothing yet' })).toBeTruthy();
-    expect(screen.getByText(/You haven.t granted anything beyond the rules above\./)).toBeTruthy();
+    expect(
+      await screen.findByText(
+        /Nothing yet — you haven.t granted anything beyond the rules above\./,
+      ),
+    ).toBeTruthy();
   });
 });
 

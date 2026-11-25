@@ -103,7 +103,7 @@ describe('AdminSettings — Teams tab', () => {
     const loading = screen.getByRole('status');
     expect(loading).toHaveAttribute('aria-busy', 'true');
     expect(loading).toHaveTextContent('Loading teams…');
-    expect(await screen.findByRole('heading', { name: 'No teams yet' })).toBeTruthy();
+    expect(await screen.findByText('No teams yet')).toBeTruthy();
     expect(screen.queryByRole('status')).toBeNull();
   });
 });

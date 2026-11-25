@@ -60,7 +60,7 @@ describe('AuthProvidersTab', () => {
   it('shows the empty state when no providers are configured', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     render(<AuthProvidersTab />);
-    expect(await screen.findByRole('heading', { name: 'No identity providers configured' })).toBeTruthy();
+    expect(await screen.findByText('No identity providers configured')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Add provider/i })).toBeTruthy();
   });
 
@@ -74,7 +74,7 @@ describe('AuthProvidersTab', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('We couldn’t load your sign-in methods.');
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByRole('heading', { name: 'No identity providers configured' })).toBeTruthy();
+    expect(await screen.findByText('No identity providers configured')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
   });
 

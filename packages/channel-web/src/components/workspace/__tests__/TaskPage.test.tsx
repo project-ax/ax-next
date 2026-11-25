@@ -555,6 +555,7 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'We couldn’t confirm the check-in started. Try again, and it won’t start twice.',
     );
+    expect(alert.className).toContain('destructive');
     await settled(check, 2);
 
     fireEvent.click(check);
@@ -765,6 +766,7 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'This task changed while you had it open. We’ve loaded the latest, so try again.',
     );
+    expect(alert.className).toContain('destructive');
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Zero open tickets, edited' }),
     ).toBeInTheDocument();
@@ -830,6 +832,7 @@ describe('TaskPage (TASK-910)', () => {
     fireEvent.click(screen.getByRole('button', { name: press }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(says);
+    expect(alert.className).toContain('destructive');
     // `RoutineApiError.message` speaks of routines; this page never says it.
     expect(document.body.textContent).not.toMatch(/routine/i);
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
@@ -853,6 +856,7 @@ describe('TaskPage (TASK-910)', () => {
     fireEvent.click(check);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('We couldn’t start the check-in. Try again.');
+    expect(alert.className).toContain('destructive');
     await settled(check, 2);
 
     fireEvent.click(check);

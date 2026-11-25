@@ -16,7 +16,7 @@ import { ChevronRight } from 'lucide-react';
  * `useConversationMemory`, owned by `AgentView` (see that hook for why).
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { EmptyState, Text } from '@project-ax/ui';
+import { Text } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -205,7 +205,7 @@ export function LearnedInChat({
     return (
       <section aria-labelledby="learned-in-chat-title" className="flex flex-col gap-2 px-2 py-2">
         <h3 id="learned-in-chat-title" className="text-xs font-medium">{LEARNED_TITLE}</h3>
-        <EmptyState title={LEARNED_NOTHING_NEW} />
+        <Text role="meta">{LEARNED_NOTHING_NEW}</Text>
         <div className="flex justify-end">
           <Button type="button" variant="link" size="sm" className="h-auto p-0 text-[11.5px]" onClick={onSeeAll}>
             {LEARNED_SEE_ALL}<ChevronRight data-icon="inline-end" aria-hidden="true" />
@@ -408,7 +408,7 @@ function Body({
       )}
       {failed && <Text role="meta">{LEARNED_SAVE_FAILED}</Text>}
       {rows.length === 0 && !paused && !extracting && !failed && (
-        <EmptyState title={LEARNED_NOTHING_NEW} />
+        <Text role="meta">{LEARNED_NOTHING_NEW}</Text>
       )}
       {visible.length > 0 && (
         <ul className="flex flex-col gap-2.5">
