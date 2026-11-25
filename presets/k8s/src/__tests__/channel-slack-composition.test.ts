@@ -159,7 +159,9 @@ const ADA: SlackPerson = { slackId: 'U07ADA00001', name: 'Ada', email: 'ada@cano
 const MEL: SlackPerson = { slackId: 'U07MEL00001', name: 'Mel', email: 'mel@canopyworks.com' };
 /** A full member with no AX account and an address off every approved domain. */
 const EVE: SlackPerson = { slackId: 'U07EVE00001', name: 'Eve', email: 'eve@evil.example' };
-const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL, EVE];
+/** Has two personal agents and picks the newer one for her DMs (TASK-1238). No other test uses her. */
+const DANA: SlackPerson = { slackId: 'U07DANA0001', name: 'Dana', email: 'dana@canopyworks.com' };
+const PEOPLE = [ALICE, BOB, CAROL, ADA, MEL, EVE, DANA];
 const SUPPORT_CHANNEL = 'C07SUPPORT1';
 /** A private channel the agent's own bot is invited to: Slack describes it with `is_private: true` (TASK-1203). */
 const PRIVATE_CHANNEL = 'C07PRIVATE01';
@@ -173,6 +175,7 @@ const AX_USERS: Record<string, string> = {
   [BOB.email]: 'usr_bob',
   [ADA.email]: 'usr_ada',
   [MEL.email]: 'usr_mel',
+  [DANA.email]: 'usr_dana',
 };
 
 // ── Captured routes, the actor, and the turns agent:invoke saw ──────────────
@@ -855,7 +858,7 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
 
   it('connect, then DMs reach each sender\'s own agent, then disconnect clears the vault', async () => {
     // 1. Two people, each with a personal agent. Alice's second, newer agent
-    //    is never picked: a DM goes to the oldest.
+    //    is never picked: with no choice made, a DM goes to the oldest.
     const aliceAgent = await personalAgent('usr_alice');
     const bobAgent = await personalAgent('usr_bob');
     // A later millisecond, so "oldest" is decided by the date, not the id.
@@ -2189,5 +2192,70 @@ describe('@ax/preset-k8s channel-slack composition (TASK-1093)', () => {
     }
     expect(await readConfigToken('usr_ada')).toMatch(/^error:/);
     expect(await query('SELECT channel_id FROM channel_slack_v1_channels')).toEqual([]);
+  });
+
+  it('a person picks which personal agent answers their Slack DMs; deleting it sends them back to the oldest (TASK-1238)', async () => {
+    // 1. Dana has two personal agents with one name, the second newer.
+    const danaOld = await personalAgent('usr_dana');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const danaNew = await personalAgent('usr_dana');
+    const installId = await connectWorkspace();
+    invokes.length = 0;
+    const choices = () => query("SELECT agent_id FROM channel_slack_v1_dm_agents WHERE user_id = 'usr_dana'");
+    const settings = (): Promise<Captured> =>
+      callRoute('GET', '/settings/slack/:agentId', {
+        params: { agentId: danaNew },
+        rawPath: `/settings/slack/${danaNew}`,
+      });
+    const danaCtx = () => makeAgentContext({ sessionId: 'test', agentId: '', userId: 'usr_dana' });
+    try {
+      actor = { id: 'usr_dana', isAdmin: false };
+
+      // 2. Before any choice, the newer agent's settings say another agent answers.
+      expect(await settings()).toMatchObject({
+        status: 200,
+        body: { state: 'personal-agent', answersDms: false, dmAgentName: 'usr_dana agent' },
+      });
+
+      // 3. "Use this one instead" stores the choice, and the settings now say so.
+      const chose = await callRoute('POST', '/settings/slack/:agentId/dm-agent', {
+        params: { agentId: danaNew },
+        rawPath: `/settings/slack/${danaNew}/dm-agent`,
+        body: jsonBody({}),
+      });
+      expect(chose).toMatchObject({ status: 200 });
+      expect(await settings()).toMatchObject({
+        status: 200,
+        body: { state: 'personal-agent', answersDms: true, dmAgentName: null },
+      });
+      expect(await choices()).toEqual([{ agent_id: danaNew }]);
+
+      // 4. Her next DM goes to the agent she chose.
+      let mark = slackCalls.length;
+      expect((await deliver(installId, dm(DANA, 'D07DANADM01', nextTs(), 'Which of you is this?'))).status).toBe(200);
+      await dmTurnCalls(mark);
+      expect(invokes[invokes.length - 1]!.ctx).toMatchObject({ userId: 'usr_dana', agentId: danaNew });
+
+      // 5. Deleting the chosen agent forgets the choice (agents:deleted).
+      await theBus!.call('agents:delete', danaCtx(), { actor: { userId: 'usr_dana', isAdmin: false }, agentId: danaNew });
+      await vi.waitFor(async () => expect(await choices()).toEqual([]), { timeout: 10_000 });
+
+      // 6. A DM in a new thread goes back to her oldest agent.
+      mark = slackCalls.length;
+      expect((await deliver(installId, dm(DANA, 'D07DANADM01', nextTs(), 'And now?'))).status).toBe(200);
+      await dmTurnCalls(mark);
+      expect(invokes[invokes.length - 1]!.ctx).toMatchObject({ userId: 'usr_dana', agentId: danaOld });
+
+      // 7. The read rule, end to end: a stale row naming the deleted agent is never followed.
+      await query("INSERT INTO channel_slack_v1_dm_agents (user_id, agent_id) VALUES ('usr_dana', $1)", [danaNew]);
+      mark = slackCalls.length;
+      expect((await deliver(installId, dm(DANA, 'D07DANADM01', nextTs(), 'One more'))).status).toBe(200);
+      await dmTurnCalls(mark);
+      expect(invokes[invokes.length - 1]!.ctx).toMatchObject({ userId: 'usr_dana', agentId: danaOld });
+    } finally {
+      actor = null;
+      await query("DELETE FROM channel_slack_v1_dm_agents WHERE user_id = 'usr_dana'");
+      await theBus!.call('agents:delete', danaCtx(), { actor: { userId: 'usr_dana', isAdmin: false }, agentId: danaOld });
+    }
   });
 });
