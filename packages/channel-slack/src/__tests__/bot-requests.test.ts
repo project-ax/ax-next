@@ -864,7 +864,7 @@ describe('list', () => {
     expect(await gone.approve({ as: GRACE })).toEqual({ status: 409, body: { error: 'agent-gone' } });
   });
 
-  it('only an answer about this agent, as a team agent, names it', async () => {
+  it('only an answer about this agent, as a shared agent, names it', async () => {
     // An answer about another agent.
     const other = world();
     await seedShared(other);
@@ -872,12 +872,32 @@ describe('list', () => {
     other.people.agents.set(SUPPORT.id, { ...SUPPORT, id: 'agt_someone_else', displayName: 'Someone Else' });
     expect((await other.list(GRACE)).requests[0]).toMatchObject({ agentName: 'A team agent', teamName: null });
 
-    // A personal agent (Ada's own), which no ask could have opened.
+    // A Just-me personal agent (Ada's own), which no ask could have opened.
     const personal = world();
     await seedShared(personal);
     await seedRequest(personal, { agentId: PERSONAL.id });
     expect((await personal.list(GRACE)).requests[0]).toMatchObject({ agentName: 'A team agent', teamName: null });
     expect(personal.teams.asked).toEqual([]);
+
+    // Ada's own agent once she shares it with everyone (TASK-1248): named as she, its owner, sees it. Its
+    // owner is a person, never a team, so no team is asked for or named.
+    const shared = world();
+    await seedShared(shared);
+    shared.people.agents.set(PERSONAL.id, { ...PERSONAL, audience: 'everyone' });
+    await seedRequest(shared, { agentId: PERSONAL.id });
+    expect((await shared.list(GRACE)).requests).toEqual([
+      {
+        requestId: REQUEST,
+        botName: BOT_NAME,
+        agentName: 'Ada Own',
+        teamName: null,
+        requestedBy: 'Ada Lovelace',
+        requestedAt: '2026-11-13T12:00:00.000Z',
+      },
+    ]);
+    expect(shared.people.inputs('agents:resolve')).toEqual([{ agentId: PERSONAL.id, userId: ADA }]);
+    expect(shared.teams.asked).toEqual([]);
+    expect(shared.lines).toEqual([]);
   });
 
   it('without @ax/teams, teamName is null and nothing else changes', async () => {

@@ -1,14 +1,22 @@
-import { PluginError, type HookBus } from '@ax/core';
+import { PluginError, isOwnerlessId, type HookBus } from '@ax/core';
 
 export interface FakeAgent {
   id: string;
   displayName: string;
   visibility: 'personal' | 'team';
   ownerType: 'user' | 'team';
-  /** A user id for a personal agent, a team id for a team agent. */
+  /** A user id for a personal agent (its creator), a team id for a team agent. */
   ownerId: string;
   /** When it was made. Default: one fixed instant shared by every agent. */
   createdAt?: Date;
+  /**
+   * A personal agent's audience (TASK-1246): `everyone` admits any person.
+   * Default `just-me`, which `shareWith` turns into a list naming whoever it
+   * names. Ignored on a team agent.
+   */
+  audience?: 'just-me' | 'everyone';
+  /** A personal agent's other owners, beside its creator (TASK-1246). Ignored on a team agent. */
+  coOwners?: string[];
 }
 
 type Role = 'admin' | 'member';
@@ -23,19 +31,26 @@ const STAMP = new Date('2026-10-01T00:00:00.000Z');
  * `resolveAgent`, `assertWriteAllowed`, `sharedCredentialSetAllowed`,
  * `listForUser`; acl.ts `checkAccess`; scope.ts `scopedAgents`):
  *
- *   resolve        missing → `not-found`; personal: only its owner; team: any
- *                  member of the owning team; anyone else → `forbidden`. The
- *                  answer is the whole agent record, as the real one returns.
+ *   resolve        missing → `not-found`; personal: its owners (its creator
+ *                  and `coOwners`) and its audience (`everyone`: any non-empty
+ *                  id that isn't an owner-less stand-in, where the real one
+ *                  also asks auth that it is an AX account; a list: whoever
+ *                  `shareWith` names); team: any member of the owning team;
+ *                  anyone else → `forbidden`. The answer is the whole agent
+ *                  record, as the real one returns it: `shared` (a team
+ *                  agent, or a personal agent whose audience isn't
+ *                  `just-me`), a personal agent's `audience`, and `isOwner`
+ *                  for the user asked about (always false on a team agent).
  *   can-set-…      missing → `not-found`; `{ allowed: false }` for an actor
  *                  who can't write the agent (a workspace admin always can);
  *                  then true only for a TEAM agent and the actor's team role
- *                  `admin`. `actor.isAdmin` never grants it.
- *   list-for-user  the user's own personal agents and every agent owned by a
- *                  team in `teamIds`, newest first. Like the real one it takes
- *                  `teamIds` on trust: the caller asks @ax/teams for them
- *                  (`teamsOf` is that answer). A personal agent `shareWith`
- *                  names the user for is listed too, `isOwner` false, and
- *                  `resolve` admits them.
+ *                  `admin`. `actor.isAdmin` never grants it, and no personal
+ *                  agent's owner ever gets it.
+ *   list-for-user  the personal agents the user can use (as `resolve` admits
+ *                  them) and every agent owned by a team in `teamIds`, newest
+ *                  first, each with `isOwner` for the user. Like the real one
+ *                  it takes `teamIds` on trust: the caller asks @ax/teams for
+ *                  them (`teamsOf` is that answer).
  *
  * `workspaceAdminsMayManage` models a later agents rule that WOULD let a
  * workspace admin set a team agent's shared credential (as
@@ -53,14 +68,29 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
   const faults = new Map<string, unknown>();
   const answers = new Map<string, unknown>();
 
-  /** A personal agent's audience beyond its owner (TASK-1246): agent id → user ids it is shared with. */
+  /** A personal agent's list audience (TASK-1246): agent id → user ids it is shared with. */
   const sharedWith = new Map<string, Set<string>>();
   const isSharedWith = (agent: FakeAgent, userId: string): boolean => sharedWith.get(agent.id)?.has(userId) === true;
+
+  /** A personal agent's whole audience, as the real one stores it: `everyone`, a list `shareWith` made, or `just-me`. */
+  const audienceOf = (agent: FakeAgent): 'just-me' | 'everyone' | 'list' => {
+    if (agent.audience === 'everyone') return 'everyone';
+    return (sharedWith.get(agent.id)?.size ?? 0) > 0 ? 'list' : 'just-me';
+  };
+  /** Its creator or a co-owner (TASK-1246). Nobody owns a team agent. */
+  const isOwnerOf = (agent: FakeAgent, userId: string): boolean =>
+    agent.ownerType === 'user' && (agent.ownerId === userId || (agent.coOwners ?? []).includes(userId));
+  /** Someone a personal agent's audience admits, owner or not. */
+  const inAudience = (agent: FakeAgent, userId: string): boolean => {
+    const audience = audienceOf(agent);
+    if (audience === 'everyone') return userId !== '' && !isOwnerlessId(userId);
+    return audience === 'list' && isSharedWith(agent, userId);
+  };
 
   const roleOf = (teamId: string, userId: string): Role | undefined => teams.get(teamId)?.get(userId);
   const canSee = (agent: FakeAgent, userId: string): boolean =>
     agent.visibility === 'personal'
-      ? agent.ownerType === 'user' && (agent.ownerId === userId || isSharedWith(agent, userId))
+      ? agent.ownerType === 'user' && (isOwnerOf(agent, userId) || inAudience(agent, userId))
       : agent.ownerType === 'team' && roleOf(agent.ownerId, userId) !== undefined;
   const notFound = (hookName: string, agentId: string): PluginError =>
     new PluginError({ code: 'not-found', plugin: PLUGIN, hookName, message: `agent '${agentId}' not found` });
@@ -70,19 +100,29 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     if (fault !== undefined) throw fault;
   };
 
-  /** The whole agent record, as @ax/agents returns it. */
-  const record = (agent: FakeAgent) => ({
-    ...agent,
-    allowedTools: [],
-    mcpConfigIds: [],
-    model: 'default-model',
-    runner: 'claude-sdk',
-    skillAttachments: [],
-    connectorAttachments: [],
-    connectorExclusions: [],
-    createdAt: agent.createdAt ?? STAMP,
-    updatedAt: STAMP,
-  });
+  /**
+   * The whole agent record, as @ax/agents returns it: `shared` always, a
+   * personal agent's `audience`, and never `coOwners` (the real one's
+   * returns schema has no such key).
+   */
+  const record = (agent: FakeAgent) => {
+    const { audience: _audience, coOwners: _coOwners, ...rest } = agent;
+    const personal = agent.visibility === 'personal';
+    return {
+      ...rest,
+      ...(personal ? { audience: audienceOf(agent) } : {}),
+      shared: !personal || audienceOf(agent) !== 'just-me',
+      allowedTools: [],
+      mcpConfigIds: [],
+      model: 'default-model',
+      runner: 'claude-sdk',
+      skillAttachments: [],
+      connectorAttachments: [],
+      connectorExclusions: [],
+      createdAt: agent.createdAt ?? STAMP,
+      updatedAt: STAMP,
+    };
+  };
 
   bus.registerService('agents:resolve', PLUGIN, async (_ctx, raw) => {
     enter('agents:resolve', raw);
@@ -97,7 +137,7 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
         message: `agent '${agentId}' not accessible to user '${userId}'`,
       });
     }
-    return { agent: record(agent) };
+    return { agent: { ...record(agent), isOwner: isOwnerOf(agent, userId) } };
   });
 
   bus.registerService('agents:list-for-user', PLUGIN, async (_ctx, raw) => {
@@ -105,13 +145,11 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     const { userId, teamIds = [] } = raw as { userId: string; teamIds?: string[] };
     // TASK-1246: a personal agent merely shared with the user is listed too, with `isOwner` false.
     const listed = [...agents.values()].filter((a) =>
-      a.ownerType === 'user' ? a.ownerId === userId || isSharedWith(a, userId) : teamIds.includes(a.ownerId),
+      a.ownerType === 'user' ? isOwnerOf(a, userId) || inAudience(a, userId) : teamIds.includes(a.ownerId),
     );
     // Added in age order, so the newest is last.
     return {
-      agents: listed
-        .reverse()
-        .map((a) => ({ ...record(a), isOwner: a.ownerType === 'user' && a.ownerId === userId })),
+      agents: listed.reverse().map((a) => ({ ...record(a), isOwner: isOwnerOf(a, userId) })),
     };
   });
 
@@ -144,7 +182,11 @@ export function fakeAgents(bus: HookBus, o: { workspaceAdminsMayManage?: boolean
     addAgent(agent: FakeAgent): void {
       agents.set(agent.id, agent);
     },
-    /** Share a personal agent with `userId`: `resolve` admits them and `list-for-user` lists it, `isOwner` false. */
+    /**
+     * Share a personal agent with `userId` (a list audience naming them):
+     * `resolve` admits them, `list-for-user` lists it with `isOwner` false,
+     * and both say it is `shared`, as a list audience is.
+     */
     shareWith(agentId: string, userId: string): void {
       const audience = sharedWith.get(agentId) ?? new Set<string>();
       sharedWith.set(agentId, audience);

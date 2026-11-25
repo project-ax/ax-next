@@ -1499,6 +1499,30 @@ describe('agentSeenBy', () => {
     expect((faults[0] as PluginError).cause).toBe(fault);
     expect(lines).toEqual([]);
   });
+
+  it('names a personal agent shared with other people, with no team: its owner is a person, never a team (TASK-1248)', async () => {
+    const bus = new HookBus({ stallWarnMs: Number.POSITIVE_INFINITY });
+    const agents = fakeAgents(bus);
+    const own: FakeAgent = { id: 'agt_ada_own', displayName: 'Ada Own', visibility: 'personal', ownerType: 'user', ownerId: ADA.id };
+    agents.addAgent(own);
+    const ctx = makeAgentContext({ sessionId: 'channel-slack', agentId: '', userId: ADA.id });
+    const faults: unknown[] = [];
+    const seen = (requestedByUserId: string) =>
+      agentSeenBy(bus, ctx, { agentId: own.id, requestedByUserId }, (err) => faults.push(err));
+
+    // Just me: its creator sees it, and it is still no shared agent.
+    expect(await seen(ADA.id)).toEqual({ name: null, teamId: null });
+    // Shared with everyone: named, for its owner and anyone it is shared with alike.
+    agents.agents.set(own.id, { ...own, audience: 'everyone' });
+    expect(await seen(ADA.id)).toEqual({ name: 'Ada Own', teamId: null });
+    expect(await seen(SAM.id)).toEqual({ name: 'Ada Own', teamId: null });
+    // Shared with a list: whoever is off it sees nothing, quietly.
+    agents.agents.set(own.id, own);
+    agents.shareWith(own.id, SAM.id);
+    expect(await seen(SAM.id)).toEqual({ name: 'Ada Own', teamId: null });
+    expect(await seen(GRACE.id)).toEqual({ name: null, teamId: null });
+    expect(faults).toEqual([]);
+  });
 });
 
 describe('isTemporarySlackCode', () => {

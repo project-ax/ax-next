@@ -13,7 +13,7 @@ import {
 import { channelInfoFailure, type ChannelCheck } from './channel-check.js';
 import { decideTier, runsAsConnector, type SenderFacts } from './channel-route.js';
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
-import { agentAccess, connectable, teamAdminAccess, type AgentAccess } from './channels.js';
+import { agentAccess, connectable, managerAccess, type AgentAccess } from './channels.js';
 import { COPY } from './copy.js';
 import type { DmAgentStore } from './dm-agents.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
@@ -90,8 +90,9 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      (auth:find-user-by-email) and its access to the agent
  *      (agents:resolve), or, with no account, whether their email is on an
  *      approved domain (auth:is-approved-email); then, only for a turn that
- *      would run as the bot's requester, whether they are still a team admin
- *      of the agent's team (channels.ts `teamAdminAccess`). channel-route.ts
+ *      would run as the bot's requester, whether the requester still manages
+ *      the agent (channels.ts `managerAccess`: a team admin of a team agent's
+ *      team, an owner of a shared personal agent, TASK-1248). channel-route.ts
  *      decides the tier: attended as the sender, external as the requester,
  *      silence (off-domain), or a private "a team admin needs to check my
  *      settings" (`botUnavailable`) when the agent is gone, or when the
@@ -113,7 +114,7 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      meanwhile is dropped too (`reconnected`), and its sender told to try
  *      again: it was planned as the old requester, in their conversation, and
  *      must not run as anyone else. An outsider's turn runs as the requester
- *      only while they are still a team admin of the agent's team, so it is
+ *      only while they still manage the agent (`managerAccess`), so it is
  *      asked again here: not any more drops the turn (`requester`) with the
  *      polite `botUnavailable` line, and a failed read drops it too
  *      (`slack_event_failed`, stage `requester`), its sender told to try
@@ -674,10 +675,11 @@ async function routeMention(
   if (runsAsConnector(sender)) {
     // The connector is the bot's requester, copied into the binding at the
     // channel's first mention (TASK-1167; a Claim moves it), and they lend
-    // outsiders their identity only while still a team admin of the agent's
-    // team. Members never get here: they run as themselves.
+    // outsiders their identity only while they still manage the agent: a
+    // team admin of a team agent's team, an owner of a shared personal agent
+    // (TASK-1248). Members never get here: they run as themselves.
     try {
-      connectorAccess = await teamAdminAccess(d.bus, lookupCtx(connectorId), agentId, connectorId);
+      connectorAccess = await managerAccess(d.bus, lookupCtx(connectorId), agentId, connectorId);
     } catch (err) {
       await failed('connector-access', err);
       return;
@@ -749,14 +751,14 @@ async function routeMention(
       await droppedReconnected();
       return;
     }
-    // An outsider runs as the bot's requester only while they are a team
-    // admin of the agent's team (TASK-1167). Asked at the mention, and again
-    // now: demoted while the turn waited, it never runs as them. Not knowing
-    // is no turn either. Members run as themselves.
+    // An outsider runs as the bot's requester only while they still manage
+    // the agent (TASK-1167, TASK-1248). Asked at the mention, and again now:
+    // demoted while the turn waited, it never runs as them. Not knowing is
+    // no turn either. Members run as themselves.
     if (external) {
       let still: AgentAccess;
       try {
-        still = await teamAdminAccess(d.bus, lookupCtx(runAs), agentId, runAs);
+        still = await managerAccess(d.bus, lookupCtx(runAs), agentId, runAs);
       } catch (err) {
         await failed('requester', err);
         return;

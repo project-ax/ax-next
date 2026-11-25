@@ -1,7 +1,7 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { isAxAdmin } from './ax-admin.js';
 import { RESERVED_BOT_NAMES, checkBotName, isBotNameTaken } from './bot-name.js';
-import { checkRights, teamAdminAccess, type Rights } from './channels.js';
+import { checkRights, managerAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
 import { INSTALL_ID_BYTES } from './limits.js';
 import { DEDICATED_BOT_SCOPES, botUrls, buildBotManifest } from './manifest.js';
@@ -846,14 +846,15 @@ export function createBots(d: BotDeps): Bots {
       const rights = await checkRights(d.bus, i.ctx, bot.agentId, i.actorUserId, 'manage');
       if (!rights.ok) return refuse(rights.reason);
     } else {
-      // An AX admin approved a team admin's request (TASK-1169). She needn't
-      // be on the agent's team, so her rights over it are never asked: she
+      // An AX admin approved a manager's request (TASK-1169). She needn't be
+      // able to use the agent, so her rights over it are never asked: she
       // must still be an AX admin, and the requester, whom its outsiders run
-      // as, still a team admin of the agent's team.
+      // as, must still manage it (a team admin of a team agent's team, an
+      // owner of a shared personal agent, TASK-1248).
       if (!(await isAxAdmin(d.bus, i.ctx, i.actorUserId))) return refuse('not-admin');
-      const requester = await teamAdminAccess(d.bus, i.ctx, bot.agentId, bot.requestedByUserId);
+      const requester = await managerAccess(d.bus, i.ctx, bot.agentId, bot.requestedByUserId);
       if (requester === 'agent-gone') return refuse('not-found');
-      if (requester === 'not-team') return refuse('personal-agent');
+      if (requester === 'not-shared') return refuse('personal-agent');
       if (requester === 'no') return refuse('requester-not-admin');
     }
     // The workspace the shared bot is live in, read before Slack is asked anything.
@@ -889,16 +890,17 @@ export function createBots(d: BotDeps): Bots {
   }
 
   /**
-   * Whether the bot's requester is no longer a team admin of the agent's
-   * team, so its outsiders are turned away until a team admin claims it
-   * (bot-changes.ts `claim`, TASK-1173). Shown only: the router asks on every
-   * mention. A fault reads false.
+   * Whether the bot's requester no longer manages the agent (`managerAccess`:
+   * a team admin of a team agent's team, an owner of a shared personal
+   * agent), so its outsiders are turned away until someone who does claims
+   * it (bot-changes.ts `claim`, TASK-1173). Shown only: the router asks on
+   * every mention. A fault reads false.
    */
   async function needsClaim(i: { ctx: AgentContext; agentId: string }, bot: InstallRow): Promise<boolean> {
     // A bot row always has its requester (the database's CHECK); with none, nobody can vouch for its outsiders.
     if (bot.requestedByUserId === null) return true;
     try {
-      return (await teamAdminAccess(d.bus, i.ctx, i.agentId, bot.requestedByUserId)) !== 'yes';
+      return (await managerAccess(d.bus, i.ctx, i.agentId, bot.requestedByUserId)) !== 'yes';
     } catch (err) {
       steps.failed('status-claim', err, bot.installId, 'warn');
       return false;

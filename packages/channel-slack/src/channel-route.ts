@@ -1,9 +1,9 @@
 import type { AgentAccess } from './channels.js';
 
 /**
- * Who a mention in a team agent's own bot's channel runs as (TASK-1094; the
- * plan's sender tiers). Pure: the router (router.ts) gathers the facts from
- * admission and AX, never from the message, and this decides.
+ * Who a mention in a shared agent's own bot's channel runs as (TASK-1094;
+ * the plan's sender tiers). Pure: the router (router.ts) gathers the facts
+ * from admission and AX, never from the message, and this decides.
  *
  *   tier  sender                                       turn
  *   A     an AX user who can use the agent             attended, as themselves
@@ -12,17 +12,20 @@ import type { AgentAccess } from './channels.js';
  *   D     no AX account, any other email               refused: silence
  *   E     B or C while the connector can't vouch for   unavailable: a private line,
  *         them anymore; or anyone, when the agent is     no turn
- *         gone or isn't a team agent
+ *         gone or isn't a shared agent
  *
+ * A shared agent is a team agent or a personal agent shared with other
+ * people (TASK-1248); "can use" is agents:resolve's answer either way.
  * Guests, bots, other workspaces, unconfirmed emails and Slack Connect never
  * get here: admission refuses them first (admission.ts).
  *
  * The connector is the bot's requester, copied into the binding at its first
  * mention; a Claim moves it. An outsider's turn runs as them, so they must
- * still be a team admin of the agent's team (the router asks
- * channels.ts `teamAdminAccess`): someone who left the agent's team must not
- * keep lending the channel their identity. A member (A) runs as themselves
- * and never depends on the connector.
+ * still manage the agent (the router asks channels.ts `managerAccess`): a
+ * team admin of a team agent's team, or an owner of a shared personal
+ * agent. Someone who stopped being one must not keep lending the channel
+ * their identity. A member (A) runs as themselves and never depends on the
+ * connector.
  *
  * Every answer is matched exactly and fails closed: only `'yes'` attends,
  * only a mapped sender's `'no'` or an unmapped sender's literal `true` runs
@@ -43,6 +46,7 @@ export interface SenderFacts {
   approved: boolean | null;
 }
 
+/** `not-team-agent`: the agent isn't a shared agent (a Just-me personal agent); the log reason predates sharing. */
 export type SenderTier =
   | { tier: 'attended'; userId: string }
   | { tier: 'external'; userId: string /* the connector */ }
@@ -72,15 +76,15 @@ export function decideTier(i: {
   if (isUserId(sender.mappedUserId)) {
     if (sender.access === 'yes') return { tier: 'attended', userId: sender.mappedUserId };
     // The sender's own lookup says the channel's agent is gone, or isn't a
-    // team agent: nobody can be served here, members included.
+    // shared agent: nobody can be served here, members included.
     if (sender.access === 'agent-gone') return { tier: 'unavailable', reason: 'agent-gone' };
-    if (sender.access === 'not-team') return { tier: 'unavailable', reason: 'not-team-agent' };
+    if (sender.access === 'not-shared') return { tier: 'unavailable', reason: 'not-team-agent' };
   }
   // Off every approved domain (or an answer we can't read): silence, and
   // nothing said about the channel's connection.
   if (!runsAsConnector(sender)) return { tier: 'refused', reason: 'off-domain' };
   if (connector.access === 'agent-gone') return { tier: 'unavailable', reason: 'agent-gone' };
-  if (connector.access === 'not-team') return { tier: 'unavailable', reason: 'not-team-agent' };
+  if (connector.access === 'not-shared') return { tier: 'unavailable', reason: 'not-team-agent' };
   // Never run as someone whose access nobody checked, or as nobody at all.
   if (connector.access !== 'yes' || !isUserId(connector.userId)) {
     return { tier: 'unavailable', reason: 'connector-no-access' };

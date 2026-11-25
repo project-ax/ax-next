@@ -3,7 +3,7 @@ import { isAxAdmin } from './ax-admin.js';
 import { isBotNameTaken } from './bot-name.js';
 import type { BotRequestDms, PostedDm } from './bot-request-dms.js';
 import type { BotReply, Bots } from './bots.js';
-import { checkRights, teamAdminAccess, type Rights } from './channels.js';
+import { checkRights, managerAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
 import { BOT_REQUESTS_MAX, INSTALL_ID_BYTES } from './limits.js';
 import { logCode } from './log-code.js';
@@ -319,10 +319,11 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
       // Read under the lock: an approve, a decline or a cancel that got here first has taken it.
       const request = await d.installs.getBotRequest(i.requestId);
       if (request === null) return refused(NOT_FOUND);
-      // Whom its outsiders will run as must still be a team admin of the
-      // agent's team. The AX admin's own rights over the agent are never
-      // asked: she needn't be on the team.
-      const requester = await teamAdminAccess(d.bus, i.ctx, request.agentId, request.requestedByUserId);
+      // Whom its outsiders will run as must still manage the agent: a team
+      // admin of a team agent's team, an owner of a shared personal agent
+      // (TASK-1248). The AX admin's own rights over the agent are never
+      // asked: she needn't be able to use it.
+      const requester = await managerAccess(d.bus, i.ctx, request.agentId, request.requestedByUserId);
       if (requester === 'agent-gone') return refused(json(409, { error: 'agent-gone' }));
       if (requester !== 'yes') return refused(json(409, { error: 'requester-not-admin' }));
       const reply = await d.bots.create({
