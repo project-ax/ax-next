@@ -10,3 +10,4 @@ export { IconButton, type IconButtonProps } from './components/IconButton.js';
 export { Notice, type NoticeProps, type NoticeTone } from './components/Notice.js';
 export { EmptyState, type EmptyStateProps } from './components/EmptyState.js';
 export { AsyncState, type AsyncStateProps, type SkeletonShape } from './components/AsyncState.js';
+export { ConfirmAction, type ConfirmActionProps, type ConfirmActionTone, type ConfirmActionTrigger } from './components/ConfirmAction.js';

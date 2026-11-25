@@ -10,8 +10,14 @@
     white-space: nowrap;
     border-width: 0
 }
+.ax-fixed {
+    position: fixed
+}
 .ax-relative {
     position: relative
+}
+.ax-inset-none {
+    inset: var(--ax-space-none)
 }
 .ax-z-50 {
     z-index: 50
@@ -84,6 +90,9 @@
 }
 .ax-min-w-touch {
     min-width: 44px
+}
+.ax-max-w-narrow {
+    max-width: var(--ax-width-narrow)
 }
 .ax-flex-1 {
     flex: 1 1 0%
@@ -188,6 +197,9 @@
 .ax-self-stretch {
     align-self: stretch
 }
+.ax-overflow-y-auto {
+    overflow-y: auto
+}
 .ax-truncate {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -198,6 +210,9 @@
 }
 .ax-break-words {
     overflow-wrap: break-word
+}
+.ax-rounded-lg {
+    border-radius: var(--ax-radius-lg)
 }
 .ax-rounded-md {
     border-radius: var(--ax-radius-md)
@@ -227,6 +242,9 @@
 .ax-bg-action {
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-action) / var(--tw-bg-opacity, 1))
+}
+.ax-bg-canvas\/80 {
+    background-color: hsl(var(--ax-bg-canvas) / 0.8)
 }
 .ax-bg-muted {
     --tw-bg-opacity: 1;
@@ -262,6 +280,9 @@
 }
 .ax-bg-transparent {
     background-color: transparent
+}
+.ax-p-lg {
+    padding: var(--ax-space-lg)
 }
 .ax-p-md {
     padding: var(--ax-space-md)
@@ -401,6 +422,10 @@
 .hover\:ax-bg-status-danger-hover:hover {
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-status-danger-hover) / var(--tw-bg-opacity, 1))
+}
+.focus\:ax-outline-none:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px
 }
 .focus-visible\:ax-outline:focus-visible {
     outline-style: solid

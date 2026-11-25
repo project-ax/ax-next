@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import { Plus } from 'lucide-react';
-import { AsyncState, Button, Divider, EmptyState, Notice, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
+import { AsyncState, Button, ConfirmAction, Divider, EmptyState, Notice, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -74,7 +74,24 @@ describe('props', () => {
     const a1: P<typeof AsyncState> = { status: 'ready', skeleton: 'rows', loadingLabel: 'x', className: 'x' };
     // @ts-expect-error tone of an error is danger or info only
     const a2: P<typeof AsyncState> = { status: 'error', skeleton: 'rows', loadingLabel: 'x', error: { message: 'x', tone: 'warning' } };
-    void [b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2];
+    const confirm = { title: 'x', confirmLabel: 'Remove', onConfirm: () => {} };
+    // @ts-expect-error trigger and open together
+    const c1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove' }, open: true, onOpenChange: () => {} };
+    // @ts-expect-error confirmLabel is required
+    const c2: P<typeof ConfirmAction> = { title: 'x', onConfirm: () => {}, trigger: { label: 'Remove' } };
+    // @ts-expect-error className is not a prop
+    const c3: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove' }, className: 'x' };
+    // @ts-expect-error danger is the default tone; the other is neutral, not primary
+    const c4: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove' }, tone: 'primary' };
+    // @ts-expect-error controlled needs onOpenChange
+    const c5: P<typeof ConfirmAction> = { ...confirm, open: true };
+    // @ts-expect-error one of trigger or open is required
+    const c6: P<typeof ConfirmAction> = { ...confirm };
+    // @ts-expect-error primary is not a trigger intent
+    const c7: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'primary' } };
+    const ok1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'quiet', size: 'sm', icon: Plus, iconOnly: true } };
+    const ok2: P<typeof ConfirmAction> = { ...confirm, tone: 'neutral', open: false, onOpenChange: () => {} };
+    void [b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });
 });
