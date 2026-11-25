@@ -1,0 +1,6 @@
+/* Storybook tooling only. The page itself has no component to paint it, so the surface token and the default
+   foreground go on body here, the way an app's base styles would set them. Fonts come from the components. */
+body {
+  background: hsl(var(--ax-bg-surface));
+  color: hsl(var(--ax-fg-default));
+}

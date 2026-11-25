@@ -157,6 +157,8 @@ reading more memory before editing.
 
    When building or modifying any UI, invoke the `shadcn` skill — it loads the installed-component list, the rule files, and the monorepo workspace flag (`-c packages/channel-web`).
 
+   **Migration in progress (2026-11):** the design system is moving to `@project-ax/ui` (`packages/ui`; design: `docs/superpowers/specs/2026-11-24-agent-first-ui-design.md`). Today shadcn primitives in channel-web are still fine, but `pnpm lint` bans arbitrary Tailwind values (`p-[3px]`) and the `style` prop in channel-web. Existing violations are frozen in `eslint-suppressions.json` and may only go down — CI's `scripts/ui-suppressions-ratchet.mjs` fails a PR that raises a rule's total. After removing violations, run `pnpm lint:ui:prune`, or lint fails with "There are suppressions left that do not occur anymore". Each remaining rule (`className`, raw elements, `@/components/ui` imports) switches on when the step that ships its replacement lands — see `docs/superpowers/plans/2026-11-24-project-ax-ui-roadmap.md`.
+
 ## Boundary review (required for new hooks)
 
 When adding or changing a service-hook signature, or adding a subscriber hook with a non-trivial payload, answer in the PR description:

@@ -108,6 +108,7 @@
 //                                     dirs (e.g. a nested server/__tests__/).
 
 import tseslint from 'typescript-eslint';
+import axUi from '@project-ax/eslint-plugin-ui';
 
 import noBareTenantTables from './eslint-rules/no-bare-tenant-tables.js';
 
@@ -157,6 +158,8 @@ export default tseslint.config(
       // same thing under dist-spa/ for its wizard bundle.
       '**/dist-web/**',
       '**/dist-spa/**',
+      // @project-ax/ui's `storybook build` output (minified bundles, gitignored).
+      '**/storybook-static/**',
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       '**/coverage/**',
@@ -295,6 +298,39 @@ export default tseslint.config(
           ],
         },
       ],
+    },
+  },
+  {
+    // Project AX UI rules: channel-web app code composes @project-ax/ui rather
+    // than styling raw elements. Existing violations are frozen in
+    // eslint-suppressions.json (ESLint bulk suppressions) and can only go down
+    // (CI: scripts/ui-suppressions-ratchet.mjs); run `pnpm lint:ui:prune` after
+    // fixing some. shadcn internals and tests are exempt. The import ban lives
+    // in the plugin (not core no-restricted-imports) so it can't replace the
+    // invariant-2 entry above.
+    //
+    // Rules switch on as their replacements ship (ruling R15, 2026-11-24).
+    // no-arbitrary-values and no-style-prop are on in full. no-classname and
+    // no-raw-elements are on only as far as replacements have shipped
+    // (ruling R12): className on intrinsic (lowercase) elements, and the raw
+    // tags Stack / Inline / Text / Heading replace. The element list and
+    // component className widen as replacements ship, per area in S3–S6; S8
+    // ends with the full lists. Existing violations are frozen either way.
+    // no-internal-imports turns on per
+    // area as S3–S6 replace each shadcn primitive. Each switch-on adds its rule
+    // to the root `lint:ui:suppress` script and regenerates
+    // eslint-suppressions.json. See
+    // docs/superpowers/plans/2026-11-24-project-ax-ui-roadmap.md.
+    files: ['packages/channel-web/src/**/*.tsx'],
+    ignores: ['packages/channel-web/src/components/ui/**', '**/__tests__/**', '**/*.test.tsx'],
+    plugins: { 'ax-ui': axUi },
+    rules: {
+      'ax-ui/no-arbitrary-values': 'error',
+      'ax-ui/no-style-prop': 'error',
+      // Narrowed to shipped replacements; widens per area in S3–S6 (roadmap).
+      'ax-ui/no-classname': ['error', { intrinsicOnly: true }],
+      'ax-ui/no-raw-elements': ['error', { elements: ['div', 'span', 'p', 'h2', 'h3', 'h4', 'h5', 'h6'] }],
+      'ax-ui/no-internal-imports': 'off', // S3–S6, per area
     },
   },
 );

@@ -34,6 +34,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
+import { Grid } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -758,7 +759,7 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
   // (D8) Same here — the code prefix belongs in the console, not on the field.
   const liveError = !parsed.ok ? parsed.message : null;
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <Grid columns={2} gap="md">
       <div className="flex flex-col gap-1">
         <label className="text-xs font-medium text-muted-foreground">SKILL.md</label>
         <Textarea
@@ -799,6 +800,6 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
           </Alert>
         )}
       </div>
-    </div>
+    </Grid>
   );
 }

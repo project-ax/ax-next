@@ -1,0 +1,244 @@
+{
+  "sign-in": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "today": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-conversation": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-files": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "tasks": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "task": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-instructions": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-model": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-connectors": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-slack": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-apps": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-memory": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-skills": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "agent-settings-routines": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "settings-skills": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "settings-sites": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "settings-agents": {
+    "serious": 1,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 1
+      }
+    ]
+  },
+  "settings-routines": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "settings-storage": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-connectors": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-ai-model-keys": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-models": {
+    "serious": 5,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 5
+      }
+    ]
+  },
+  "admin-helper-model": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-sign-in-methods": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-teams": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-slack": {
+    "serious": 0,
+    "critical": 0,
+    "rules": []
+  },
+  "admin-branding": {
+    "serious": 0,
+    "critical": 1,
+    "rules": [
+      {
+        "rule": "label",
+        "impact": "critical",
+        "nodes": 1
+      }
+    ]
+  },
+  "admin-usage": {
+    "serious": 5,
+    "critical": 0,
+    "rules": [
+      {
+        "rule": "label-content-name-mismatch",
+        "impact": "serious",
+        "nodes": 5
+      }
+    ]
+  }
+}

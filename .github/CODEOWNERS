@@ -1,0 +1,5 @@
+/packages/ui/ @vpulim
+/packages/eslint-plugin-ui/ @vpulim
+/eslint-suppressions.json @vpulim
+/scripts/ui-suppressions-ratchet.mjs @vpulim
+/scripts/__tests__/ui-suppressions-ratchet.test.js @vpulim

@@ -17,6 +17,8 @@
     "test:eslint-rules": "vitest run --root eslint-rules",
     "test:scripts": "vitest run --root scripts",
     "lint": "eslint .",
+    "lint:ui:suppress": "eslint packages/channel-web/src --suppress-rule ax-ui/no-arbitrary-values --suppress-rule ax-ui/no-style-prop --suppress-rule ax-ui/no-classname --suppress-rule ax-ui/no-raw-elements",
+    "lint:ui:prune": "eslint . --prune-suppressions",
     "typecheck": "tsc --build && pnpm -r --if-present run typecheck",
     "changeset": "changeset",
     "version-packages": "changeset version",
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
+    "@project-ax/eslint-plugin-ui": "workspace:*",
     "@types/node": "^25.6.0",
     "eslint": "^10.2.1",
     "tsx": "^4.21.0",
@@ -71,7 +74,10 @@
       "source-map-js@<1.2.2": ">=1.2.2 <2.0.0",
       "postcss-selector-parser@<7.1.6": ">=7.1.6 <8.0.0",
       "vitest@>=5.0.0 <5.0.3": "5.0.3",
-      "zod@>=4.0.0 <4.6.6": ">=4.6.6 <5.0.0"
+      "zod@>=4.0.0 <4.6.6": ">=4.6.6 <5.0.0",
+      "storybook>ws": "8.22.2",
+      "storybook>@testing-library/user-event": "14.6.9",
+      "@napi-rs/wasm-runtime>@tybys/wasm-util": "0.10.4"
     },
     "patchedDependencies": {
       "testcontainers@11.14.0": "patches/testcontainers@11.14.0.patch",

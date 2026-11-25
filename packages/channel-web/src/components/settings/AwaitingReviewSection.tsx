@@ -18,6 +18,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Inline, Stack, Text } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { listCatalogRequests } from '@/lib/catalog';
 import type { CatalogRequest } from '@ax/skills';
@@ -56,19 +57,19 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
       </button>
 
       {expanded && (
-        <div className="flex flex-col gap-2">
+        <Stack gap="sm">
           {error && (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
           {requests === null ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <Text role="meta">Loading…</Text>
           ) : requests.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <Text role="meta">
               No pending requests. Cold-start and submit-to-workspace requests land
               here.
-            </p>
+            </Text>
           ) : (
             requests.map((r) => (
               <div
@@ -76,7 +77,7 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
                 className="flex items-start justify-between gap-3 rounded-md border border-border p-3"
               >
                 <div className="flex flex-col gap-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <Inline gap="sm">
                     <Badge
                       variant={r.kind === 'share' ? 'secondary' : 'outline'}
                       className="text-[10px]"
@@ -84,7 +85,7 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
                       {r.kind}
                     </Badge>
                     <span className="font-mono text-xs">{r.skillId}</span>
-                  </div>
+                  </Inline>
                   <p className="text-sm">{r.description}</p>
                   <p className="text-xs text-muted-foreground">
                     requested by {r.requestedByUserId} ·{' '}
@@ -102,7 +103,7 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
               </div>
             ))
           )}
-        </div>
+        </Stack>
       )}
 
       {reviewing !== null && (

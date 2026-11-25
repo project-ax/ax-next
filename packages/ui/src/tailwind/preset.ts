@@ -1,0 +1,55 @@
+import type { Config } from 'tailwindcss';
+import { accent, action, bg, fg, line, motion, radius, space, status, text, width } from '../foundation/tokens.js';
+
+// Restricted preset: every theme key below REPLACES Tailwind's defaults, so only token-backed
+// utilities exist (a token name works, a default-scale number does not). Values point at the --ax-* variables in theme.css.
+
+const v = (name: string): string => `var(--ax-${name})`;
+const hsl = (name: string): string => `hsl(var(--ax-${name}) / <alpha-value>)`;
+
+// Variable name -> color key: drop a leading `bg-`, fold a trailing `-default`/`-base` into DEFAULT.
+function colorEntries(): Record<string, string> {
+  const names: string[] = [];
+  for (const k of Object.keys(bg.light)) names.push(`bg-${k}`);
+  for (const k of Object.keys(fg.light)) names.push(`fg-${k}`);
+  for (const k of Object.keys(accent.light)) names.push(k === 'base' ? 'accent' : `accent-${k}`);
+  for (const k of Object.keys(action.light)) names.push(k === 'base' ? 'action' : `action-${k}`);
+  for (const k of Object.keys(line.light)) names.push(`line-${k}`);
+  names.push('brand');
+  for (const [tone, themes] of Object.entries(status)) {
+    for (const k of Object.keys(themes.light)) names.push(k === 'base' ? `status-${tone}` : `status-${tone}-${k}`);
+  }
+  const out: Record<string, string> = {};
+  for (const name of names) {
+    const key = name.replace(/^bg-/, '').replace(/-(default|base)$/, '') || 'DEFAULT';
+    out[key] = hsl(name);
+  }
+  return out;
+}
+
+const keyed = <T extends Record<string, unknown>>(group: T, f: (k: string) => string): Record<string, string> =>
+  Object.fromEntries(Object.keys(group).map((k) => [k, f(k)]));
+
+export const axPreset: Config = {
+  content: [],
+  prefix: 'ax-',
+  corePlugins: { preflight: false },
+  theme: {
+    screens: { md: '768px', lg: '1024px' },
+    spacing: keyed(space, (k) => v(`space-${k}`)),
+    colors: { transparent: 'transparent', current: 'currentColor', ...colorEntries() },
+    fontSize: Object.fromEntries(
+      Object.keys(text).map((role) => [
+        role,
+        [v(`text-${role}-size`), { lineHeight: v(`text-${role}-line`), fontWeight: v(`text-${role}-weight`) }],
+      ]),
+    ),
+    fontFamily: { sans: v('font-sans'), mono: v('font-mono') },
+    borderRadius: keyed(radius, (k) => v(`radius-${k}`)),
+    boxShadow: { flat: v('elevation-flat'), raised: v('elevation-raised'), overlay: v('elevation-overlay') },
+    maxWidth: keyed(width, (k) => v(`width-${k}`)),
+    transitionDuration: keyed(motion, (k) => v(`motion-${k}`)),
+  },
+};
+
+export default axPreset;

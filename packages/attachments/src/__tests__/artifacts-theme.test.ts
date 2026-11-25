@@ -58,6 +58,10 @@ describe('the palette copies the app stylesheet', () => {
   const css = readFileSync(fileURLToPath(new URL('../../../channel-web/src/index.css', import.meta.url)), 'utf8');
 
   function blockAfter(selector: string): string {
+    return blockOf(css, selector);
+  }
+
+  function blockOf(css: string, selector: string): string {
     const start = css.indexOf(selector);
     expect(start, `${selector} in index.css`).toBeGreaterThanOrEqual(0);
     const open = css.indexOf('{', start);
@@ -71,16 +75,39 @@ describe('the palette copies the app stylesheet', () => {
     return css.slice(open + 1, i - 1);
   }
 
-  const blocks: Record<ArtifactTheme, string> = {
+  // channel-web's legacy names (--background, ...) are `var(--ax-*)` aliases
+  // onto @project-ax/ui's theme.css; resolve through both. Dark theme: the
+  // aliases live once in the base `:root`, the literal ones in the dark block,
+  // and theme.css's dark block layers over its light one.
+  const themeCss = readFileSync(fileURLToPath(new URL('../../../ui/theme.css', import.meta.url)), 'utf8');
+  const baseCss: Record<ArtifactTheme, string> = {
     light: blockAfter(':root {'),
     dark: blockAfter(":root[data-theme='dark'] {"),
   };
+  const themeBlocks: Record<ArtifactTheme, string[]> = {
+    light: [blockOf(themeCss, ':root {')],
+    dark: [blockOf(themeCss, ':root {'), blockOf(themeCss, ":root[data-theme='dark'] {")],
+  };
+
+  function lookup(blocks: string[], name: string): string | undefined {
+    let found: string | undefined;
+    for (const b of blocks) {
+      const m = new RegExp(`--${name}:\\s*([^;]+);`).exec(b);
+      if (m?.[1]) found = m[1].trim();
+    }
+    return found;
+  }
+
+  function resolve(theme: ArtifactTheme, name: string): string | undefined {
+    const own = lookup(theme === 'dark' ? [baseCss.light, baseCss.dark] : [baseCss.light], name);
+    const ref = own?.match(/^var\((--ax-[a-z0-9-]+)\)$/);
+    return ref ? lookup(themeBlocks[theme], ref[1]!.slice(2)) : own;
+  }
 
   for (const theme of ['light', 'dark'] as const) {
     it(`${theme}: every value matches --<name> in index.css`, () => {
       for (const [name, triplet] of Object.entries(ARTIFACT_PALETTE[theme])) {
-        const m = new RegExp(`--${name}:\\s*([^;]+);`).exec(blocks[theme]);
-        expect(m?.[1]?.trim(), `--${name} (${theme})`).toBe(triplet);
+        expect(resolve(theme, name), `--${name} (${theme})`).toBe(triplet);
       }
     });
   }

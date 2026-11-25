@@ -80,6 +80,21 @@ jobs:
         with:
           node-version: '24'
           cache: 'pnpm'
+      # Frozen `ax-ui/*` lint violations (eslint-suppressions.json) may only go
+      # down. ESLint itself lets `pnpm lint:ui:suppress` raise a count and never
+      # looks at entries for deleted files; this compares per-rule totals (and
+      # the count of ax-ui eslint-disable directives) at HEAD with the
+      # merge-base of HEAD and the base-branch tip (FETCH_HEAD below), so
+      # commits that landed on the base since the branch point don't count.
+      # Needs only node + git, so it runs before `pnpm install` and fails in
+      # seconds.
+      - name: UI lint suppressions only go down
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --quiet --no-tags origin "$BASE_REF"
+          node scripts/ui-suppressions-ratchet.mjs FETCH_HEAD
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       # Repo-wide checks run once: on the PR job, or on main's `rest` shard.
@@ -347,6 +362,30 @@ jobs:
         run: scripts/ci-test-shard.sh "${{ matrix.shard }}"
       - run: pnpm audit --audit-level moderate
         if: matrix.shard == 'pr' || matrix.shard == 'rest'
+
+  # @project-ax/ui stories: every Storybook story, light and dark, gets an axe
+  # pass (serious/critical violations fail) and a screenshot compared with the
+  # committed baselines in packages/ui/stories-test/__screenshots__. The job
+  # runs inside the same Playwright image `pnpm --filter @project-ax/ui
+  # stories:update` uses to generate those baselines, so fonts and rendering
+  # match pixel for pixel; a different image means regenerating them. Pinned
+  # by the multi-arch index digest (same string as the stories:update script
+  # in packages/ui/package.json), so a re-pushed tag can't move it.
+  ui-stories:
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/playwright:v1.59.1-noble@sha256:b0ab6f3cb99aa7803adbc14d9027ec1785fc6e433b97e134e0f8fe61683b6b53
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile --filter @project-ax/ui...
+      - run: pnpm --filter @project-ax/ui build
+      - run: pnpm --filter @project-ax/ui stories:test
 
   # Renders the Helm chart and runs its render-time guard suite. Without this
   # lane those guards (single-replica chat guard, blob-root and filestore guards)
