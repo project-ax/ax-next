@@ -7,6 +7,7 @@
  */
 import type { AgentAudience, SharingView } from '@ax/agents';
 import { httpFetch } from './http';
+import { SHARING_COPY } from './sharing-copy';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -84,4 +85,16 @@ export async function searchPeople(query: string, signal?: AbortSignal): Promise
   const body = await call(path, signal === undefined ? {} : { signal });
   if (!Array.isArray(body.people)) throw new SharingRequestError(path, 200, null);
   return body.people as PersonMatch[];
+}
+
+/** The words for a sharing write that didn't land. The server's code picks the
+ *  line; the code itself is never shown. Shared by the audience and owners
+ *  dialogs. */
+export function sharingErrorMessage(error: unknown, agentName: string): string {
+  if (!(error instanceof SharingRequestError)) return SHARING_COPY.errors.generic;
+  if (error.status === 403) return SHARING_COPY.errors.forbidden(agentName);
+  if (error.code === 'unknown-person') return SHARING_COPY.errors.unknownPerson;
+  if (error.status === 503) return SHARING_COPY.errors.accountsUnavailable;
+  if (error.status === 404) return SHARING_COPY.errors.notFound(agentName);
+  return SHARING_COPY.errors.generic;
 }

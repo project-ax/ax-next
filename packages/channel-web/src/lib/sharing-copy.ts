@@ -43,6 +43,8 @@ export const SHARING_COPY = {
   heading: (agent: string): string => `Who can use ${agent}?`,
   change: 'Change',
   someone: 'Someone',
+  loading: 'Checking who can use it…',
+  tryAgain: 'Try again',
 
   audience: {
     justMe: (ownerCount: number): string => (ownerCount > 1 ? 'Just its owners' : 'Just me'),

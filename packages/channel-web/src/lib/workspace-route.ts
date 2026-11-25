@@ -35,6 +35,8 @@ const DEFAULT_TAB: AgentTab = 'chat';
  */
 export const AGENT_SETTINGS_SECTIONS = [
   'instructions',
+  // TASK-1247: who can use the agent and who owns it.
+  'sharing',
   'model',
   'connectors',
   'slack',

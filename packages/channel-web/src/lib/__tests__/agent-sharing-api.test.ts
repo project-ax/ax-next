@@ -4,7 +4,9 @@ import {
   searchPeople,
   setAudience,
   setOwners,
+  sharingErrorMessage,
 } from '../agent-sharing-api';
+import { SHARING_COPY } from '../sharing-copy';
 
 const VIEW = {
   audience: { kind: 'just-me' },
@@ -107,5 +109,21 @@ describe('refusals', () => {
     );
     stub(json(200, { nope: 1 }));
     await expect(searchPeople('pat')).rejects.toBeInstanceOf(SharingRequestError);
+  });
+});
+
+describe('sharingErrorMessage', () => {
+  const refused = (status: number, code: string | null) =>
+    new SharingRequestError('/admin/agents/a/audience', status, code);
+
+  it.each([
+    ['403 forbidden', refused(403, 'forbidden'), SHARING_COPY.errors.forbidden('Fern')],
+    ['400 unknown-person', refused(400, 'unknown-person'), SHARING_COPY.errors.unknownPerson],
+    ['503', refused(503, 'accounts-unavailable'), SHARING_COPY.errors.accountsUnavailable],
+    ['404', refused(404, 'not-found'), SHARING_COPY.errors.notFound('Fern')],
+    ['another 400', refused(400, 'invalid-audience'), SHARING_COPY.errors.generic],
+    ['a network failure', new Error('network'), SHARING_COPY.errors.generic],
+  ])('turns %s into words', (_name, error, words) => {
+    expect(sharingErrorMessage(error, 'Fern')).toBe(words);
   });
 });

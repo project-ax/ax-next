@@ -136,7 +136,7 @@ export function PeoplePicker({
           <ChevronsUpDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="p-0 w-(--radix-popover-trigger-width)" align="start">
+      <PopoverContent className="w-80 p-0" align="start">
         <Command shouldFilter={false}>
           <CommandInput
             placeholder={placeholder}
