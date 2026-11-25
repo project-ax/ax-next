@@ -471,6 +471,30 @@ describe('channel-web agent-workspace BFF', () => {
       expect(JSON.stringify(body)).not.toContain('@');
     });
 
+    it('the creator’s own shared agent says creator, names nobody, and never looks the caller up', async () => {
+      rosterOf([{ ...MINE, shared: true }]);
+      const asked = registerPeople({ u1: { id: 'u1', displayName: 'Me Myself', email: 'me@example.com' } });
+
+      const { rows } = await readRoster();
+      expect(rowOf(rows, 'a-mine').access).toBe('creator');
+      expect('sharedBy' in rowOf(rows, 'a-mine')).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
+    it('a row whose producer doesn’t say whether it is shared gets no Shared-by line', async () => {
+      const { shared: _unsaid, ...OLD_SHARED } = SHARED;
+      const { shared: _unsaidToo, ...OLD_CO_OWNED } = CO_OWNED;
+      rosterOf([OLD_SHARED, OLD_CO_OWNED]);
+      const asked = registerPeople({ vin: VINAY });
+
+      const { rows } = await readRoster();
+      expect(rowOf(rows, 'a-shared').access).toBe('audience');
+      expect(rowOf(rows, 'a-co').access).toBe('co-owner');
+      expect('sharedBy' in rowOf(rows, 'a-shared')).toBe(false);
+      expect('sharedBy' in rowOf(rows, 'a-co')).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
     const unnamed: Array<[string, () => void]> = [
       ['there is no auth:get-user', () => {}],
       [
@@ -633,6 +657,17 @@ describe('channel-web agent-workspace BFF', () => {
       expect(asked).toEqual([]);
       expect(people).toEqual(['vin']);
       expect(JSON.stringify(body)).not.toContain('@');
+    });
+
+    it('the agent view of the creator’s own shared agent says creator, names nobody, and never looks the caller up', async () => {
+      agentViewOf({ ...MINE, shared: true });
+      const asked = registerPeople({ u1: { id: 'u1', displayName: 'Me Myself', email: 'me@example.com' } });
+      registerBusyActivity();
+
+      const { agent } = await readAgentView('a-mine');
+      expect(agent).toMatchObject({ access: 'creator', state: 'working' });
+      expect('sharedBy' in agent).toBe(false);
+      expect(asked).toEqual([]);
     });
 
     it('the agent view still shows its owners what it is doing, and tells a co-owner who created it', async () => {
