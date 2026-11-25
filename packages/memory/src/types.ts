@@ -14,8 +14,10 @@
  * - **`ownerUserId` is not a payload field either.** It is a SCOPE taken from
  *   `ctx`, not a hint taken from a caller (the `@ax/decisions` phrasing). A
  *   caller that could name an owner could read or retract another person's
- *   memory. On a personal agent it is also the READ filter; on a team agent
- *   the read filter is the agent itself and `ownerUserId` is attribution.
+ *   memory. On a "Just me" personal agent it is also the READ filter; where
+ *   the agent's memory is shared (a team agent, or a personal agent shared
+ *   with other people, TASK-1248) the read filter is the agent itself and
+ *   `ownerUserId` is attribution.
  * - **Sharing is never a payload field either.** No `scope`, `visibility`,
  *   `teamId` or `agentId` below: whether memory is shared is a property of
  *   the resolved agent (`agents:resolve` on every call), not of the request.
@@ -204,6 +206,12 @@ export interface MemoryRecallOutput {
    * reorder). It is pinned by an engine contract case.
    */
   degraded: string[];
+  /**
+   * Whose memory this answer is from. `'personal'`: the caller's own, on a
+   * "Just me" agent. `'team'`: this agent's memory, shared with everyone who
+   * can use it: a team agent, or a personal agent shared with other people
+   * (TASK-1248). The name predates sharing; read `'team'` as "shared".
+   */
   visibility?: 'personal' | 'team';
 }
 
@@ -441,5 +449,6 @@ export interface MemoryRecallReceiptsInput {
 export interface MemoryRecallReceiptsOutput {
   /** Oldest first. Empty when none were recorded, or none are the caller's. */
   receipts: MemoryRecallReceipt[];
+  /** As {@link MemoryRecallOutput.visibility}: `'team'` reads as "shared". */
   visibility?: 'personal' | 'team';
 }

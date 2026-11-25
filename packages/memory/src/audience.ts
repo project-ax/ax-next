@@ -103,7 +103,11 @@ import { rewriteSpeaker, SPEAKER_SUBJECT } from './subject.js';
  *    the least recall). Nothing at all for a private turn, whose reads are
  *    exactly what they were before audiences existed.
  *
- * A visibility this build doesn't know isn't `'team'`, so it skips steps 1
+ * "A team agent" in steps 1 and 2 is any access whose `visibility` is
+ * `'team'`: an agent whose memory is shared with everyone who can use it, a
+ * team agent or a personal agent shared with other people (TASK-1248,
+ * `resolveMemoryAccess`). A "Just me" personal agent keeps steps 3 and 4. A
+ * visibility this build doesn't know isn't `'team'`, so it skips steps 1
  * and 2 and keeps a personal agent's rules, the fail-closed outsider step
  * included.
  */
@@ -413,10 +417,11 @@ export function breaksSpeakerRule(
  * - `'private'`: the owner's own turn. The person talking is the person the
  *   turn runs as, and `user` is filed under their key ({@link rewriteSpeaker}),
  *   as it always was.
- * - `'team'`: a team agent's shared turn, run as the member who wrote it. A
- *   member's conversation holds only that member's turns (one conversation per
- *   person per thread), so the person talking IS `ctx.userId`. A fact about
- *   them is filed under their own key, the one their web chats write and read.
+ * - `'team'`: a team agent's shared turn (or a shared personal agent's,
+ *   TASK-1248), run as the member who wrote it. A member's conversation
+ *   holds only that member's turns (one conversation per person per thread),
+ *   so the person talking IS `ctx.userId`. A fact about them is filed under
+ *   their own key, the one their web chats write and read.
  * - `'withheld'`: any outsider's turn, and any other shared turn (a personal
  *   agent's). The speaker could be anyone in the room, so nothing is filed
  *   under a person ({@link breaksSpeakerRule}, TASK-1091 and TASK-1146).
@@ -425,7 +430,9 @@ export type SpeakerScope = 'private' | 'team' | 'withheld';
 
 /**
  * The {@link SpeakerScope} of a turn, from `ctx` and the agent's resolved
- * access (`resolveMemoryAccess`: a team agent's `visibility` is `'team'`).
+ * access (`resolveMemoryAccess`: `visibility` is `'team'` wherever the
+ * agent's memory is shared, on a team agent or a personal agent shared with
+ * other people, TASK-1248).
  *
  * An outsider's turn is `'withheld'` whatever its audience: there `ctx.userId`
  * is whoever answers for the channel, never the person talking, so not even a
@@ -640,7 +647,7 @@ function refuseUnfiled(
         hookName,
         message:
           scope === 'team'
-            ? `a team agent's turn tried to write a statement through ${hookName} that isn't filed under its speaker: memory writes none of the batch rather than file someone's words under the wrong subject`
+            ? `a shared agent's turn tried to write a statement through ${hookName} that isn't filed under its speaker: memory writes none of the batch rather than file someone's words under the wrong subject`
             : `a shared-audience turn tried to write a statement about a person through ${hookName}: the speaker could be anyone in the room, so memory writes none of the batch rather than file their words under a person`,
       });
     }

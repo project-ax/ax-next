@@ -111,6 +111,14 @@ export interface MemoryHarness {
   authCalls: string[];
   /** Every id `teams:is-member` was asked about, in order (TASK-1209). */
   memberCalls: string[];
+  /** Every `userId` the fake `agents:resolve` was asked about, in order (TASK-1248). */
+  resolveCalls: string[];
+  /**
+   * Share the personal agent with `agent.members` (`true`) or take it back to
+   * Just me (`false`), between calls (TASK-1248). Just me admits only
+   * `agent.ownerUserId`. Throws on a team agent, which is always shared.
+   */
+  setShared: (shared: boolean) => void;
   teardown: () => Promise<void>;
 }
 
@@ -134,6 +142,12 @@ export interface MemoryHarnessOptions {
     members?: Set<string>;
     /** The agent's display name, as `agents:resolve` answers it. Omitted, the answer carries none. */
     displayName?: string;
+    /**
+     * A personal agent shared with other people (TASK-1248): `agents:resolve`
+     * then admits `ownerUserId` and every id in `members`, and answers
+     * `shared: true`. Omitted or `false`, it is Just me. Personal agents only.
+     */
+    shared?: boolean;
   };
   /**
    * Registers `auth:get-user` (TASK-1209), answering with whatever this returns
@@ -179,11 +193,12 @@ export async function makeMemoryHarness(
 
   const teamMembers =
     options.agent?.members ?? new Set<string>([ALICE, BOB]);
-  registerMemoryAgents(bus, {
+  const agents = registerMemoryAgents(bus, {
     visibility: options.agent?.visibility,
     ownerUserId: options.agent?.ownerUserId,
     members: teamMembers,
     displayName: options.agent?.displayName,
+    shared: options.agent?.shared,
   });
 
   const memberCalls: string[] = [];
@@ -262,6 +277,8 @@ export async function makeMemoryHarness(
     teamMembers,
     authCalls,
     memberCalls,
+    resolveCalls: agents.resolveCalls,
+    setShared: agents.setShared,
     settleObserver: async () => {
       // Loop: a settle can race a run that starts another. Bounded so a
       // pathological test cannot hang the suite.
@@ -291,26 +308,67 @@ export async function makeMemoryHarness(
   };
 }
 
+/** The fake `agents:resolve`'s handle: what it was asked, and the sharing switch. */
+export interface MemoryAgentsFake {
+  /** Every `userId` it was asked about, in order. */
+  resolveCalls: string[];
+  /** See {@link MemoryHarness.setShared}. */
+  setShared: (shared: boolean) => void;
+}
+
+/**
+ * A fake `agents:resolve`, answering the way `@ax/agents` does since
+ * TASK-1246: `shared` on every answer, and `isOwner` for the id asked about.
+ *
+ * - A team agent admits `members`, and answers `shared: true, isOwner: false`.
+ * - A personal agent that is Just me (the default) admits only `ownerUserId`,
+ *   and answers `shared: false, audience: 'just-me', isOwner: true`.
+ * - A personal agent shared with other people (`shared: true`, TASK-1248)
+ *   admits `ownerUserId` and every id in `members`, and answers
+ *   `shared: true, audience: 'everyone'`, with `isOwner` true for
+ *   `ownerUserId` only.
+ */
 export function registerMemoryAgents(
   bus: HookBus,
   options: {
-    visibility?: 'personal' | 'team';
-    ownerUserId?: string;
+    visibility?: 'personal' | 'team' | undefined;
+    ownerUserId?: string | undefined;
     members?: Set<string>;
     /** Answered only when set: the stub's answer carries no `displayName` otherwise. */
     displayName?: string | undefined;
+    /** A personal agent shared with other people (TASK-1248). Personal agents only. */
+    shared?: boolean | undefined;
   } = {},
-): void {
+): MemoryAgentsFake {
   const visibility = options.visibility ?? 'personal';
   const ownerUserId = options.ownerUserId ?? ALICE;
   const members = options.members ?? new Set<string>([ALICE, BOB]);
   const displayName = options.displayName;
+  if (visibility === 'team' && options.shared !== undefined) {
+    throw new Error('registerMemoryAgents: `shared` is for a personal agent; a team agent is always shared');
+  }
+  let shared = options.shared === true;
+  const resolveCalls: string[] = [];
   bus.registerService<
     { agentId: string; userId: string },
-    { agent: { id: string; ownerId: string; ownerType: string; visibility: string; displayName?: string } }
+    {
+      agent: {
+        id: string;
+        ownerId: string;
+        ownerType: string;
+        visibility: string;
+        shared: boolean;
+        audience?: string;
+        isOwner: boolean;
+        displayName?: string;
+      };
+    }
   >(AGENTS_RESOLVE_HOOK, '@ax/test-agents', async (_ctx, input) => {
+    resolveCalls.push(input.userId);
     const allowed =
-      visibility === 'personal' ? input.userId === ownerUserId : members.has(input.userId);
+      visibility === 'team'
+        ? members.has(input.userId)
+        : input.userId === ownerUserId || (shared && members.has(input.userId));
     if (!allowed) {
       throw new PluginError({
         code: 'forbidden',
@@ -325,10 +383,24 @@ export function registerMemoryAgents(
         ownerId: visibility === 'team' ? TEAM_ID : ownerUserId,
         ownerType: visibility === 'team' ? 'team' : 'user',
         visibility,
+        ...(visibility === 'team'
+          ? { shared: true, isOwner: false }
+          : shared
+            ? { shared: true, audience: 'everyone', isOwner: input.userId === ownerUserId }
+            : { shared: false, audience: 'just-me', isOwner: true }),
         ...(displayName !== undefined ? { displayName } : {}),
       },
     };
   });
+  return {
+    resolveCalls,
+    setShared: (next) => {
+      if (visibility === 'team') {
+        throw new Error('setShared: a team agent is always shared');
+      }
+      shared = next;
+    },
+  };
 }
 
 /**

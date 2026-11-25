@@ -254,7 +254,10 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  *   a shared one, borrow another owner, or point at another agent. Sharing
  *   is a property of the RESOLVED agent — `resolveMemoryAccess` asks
  *   `agents:resolve` on every operation — and never of the request, so the
- *   payload cannot carry it.
+ *   payload cannot carry it. The same goes for `shared` and `isOwner`, the
+ *   facts `agents:resolve` answers about an agent and the person asking
+ *   (TASK-1246), and for `memberCheck`, how memory proves who may be named
+ *   where an agent's memory is shared (TASK-1248).
  * - `audience` decides which rows a turn may recall (TASK-1091). The host
  *   stamps it on `ctx`, and a payload that could set it could widen a shared
  *   turn's read back to every row.
@@ -276,6 +279,11 @@ const FORBIDDEN_PAYLOAD_FIELDS = [
   'ownerType',
   'teamId',
   'agentId',
+  // TASK-1248: sharing facts only `agents:resolve` answers, and memory's own
+  // proof of who may be named.
+  'shared',
+  'isOwner',
+  'memberCheck',
   // Also the read-only display field on `MemoryStatement`, refused like
   // `savedBy` so a caller echoing it back learns it did nothing.
   'audience',
@@ -651,12 +659,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             }))),
         // TASK-1209: on a team agent another member's memories read by their
         // display name (`member-names.ts`), asked only about a proven current
-        // member of the agent's team. Only labels depend on either, so
-        // without one of them they read "a teammate" and every read still
-        // answers.
+        // member of the agent's team. Every name comes from `auth:get-user`,
+        // so without it nobody is named on any agent whose memory is shared,
+        // a personal agent shared with other people included (TASK-1248).
+        // `teams:is-member` is the proof for a team agent only. Only labels
+        // depend on either, so without one of them they read "a teammate"
+        // and every read still answers.
         {
           hook: AUTH_GET_USER_HOOK,
-          degradation: 'on a team agent, another member\'s memories read "a teammate" instead of their name',
+          degradation:
+            'on an agent whose memory is shared (a team agent, or a personal agent shared with other people), another person\'s memories read "a teammate" instead of their name',
         },
         {
           hook: TEAMS_IS_MEMBER_HOOK,

@@ -10,9 +10,10 @@ import { PLUGIN_NAME } from './plugin-name.js';
  * WRITER. It is a SCOPE, not a hint (the `@ax/decisions` phrasing): every row
  * `@ax/memory` writes is stamped with it, so a row's owner is always a real
  * caller. Whether it is also the READ filter is `resolveMemoryAccess`'s call,
- * not this function's: a personal agent filters reads and retracts by it; a
- * team agent shares the agent's rows across its current members and the
- * stamp is attribution only.
+ * not this function's: a "Just me" personal agent filters reads and retracts
+ * by it; an agent whose memory is shared (a team agent, or a personal agent
+ * shared with other people, TASK-1248) shares its rows with everyone who can
+ * use it, and the stamp is attribution only.
  *
  * It is taken from `ctx` and never from a payload, which is the security
  * property: a caller that could name an owner could read or retract another
@@ -36,10 +37,12 @@ import { PLUGIN_NAME } from './plugin-name.js';
  * owner, and keeping their words out of the owner's memory is `audience`'s
  * job, not ownership's: a shared turn's rows are stamped shared and
  * none has a person subject, `user`, `user:<id>` or a speaker's name
- * (`audience.ts`). A team agent's MEMBER turn is different (TASK-1204): it
- * runs as the member, so it files a member's facts under them, stamped with
- * the turn like the rest (TASK-1209), while an outsider's turn on it still
- * keeps none. (From Slack none is captured:
+ * (`audience.ts`). A MEMBER turn on an agent whose memory is shared is
+ * different (TASK-1204; on a personal agent shared with other people too,
+ * TASK-1248): it runs as the person talking, someone who can use the agent,
+ * so it files their facts under them, stamped with the turn like the rest
+ * (TASK-1209), while an outsider's turn on it still keeps none. (From Slack
+ * none is captured:
  * channel-slack's `memory:pre-capture` veto refuses every thread an outsider
  * talks in, TASK-1094.)
  *
