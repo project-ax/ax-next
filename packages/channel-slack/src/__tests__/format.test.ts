@@ -452,6 +452,8 @@ describe('cleanDetailLine: a failed turn’s detail, fit for a Markdown reply (T
     'Connector: <img src=x onerror=alert(1)>', 'Connector: @here @channel @everyone',
     'Connector: &lt;!here&gt; &#64;channel',
     "Dev service 'x' couldn't write /<!channel>/[a](//evil.example) (permission denied)",
+    // A logged path holds no `:`, so its angle link has no scheme: every `<` is marked, not only one before a letter.
+    "Dev service 'x' couldn't write /<//evil.example|Sign-in> (permission denied)",
     // Several names on one line: every link on it is defused, not only the first.
     'Connectors: [Gmail](https://evil.example), [Linear](https://evil.example), <http://evil.example|Notion> <https://evil.example> and 2 more',
   ])('%j pings, links and tags nothing, and still reads as written', (raw) => {
