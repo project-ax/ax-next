@@ -361,8 +361,8 @@ export function computeReadinessBudgetMs(args: {
 
 /**
  * TASK-1240 — everything `sandbox:open-session` may spend beyond the readiness
- * wait itself: the failure path's pod delete (kill.ts backs off up to 1.75 s
- * per attempt, bounded by its own retries), the log reads that name a failing
+ * wait itself: the failure path's pod delete (kill.ts retries a few times with
+ * about 1.75 s of backoff in total), the log reads that name a failing
  * service, and the rest of the open. The mount-preparation pod has its own
  * deadline, which `computeOpenSessionTimeoutMs` adds separately (it is
  * `readinessTimeoutMs`).
