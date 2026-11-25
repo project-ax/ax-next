@@ -1658,6 +1658,104 @@ describe('claim (TASK-1173)', () => {
   });
 });
 
+/*
+  A Claim on a personal agent shared with other people (TASK-1248): its
+  agents:resolve answer says `shared: true`, and its owners stand where a
+  team agent's team admins do (channels.ts `managerAccess`). Here the support
+  bot's agent is Alice's personal agent, shared with everyone, and Ada (who
+  asked for its bot) and Bob co-own it. Any owner takes the bot over once the
+  owner who asked is no longer one; nobody it is only shared with ever does.
+  Who is an owner comes from the resolve answer alone: the team-admin
+  question is never asked about a personal agent.
+*/
+describe('claim on a personal agent shared with other people (TASK-1248)', () => {
+  /** Made the agent and shared it with everyone. */
+  const ALICE = 'usr_alice';
+  /** The support bot's agent, as a personal agent of Alice's: shared with everyone, co-owned by Ada and Bob. */
+  const SHARED: FakeAgent = {
+    id: SUPPORT,
+    displayName: 'Support',
+    visibility: 'personal',
+    ownerType: 'user',
+    ownerId: ALICE,
+    audience: 'everyone',
+    coOwners: [ADA, BOB],
+  };
+  /** The seeded world, its support agent being Alice's shared one. */
+  async function sharedSeeded(): Promise<World> {
+    const w = await seeded();
+    w.people.addAgent(SHARED);
+    return w;
+  }
+  /** Alice takes Ada, who asked for the bot, off its owners. It is still shared with her, as with everyone. */
+  const adaNoLongerAnOwner = (w: World): void => {
+    w.people.agents.set(SUPPORT, { ...SHARED, coOwners: [BOB] });
+  };
+  /** Back to Just me: its owners can use it, and nobody else. */
+  const justMe = (w: World): void => {
+    w.people.agents.set(SUPPORT, { ...SHARED, audience: 'just-me' });
+  };
+
+  it('a co-owner takes over once the owner who asked is no longer one, as its creator can: their rights, then the requester, each from one resolve; one claimBot naming them', async () => {
+    for (const actor of [BOB, ALICE]) {
+      const w = await sharedSeeded();
+      adaNoLongerAnOwner(w);
+      const before = structuredClone(supportRow(w));
+
+      expect(await w.claim(actor, SUPPORT_BOT), actor).toEqual({ status: 200, body: {} });
+
+      // Their rights first, inside the lock; then whether Ada still is an owner. Never the team-admin question.
+      expect(asked(w), actor).toEqual([
+        ['agents:resolve', actor],
+        ['agents:resolve', ADA],
+      ]);
+      expect(w.memory.calls, actor).toEqual([
+        { method: 'botForAgent', args: [SUPPORT] },
+        { method: 'claimBot', args: [SUPPORT_BOT, actor] },
+      ]);
+      // Only whom its outsiders run as moved: Grace, whose token made the app, is still its approver.
+      expect(supportRow(w), actor).toEqual({ ...before, requestedByUserId: actor });
+      expect(reached(w), actor).toEqual([]);
+      expect(w.lines, actor).toEqual([CLAIMED]);
+    }
+  });
+
+  it('claim-not-needed while the owner who asked is still one: nothing written, for another owner or the requester herself', async () => {
+    for (const actor of [BOB, ALICE, ADA]) {
+      const w = await sharedSeeded();
+      const before = structuredClone(supportRow(w));
+
+      expect(await w.claim(actor, SUPPORT_BOT), actor).toEqual({ status: 409, body: { error: 'claim-not-needed' } });
+
+      expect(w.memory.calls.map((c) => c.method), actor).toEqual(['botForAgent']);
+      expect(asked(w).map(([hook]) => hook), actor).toEqual(['agents:resolve', 'agents:resolve']);
+      expect(supportRow(w), actor).toEqual(before);
+      expect(w.lines, actor).toEqual([]);
+    }
+  });
+
+  it("someone it is only shared with can't take over (403), the requester no longer an owner included; once it is Just me, an owner's claim is 409 personal-agent; nothing is read", async () => {
+    const cases: Array<[what: string, actor: string, change: (w: World) => void, status: number, error: string]> = [
+      ['someone it is shared with', MEL, adaNoLongerAnOwner, 403, 'forbidden'],
+      ['its approver, who owns none of it', GRACE, adaNoLongerAnOwner, 403, 'forbidden'],
+      ['anyone else at all: it is shared with everyone', STRANGER, adaNoLongerAnOwner, 403, 'forbidden'],
+      ['the requester, no longer an owner', ADA, adaNoLongerAnOwner, 403, 'forbidden'],
+      ['an owner, once it is Just me', BOB, justMe, 409, 'personal-agent'],
+    ];
+    for (const [what, actor, change, status, error] of cases) {
+      const w = await sharedSeeded();
+      change(w);
+
+      expect(await w.claim(actor, SUPPORT_BOT), what).toEqual({ status, body: { error } });
+
+      expect(w.memory.calls, what).toEqual([]);
+      expect(asked(w), what).toEqual([['agents:resolve', actor]]);
+      expect(supportRow(w).requestedByUserId, what).toBe(ADA);
+      expect(w.lines, what).toEqual([]);
+    }
+  });
+});
+
 // ── What leaves the domain ──────────────────────────────────────────────────
 
 describe('answers and logs', () => {

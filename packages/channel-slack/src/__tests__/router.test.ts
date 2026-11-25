@@ -3415,6 +3415,219 @@ describe("createEventRouter: a team agent's own Slack bot (TASK-1167)", () => {
   });
 });
 
+// ── A personal agent shared with other people: its own bot (TASK-1248) ──────
+
+/*
+  A personal agent whose agents:resolve answer says `shared: true` is reached
+  in a channel through its own bot, as a team agent is (channels.ts): anyone
+  it is shared with runs attended, as themself; anyone else the channel
+  admits runs external, as the bot's requester, while they are still one of
+  its owners (channels.ts `managerAccess`, read from the same resolve
+  answer). Narrowed back to Just me, the bot is inert: every mention gets the
+  polite line, and no turn runs, until it is shared again.
+
+  Here the support agent's own bot's agent is a personal agent: Alice made
+  it and shared it with everyone, and Ada, who asked for the bot (so its
+  channels' outsiders run as her), co-owns it. Bob, an AX user who owns none
+  of it, can use it; Carol has no AX account.
+*/
+describe("createEventRouter: a personal agent shared with other people, through its own bot (TASK-1248)", () => {
+  /** Alice's personal agent, shared with everyone and co-owned by Ada: the support agent's own bot's agent, by its id. */
+  const SHARED_AGENT: FakeAgent = {
+    ...SUPPORT_AGENT,
+    visibility: 'personal',
+    ownerType: 'user',
+    ownerId: 'usr_alice',
+    audience: 'everyone',
+    coOwners: ['usr_ada'],
+  };
+  /** Ada, who asked for the bot, is no longer one of its owners. It is still shared with her, as with everyone. */
+  const ADA_NOT_AN_OWNER: FakeAgent = { ...SHARED_AGENT, coOwners: [] };
+  /** Back to Just me: its owners can use it, and nobody else. */
+  const JUST_ME: FakeAgent = { ...SHARED_AGENT, audience: 'just-me' };
+
+  it("a mention from someone it is shared with binds the channel to its bot's agent and runs attended there, as him", async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    w.agents.addAgent(SHARED_AGENT);
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Two tickets.' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention({ user: BOB }));
+    await w.idle();
+
+    // Bound on the bot's install, to its agent, connected by its requester (whom outsiders run as).
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual({
+      installId: OWN_BOT_ID,
+      channelId: SUPPORT,
+      agentId: SUPPORT_AGENT.id,
+      connectedByUserId: 'usr_ada',
+      channelName: 'support',
+      createdAt: expect.any(Date),
+    });
+    // Bob owns none of it and runs attended, as himself, in his own conversation for the thread.
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId, i.ctx.source, i.ctx.conversationId])).toEqual([
+      ['usr_bob', SUPPORT_AGENT.id, 'user', `conv:${botKey(MENTION_TS)}`],
+    ]);
+    expect(w.threadWrites.map((t) => [t.installId, t.channelId, t.agentId, t.mode])).toEqual([
+      [OWN_BOT_ID, SUPPORT, SUPPORT_AGENT.id, 'attended'],
+    ]);
+    // Only his own access was asked: someone it is shared with never depends on the requester.
+    expect(w.agents.inputs('agents:resolve')).toEqual([{ agentId: SUPPORT_AGENT.id, userId: 'usr_bob' }]);
+    expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([]);
+    expect(w.slack.calls.find((c) => c.method === 'startStream')).toMatchObject({
+      token: OWN_BOT_TOKEN,
+      args: { channel: SUPPORT, threadTs: MENTION_TS, recipientUserId: BOB },
+    });
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe('Two tickets.');
+    expect(w.lines.filter((l) => l.msg === 'slack_bot_channel_bound')).toEqual([
+      { level: 'info', msg: 'slack_bot_channel_bound', fields: { installId: OWN_BOT_ID } },
+    ]);
+  });
+
+  it.each([
+    // Shared with everyone: anyone with an AX account can use it, so an outsider is someone without one.
+    ['someone with no AX account whose email is on an approved domain', CAROL, null, SHARED_AGENT],
+    // Shared with a list naming Dave alone: Bob has an account, and it isn't shared with him.
+    ['an AX user it is not shared with', BOB, 'usr_bob', { ...SHARED_AGENT, audience: 'just-me' } as FakeAgent],
+  ] as const)(
+    "an outsider's mention runs external, as the requester, while she is one of its owners: %s",
+    async (_what, user, mapped, agent) => {
+      const w = world();
+      w.putInstall(OWN_BOT);
+      w.agents.addAgent(agent);
+      if (mapped !== null) w.agents.shareWith(SUPPORT_AGENT.id, 'usr_dave');
+      await w.dispatch(OWN_BOT, botMention({ user, text: 'can you help?' }));
+      await w.idle();
+
+      expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.agentId, i.ctx.source, i.ctx.conversationId])).toEqual([
+        ['usr_ada', SUPPORT_AGENT.id, 'external', `conv:${botKey(MENTION_TS)}:external`],
+      ]);
+      expect(w.threadWrites.map((t) => [t.installId, t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([
+        [OWN_BOT_ID, 'external', 'usr_ada'],
+      ]);
+      // Their own access first, when they have an account; then whether Ada is still one of its owners, from
+      // the resolve answer alone: at the mention, and again when the turn's time comes. Never the team-admin question.
+      expect(w.agents.inputs('agents:resolve')).toEqual([
+        ...(mapped === null ? [] : [{ agentId: SUPPORT_AGENT.id, userId: mapped }]),
+        { agentId: SUPPORT_AGENT.id, userId: 'usr_ada' },
+        { agentId: SUPPORT_AGENT.id, userId: 'usr_ada' },
+      ]);
+      expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([]);
+      // One lane for every outsider in the bot's channel.
+      expect(w.lanes).toEqual([{ lane: 'channel', key: `${OWN_BOT_ID}:${SUPPORT}`, group: OWN_BOT_ID }]);
+    },
+  );
+
+  it('once the requester is no longer one of its owners, an outsider gets the polite line and no turn; someone it is shared with still runs, as himself', async () => {
+    const w = world();
+    w.putInstall(OWN_BOT);
+    w.agents.addAgent(ADA_NOT_AN_OWNER);
+    const threaded = '1763035100.000050';
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: '1763035301.000301', threadTs: threaded }));
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    // Privately, in the mention's thread, with the bot's own token.
+    expect(ephemerals(w.slack.calls)).toEqual([{ channel: SUPPORT, user: CAROL, text: COPY.botUnavailable, threadTs: threaded }]);
+    expect(w.slack.calls.filter((c) => c.method === 'postEphemeral').map((c) => c.token)).toEqual([OWN_BOT_TOKEN]);
+    expect(w.lines.filter((l) => l.msg === 'slack_channel_unavailable')).toEqual([
+      { level: 'warn', msg: 'slack_channel_unavailable', fields: { installId: OWN_BOT_ID, reason: 'connector-no-access' } },
+    ]);
+    expect(w.agents.inputs('agents:resolve')).toEqual([{ agentId: SUPPORT_AGENT.id, userId: 'usr_ada' }]);
+
+    // Bob can use the agent: his turn runs, as him.
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035303.000303' }));
+    await w.idle();
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.agentId])).toEqual([['usr_bob', 'user', SUPPORT_AGENT.id]]);
+    expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([]);
+  });
+
+  it('once it is Just me again, every mention gets the polite line and no turn runs, its owners included; shared again, the very next one runs', async () => {
+    const w = botWorld();
+    w.agents.addAgent(JUST_ME);
+    // Its creator, its co-owner (the bot's requester), someone it was shared with, and someone with no AX account.
+    const senders = [ALICE, ADA, BOB, CAROL];
+    for (const [n, user] of senders.entries()) {
+      await w.dispatch(OWN_BOT, botMention({ user, ts: `1763035301.00030${n}` }));
+    }
+    await w.idle();
+
+    expect(w.invokes).toEqual([]);
+    expect(w.conversations).toEqual([]);
+    expect(w.threadWrites).toEqual([]);
+    expect(ephemerals(w.slack.calls)).toEqual(senders.map((user) => ({ channel: SUPPORT, user, text: COPY.botUnavailable })));
+    const inert = { level: 'warn', msg: 'slack_channel_unavailable', fields: { installId: OWN_BOT_ID, reason: 'not-team-agent' } };
+    expect(w.lines.filter((l) => l.msg === 'slack_channel_unavailable')).toEqual(senders.map(() => inert));
+    // Inert, not removed: the binding stays.
+    expect(w.channels.row(OWN_BOT_ID, SUPPORT)).toEqual(ownBinding());
+    expect(w.agents.inputs('agents:can-set-shared-credential')).toEqual([]);
+
+    // Shared again: nothing was kept, and Bob's next mention runs, as him.
+    w.agents.addAgent(SHARED_AGENT);
+    await w.dispatch(OWN_BOT, botMention({ user: BOB, ts: '1763035309.000309' }));
+    await w.idle();
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, i.ctx.agentId])).toEqual([['usr_bob', 'user', SUPPORT_AGENT.id]]);
+  });
+
+  it.each([
+    ['the requester is no longer one of its owners', ADA_NOT_AN_OWNER],
+    ['it is Just me again', JUST_ME],
+  ] as const)("an outsider's turn still waiting when %s is dropped with the polite line, and never runs as her", async (_what, narrowed) => {
+    const w = botWorld();
+    w.agents.addAgent(SHARED_AGENT);
+    const first = deferred();
+    w.scripts.push({ gate: first.promise, chunks: [{ kind: 'text', text: 'one' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, text: 'outsider first' }));
+    // Planned while Ada is one of its owners: it waits behind the first in the channel's one outsider lane.
+    await w.dispatch(OWN_BOT, botMention({ user: CAROL, ts: '1763035302.000302', threadTs: MENTION_TS, text: 'outsider second' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(w.invokes).toHaveLength(1);
+
+    w.agents.addAgent(narrowed);
+    first.release();
+    await w.idle();
+
+    // Asked again when its time came: no longer, so it never runs as Ada, and records nothing.
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source, wordsOf(i)])).toEqual([['usr_ada', 'external', 'outsider first']]);
+    expect(w.threadWrites.map((t) => [t.mode, t.mode === 'external' ? t.runAs : null])).toEqual([['external', 'usr_ada']]);
+    expect(ephemerals(w.slack.calls)).toEqual([
+      { channel: SUPPORT, user: CAROL, text: COPY.botUnavailable, threadTs: MENTION_TS },
+    ]);
+    expect(w.lines.filter((l) => l.msg === 'slack_turns_dropped')).toEqual([
+      { level: 'info', msg: 'slack_turns_dropped', fields: { installId: OWN_BOT_ID, reason: 'requester', count: 1 } },
+    ]);
+  });
+
+  it("the memory notice posts once at its bot's first channel turn, top-level and before the reply; it names no team, and the second turn posts none", async () => {
+    const w = botWorld({ teams: { [SUPPORT_TEAM]: 'Customer Support' } });
+    w.agents.addAgent(SHARED_AGENT);
+    const notices = () => w.slack.calls.filter((c) => c.method === 'postToChannel').map((c) => [c.token, c.args]);
+    w.scripts.push({ chunks: [{ kind: 'text', text: 'Two tickets.' }], end: 'turn-end' });
+    await w.dispatch(OWN_BOT, botMention({ user: BOB }));
+    await w.idle();
+
+    // One post, with the bot's own token, in the channel itself: what anyone says to it is shared with anyone who talks to it.
+    expect(notices()).toEqual([[OWN_BOT_TOKEN, { channel: SUPPORT, text: COPY.memoryNotice }]]);
+    expect(w.teamsAsked).toEqual([]);
+    const order = methods(w.slack.calls);
+    expect(order.indexOf('postToChannel')).toBeGreaterThan(-1);
+    expect(order.indexOf('postToChannel')).toBeLessThan(order.indexOf('startStream'));
+    expect(replyIn(w.slack.calls, SUPPORT)).toBe('Two tickets.');
+    expect(w.lines.filter((l) => l.msg === 'slack_notice_posted')).toEqual([
+      { level: 'info', msg: 'slack_notice_posted', fields: { installId: OWN_BOT_ID } },
+    ]);
+
+    // Its creator's turn after it finds the channel told.
+    await w.dispatch(OWN_BOT, botMention({ user: ALICE, ts: '1763035301.000301', text: `<@${OWN_BOT_USER_ID}> and now?` }));
+    await w.idle();
+    expect(w.invokes.map((i) => [i.ctx.userId, i.ctx.source])).toEqual([
+      ['usr_bob', 'user'],
+      ['usr_alice', 'user'],
+    ]);
+    expect(notices()).toHaveLength(1);
+  });
+});
+
 // ── A bound channel Slack no longer allows (TASK-1184) ──────────────────────
 
 /*

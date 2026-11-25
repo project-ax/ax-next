@@ -1555,6 +1555,122 @@ describe('decline', () => {
   });
 });
 
+// ── A personal agent shared with other people (TASK-1248) ───────────────────
+
+/*
+  A personal agent whose agents:resolve answer says `shared: true` is asked
+  for as a team agent is, with its owners where a team agent has its team
+  admins: any owner may ask, and an AX admin's approve makes the bot only
+  while the owner who asked is still one (channels.ts `managerAccess`). Who
+  is an owner comes from the resolve answer alone: agents:can-set-shared-credential
+  is never asked about a personal agent.
+*/
+describe('a personal agent shared with other people (TASK-1248)', () => {
+  /** Made the agent and shared it with everyone. */
+  const ALICE = 'usr_alice';
+  /** A co-owner of Alice's agent. */
+  const CAROL = 'usr_carol';
+  /** Alice's personal agent, shared with everyone; Carol co-owns it (TASK-1246). Bob can use it, and owns none of it. */
+  const SHARED: FakeAgent = {
+    id: 'agt_alice',
+    displayName: "Alice's agent",
+    visibility: 'personal',
+    ownerType: 'user',
+    ownerId: ALICE,
+    audience: 'everyone',
+    coOwners: [CAROL],
+  };
+  /** Back to Just me: its owners can use it, and nobody else. */
+  const justMe = (w: World): void => {
+    w.people.agents.set(SHARED.id, { ...SHARED, audience: 'just-me' });
+  };
+
+  it('asks: its owners open one; anyone else it is shared with is 403; a Just-me agent is 409 personal-agent, its owners included; anyone who cannot use it is 404; no refusal opens one', async () => {
+    const cases: Array<{ what: string; as: string; arrange?: (w: World) => void; want: Reply }> = [
+      { what: 'its creator', as: ALICE, want: { status: 200, body: {} } },
+      { what: 'a co-owner', as: CAROL, want: { status: 200, body: {} } },
+      { what: 'someone it is shared with, not an owner', as: BOB, want: { status: 403, body: { error: 'forbidden' } } },
+      { what: 'its creator, once it is Just me', as: ALICE, arrange: justMe, want: { status: 409, body: { error: 'personal-agent' } } },
+      { what: 'a co-owner, once it is Just me', as: CAROL, arrange: justMe, want: { status: 409, body: { error: 'personal-agent' } } },
+      { what: 'someone it was shared with, once it is Just me', as: BOB, arrange: justMe, want: NOT_FOUND },
+      {
+        what: 'a stranger: shared with a list that names Bob alone',
+        as: SAM,
+        arrange: (w) => {
+          justMe(w);
+          w.people.shareWith(SHARED.id, BOB);
+        },
+        want: NOT_FOUND,
+      },
+    ];
+    for (const c of cases) {
+      const w = world();
+      w.people.addAgent(SHARED);
+      await seedShared(w);
+      c.arrange?.(w);
+
+      expect(await w.ask({ as: c.as, agentId: SHARED.id }), c.what).toEqual(c.want);
+
+      // Only an owner's ask opens one, naming them; the AX admins hear of that one alone.
+      const opened = c.want.status === 200;
+      expect([...w.memory.requests.values()].map((r) => [r.agentId, r.requestedByUserId]), c.what).toEqual(
+        opened ? [[SHARED.id, c.as]] : [],
+      );
+      expect(w.dms.calls.map((n) => n.method), c.what).toEqual(opened ? ['opened'] : []);
+      // One question, about the person asking; never the team-admin one.
+      expect(w.people.inputs('agents:resolve'), c.what).toEqual([{ agentId: SHARED.id, userId: c.as }]);
+      expect(w.people.inputs('agents:can-set-shared-credential'), c.what).toEqual([]);
+      expect(w.slack.calls, c.what).toEqual([]);
+      expect(w.vaultCalls, c.what).toEqual([]);
+    }
+  });
+
+  it('approving needs the owner who asked to still be one: made while they are; once they are not, or it is Just me again, 409 requester-not-admin before any token, and the request stays', async () => {
+    /** Carol's open request for Alice's agent's bot, and Grace's stored token. */
+    const requested = async (): Promise<World> => {
+      const w = world();
+      w.people.addAgent(SHARED);
+      await seedShared(w);
+      await seedRequest(w, { agentId: SHARED.id, by: CAROL });
+      w.vault.set(configTokenRef(GRACE), GRACE_STORED);
+      return w;
+    };
+    const sharedBot = (w: World): Row | undefined =>
+      [...w.memory.rows.values()].find((r) => r.kind === 'bot' && r.agentId === SHARED.id);
+
+    // Carol is still an owner: Grace's token makes the bot, Carol its requester, and the request goes.
+    const ok = await requested();
+    expect(await ok.approve({ as: GRACE })).toEqual(INSTALL_LINK);
+    expect(sharedBot(ok)).toMatchObject({ status: 'pending', connectedByUserId: GRACE, requestedByUserId: CAROL });
+    expect(ok.memory.requests.size).toBe(0);
+    // Whether Carol still is one, asked as her; Grace's own rights over the agent never are.
+    expect(ok.people.inputs('agents:resolve')).toEqual([{ agentId: SHARED.id, userId: CAROL }]);
+    expect(ok.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+
+    const cases: Array<[string, (w: World) => void]> = [
+      [
+        'Alice took Carol off its owners (it is still shared with her)',
+        (w) => {
+          w.people.agents.set(SHARED.id, { ...SHARED, coOwners: [] });
+        },
+      ],
+      ['it is Just me again', justMe],
+    ];
+    for (const [what, change] of cases) {
+      const w = await requested();
+      change(w);
+
+      expect(await w.approve({ as: GRACE }), what).toEqual({ status: 409, body: { error: 'requester-not-admin' } });
+
+      expect(w.slack.calls, what).toEqual([]);
+      expect(w.vaultCalls, what).toEqual([]);
+      expect(bots(w), what).toEqual([]);
+      expect(w.memory.requests.has(REQUEST), what).toBe(true);
+      expect(w.dms.calls, what).toEqual([]);
+    }
+  });
+});
+
 // ── The DMs ─────────────────────────────────────────────────────────────────
 
 describe("a request's DMs", () => {
