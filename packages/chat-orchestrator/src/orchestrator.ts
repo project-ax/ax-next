@@ -1380,13 +1380,15 @@ export const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
  * before the orchestrator's own bound. A reviewer showed that does not hold:
  * the `chatTimeoutMs` timer is armed only AFTER setup — `chat:start`
  * subscribers, `agents:resolve`, `proxy:open-session` and `sandbox:open-session`
- * (each registered with its own timeout: a fixed 300 s on sandbox-subprocess; on sandbox-k8s the readiness budget plus overhead, which runs to minutes when a session has dev services) — while the bus clock
- * starts at handler entry. A three-minute cold pod spawn therefore still put
- * the bus deadline two minutes AHEAD of the orchestrator's, and now that
- * channel-web surfaces the rejection it would have killed a healthy streaming
- * turn's SSE and persisted a failure that never happened. Any finite slack has
- * that shape: setup is a chain of separately-bounded phases, and no single
- * number measured from handler entry dominates their sum.
+ * (each registered with its own timeout: a fixed 300 s on sandbox-subprocess;
+ * on sandbox-k8s the readiness budget plus overhead, which runs to minutes
+ * when a session has dev services) — while the bus clock starts at handler
+ * entry. A three-minute cold pod spawn therefore still put the bus deadline
+ * two minutes AHEAD of the orchestrator's, and now that channel-web surfaces
+ * the rejection it would have killed a healthy streaming turn's SSE and
+ * persisted a failure that never happened. Any finite slack has that shape:
+ * setup is a chain of separately-bounded phases, and no single number
+ * measured from handler entry dominates their sum.
  *
  * SO THE ORCHESTRATOR OWNS TURN DURATION, ALONE — which it is built to do, and
  * this is not a backstop being removed so much as a second, wrong clock. Every

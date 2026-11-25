@@ -338,13 +338,6 @@ export const ProxyConfigSchema = z
   });
 export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
 
-// The full `sandbox:open-session` input envelope. Both backends `safeParse`
-// this at their boundary. `owner` and `installedSkills` are optional for
-// back-compat with non-orchestrator paths (tests, ad-hoc CLI). `proxyConfig`
-// is REQUIRED (TASK-838): the runner refuses to boot without the per-session
-// proxy env, so a session opened without one could never be served. The host
-// refuses it here, before a sandbox is spawned, instead of letting it surface
-// as a runner exit 2.
 /**
  * The most dev services one `sandbox:open-session` may carry (the on-demand
  * ceiling). A provider that sizes a clock by service count (sandbox-k8s's
@@ -353,6 +346,13 @@ export type ProxyConfig = z.infer<typeof ProxyConfigSchema>;
  */
 export const MAX_OPEN_SESSION_SERVICES = 16;
 
+// The full `sandbox:open-session` input envelope. Both backends `safeParse`
+// this at their boundary. `owner` and `installedSkills` are optional for
+// back-compat with non-orchestrator paths (tests, ad-hoc CLI). `proxyConfig`
+// is REQUIRED (TASK-838): the runner refuses to boot without the per-session
+// proxy env, so a session opened without one could never be served. The host
+// refuses it here, before a sandbox is spawned, instead of letting it surface
+// as a runner exit 2.
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
