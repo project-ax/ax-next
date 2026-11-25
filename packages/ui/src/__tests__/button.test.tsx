@@ -25,16 +25,78 @@ describe('Button', () => {
     expect(b.getAttribute('type')).toBe('button');
   });
 
-  it('busy: aria-busy, disabled, keeps the label, ignores clicks', () => {
+  it('busy: aria-busy and aria-disabled (not disabled), keeps the label, ignores clicks', () => {
     const onClick = vi.fn();
     render(<Button busy onClick={onClick}>Save</Button>);
     const b = screen.getByRole('button', { name: 'Save' });
     expect(b.getAttribute('aria-busy')).toBe('true');
-    expect((b as HTMLButtonElement).disabled).toBe(true);
+    expect(b.getAttribute('aria-disabled')).toBe('true');
+    expect((b as HTMLButtonElement).disabled).toBe(false);
     expect(b.textContent).toBe('Save');
     expect(b.querySelector('svg.ax-animate-spin')).not.toBeNull();
     fireEvent.click(b);
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('busy keeps focus when it becomes busy', () => {
+    const { rerender } = render(<Button>Save</Button>);
+    const b = screen.getByRole('button', { name: 'Save' });
+    b.focus();
+    expect(document.activeElement).toBe(b);
+    rerender(<Button busy>Save</Button>);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Save' }));
+  });
+
+  it('busy submit button does not submit its form', () => {
+    const onSubmit = vi.fn((e: { preventDefault(): void }) => e.preventDefault());
+    render(
+      <form onSubmit={onSubmit}>
+        <Button type="submit" busy>Save</Button>
+      </form>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('idle submit button does submit its form', () => {
+    const onSubmit = vi.fn((e: { preventDefault(): void }) => e.preventDefault());
+    render(
+      <form onSubmit={onSubmit}>
+        <Button type="submit">Save</Button>
+      </form>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('real disabled still uses the disabled attribute', () => {
+    render(<Button disabled>Save</Button>);
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('busy without an icon differs from idle only in padding and gap classes (width stays identical)', () => {
+    const PAD = /^ax-(gap|px|pl|pr)-/;
+    for (const size of ['sm', 'md'] as const) {
+      const idle = render(<Button size={size}>Save</Button>);
+      const idleCls = idle.container.firstElementChild!.getAttribute('class')!.split(' ');
+      idle.unmount();
+      const busy = render(<Button size={size} busy>Save</Button>);
+      const busyCls = busy.container.firstElementChild!.getAttribute('class')!.split(' ');
+      busy.unmount();
+      const removed = idleCls.filter((c) => !busyCls.includes(c)).sort();
+      const added = busyCls.filter((c) => !idleCls.includes(c)).sort();
+      expect(removed, size).toEqual(['ax-gap-sm', 'ax-px-lg']);
+      expect(added, size).toEqual(['ax-gap-xs', 'ax-pl-sm', 'ax-pr-sm']);
+      for (const c of [...removed, ...added]) expect(c).toMatch(PAD);
+    }
+  });
+
+  it('busy with an icon keeps the idle spacing classes', () => {
+    const a = render(<Button icon={Plus}>Add</Button>);
+    const idle = a.container.firstElementChild!.getAttribute('class');
+    a.unmount();
+    const b = render(<Button icon={Plus} busy>Add</Button>);
+    expect(b.container.firstElementChild!.getAttribute('class')).toBe(idle);
   });
 
   it('is not aria-busy when idle, and clicks fire', () => {
@@ -90,11 +152,11 @@ describe('IconButton', () => {
     expect((await screen.findByRole('tooltip')).textContent).toBe('Add item');
   });
 
-  it('busy: aria-busy and disabled', () => {
+  it('busy: aria-busy and aria-disabled', () => {
     render(<IconButton label="Add item" icon={Plus} busy />);
     const b = screen.getByRole('button', { name: 'Add item' });
     expect(b.getAttribute('aria-busy')).toBe('true');
-    expect((b as HTMLButtonElement).disabled).toBe(true);
+    expect(b.getAttribute('aria-disabled')).toBe('true');
   });
 
   it('ssr: renderToString does not throw', () => {
