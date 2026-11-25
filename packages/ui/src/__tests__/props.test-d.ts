@@ -1,5 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
-import { Divider, Grid, Heading, Inline, Stack, Text } from '../index.js';
+import { Plus } from 'lucide-react';
+import { Button, Divider, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -51,6 +52,19 @@ describe('props', () => {
     const h2: P<typeof Heading> = { style: {} };
     // @ts-expect-error as is not a prop
     const h3: P<typeof Heading> = { as: 'h1' };
+    // @ts-expect-error className is not a prop
+    const b1: P<typeof Button> = { children: 'x', className: 'x' };
+    // @ts-expect-error style is not a prop
+    const b2: P<typeof Button> = { children: 'x', style: {} };
+    // @ts-expect-error danger is not a public intent
+    const b3: P<typeof Button> = { children: 'x', intent: 'danger' };
+    // @ts-expect-error className is not a prop
+    const ib1: P<typeof IconButton> = { label: 'x', icon: Plus, className: 'x' };
+    // @ts-expect-error label required
+    const ib2: P<typeof IconButton> = { icon: Plus };
+    // @ts-expect-error primary is not an IconButton intent
+    const ib3: P<typeof IconButton> = { label: 'x', icon: Plus, intent: 'primary' };
+    void [b1, b2, b3, ib1, ib2, ib3];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });
 });
