@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { HookBus, PluginError, makeAgentContext, type AgentContext, type Logger } from '@ax/core';
+import { ERROR_LABELS } from '@ax/core/turn-error-text';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COPY } from '../copy.js';
 import {
@@ -10,10 +11,11 @@ import {
   PROMPT_MAX,
   PROMPT_TTL_MS,
   TURN_END_GRACE_MS,
+  TURN_ERROR_WAIT_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
 import { linkOnlyBlocks, outcomeBlocks } from '../blocks.js';
-import { cleanPromptSubject } from '../format.js';
+import { cleanDetailLine, cleanPromptSubject } from '../format.js';
 import { createPromptRegistry } from '../prompts.js';
 import { systemClock } from '../reply-stream.js';
 import { SlackApiError, type SlackApi, type StreamChunkOut } from '../slack-api.js';
@@ -58,6 +60,9 @@ const INSTALL: InstallRow = {
 const SENDER = 'U07ALICE001';
 /** The caller's label, whatever the mode: the turn puts it in front of the text as it is. */
 const LABEL = `[Slack · #support · Alice Smith (${SENDER})]`;
+
+/** The sentence a turn-error's default reason here (`chat-run-timeout`) ends a member's reply with (TASK-1250). */
+const TIMED_OUT = ERROR_LABELS['chat-run-timeout']!;
 
 // ── A fake Slack: the reply's calls, recorded ───────────────────────────────
 
@@ -190,7 +195,18 @@ interface Script {
    * whose conversation is the turn's, and no reqId at all.
    */
   cards?: Array<Record<string, unknown>>;
-  end?: 'turn-end' | 'turn-error';
+  /** How the turn ends: its turn-end (the default), its turn-error, or nothing fired at all. */
+  end?: 'turn-end' | 'turn-error' | 'none';
+  /** The turn-error's payload, merged over `{ reqId, reason: 'chat-run-timeout' }`. */
+  turnError?: Record<string, unknown>;
+  /** What agent:invoke answers: complete unless set. */
+  outcome?: Record<string, unknown>;
+  /**
+   * The turn-error fires after the invoke has answered (`setTimeout` 0), not
+   * before: chat-orchestrator's F2b order (`onChatEnd` resolves the invoke's
+   * waiter, then fires the turn-error).
+   */
+  turnErrorAfterOutcome?: boolean;
 }
 
 /** The reply as it stood right after another turn's dark turn-end. */
@@ -345,11 +361,16 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
         else await bus.fire('chat:permission-request', egressCtx, { reqId: ctx.reqId, ...card });
       }
       if (script.end === 'turn-error') {
-        await bus.fire('chat:turn-error', ipcCtx, { reqId: ctx.reqId, reason: 'chat-run-timeout' });
-      } else {
+        const turnError = { reqId: ctx.reqId, reason: 'chat-run-timeout', ...script.turnError };
+        if (script.turnErrorAfterOutcome === true) {
+          setTimeout(() => void bus.fire('chat:turn-error', ipcCtx, turnError), 0);
+        } else {
+          await bus.fire('chat:turn-error', ipcCtx, turnError);
+        }
+      } else if (script.end !== 'none') {
         await bus.fire('chat:turn-end', ipcCtx, { reqId: ctx.reqId, reason: 'complete' });
       }
-      return { kind: 'complete', messages: [] };
+      return script.outcome ?? { kind: 'complete', messages: [] };
     },
     // Like the real one (AGENT_INVOKE_TIMEOUT_MS): no bus deadline, no stall watch.
     { timeoutMs: Number.POSITIVE_INFINITY, stallWarnMs: Number.POSITIVE_INFINITY },
@@ -659,6 +680,146 @@ describe("runTurn: another turn's dark turn-end is not this one's (TASK-1095)", 
   });
 });
 
+describe('runTurn: a failed turn says why (TASK-1250)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SERVICE_FAILED = ERROR_LABELS['dev-service-failed']!;
+  /** A dev service's diagnosis, as the host sends it in `detail` (format.test.ts). */
+  const DIAG = "Dev service 'kafka' couldn't write /var/lib/kafka (read-only filesystem) — add /var/lib/kafka to the service's writablePaths.";
+  /** The agent's Connectors settings in the web app: where Slack's reconnect line links. */
+  const CONNECTORS = 'https://ax.example/workspace/agents/agt_support/settings/connectors';
+  /** What agent:invoke answers for a turn that ended abnormally. */
+  const terminated = (reason: string) => ({ kind: 'terminated', reason });
+
+  it('a known reason ends the reply with its sentence', async () => {
+    const h = harness({
+      chunks: [{ kind: 'text', text: 'Let me check.' }],
+      end: 'turn-error',
+      outcome: terminated('chat-run-timeout'),
+    });
+    await h.run('dm');
+    expect(h.reply()).toBe(`Let me check.\n\n${TIMED_OUT}`);
+  });
+
+  it("the orchestrator's order (turn-error, then terminated): dev-service-failed shows its detail", async () => {
+    const h = harness({
+      chunks: [],
+      end: 'turn-error',
+      turnError: { reason: 'dev-service-failed', detail: DIAG },
+      outcome: terminated('dev-service-failed'),
+    });
+    await h.run('dm');
+    expect(h.reply()).toBe(`${SERVICE_FAILED}\n\n\u200B${DIAG}`);
+  });
+
+  it('an unknown reason keeps the generic line', async () => {
+    const h = harness({
+      chunks: [],
+      end: 'turn-error',
+      turnError: { reason: 'sandbox-terminated' },
+      outcome: terminated('sandbox-terminated'),
+    });
+    await h.run('dm');
+    expect(h.reply()).toBe(COPY.turnFailed);
+  });
+
+  it("a connector to sign in again: Slack's own line, linking the agent's Connectors settings; a hostile name in the detail pings and links nothing", async () => {
+    const hostile =
+      'Connector: <!channel> <@U07BOB0001> <http://evil.example|Sign in again> [Sign in](https://evil.example) @here';
+    const h = harness({
+      chunks: [],
+      end: 'turn-error',
+      turnError: { reason: 'connector-needs-reconnect', detail: hostile },
+      outcome: terminated('connector-needs-reconnect'),
+    });
+    await h.run('dm');
+    const reply = h.reply();
+    expect(reply.startsWith(COPY.turnErrorReconnect(CONNECTORS)), reply).toBe(true);
+    expect(spellsMention(reply)).toBe(false);
+    // Every `<` is marked: no Slack token, autolink or tag can form.
+    expect(reply).not.toMatch(/<(?!\u200B)/);
+    // The detail, last, holds no Markdown link.
+    expect(reply.split('\n\n').at(-1)).not.toMatch(/\]\(/);
+    // Cleaned exactly once, as it came: a second pass would turn its marks into spaces.
+    expect(reply).toBe(`${COPY.turnErrorReconnect(CONNECTORS)}\n\n${cleanDetailLine(hostile)}`);
+  });
+
+  it('a turn whose detail the host withheld says the sentence only', async () => {
+    const h = harness({
+      chunks: [],
+      end: 'turn-error',
+      turnError: { reason: 'dev-service-failed' },
+      outcome: terminated('dev-service-failed'),
+    });
+    await h.run('external');
+    expect(h.reply()).toBe(SERVICE_FAILED);
+  });
+
+  it("an outsider hears the generic line for a reason that speaks to the agent's user", async () => {
+    const script: Script = {
+      chunks: [],
+      end: 'turn-error',
+      turnError: { reason: 'chat:start:usage-limit-daily' },
+      outcome: terminated('chat:start:usage-limit-daily'),
+    };
+    const outsider = harness(script);
+    await outsider.run('external');
+    expect(outsider.reply()).toBe(COPY.turnFailed);
+    const owner = harness(script);
+    await owner.run('dm');
+    expect(owner.reply()).toBe(ERROR_LABELS['chat:start:usage-limit-daily']);
+  });
+
+  it("terminated first, then its turn-error (F2b's order): the detail is still kept", async () => {
+    const h = harness({
+      chunks: [],
+      end: 'turn-error',
+      turnError: { reason: 'dev-service-failed', detail: DIAG },
+      outcome: terminated('dev-service-failed'),
+      turnErrorAfterOutcome: true,
+    });
+    await h.run('dm');
+    expect(h.reply()).toBe(`${SERVICE_FAILED}\n\n\u200B${DIAG}`);
+    expect(h.logged('slack_turn_failed')).toEqual([{ installId: INSTALL.installId, reason: 'turn-error' }]);
+  });
+
+  it("terminated and no turn-error ever: the outcome's sentence after TURN_ERROR_WAIT_MS, and nothing left behind", async () => {
+    vi.useFakeTimers();
+    const h = harness({ chunks: [], end: 'none', outcome: terminated('dev-service-failed') });
+    const done = h.run('dm');
+    await vi.advanceTimersByTimeAsync(TURN_ERROR_WAIT_MS - 1);
+    expect(h.calls()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await done;
+    expect(h.reply()).toBe(SERVICE_FAILED);
+    expect(h.logged('slack_turn_failed')).toEqual([
+      { installId: INSTALL.installId, reason: 'terminated', code: 'dev-service-failed' },
+    ]);
+    expect(h.sinks()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a turn-end heard while it waits still ends it as a failure, at once', async () => {
+    vi.useFakeTimers();
+    const h = harness({ chunks: [], end: 'none', outcome: terminated('chat-run-timeout') });
+    const done = h.run('dm');
+    await vi.advanceTimersByTimeAsync(0);
+    await h.own.end();
+    // Still inside the wait: unless the turn-end ended it, `done` never settles and this times out.
+    await vi.advanceTimersByTimeAsync(TURN_ERROR_WAIT_MS - 1);
+    await done;
+    expect(h.reply()).toBe(TIMED_OUT);
+    expect(h.logged('slack_turn_failed')).toEqual([
+      { installId: INSTALL.installId, reason: 'terminated', code: 'chat-run-timeout' },
+    ]);
+    // The wait it ended is cleared with it.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe('runTurn: a call held for approval ends the reply with one line saying who must approve', () => {
   /** A connector call the policy held: the runner marks its result held, then ends the turn. */
   const heldCall = (id: string): Array<Record<string, unknown>> => [
@@ -691,7 +852,7 @@ describe('runTurn: a call held for approval ends the reply with one line saying 
   it('a held call, then the turn fails: the held line, then the failure line', async () => {
     const h = harness({ chunks: heldCall('c1'), end: 'turn-error' });
     await h.run('attended');
-    expect(h.reply()).toBe(`${COPY.heldForSender(TODAY)}\n\n${COPY.turnFailed}`);
+    expect(h.reply()).toBe(`${COPY.heldForSender(TODAY)}\n\n${TIMED_OUT}`);
   });
 
   /*
@@ -866,7 +1027,7 @@ describe('runTurn: a held call the person who wrote can answer gets a prompt aft
       { decisions: [decisionRow('dec_held', 'toolu_held')] },
     );
     await h.run('attended');
-    expect(h.streamed()).toBe(`Let me send that.\n\n${COPY.heldAsked}\n\n${COPY.turnFailed}`);
+    expect(h.streamed()).toBe(`Let me send that.\n\n${COPY.heldAsked}\n\n${TIMED_OUT}`);
     expect(h.calls().at(-1)!.method).toBe('postBlocks');
     expect(h.prompts.size()).toBe(1);
   });
@@ -1043,7 +1204,7 @@ describe('runTurn: a host the sandbox was refused gets a prompt after the reply,
   it('a refused host, then the turn fails: the failure line, then the prompt', async () => {
     const h = harness({ chunks: [SAID], cards: [hostCard('api.example.com')], end: 'turn-error' });
     await h.run('dm');
-    expect(h.streamed()).toBe(`I could not reach that site.\n\n${COPY.turnFailed}`);
+    expect(h.streamed()).toBe(`I could not reach that site.\n\n${TIMED_OUT}`);
     expect(h.calls().at(-1)!.method).toBe('postBlocks');
     expect(subjects(h.calls())).toEqual([COPY.hostSubject('api.example.com')]);
     expect(h.prompts.size()).toBe(1);
@@ -1851,13 +2012,13 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     expect(h.lines).toEqual([]);
   });
 
-  it('a turn-error ends it with the failure line', async () => {
+  it("a continuation's turn-error says its reason", async () => {
     const h = follower();
     const done = h.follow(inTenSeconds());
     await h.chunk({ kind: 'text', text: 'Sending.' });
     await h.error();
     await done;
-    expect(h.reply()).toBe(`Sending.\n\n${COPY.turnFailed}`);
+    expect(h.reply()).toBe(`Sending.\n\n${TIMED_OUT}`);
     expect(h.lines).toEqual([
       { level: 'warn', msg: 'slack_turn_failed', fields: { installId: CONTEXT.installId, reason: 'turn-error' } },
     ]);

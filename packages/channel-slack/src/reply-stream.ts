@@ -62,9 +62,11 @@ import { SlackApiError, type SlackApi, type StreamChunkOut } from './slack-api.j
  *   - `finish` adds the closing lines, in this order: the artifact link once,
  *     the held line once (a call waits for someone's approval; it says whose,
  *     and nothing about the call; when a prompt follows the reply, only the
- *     ask), the failure or busy line. Then it flushes
- *     and stops the stream. A reply with nothing at all to say, not even a
- *     closing line, posts COPY.emptyReply. It never rejects and runs once.
+ *     ask), the failure line (the one `finish` is given: the reason's
+ *     sentence and its detail; `COPY.turnFailed` when none) or the busy line.
+ *     Then it flushes and stops the stream. A reply with nothing at all to
+ *     say, not even a closing line, posts COPY.emptyReply. It never rejects
+ *     and runs once.
  *
  * Failures are logged as `slack_reply_failed` with a stage and a code, never
  * text, a token or Slack's words.
@@ -104,7 +106,12 @@ export interface ReplyStream {
    * held (the first hold decides whose), and it counts as something to say.
    */
   held(who: 'owner' | 'sender' | 'asked'): void;
-  finish(outcome: ReplyOutcome): Promise<void>;
+  /**
+   * End the reply. An `error` ends with `failLine` (turn-error-line.ts: a
+   * host-authored sentence, then a cleaned detail), or `COPY.turnFailed`
+   * when it is absent or `''`. It is ignored for `complete` and `busy`.
+   */
+  finish(outcome: ReplyOutcome, failLine?: string): Promise<void>;
 }
 
 export interface ReplyClock {
@@ -594,7 +601,7 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
       heldBy = who;
     },
 
-    finish(outcome) {
+    finish(outcome, failLine) {
       if (finishing !== null) return finishing;
       finished = true;
       if (flushTimer !== null) clock.clearTimeout(flushTimer);
@@ -613,7 +620,8 @@ export function createReplyStream(d: ReplyStreamDeps): ReplyStream {
           heldBy === 'sender' ? COPY.heldForSender(d.todayLink) : heldBy === 'asked' ? COPY.heldAsked : COPY.heldForOwner,
         );
       }
-      if (outcome === 'error') lines.push(COPY.turnFailed);
+      // Last, so a failure's detail line ends the message.
+      if (outcome === 'error') lines.push(failLine === undefined || failLine === '' ? COPY.turnFailed : failLine);
       if (outcome === 'busy') lines.push(COPY.busy);
       // Only the Working card was shown: say so in that message, not a second one.
       if (!anyText && !agentStatus && title !== null && lines.length === 0) lines.push(COPY.emptyReply);

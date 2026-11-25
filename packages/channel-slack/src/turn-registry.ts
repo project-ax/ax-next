@@ -12,7 +12,8 @@ import type { TurnMode } from './turn.js';
  * rule:
  *   - `chat:stream-chunk` and `chat:turn-error`: the payload's `reqId` is
  *     the turn's. (The firing ctx's reqId is useless: the IPC listener
- *     restamps it per request.)
+ *     restamps it per request.) A turn-error hands its sink the payload's
+ *     `reason` and `detail`, each only when a string (TurnErrorIn).
  *   - `chat:turn-end`: the firing ctx's conversation is the turn's, and then
  *     the payload's `reqId` is the turn's, OR the turn's reqId is in
  *     `foldedReqIds` (a real array, exact matches: it's runner-written and
@@ -37,12 +38,13 @@ import type { TurnMode } from './turn.js';
  * it, and a woken turn's start deadline does (turn.ts).
  *
  * Payloads are runner output: every field is checked with typeof, and a
- * chunk is handed on with only the fields named in StreamChunkIn. A sink
- * that throws never breaks the registry or the bus. Its end, error or
- * permission throwing is logged (`slack_turn_sink_failed`, the stage and the
- * error's code only: never its message, the card or an id). A chunk's is
- * logged once per sink: the busiest path must leave a trace when a reply
- * is lost, but one broken sink would log once per streamed piece.
+ * chunk is handed on with only the fields named in StreamChunkIn, a
+ * turn-error with only those in TurnErrorIn. A sink that throws never breaks
+ * the registry or the bus. Its end, error or permission throwing is logged
+ * (`slack_turn_sink_failed`, the stage and the error's code only: never its
+ * message, the card or an id). A chunk's is logged once per sink: the
+ * busiest path must leave a trace when a reply is lost, but one broken sink
+ * would log once per streamed piece.
  */
 
 /** The chat events the registry needs, in the order it subscribes to them. */
@@ -118,7 +120,8 @@ export interface TurnSink {
   mode: TurnMode;
   chunk(c: StreamChunkIn): void;
   end(): void;
-  error(): void;
+  /** The turn's `chat:turn-error`, with only its string `reason` and `detail`. */
+  error(e: TurnErrorIn): void;
   /** A card asking for the person's OK, for this turn (host) or conversation (skill). */
   permission?(p: PermissionIn): void;
 }
@@ -293,7 +296,13 @@ export function createTurnRegistry(d: TurnRegistryDeps): TurnRegistry {
 
     onTurnError(payload) {
       const sink = entryFor(payload)?.sink;
-      if (sink !== undefined) safely('error', () => sink.error());
+      if (sink === undefined) return;
+      // Each read once, then kept only when a string: nothing else in the payload is handed on.
+      const { reason, detail } = payload as Record<string, unknown>;
+      const e: TurnErrorIn = {};
+      if (typeof reason === 'string') e.reason = reason;
+      if (typeof detail === 'string') e.detail = detail;
+      safely('error', () => sink.error(e));
     },
 
     onPermissionRequest(ctx, payload) {
