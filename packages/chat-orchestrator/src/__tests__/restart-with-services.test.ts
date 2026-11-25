@@ -1197,6 +1197,50 @@ describe('restart_with_services: a failed services open is told to the agent (TA
     await endTurn(t, plain.open.sessionId, 'req-4', plain.p);
   });
 
+  it('an outsider\'s successful open of the failed set retires the notice for every later turn', async () => {
+    // Review repro: (1) a member's sandbox carrying `e2e` fails to open (R32);
+    // (2) an outsider's restart_with_services opens `e2e` fine; (3) the set is
+    // turned off; (4) the member's next sandbox must not be told "mongo failed".
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the notice is recorded
+    const outsider = await spawnTurn(t, 'req-2', 'external');
+    expect((await t.tool(RESTART_WITH_SERVICES, outsider.open.sessionId, 'conv-1', { set: 'e2e' }, 'external')).ok).toBe(true);
+    await t.endSegment(outsider.open.sessionId, 'conv-1', 'req-2');
+    await waitFor(() => t.notes().length === 1, 'the restart note');
+    const restarted = t.opens.at(-1)!;
+    expect(restarted.services?.map((s) => s.name)).toEqual(['mongo']);
+    expect(restarted.augment).not.toContain(NOTICE);
+    // The set goes off again (the outsider's stop_services).
+    expect((await t.tool(STOP_SERVICES, restarted.sessionId, 'conv-1', {}, 'external')).ok).toBe(true);
+    await endTurn(t, restarted.sessionId, 'req-2', outsider.p);
+
+    const member = await spawnTurn(t, 'req-3');
+    expect(member.open.services).toBeUndefined();
+    expect(member.open.augment).not.toContain(NOTICE);
+    expect(member.open.augment).not.toContain('mongo" failed');
+    await endTurn(t, member.open.sessionId, 'req-3', member.p);
+  });
+
+  it('a first-run-setup sandbox that opens the failed set fine retires the notice too', async () => {
+    const identityBootstrap: { current: 'none' | 'pending' | 'done' } = { current: 'pending' };
+    const t = await setup({ openSessionThrowsOn: 1, rows: { 'conv-1': { serviceSet: 'e2e' } }, identityBootstrap });
+    await t.invoke('s-1', 'conv-1', 'req-1'); // R32: the notice is recorded, the set off
+    t.row('conv-1').serviceSet = 'e2e'; // the set comes back on (a restart elsewhere, say)
+    const setupTurn = await spawnTurn(t, 'req-2');
+    expect(setupTurn.open.bootstrap).toBe(true);
+    expect(setupTurn.open.services?.map((s) => s.name)).toEqual(['mongo']);
+    await endTurn(t, setupTurn.open.sessionId, 'req-2', setupTurn.p);
+
+    identityBootstrap.current = 'done';
+    t.row('conv-1').serviceSet = null; // and goes off again
+    await exitSandbox(t, setupTurn.open.sessionId);
+    const normal = await spawnTurn(t, 'req-3');
+    expect(normal.open.bootstrap).toBeUndefined();
+    expect(normal.open.services).toBeUndefined();
+    expect(normal.open.augment).not.toContain(NOTICE);
+    await endTurn(t, normal.open.sessionId, 'req-3', normal.p);
+  });
+
   it('a newer failure recorded while a notified sandbox opens survives that open', async () => {
     let release!: () => void;
     const until = new Promise<void>((r) => { release = r; });

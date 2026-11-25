@@ -5435,21 +5435,23 @@ export function createOrchestrator(
     // above. Never on an outsider's turn (TASK-1091): why the owners' services
     // failed is not the outsider's to hear, and the entry stays for the next
     // member's turn. Not to a sandbox that folds that same set again: "this
-    // sandbox has none of its services" would be false there. Its open
-    // succeeding means the set starts now, so the entry goes all the same.
-    // Nor in first-run setup (bootstrap mode): the runner shows that sandbox
-    // only the bootstrap augment, so it can't hear the notice and must not
-    // spend it; the entry stays for the first sandbox in normal mode.
-    // Kept here, for the open below: only this entry is consumed there.
-    const serviceSetFailure =
-      ctx.conversationId !== undefined &&
+    // sandbox has none of its services" would be false there. Nor in first-run
+    // setup (bootstrap mode): the runner shows that sandbox only the bootstrap
+    // augment, so it can't hear the notice and must not spend it; the entry
+    // stays for the first sandbox in normal mode.
+    // The entry as this spawn found it is kept, for the open below: only this
+    // entry is consumed there, when this sandbox was told it, or — on ANY turn,
+    // outsider and first-run setup included — when it folds that same set and
+    // opens: the set starts now, so the notice is no longer true.
+    const serviceSetFailureAtSpawn =
+      ctx.conversationId !== undefined ? serviceSetFailureByConversation.get(ctx.conversationId) : undefined;
+    const serviceSetFailureHeard =
+      serviceSetFailureAtSpawn !== undefined &&
       !isOutsiderTurn(ctx) &&
-      agentConfig.identity?.bootstrapMode !== true
-        ? serviceSetFailureByConversation.get(ctx.conversationId)
-        : undefined;
+      agentConfig.identity?.bootstrapMode !== true;
     const serviceSetFailureLine =
-      serviceSetFailure !== undefined && serviceSetFailure.set !== serviceSet?.set
-        ? serviceSetFailurePromptLine(serviceSetFailure)
+      serviceSetFailureHeard && serviceSetFailureAtSpawn.set !== serviceSet?.set
+        ? serviceSetFailurePromptLine(serviceSetFailureAtSpawn)
         : '';
     if (serviceSetFailureLine.length > 0) {
       agentConfig.systemPromptAugment =
@@ -5795,13 +5797,15 @@ export function createOrchestrator(
         sandboxInput,
       );
       handle = opened.handle;
-      // TASK-1240 — this sandbox is up, so the failure notice it was given (or
-      // made moot, by starting the same set) is spent. Only that entry: a newer
-      // failure recorded while this one opened is still to be told.
+      // TASK-1240 — this sandbox is up, so the failure notice it was given is
+      // spent; and one it made moot, by starting the same set, goes whoever's
+      // turn this is. Only that entry: a newer failure recorded while this one
+      // opened is still to be told.
       if (
-        serviceSetFailure !== undefined &&
+        serviceSetFailureAtSpawn !== undefined &&
         ctx.conversationId !== undefined &&
-        serviceSetFailureByConversation.get(ctx.conversationId) === serviceSetFailure
+        serviceSetFailureByConversation.get(ctx.conversationId) === serviceSetFailureAtSpawn &&
+        (serviceSetFailureHeard || serviceSetFailureAtSpawn.set === serviceSet?.set)
       ) {
         serviceSetFailureByConversation.delete(ctx.conversationId);
       }
