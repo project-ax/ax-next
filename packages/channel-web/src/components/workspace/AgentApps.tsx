@@ -33,6 +33,7 @@ import {
   unlinkApp,
 } from '@/lib/agent-apps';
 import { logRequestFailure } from '@/lib/http';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { AppGrantEditor, type AppGrantEditorTarget } from './AppGrantEditor';
 import { AppLinkCodeDialog } from './AppLinkCodeDialog';
 import { ApprovalRow, LinkRow, UnlinkDialog } from './AgentAppsRows';
@@ -149,12 +150,15 @@ function AppsBody({
     if (agentAppsStale(err)) onReread();
   };
 
-  async function run(k: string, write: () => Promise<void>) {
+  /** A refusal is shown on the page, so the confirmation closes either way. */
+  async function run(k: string, write: () => Promise<void>): Promise<void> {
     mark(k, true);
     setNotice(null);
     try {
       await write();
       onReread();
+      // The row that opened the confirmation leaves with the write; park focus on the section's primary action.
+      focusAfterRemoval('[data-return-focus="agent-apps"]', '#apps-linked');
     } catch (err) {
       refuse(err);
     } finally {
@@ -184,11 +188,11 @@ function AppsBody({
 
       <section aria-labelledby="apps-linked" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 id="apps-linked" className="text-[14px] font-semibold">
+          <h3 id="apps-linked" tabIndex={-1} className="text-[14px] font-semibold">
             Apps that use this agent
           </h3>
           {canManage && (
-            <Button size="sm" onClick={() => void linkApp()} disabled={minting}>
+            <Button size="sm" data-return-focus="agent-apps" onClick={() => void linkApp()} disabled={minting}>
               {minting ? (
                 <Spinner data-icon="inline-start" aria-hidden="true" />
               ) : (
@@ -217,7 +221,7 @@ function AppsBody({
                     onAdd={() => setEditing({ link, grant: null })}
                     onEdit={(grant) => setEditing({ link, grant })}
                     onRemove={(grant) =>
-                      void run(`${link.appId}:${grant.connectorId}`, () =>
+                      run(`${link.appId}:${grant.connectorId}`, () =>
                         removeGrant(agentId, link.appId, grant.connectorId),
                       )
                     }
@@ -249,7 +253,7 @@ function AppsBody({
                     approval={ap}
                     busy={busy.has(`approval:${ap.appId}:${ap.connectorId}`)}
                     onRevoke={() =>
-                      void run(`approval:${ap.appId}:${ap.connectorId}`, () =>
+                      run(`approval:${ap.appId}:${ap.connectorId}`, () =>
                         revokeApproval(agentId, ap.appId, ap.connectorId),
                       )
                     }
@@ -282,12 +286,9 @@ function AppsBody({
       <UnlinkDialog
         link={unlinking}
         agentName={agentName}
-        busy={unlinking !== null && busy.has(unlinking.appId)}
         onCancel={() => setUnlinking(null)}
-        onConfirm={(link) =>
-          // Closed either way: a refusal's sentence shows on the page, not behind the dialog.
-          void run(link.appId, () => unlinkApp(agentId, link.appId)).finally(() => setUnlinking(null))
-        }
+        // Closed either way: a refusal's sentence shows on the page, not behind the dialog.
+        onConfirm={(link) => run(link.appId, () => unlinkApp(agentId, link.appId))}
       />
     </div>
   );

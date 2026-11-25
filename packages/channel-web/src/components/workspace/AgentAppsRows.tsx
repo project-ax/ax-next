@@ -3,21 +3,14 @@
  * of `AgentApps.tsx`, which owns the state and the writes. App names,
  * connector names and tool names are untrusted text, rendered as text only.
  */
+import { useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
+import { Button as AxButton, ConfirmAction } from '@project-ax/ui';
 import type { AppGrant, AppLink, ViewerApproval } from '@ax/apps-bridge-contract';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
 import { APP_MODE_COPY } from './AppGrantEditor';
-import { useHeldThroughClose } from './use-held-through-close';
 
 export function LinkRow({
   link,
@@ -33,12 +26,18 @@ export function LinkRow({
   busy: ReadonlySet<string>;
   onAdd: () => void;
   onEdit: (grant: AppGrant) => void;
-  onRemove: (grant: AppGrant) => void;
+  /** Resolves once the write is done; a refusal is the page's to show. */
+  onRemove: (grant: AppGrant) => Promise<void>;
   onUnlink: () => void;
 }) {
   const nameId = `app-${link.appId}-name`;
   // While the app is being unlinked, nothing else on its row can start.
   const unlinking = busy.has(link.appId);
+  // The grant whose Remove is awaiting confirmation. Held past close so the words don't blank while it animates out.
+  const [removing, setRemoving] = useState<AppGrant | null>(null);
+  const lastRemoving = useRef<AppGrant | null>(null);
+  if (removing !== null) lastRemoving.current = removing;
+  const shown = removing ?? lastRemoving.current;
   return (
     <li aria-labelledby={nameId} className="flex flex-col gap-3 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
@@ -108,7 +107,7 @@ export function LinkRow({
                       variant="ghost"
                       size="sm"
                       disabled={rowBusy}
-                      onClick={() => onRemove(grant)}
+                      onClick={() => setRemoving(grant)}
                       aria-label={`Remove ${grant.connectorName} from ${link.appName}`}
                     >
                       {rowBusy && <Spinner data-icon="inline-start" aria-hidden="true" />}
@@ -121,6 +120,16 @@ export function LinkRow({
           })}
         </ul>
       )}
+      <ConfirmAction
+        open={removing !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoving(null);
+        }}
+        title="Remove this app?"
+        description={`${link.appName} stops using ${shown?.connectorName ?? 'this connector'} straight away. The app stays linked and keeps any other connectors you gave it.`}
+        confirmLabel="Remove app"
+        onConfirm={() => (removing !== null ? onRemove(removing) : undefined)}
+      />
     </li>
   );
 }
@@ -132,24 +141,33 @@ export function ApprovalRow({
 }: {
   approval: ViewerApproval;
   busy: boolean;
-  onRevoke: () => void;
+  /** Resolves once the write is done; a refusal is the page's to show. */
+  onRevoke: () => Promise<void>;
 }) {
+  const [asking, setAsking] = useState(false);
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="break-words text-[14px] font-medium">{approval.appName}</span>
         <span className="text-[12.5px] text-muted-foreground">Uses {approval.connectorName} as you</span>
       </div>
-      <Button
-        variant="ghost"
+      <AxButton
+        intent="quiet"
         size="sm"
         disabled={busy}
-        onClick={onRevoke}
+        onClick={() => setAsking(true)}
         aria-label={`Revoke ${approval.appName} using ${approval.connectorName}`}
       >
-        {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
         Revoke
-      </Button>
+      </AxButton>
+      <ConfirmAction
+        open={asking}
+        onOpenChange={setAsking}
+        title="Revoke this permission?"
+        description={`${approval.appName} stops using ${approval.connectorName} as you, straight away.`}
+        confirmLabel="Revoke"
+        onConfirm={onRevoke}
+      />
     </li>
   );
 }
@@ -157,37 +175,28 @@ export function ApprovalRow({
 export function UnlinkDialog({
   link,
   agentName,
-  busy,
   onCancel,
   onConfirm,
 }: {
   link: AppLink | null;
   agentName: string;
-  busy: boolean;
   onCancel: () => void;
-  onConfirm: (link: AppLink) => void;
+  /** Resolves once the write is done; a refusal is the page's to show. */
+  onConfirm: (link: AppLink) => Promise<void>;
 }) {
-  const { held, release } = useHeldThroughClose(link);
+  // Keep the app's name on screen while the dialog animates closed.
+  const last = useRef<AppLink | null>(null);
+  if (link !== null) last.current = link;
   return (
-    <Dialog open={link !== null} onOpenChange={(open) => !open && !busy && onCancel()}>
-      <DialogContent onCloseAutoFocus={release}>
-        <DialogHeader>
-          <DialogTitle>Unlink {held?.appName}?</DialogTitle>
-          <DialogDescription>
-            It stops using {agentName} straight away, along with every connector you gave it. To use it again,
-            link it with a new code.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="destructive" disabled={busy || link === null} onClick={() => link !== null && onConfirm(link)}>
-            {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-            Unlink
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={link !== null}
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title={`Unlink ${(link ?? last.current)?.appName ?? ''}?`}
+      description={`It stops using ${agentName} straight away, along with every connector you gave it. To use it again, link it with a new code.`}
+      confirmLabel="Unlink"
+      onConfirm={() => (link !== null ? onConfirm(link) : undefined)}
+    />
   );
 }

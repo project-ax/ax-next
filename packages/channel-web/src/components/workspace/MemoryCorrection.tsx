@@ -23,6 +23,7 @@ import {
   useState,
   type RefObject,
 } from 'react';
+import { ConfirmAction } from '@project-ax/ui';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
@@ -44,6 +45,7 @@ import {
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { afterDialogCloses } from '@/lib/focus-after-removal';
 import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
 import { cn } from '@/lib/utils';
 import { workspaceApi, type FactMemoryStatement } from '@/lib/workspace-api';
@@ -183,7 +185,14 @@ function useLandOnOutcome(scope: RefObject<HTMLElement | null> | undefined) {
     },
     [scope],
   );
-  return { arm, disarm, onCloseAutoFocus };
+  // For a confirmation that has no `onCloseAutoFocus` of its own (ConfirmAction): the same landing, run by hand.
+  const landNow = useCallback(() => {
+    if (!armed.current) return;
+    armed.current = false;
+    const outcome = scope?.current?.querySelector<HTMLElement>(`[${OUTCOME_ATTR}]`);
+    if (outcome !== null && outcome !== undefined) takeResolutionFocus(outcome);
+  }, [scope]);
+  return { arm, disarm, onCloseAutoFocus, landNow };
 }
 
 export function MemoryFixDialog({
@@ -348,74 +357,39 @@ export function MemoryForgetDialog({
   /** As on `MemoryFixDialog`: where the receipt that follows is drawn. */
   outcomeScope?: RefObject<HTMLElement | null>;
 }) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState(false);
   const land = useLandOnOutcome(outcomeScope);
-  const { disarm } = land;
+  const { disarm, landNow } = land;
+  // The caller clears `target` the moment the forget lands; keep the words on screen while the dialog closes.
+  const last = useRef<FactMemoryStatement | null>(null);
+  if (target !== null) last.current = target;
+  const shown = target ?? last.current;
 
   useEffect(() => {
-    if (target !== null) {
-      setPending(false);
-      setError(false);
-      disarm();
-    }
+    if (target !== null) disarm();
   }, [target, disarm]);
 
   async function forget() {
-    if (target === null || pending) return;
-    setPending(true);
-    setError(false);
-    try {
-      await workspaceApi.forgetMemory(agentId, [target.id]);
-      land.arm();
-      onForgotten(target);
-    } catch {
-      setPending(false);
-      setError(true);
-    }
+    if (target === null) return;
+    await workspaceApi.forgetMemory(agentId, [target.id]);
+    land.arm();
+    onForgotten(target);
+    // The row, and the button that opened this, leave with the forget; focus lands on the receipt's outcome
+    // line (TASK-644) once the confirmation has closed.
+    afterDialogCloses(landNow);
   }
 
   return (
-    <Dialog
+    <ConfirmAction
       open={target !== null}
       onOpenChange={(open) => {
-        if (!open && !pending) onClose();
+        if (!open) onClose();
       }}
-    >
-      <DialogContent
-        onCloseAutoFocus={land.onCloseAutoFocus}
-        onEscapeKeyDown={(e) => {
-          if (pending) e.preventDefault();
-        }}
-        onInteractOutside={(e) => {
-          if (pending) e.preventDefault();
-        }}
-      >
-        <DialogHeader>
-          <DialogTitle>{MEMORY_FORGET_TITLE}</DialogTitle>
-          <DialogDescription>{memoryForgetHelper(visibility)}</DialogDescription>
-        </DialogHeader>
-        {target !== null && <p className="text-sm">{memoryStatementText(target)}</p>}
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{MEMORY_FORGET_FAILED}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter>
-          <Button type="button" variant="secondary" disabled={pending} onClick={onClose}>
-            {MEMORY_CANCEL}
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            disabled={pending}
-            onClick={() => void forget()}
-          >
-            {MEMORY_FORGET}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      title={MEMORY_FORGET_TITLE}
+      description={`${shown === null ? '' : `“${memoryStatementText(shown)}” — `}${memoryForgetHelper(visibility)}`}
+      confirmLabel={MEMORY_FORGET}
+      errorMessage={() => MEMORY_FORGET_FAILED}
+      onConfirm={forget}
+    />
   );
 }
 

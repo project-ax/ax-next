@@ -6,10 +6,11 @@
  * (`tailwind.config.ts` / `index.css`, both themes), because waiting-on-a-human
  * is a real third state that is neither an error nor business as usual.
  */
+import { useState } from 'react';
 import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
+import { Button as AxButton, ConfirmAction } from '@project-ax/ui';
 import { AvatarTile } from '@/components/AvatarTile';
 import { Badge, badgeVariants } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 import {
   Popover,
   PopoverContent,
@@ -22,6 +23,7 @@ import {
   verdictFrame,
 } from '@/lib/permission-frames';
 import { cn } from '@/lib/utils';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import type { TaskGroup } from '@/lib/task-groups';
 import { shortDay } from '@/lib/workspace-time';
 import type {
@@ -475,12 +477,14 @@ export function GrantLine({
 }: {
   row: GrantRow;
   busy: boolean;
-  onRevoke: (row: GrantRow) => void;
+  /** Resolves once the revoke has been tried; the caller owns the one-line outcome (see `useGrantRevoke`). */
+  onRevoke: (row: GrantRow) => void | Promise<void>;
 }) {
   // Never conditional: a grant is a thing a person did, not a rule with a
   // predicate over a call's arguments. It applies to every call or it does not
   // exist.
   const frame = verdictFrame(row.verdict, false);
+  const [asking, setAsking] = useState(false);
   return (
     <div className="flex items-start gap-2.5 py-1 text-[13px]">
       <VerdictMark verdict={row.verdict} />
@@ -504,16 +508,23 @@ export function GrantLine({
         )}
       </span>
       {row.revocable && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() => onRevoke(row)}
-          className="-mt-0.5 h-6 shrink-0 px-1.5 text-[11.5px]"
-        >
-          {busy ? 'Revoking…' : 'Revoke'}
-        </Button>
+        <>
+          <AxButton intent="quiet" size="sm" disabled={busy} onClick={() => setAsking(true)}>
+            Revoke
+          </AxButton>
+          <ConfirmAction
+            open={asking}
+            onOpenChange={setAsking}
+            title="Revoke this permission?"
+            description="New conversations won’t have it. Anything already running may still have it until it finishes."
+            confirmLabel="Revoke"
+            onConfirm={async () => {
+              await onRevoke(row);
+              // A revoked grant's row leaves the list; if focus fell to the page, park it on the list.
+              focusAfterRemoval('[data-return-focus="grant-lines"]');
+            }}
+          />
+        </>
       )}
     </div>
   );

@@ -26,6 +26,8 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from '@/components/ui/input-group';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { conversationControls } from '@/lib/conversation-controls';
 import { filterChatsByTitle, type SidebarChatList } from '@/lib/sidebar-chats';
 import { cn } from '@/lib/utils';
@@ -172,6 +174,7 @@ export function SidebarChats({
         <Button
           variant="navigation"
           disabled={actionBusy}
+          data-return-focus="sidebar-chats"
           onClick={() => {
             onNew();
             onNavigate?.();
@@ -277,35 +280,27 @@ export function SidebarChats({
       </section>
 
       <Dialog
-        open={editing !== null}
+        open={editing?.kind === 'rename'}
         onOpenChange={(open) => {
           if (!open && !actionBusy) setEditing(null);
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              {editing?.kind === 'delete' ? 'Delete conversation?' : 'Rename conversation'}
-            </DialogTitle>
-            <DialogDescription>
-              {editing?.kind === 'delete'
-                ? 'This removes the conversation from your workspace.'
-                : 'Give it a name that’s easy to find later.'}
-            </DialogDescription>
+            <DialogTitle>Rename conversation</DialogTitle>
+            <DialogDescription>Give it a name that’s easy to find later.</DialogDescription>
           </DialogHeader>
-          {editing?.kind === 'rename' && (
-            <FieldGroup>
-              <Field>
-                <FieldLabel htmlFor="conversation-title">Name</FieldLabel>
-                <Input
-                  id="conversation-title"
-                  value={title}
-                  maxLength={256}
-                  onChange={(e) => setTitle(e.target.value)}
-                />
-              </Field>
-            </FieldGroup>
-          )}
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="conversation-title">Name</FieldLabel>
+              <Input
+                id="conversation-title"
+                value={title}
+                maxLength={256}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </Field>
+          </FieldGroup>
           {actionError && (
             <Alert variant="destructive">
               <AlertDescription>{actionError}</AlertDescription>
@@ -316,29 +311,42 @@ export function SidebarChats({
               Cancel
             </Button>
             <Button
-              variant={editing?.kind === 'delete' ? 'destructive' : 'default'}
-              disabled={actionBusy || (editing?.kind === 'rename' && !title.trim())}
+              disabled={actionBusy || !title.trim()}
               onClick={() => {
                 if (!editing) return;
                 const target = editing;
                 void act(async () => {
-                  if (target.kind === 'rename')
-                    await conversationControls.rename(target.id, title.trim());
-                  else {
-                    await conversationControls.delete(target.id);
-                    // Deleting the chat on screen shows the most recent one left.
-                    if (chats?.openId === target.id) onOpen(null);
-                  }
+                  await conversationControls.rename(target.id, title.trim());
                   setEditing(null);
                   onChanged();
                 });
               }}
             >
-              {actionBusy ? 'Saving…' : editing?.kind === 'delete' ? 'Delete' : 'Save'}
+              {actionBusy ? 'Saving…' : 'Save'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <ConfirmAction
+        open={editing?.kind === 'delete'}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null);
+        }}
+        title="Delete conversation?"
+        description="This removes the conversation from your workspace."
+        confirmLabel="Delete"
+        errorMessage={() => 'We couldn’t finish that just now. Please try again.'}
+        onConfirm={async () => {
+          if (editing === null) return;
+          const target = editing;
+          await conversationControls.delete(target.id);
+          // Deleting the chat on screen shows the most recent one left.
+          if (chats?.openId === target.id) onOpen(null);
+          onChanged();
+          // The row's menu is gone with it; park focus on the list's primary action.
+          focusAfterRemoval('[data-return-focus="sidebar-chats"]');
+        }}
+      />
     </>
   );
 }

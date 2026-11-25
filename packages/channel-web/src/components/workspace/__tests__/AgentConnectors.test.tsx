@@ -410,7 +410,7 @@ describe('remove', () => {
     expect(within(dialog).getByText('Remove Linear from Quill?')).toBeTruthy();
     // Remove deletes this agent's sign-in and keys for it too: it says so.
     expect(within(dialog).getByText(/including its sign-in and keys/)).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(removeMock).not.toHaveBeenCalled();
   });

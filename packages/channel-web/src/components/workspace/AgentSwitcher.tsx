@@ -1,15 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Check, ChevronsUpDown, EllipsisVertical, Plus, Settings, Trash2 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmAction } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { deleteAgent } from '@/lib/admin';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
@@ -59,8 +52,9 @@ export function AgentSwitcher({
   onNavigate,
 }: Props) {
   const [pendingDelete, setPendingDelete] = useState<WorkspaceAgent | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The last agent asked about, so the dialog's words stay put while it closes (and the selection moves on).
+  const lastPending = useRef<WorkspaceAgent | null>(null);
+  if (pendingDelete !== null) lastPending.current = pendingDelete;
 
   const go = (act: () => void) => () => {
     act();
@@ -225,7 +219,6 @@ export function AgentSwitcher({
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
                   onSelect={() => {
-                    setDeleteError(null);
                     setPendingDelete(selected);
                   }}
                 >
@@ -237,64 +230,27 @@ export function AgentSwitcher({
           </DropdownMenu>
         )}
       </div>
-      <Dialog
+      {/* Same claim as the admin list's dialog (TASK-718): every item
+          named here really is deleted. Data loss — plain, no jokes. */}
+      <ConfirmAction
         open={pendingDelete !== null}
         onOpenChange={(open) => {
-          if (!open && !deleting) setPendingDelete(null);
+          if (!open) setPendingDelete(null);
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete agent?</DialogTitle>
-            {/* Same claim as the admin list's dialog (TASK-718): every item
-                named here really is deleted. Data loss — plain, no jokes. */}
-            <DialogDescription>
-              Delete{' '}
-              <span className="font-medium text-foreground">{pendingDelete?.name}</span>?
-              We will delete its conversations, the files in them, the files it
-              saved and its routines along with it. This cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          {deleteError && (
-            <Alert variant="destructive">
-              <AlertDescription>{deleteError}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={deleting}
-              onClick={() => setPendingDelete(null)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleting}
-              onClick={() => {
-                const target = pendingDelete;
-                if (!target) return;
-                setDeleting(true);
-                setDeleteError(null);
-                deleteAgent(target.id)
-                  .then(() => {
-                    setPendingDelete(null);
-                    onDeleted?.(target.id);
-                    onNavigate?.();
-                  })
-                  .catch(() => {
-                    setDeleteError(
-                      'We couldn’t delete this agent just now, so nothing was removed. Please try again.',
-                    );
-                  })
-                  .finally(() => setDeleting(false));
-              }}
-            >
-              {deleting ? 'Deleting…' : 'Delete agent'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        title="Delete agent?"
+        description={`Delete ${(pendingDelete ?? lastPending.current)?.name ?? ''}? We will delete its conversations, the files in them, the files it saved and its routines along with it. This cannot be undone.`}
+        confirmLabel="Delete agent"
+        errorMessage={() => 'We couldn’t delete this agent just now, so nothing was removed. Please try again.'}
+        onConfirm={async () => {
+          if (pendingDelete === null) return;
+          const target = pendingDelete;
+          await deleteAgent(target.id);
+          onDeleted?.(target.id);
+          onNavigate?.();
+          // The options menu belonged to the deleted agent; park focus on the agent switcher.
+          focusAfterRemoval(`[${NEW_AGENT_OPENER_ATTR}]`);
+        }}
+      />
     </>
   );
 }

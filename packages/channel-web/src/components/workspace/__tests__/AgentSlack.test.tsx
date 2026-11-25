@@ -855,7 +855,7 @@ describe('words (TASK-1187): no plumbing word and no product name on the card', 
     it.each([
       ['Rename', LIVE_BOT, 'Rename', 'Cancel'],
       ['Change picture', LIVE_BOT, 'Change picture', 'Cancel'],
-      ['Remove from Slack', LIVE_BOT, 'Remove from Slack', 'Keep it'],
+      ['Remove from Slack', LIVE_BOT, 'Remove from Slack', 'Cancel'],
     ])('the %s dialog', async (_, bot, item, decline) => {
       renderIt(ready(true, bot));
       await choose('@quill', item);

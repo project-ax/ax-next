@@ -1115,10 +1115,10 @@
       "count": 7
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 6
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 6
     }
   },
   "packages/channel-web/src/components/workspace/AgentView.tsx": {
@@ -1333,10 +1333,10 @@
   },
   "packages/channel-web/src/components/workspace/MemoryCorrection.tsx": {
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 6
     }
   },
   "packages/channel-web/src/components/workspace/MemoryUsedChip.tsx": {
@@ -1604,7 +1604,7 @@
   },
   "packages/channel-web/src/components/workspace/bits.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 17
+      "count": 16
     },
     "ax-ui/no-classname": {
       "count": 23

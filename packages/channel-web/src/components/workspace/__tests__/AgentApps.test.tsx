@@ -374,7 +374,12 @@ describe('AgentApps', () => {
     await renderApps();
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove Linear from Sprint board' }));
+    const removeDialog = await screen.findByRole('dialog', { name: 'Remove this app?' });
+    expect(api.removeGrant).not.toHaveBeenCalled();
+    fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove app' }));
     await waitFor(() => expect(api.removeGrant).toHaveBeenCalledWith('a1', LINK.appId, 'linear'));
+    expect(api.removeGrant).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: 'Unlink Sprint board' }));
     const dialog = await screen.findByRole('dialog');
@@ -400,7 +405,11 @@ describe('AgentApps', () => {
     expect(rows[0]).toHaveTextContent('Sprint board');
     expect(rows[0]).toHaveTextContent('Linear');
     fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Revoke Sprint board using Linear' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this permission?' });
+    expect(api.revokeApproval).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
     await waitFor(() => expect(api.revokeApproval).toHaveBeenCalledWith('a1', LINK.appId, 'linear'));
+    expect(api.revokeApproval).toHaveBeenCalledTimes(1);
   });
 
   it('with no approvals, the approvals list is not drawn', async () => {

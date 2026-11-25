@@ -737,6 +737,10 @@ describe('AgentSettings — "Granted by you"', () => {
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    // Asks first: nothing is revoked until the dialog's Revoke is clicked.
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this permission?' });
+    expect(revokeMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
     await waitFor(() => {
       expect(revokeMock).toHaveBeenCalledWith('a-quill', {
         grant: 'site',
@@ -754,6 +758,7 @@ describe('AgentSettings — "Granted by you"', () => {
       already running keeps it until it ends. A bare "Revoked." would let
       somebody believe they had stopped something mid-flight.
     */
+    expect(revokeMock).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(/Revoked\./)).toBeTruthy();
     expect(screen.getByText(/may still have it until it finishes/)).toBeTruthy();
   });
@@ -767,6 +772,7 @@ describe('AgentSettings — "Granted by you"', () => {
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Revoke' }));
     expect(await screen.findByText(/already gone/)).toBeTruthy();
   });
 
@@ -779,6 +785,7 @@ describe('AgentSettings — "Granted by you"', () => {
     await openGrants();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Revoke' }));
     expect(await screen.findByText(/Nothing changed/)).toBeTruthy();
   });
 

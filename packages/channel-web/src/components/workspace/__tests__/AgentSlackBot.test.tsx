@@ -941,12 +941,12 @@ describe('live', () => {
     renderIt(LIVE);
     const trigger = screen.getByRole('button', { name: 'Actions for @quill_bot' });
     await choose('@quill_bot', 'Remove from Slack');
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
-  it('Remove from Slack asks first: the bot leaves every channel, @handle stops working, its Slack app is deleted; Keep it sends nothing', async () => {
+  it('Remove from Slack asks first: the bot leaves every channel, @handle stops working, its Slack app is deleted; Cancel sends nothing', async () => {
     render(
       <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage sharedConnected {...QUIET} onChanged={vi.fn()} />,
     );
@@ -959,7 +959,7 @@ describe('live', () => {
       ),
     ).toBeInTheDocument();
     expect(dialog.textContent).not.toMatch(/\bAX\b/);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(disconnect).not.toHaveBeenCalled();
   });

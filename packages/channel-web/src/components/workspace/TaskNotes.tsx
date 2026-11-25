@@ -33,17 +33,9 @@
  * hand focus back to the button, which is still there.
  */
 import { useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ConfirmAction } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Spinner } from '@/components/ui/spinner';
+import { afterDialogCloses } from '@/lib/focus-after-removal';
 import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
 import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
 import { toReadOutcome, type ReadOutcome } from '@/lib/read-register';
@@ -84,13 +76,8 @@ export function TaskNotes({
   onCleared: () => void;
 }) {
   const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<ReadOutcome | null>(null);
   const [cleared, setCleared] = useState<Cleared>(null);
   const outcome = useRef<HTMLParagraphElement>(null);
-  // Set just before a clear that went through closes the confirm, so only
-  // that close lands on the outcome line.
-  const landOnOutcome = useRef(false);
 
   // Adjusted while rendering (React's "storing information from previous
   // renders"), so the line is never painted beside newer notes, even once.
@@ -102,30 +89,20 @@ export function TaskNotes({
     }
   }
 
-  const openConfirm = () => {
-    setFailure(null);
-    setConfirming(true);
-  };
-
-  const clear = () => {
+  async function clear() {
     const shown = notes;
-    setBusy(true);
-    setFailure(null);
-    workspaceApi.clearTaskNotes(agentId, routineId).then(
-      () => {
-        landOnOutcome.current = true;
-        setBusy(false);
-        setConfirming(false);
-        setCleared({ from: shown, sawEmpty: false });
-        onCleared();
-      },
-      (e: unknown) => {
-        logRequestFailure(e, 'task-notes');
-        setBusy(false);
-        setFailure(toReadOutcome(e));
-      },
-    );
-  };
+    try {
+      await workspaceApi.clearTaskNotes(agentId, routineId);
+    } catch (e: unknown) {
+      logRequestFailure(e, 'task-notes');
+      throw e;
+    }
+    setCleared({ from: shown, sawEmpty: false });
+    onCleared();
+    // The re-read takes the notes, and the button that opened the confirm, away, so ConfirmAction has
+    // nowhere to hand focus back to. Land on the outcome line instead, once the confirm has closed.
+    afterDialogCloses(() => takeResolutionFocus(outcome.current));
+  }
 
   return (
     <div className="flex flex-col gap-2 text-[13px] leading-relaxed">
@@ -142,55 +119,20 @@ export function TaskNotes({
           <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted px-3 py-2">
             {notes}
           </p>
-          <Button variant="outline" size="sm" className="self-start" onClick={openConfirm}>
+          <Button variant="outline" size="sm" className="self-start" onClick={() => setConfirming(true)}>
             Clear notes
           </Button>
         </>
       )}
-      <Dialog
+      <ConfirmAction
         open={confirming}
-        onOpenChange={(next) => {
-          // A clear on its way can't be dismissed out from under itself.
-          if (!next && !busy) setConfirming(false);
-        }}
-      >
-        <DialogContent
-          onCloseAutoFocus={(event) => {
-            if (!landOnOutcome.current) return;
-            landOnOutcome.current = false;
-            if (outcome.current === null) return;
-            event.preventDefault();
-            takeResolutionFocus(outcome.current);
-          }}
-        >
-          <DialogHeader>
-            <DialogTitle>{`Clear ${agentName}’s notes?`}</DialogTitle>
-            <DialogDescription>
-              {`${agentName} won’t see them at its next check-in. You can’t undo this.`}
-            </DialogDescription>
-          </DialogHeader>
-          {failure !== null && (
-            // An ended session is drawn neutral, as `LoginPage` draws it:
-            // nothing broke, and the way on is to sign in, not to repair.
-            <Alert variant={failure === 'expired' ? 'default' : 'destructive'}>
-              <AlertDescription>{CLEAR_FAILED[failure]}</AlertDescription>
-            </Alert>
-          )}
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button variant="outline" disabled={busy} onClick={() => setConfirming(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={busy || failure === 'expired' || failure === 'gone'}
-              onClick={clear}
-            >
-              {busy && <Spinner data-icon="inline-start" aria-hidden="true" />}
-              {busy ? 'Clearing…' : 'Clear notes'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        onOpenChange={setConfirming}
+        title={`Clear ${agentName}’s notes?`}
+        description={`${agentName} won’t see them at its next check-in. You can’t undo this.`}
+        confirmLabel="Clear notes"
+        errorMessage={(e) => CLEAR_FAILED[toReadOutcome(e)]}
+        onConfirm={clear}
+      />
     </div>
   );
 }

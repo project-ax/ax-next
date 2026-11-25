@@ -12,6 +12,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
+import { ConfirmAction } from '@project-ax/ui';
 import {
   Collapsible,
   CollapsibleContent,
@@ -21,7 +22,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -99,7 +99,7 @@ interface Props {
   error: string | null;
   revoking: ReadonlySet<string>;
   notice: string | null;
-  onRevoke: (row: GrantRow) => void;
+  onRevoke: (row: GrantRow) => void | Promise<void>;
   /** Re-read the rail after a connector is removed (its grants went too). */
   onConnectorsChanged?: () => void;
 }
@@ -347,34 +347,15 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
           </AlertDescription>
         </Alert>
       )}
-      <Dialog open={confirmRunCodeOff} onOpenChange={setConfirmRunCodeOff}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Turn off Run code for {name}?</DialogTitle>
-            <DialogDescription>
-              {RUN_CODE_OFF_WARNING} Anything that needs to run a script will
-              stop at that step. You can turn it back on any time.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setConfirmRunCodeOff(false)}
-            >
-              Keep it on
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setConfirmRunCodeOff(false);
-                void change('runCode', false);
-              }}
-            >
-              Turn off
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmAction
+        open={confirmRunCodeOff}
+        onOpenChange={setConfirmRunCodeOff}
+        title={`Turn off Run code for ${name}?`}
+        description={`${RUN_CODE_OFF_WARNING} Anything that needs to run a script will stop at that step. You can turn it back on any time.`}
+        confirmLabel="Turn off"
+        // A refusal shows on the page ("We couldn't change that just now"), so the dialog closes either way.
+        onConfirm={() => change('runCode', false)}
+      />
     </>
   );
 }
@@ -499,7 +480,7 @@ function Grants({
   loading: boolean;
   revoking: ReadonlySet<string>;
   notice: string | null;
-  onRevoke: (row: GrantRow) => void;
+  onRevoke: (row: GrantRow) => void | Promise<void>;
   /** Re-reads the rail: offered as Try again when the grants read failed. */
   onRetry?: (() => void) | undefined;
 }) {
@@ -542,7 +523,7 @@ function Grants({
     (r) => r.ref.grant === 'site' && !r.revocable,
   );
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" tabIndex={-1} data-return-focus="grant-lines">
       {rows.length === 0 && moved === 0 && (
         <Text role="meta">
           {shared

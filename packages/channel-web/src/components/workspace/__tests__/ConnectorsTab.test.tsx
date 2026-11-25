@@ -302,13 +302,13 @@ describe('Other abilities', () => {
     expect(await sw('Web search')).toHaveAttribute('aria-checked', 'true');
   });
 
-  it('asks before turning Run code off, and does nothing on "Keep it on"', async () => {
+  it('asks before turning Run code off, and does nothing on Cancel', async () => {
     renderTab();
 
     fireEvent.click(await sw('Run code'));
     const dialog = await screen.findByRole('dialog', { name: 'Turn off Run code for Quill?' });
     expect(within(dialog).getByText(/Some skills won't work\./)).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it on' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(setAbilityMock).not.toHaveBeenCalled();
     expect(await sw('Run code')).toHaveAttribute('aria-checked', 'true');

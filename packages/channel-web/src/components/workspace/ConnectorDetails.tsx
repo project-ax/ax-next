@@ -99,7 +99,7 @@ interface Props {
   /** TASK-757 — the approved-access read failed: say so, don't hide it. */
   grantsFailed?: boolean;
   revoking: ReadonlySet<string>;
-  onRevoke: (row: GrantRow) => void;
+  onRevoke: (row: GrantRow) => void | Promise<void>;
   busy: boolean;
   /** The row's `⋯` menu, shared with the list so the two never disagree. */
   menu: React.ReactNode;
@@ -215,7 +215,7 @@ export function ConnectorDetails({
       <div className="mt-5 flex-1">
         <ToolPermissions agentName={agentName} row={row} state={state} />
         {(grants.length > 0 || grantsFailed) && (
-          <section aria-label="Access you approved" className="mt-6">
+          <section aria-label="Access you approved" className="mt-6" tabIndex={-1} data-return-focus="grant-lines">
             <h4 className="mb-1.5 text-[12px] font-medium text-muted-foreground">
               Access you approved
             </h4>

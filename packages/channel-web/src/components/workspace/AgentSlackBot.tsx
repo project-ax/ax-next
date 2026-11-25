@@ -75,18 +75,10 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
-import { Button as AxButton, Inline } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, Inline } from '@project-ax/ui';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { AgentSlackMenu } from './AgentSlackMenu';
 import { AgentSlackBotChannels } from './AgentSlackBotChannels';
@@ -844,20 +836,9 @@ function DisconnectBotDialog({
   onCancelled: (cancelled: BotCancelled) => void;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const who = botWho(bot);
 
-  const close = (next: boolean) => {
-    if (busy || next) return;
-    setError(null);
-    onClose();
-  };
-
   async function confirm() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
     try {
       const { appDeleted } = await disconnectSlackBot(agentId, installId);
       // The bot is gone: say how it went before the status is read again and this section goes with it.
@@ -871,41 +852,26 @@ function DisconnectBotDialog({
       onChanged();
     } catch (err) {
       logRequestFailure(err, 'agent-slack');
+      // The bot is already gone: closing and reading again is the whole answer, so return normally.
       if (agentSlackBotStale(err)) {
-        setError(null);
-        onClose();
         onChanged();
-      } else {
-        setError(agentSlackBotErrorCopy(err).message);
+        return;
       }
-    } finally {
-      setBusy(false);
+      throw err;
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{`Remove ${who} from Slack?`}</DialogTitle>
-          <DialogDescription>
-            {`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
-          </DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <AxButton intent="secondary" onClick={() => close(false)} disabled={busy}>
-            Keep it
-          </AxButton>
-          <AxButton intent="secondary" onClick={() => void confirm()} busy={busy}>
-            Remove
-          </AxButton>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={`Remove ${who} from Slack?`}
+      description={`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
+      confirmLabel="Remove"
+      errorMessage={(err) => agentSlackBotErrorCopy(err).message}
+      onConfirm={confirm}
+    />
   );
 }

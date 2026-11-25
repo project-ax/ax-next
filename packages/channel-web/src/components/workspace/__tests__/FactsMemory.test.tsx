@@ -795,8 +795,9 @@ describe('MemorySurface', () => {
 
     fireEvent.click(await memoryAction('Forget: Boston'));
     expect(
+      // The dialog now names the memory first ("“Boston” — …"), so the disclosure is a substring of its description.
       await screen.findByText(
-        'This memory will be removed from active results for the team. It stays in History, and past conversations do not change.',
+        /This memory will be removed from active results for the team\. It stays in History, and past conversations do not change\./,
       ),
     ).toBeInTheDocument();
   });

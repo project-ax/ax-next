@@ -11,6 +11,8 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
+import { ConfirmAction } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -18,7 +20,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -138,7 +139,7 @@ interface Props {
    */
   grantsFailed?: boolean;
   revoking?: ReadonlySet<string>;
-  onRevoke?: (row: GrantRow) => void;
+  onRevoke?: (row: GrantRow) => void | Promise<void>;
   /** The ids currently listed, or null while unknown — so the tab can tell
    *  which approved access has a details view to live in. */
   onListed?: (ids: ReadonlySet<string> | null) => void;
@@ -178,6 +179,9 @@ export function AgentConnectors({
   const addable = connectorsSupported && manageable ? onAdd : undefined;
   const isAdmin = useUser()?.role === 'admin';
   const [confirming, setConfirming] = useState<AgentConnectorRow | null>(null);
+  // The last connector asked about, so the dialog's words stay put while it closes.
+  const lastConfirming = useRef<AgentConnectorRow | null>(null);
+  if (confirming !== null) lastConfirming.current = confirming;
   const [notice, setNotice] = useState<
     { tone: 'error' | 'note'; text: ReactNode } | null
   >(null);
@@ -201,16 +205,10 @@ export function AgentConnectors({
   }
 
   async function onRemove(row: AgentConnectorRow) {
-    setConfirming(null);
     setNotice(null);
     const outcome = await remove(row.id);
-    if (outcome === 'failed') {
-      setNotice({
-        tone: 'error',
-        text: `We couldn’t remove ${row.name} just now. Nothing changed.`,
-      });
-      return;
-    }
+    // Said inside the confirmation; the row stays.
+    if (outcome === 'failed') throw new Error(`couldn’t remove ${row.name}`);
     if (outcome === 'removed-partial') {
       setNotice({
         tone: 'note',
@@ -220,6 +218,8 @@ export function AgentConnectors({
       });
     }
     onChanged?.();
+    // The row's menu is gone with it; park focus on the tab's primary action.
+    focusAfterRemoval('[data-return-focus="agent-connectors"]');
   }
 
   const count = status === 'ok' && connectors !== null ? connectors.length : null;
@@ -368,38 +368,17 @@ export function AgentConnectors({
           </p>
         )
       )}
-      <Dialog
+      <ConfirmAction
         open={confirming !== null}
         onOpenChange={(open) => {
           if (!open) setConfirming(null);
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              Remove {confirming?.name} from {name}?
-            </DialogTitle>
-            <DialogDescription>
-              This removes {confirming?.name} from {name}, including its sign-in
-              and keys, and anything you approved for it here. The connector
-              itself stays, and so do your other agents that use it.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirming(null)}>
-              Keep it
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (confirming !== null) void onRemove(confirming);
-              }}
-            >
-              Remove
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        title={`Remove ${(confirming ?? lastConfirming.current)?.name ?? ''} from ${name}?`}
+        description={`This removes ${(confirming ?? lastConfirming.current)?.name ?? ''} from ${name}, including its sign-in and keys, and anything you approved for it here. The connector itself stays, and so do your other agents that use it.`}
+        confirmLabel="Remove"
+        errorMessage={() => `We couldn’t remove ${(confirming ?? lastConfirming.current)?.name ?? 'it'} just now. Nothing changed.`}
+        onConfirm={() => (confirming !== null ? onRemove(confirming) : undefined)}
+      />
       <Dialog
         open={signingIn !== null}
         onOpenChange={(open) => {
@@ -506,7 +485,7 @@ function ConnectorsHeader({
         Tools {name} can work in for you. Open one to choose which actions it can take on its own.
       </p>
       {onAdd !== undefined && count !== null && count > 0 && (
-        <Button type="button" size="sm" onClick={onAdd} className="min-h-11 shrink-0">
+        <Button type="button" size="sm" data-return-focus="agent-connectors" onClick={onAdd} className="min-h-11 shrink-0">
           <Plus data-icon="inline-start" aria-hidden="true" />
           Add connector
         </Button>
@@ -540,7 +519,7 @@ function NoConnectors({
       </EmptyHeader>
       {onAdd !== undefined && (
         <EmptyContent>
-          <Button type="button" size="sm" onClick={onAdd}>
+          <Button type="button" size="sm" data-return-focus="agent-connectors" onClick={onAdd}>
             Add connector
           </Button>
         </EmptyContent>
