@@ -1702,6 +1702,33 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.activity).toEqual({ status: 'failed', activity: null });
   });
 
+  // TASK-1247 — an agent's activity line is stored per AGENT, not per person.
+  // For someone a personal agent is only shared with, it would describe its
+  // owners' own conversations, which they can't otherwise see, so the rail
+  // never reads it for them. Its owner still sees it.
+  it('the rail shows no activity line to someone the agent is only shared with', async () => {
+    registerPolicy();
+    registerActivity();
+    agents.set('a-shared', agent({ id: 'a-shared', ownerId: 'u2', sharedWith: ['u1'] }));
+    activityByAgent.set('a-shared', {
+      phrase: 'Reading the board memo',
+      counter: { done: 2, total: 5, unit: 'pages' },
+      startedAt: '2026-08-21T11:54:00.000Z',
+      source: 'tool',
+      stale: false,
+    });
+
+    const shared = await railFor('a-shared');
+    expect(shared.statusCode).toBe(200);
+    expect((shared.body as AgentRailData).activity).toEqual({ status: 'ok', activity: null });
+    expect(activityCalls).toEqual([]);
+
+    caller = { id: 'u2', isAdmin: false };
+    const own = (await railFor('a-shared')).body as AgentRailData;
+    expect(own.activity.activity?.phrase).toBe('Reading the board memo');
+    expect(activityCalls).toEqual(['a-shared']);
+  });
+
   // -------------------------------------------------------------------------
   // Revoking
   // -------------------------------------------------------------------------

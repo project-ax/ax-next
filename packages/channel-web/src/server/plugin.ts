@@ -457,10 +457,12 @@ export function createChannelWebServerPlugin(
         {
           // Slice 4 — "Signed in as": the rail names the person who signed an
           // agent in to a connector (display name, else email). Looked up per
-          // read, not stored — names change.
+          // read, not stored — names change. TASK-1247 — the roster and the
+          // agent view name who shared an agent with the reader (display name
+          // only, never an email), looked up the same way.
           hook: 'auth:get-user',
           degradation:
-            'a connector row says "Signed in by someone" instead of naming the person (and "you" is still said to the viewer who did)',
+            'a connector row says "Signed in by someone" instead of naming the person (and "you" is still said to the viewer who did); the "Shared by" line on a shared agent names nobody',
         },
         {
           // TASK-795 — the Connectors tab's "Not signed in yet" icon. A vault
