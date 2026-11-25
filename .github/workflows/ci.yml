@@ -360,6 +360,28 @@ jobs:
       - run: pnpm audit --audit-level moderate
         if: matrix.shard == 'pr' || matrix.shard == 'rest'
 
+  # @project-ax/ui stories: every Storybook story, light and dark, gets an axe
+  # pass (serious/critical violations fail) and a screenshot compared with the
+  # committed baselines in packages/ui/stories-test/__screenshots__. The job
+  # runs inside the same Playwright image `pnpm --filter @project-ax/ui
+  # stories:update` uses to generate those baselines, so fonts and rendering
+  # match pixel for pixel; a different image tag means regenerating them.
+  ui-stories:
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/playwright:v1.59.1-noble
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile --filter @project-ax/ui...
+      - run: pnpm --filter @project-ax/ui build
+      - run: pnpm --filter @project-ax/ui stories:test
+
   # Renders the Helm chart and runs its render-time guard suite. Without this
   # lane those guards (single-replica chat guard, blob-root and filestore guards)
   # only execute where helm happens to be on PATH — i.e. never in the test job above, which

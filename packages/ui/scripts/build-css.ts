@@ -12,8 +12,8 @@ export async function renderUiCss(): Promise<string> {
   const result = await postcss([
     tailwindcss({
       presets: [axPreset],
-      // Component sources only: tests mention classes on purpose and must not leak into ui.css.
-      content: [`${src}/**/*.{ts,tsx}`, `!${src}/**/__tests__/**`],
+      // Component sources only: tests and stories mention classes or class-like words and must not leak into ui.css.
+      content: [`${src}/**/*.{ts,tsx}`, `!${src}/**/__tests__/**`, `!${src}/**/*.stories.tsx`],
     }),
   ]).process('@tailwind utilities;', { from: undefined });
   return HEADER + result.css + '\n';

@@ -158,6 +158,8 @@ export default tseslint.config(
       // same thing under dist-spa/ for its wizard bundle.
       '**/dist-web/**',
       '**/dist-spa/**',
+      // @project-ax/ui's `storybook build` output (minified bundles, gitignored).
+      '**/storybook-static/**',
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       '**/coverage/**',
