@@ -20,10 +20,16 @@
 // package.json `lint:ui:suppress` script, and regenerates the file. So a rule's
 // total may rise only if its severity in that block is 'off' (or the rule is
 // absent) at the base and 'error' at HEAD, and the rule is in the HEAD script.
-// A rule already on at the base may not grow, even if its entries had all been
-// fixed and pruned. (Keying on the script instead would let a rule be dropped
-// from it in one PR and re-added at a higher count in the next.) A severity
-// that cannot be read at HEAD fails closed.
+// The base must hold no entries for it. A rule already on at the base may not
+// grow, even if its entries had all been fixed and pruned. (Keying on the script
+// instead would let a rule be dropped from it in one PR and re-added at a higher
+// count in the next.)
+//
+// Severities are read from the channel-web config block only, comments
+// stripped, so a decoy line elsewhere can't fake one. A severity that is present
+// but unreadable fails closed. A rule that has frozen entries may not go from
+// 'error' to anything else (that would launder the entries: off + prune, then
+// back on higher) unless a commit in the range carries `UI-Ratchet-Override:`.
 //
 // Usage:
 //   node scripts/ui-suppressions-ratchet.mjs <base-ref>
@@ -94,17 +100,73 @@ function suppressScriptRules(ref) {
   );
 }
 
+/** `text` with // and /* *\/ comments blanked out; string literals are left alone. */
+function stripComments(text) {
+  let out = '';
+  for (let i = 0; i < text.length; ) {
+    const c = text[i];
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== c) j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+    } else if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 2;
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
 /**
- * A rule's severity in `eslint.config.mjs` at `ref`: 'off' | 'warn' | 'error',
- * or null when no `'<rule>': '<severity>'` entry can be read (absent, or not a
- * string literal).
+ * The config object whose `files` is the channel-web tsx glob, comments
+ * stripped; null if there is none. Anchoring here keeps a decoy line elsewhere
+ * in the file (or in a comment) from being read as the rule's severity.
+ */
+function channelWebBlock(text) {
+  const code = stripComments(text);
+  const re = /files:\s*\[\s*(['"])packages\/channel-web\/src\/\*\*\/\*\.tsx\1\s*\]/g;
+  for (const m of code.matchAll(re)) {
+    const open = code.lastIndexOf('{', m.index);
+    if (open === -1) continue;
+    let depth = 0;
+    for (let i = open; i < code.length; i++) {
+      if (code[i] === '{') depth++;
+      else if (code[i] === '}' && --depth === 0) {
+        const block = code.slice(open, i + 1);
+        if (block.includes('ax-ui/')) return block;
+        break;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A rule's severity in the channel-web block of `eslint.config.mjs` at `ref`:
+ * 'off' | 'warn' | 'error'; 'absent' when the rule id is not in the block (or
+ * there is no block/file); 'unreadable' when the id is there but its value is
+ * not a plain severity string (e.g. `['error', {...}]`).
  */
 function severity(ref, rule) {
   const text = show(ref, 'eslint.config.mjs');
-  if (text === null) return null;
+  const block = text === null ? null : channelWebBlock(text);
+  if (block === null) return 'absent';
   const escaped = rule.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const m = new RegExp(`'${escaped}':\\s*'(off|warn|error)'`).exec(text);
-  return m ? m[1] : null;
+  const m = new RegExp(`(['"])${escaped}\\1\\s*:\\s*(['"])(off|warn|error)\\2\\s*[,}\\s]`).exec(block);
+  if (m) return m[3];
+  return new RegExp(`(['"])${escaped}\\1`).test(block) ? 'unreadable' : 'absent';
+}
+
+/** Reasons given by `UI-Ratchet-Override:` trailers on commits in base..HEAD. */
+function overrides(base) {
+  const r = git(['log', '--format=%(trailers:key=UI-Ratchet-Override,valueonly)', `${base}..HEAD`]);
+  return r.ok ? r.out.split('\n').map((l) => l.trim()).filter(Boolean) : [];
 }
 
 const baseRef = process.argv[2] || process.env.BASE_SHA;
@@ -144,20 +206,46 @@ if (baseText === null) {
   const after = totals(head);
   const scriptRules = suppressScriptRules('HEAD');
 
+  const waivers = overrides(base);
+
   for (const rule of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const b = before.get(rule) ?? 0;
     const h = after.get(rule) ?? 0;
-    if (h <= b) continue;
-    const was = severity(base, rule) ?? 'off'; // absent counts as off
+    const was = severity(base, rule);
     const now = severity('HEAD', rule);
-    if (now === null) {
+
+    // Downgrade laundering: off + prune in one PR, back on at a higher count in
+    // the next. A rule with frozen entries may not stop being an error.
+    if (b > 0 && was === 'error' && now !== 'error') {
+      if (waivers.length > 0) {
+        process.stdout.write(
+          `${TAG}: ${rule} downgraded to '${now}' with ${b} frozen, waived by UI-Ratchet-Override: ${waivers.join('; ')}\n`,
+        );
+      } else {
+        problems.push(
+          `${rule}: severity went from 'error' to '${now}' while ${b} violations are frozen. ` +
+            `Switching a frozen rule off is a design-system decision: it needs the CODEOWNERS owner ` +
+            `and a \`UI-Ratchet-Override: <reason>\` trailer on a commit in the range.`,
+        );
+      }
+    }
+
+    if (h <= b) continue;
+    if (was === 'unreadable') {
+      problems.push(
+        `${rule}: total went up (base ${b}, head ${h}) and its severity at the base in ` +
+          `eslint.config.mjs cannot be read (expected a literal 'off' | 'warn' | 'error'). Failing closed.`,
+      );
+      continue;
+    }
+    if (now === 'unreadable') {
       problems.push(
         `${rule}: total went up (base ${b}, head ${h}) and its severity in eslint.config.mjs at HEAD ` +
           `cannot be read (expected a literal 'off' | 'warn' | 'error'). Failing closed.`,
       );
       continue;
     }
-    if (was === 'off' && now === 'error') {
+    if ((was === 'off' || was === 'absent') && now === 'error' && b === 0) {
       if (scriptRules.has(rule)) {
         process.stdout.write(`${TAG}: ${rule} switched on in this range: frozen ${h} (base ${b}).\n`);
       } else {

@@ -35,9 +35,14 @@ const ON4 = `${ON2} --suppress-rule ax-ui/no-classname --suppress-rule ax-ui/no-
 const SEV2 = { 'ax-ui/no-style-prop': 'error', 'ax-ui/no-arbitrary-values': 'error' };
 const SEV4 = { ...SEV2, 'ax-ui/no-classname': 'error', 'ax-ui/no-raw-elements': 'error' };
 
-function configText(rules) {
-  const lines = Object.entries(rules).map(([rule, sev]) => `      '${rule}': '${sev}',`);
-  return `export default [{\n  rules: {\n${lines.join('\n')}\n  },\n}];\n`;
+function configText(rules, decoy = '') {
+  const lines = Object.entries(rules).map(([rule, sev]) =>
+    typeof sev === 'string' ? `      '${rule}': '${sev}',` : `      '${rule}': ${sev.raw},`,
+  );
+  return (
+    `${decoy}export default [{\n  files: ['packages/other/**'],\n  rules: { 'no-undef': 'off' },\n}, {\n` +
+    `  files: ['packages/channel-web/src/**/*.tsx'],\n  rules: {\n${lines.join('\n')}\n  },\n}];\n`
+  );
 }
 
 function supp(entries) {
@@ -51,7 +56,7 @@ function supp(entries) {
 }
 
 /**
- * Commit `base` then `head` (each `{ suppressions?: object|null, script?: string, rules?: {rule: severity}, configText?: string, files?: string[] }`)
+ * Commit `base` then `head` (each `{ suppressions?: object|null, script?: string, rules?: {rule: severity}, configText?: string, decoy?: string, message?: string, files?: string[] }`)
  * and return { repo, baseSha }.
  */
 function repoWith(base, head) {
@@ -71,14 +76,14 @@ function repoWith(base, head) {
       join(repo, 'package.json'),
       JSON.stringify({ scripts: { 'lint:ui:suppress': `eslint src ${state.script ?? ON2}` } }),
     );
-    writeFileSync(join(repo, 'eslint.config.mjs'), state.configText ?? configText(state.rules ?? SEV2));
+    writeFileSync(join(repo, 'eslint.config.mjs'), state.configText ?? configText(state.rules ?? SEV2, state.decoy));
     if (state.suppressions === null || state.suppressions === undefined) {
       rmSync(join(repo, 'eslint-suppressions.json'), { force: true });
     } else {
       writeFileSync(join(repo, 'eslint-suppressions.json'), supp(state.suppressions));
     }
     git(repo, 'add', '-A');
-    git(repo, 'commit', '-q', '--allow-empty', '-m', msg);
+    git(repo, 'commit', '-q', '--allow-empty', '-m', state.message ?? msg);
   };
   commit(base, 'base');
   const baseSha = git(repo, 'rev-parse', 'HEAD');
@@ -248,12 +253,119 @@ describe('ui-suppressions-ratchet', () => {
       {
         suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } },
         script: ON4,
-        configText: "export default [{ rules: { 'ax-ui/no-classname': sev } }];\n",
+        rules: { ...SEV2, 'ax-ui/no-classname': { raw: 'sev' } },
       },
     );
     const r = run(repo, [baseSha]);
     expect(r.status).toBe(1);
     expect(r.out).toContain('ax-ui/no-classname');
+    expect(r.out).toContain('severity');
+  });
+
+  it('a decoy comment before the block cannot make the base read off (two-PR bypass)', () => {
+    const { repo, baseSha } = repoWith(
+      {
+        suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } },
+        script: ON4,
+        rules: SEV4,
+        decoy: "// 'ax-ui/no-classname': 'off',\n/* 'ax-ui/no-classname': 'off' */\n",
+      },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } }, script: ON4, rules: SEV4 },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname: total went up');
+  });
+
+  it('a decoy comment before the block cannot make HEAD read error', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+      {
+        suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } },
+        script: ON4,
+        rules: { ...SEV4, 'ax-ui/no-classname': 'off' },
+        decoy: "// 'ax-ui/no-classname': 'error',\n",
+      },
+    );
+    expect(run(repo, [baseSha]).status).toBe(1);
+  });
+
+  it('a rule in another config block does not count as the channel-web severity', () => {
+    const other = "export default [{ files: ['x/**'], rules: { 'ax-ui/no-classname': 'error' } }, {\n  files: ['packages/channel-web/src/**/*.tsx'],\n  rules: { 'ax-ui/no-style-prop': 'error' },\n}];\n";
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, configText: other },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
+    );
+    // base: absent from the channel-web block -> off -> legit switch-on
+    expect(run(repo, [baseSha]).status).toBe(0);
+  });
+
+  it('downgrading a rule with frozen entries (error -> off) fails', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
+      { suppressions: {}, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname');
+    expect(r.out).toContain('design-system decision');
+    expect(r.out).toContain('UI-Ratchet-Override');
+  });
+
+  it('removing a rule with frozen entries from the block fails; warn too', () => {
+    const noClass = { ...SEV4 };
+    delete noClass['ax-ui/no-classname'];
+    for (const rules of [noClass, { ...SEV4, 'ax-ui/no-classname': 'warn' }]) {
+      const { repo, baseSha } = repoWith(
+        { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
+        { suppressions: {}, script: ON4, rules },
+      );
+      expect(run(repo, [baseSha]).status).toBe(1);
+    }
+  });
+
+  it('a UI-Ratchet-Override trailer waives the downgrade', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: SEV4 },
+      {
+        suppressions: {},
+        script: ON4,
+        rules: { ...SEV4, 'ax-ui/no-classname': 'off' },
+        message: 'drop no-classname\n\nUI-Ratchet-Override: owner approved, see DS-12',
+      },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(0);
+    expect(r.out).toContain('UI-Ratchet-Override');
+  });
+
+  it('a downgrade with no frozen entries is fine (nothing to launder)', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: SEV4 },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+    );
+    expect(run(repo, [baseSha]).status).toBe(0);
+  });
+
+  it('a switch-on with nonzero base entries fails', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-classname': 4 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': 'off' } },
+      { suppressions: { [A]: { 'ax-ui/no-classname': 9 } }, script: ON4, rules: SEV4 },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname');
+  });
+
+  it('a present-but-unparseable severity at the base fails closed, naming the rule', () => {
+    const { repo, baseSha } = repoWith(
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2 } }, script: ON4, rules: { ...SEV4, 'ax-ui/no-classname': { raw: "['error', {}]" } } },
+      { suppressions: { [A]: { 'ax-ui/no-style-prop': 2, 'ax-ui/no-classname': 40 } }, script: ON4, rules: SEV4 },
+    );
+    const r = run(repo, [baseSha]);
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('ax-ui/no-classname');
+    expect(r.out).toContain('base');
     expect(r.out).toContain('severity');
   });
 
