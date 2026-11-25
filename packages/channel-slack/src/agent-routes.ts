@@ -5,12 +5,13 @@ import type { BotRequests } from './bot-requests.js';
 import type { AgentSlackBot, Bots } from './bots.js';
 import type { ChannelStore } from './channel-store.js';
 import { checkRights, liveOwnBot, type Rights } from './channels.js';
+import type { DmAgentStore } from './dm-agents.js';
 import type { RouteRequest, RouteSpec } from './http-types.js';
 import { parseIconPng, type ParsedIcon } from './icon.js';
 import { INSTALL_ID_RE } from './ingress.js';
 import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX } from './limits.js';
 import { logCode } from './log-code.js';
-import { personalAgentFor } from './router.js';
+import { isOwnPersonalAgent, personalAgentFor } from './router.js';
 import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
 import type { InstallStore } from './store.js';
 import { checkUser } from './user-auth.js';
@@ -26,7 +27,9 @@ import { checkUser } from './user-auth.js';
  * can't install Slack apps, asking an AX admin to approve it instead
  * (TASK-1169, bot-requests.ts), and taking that ask back. The shared app
  * connects no channel here (TASK-1186; design §4b.1): a team agent is reached
- * in a channel only through its own bot.
+ * in a channel only through its own bot. A personal agent's section says
+ * which of its owner's personal agents answers their DMs to the shared app,
+ * and its owner can make it this one (TASK-1238, dm-agents.ts).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -48,13 +51,19 @@ import { checkUser } from './user-auth.js';
  *                                             no-bot when `installId` is another bot's, TASK-1173)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}, while it has an open request
+ *   POST /settings/slack/:agentId/dm-agent    → {}, a personal agent's owner alone: it becomes the one
+ *                                             that answers their DMs (TASK-1238); 403 for a team agent
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
  * could have (never tell someone the agent exists); then rights (channels.ts:
  * a team admin of the agent's team manages, workspace-admin status never
  * counts; anything but a team agent is `personal-agent`), all before a body
- * is read or the domain is asked anything. The routes hold no Slack client
+ * is read or the domain is asked anything. The DM agent route turns the
+ * rights around: only a personal agent may be chosen, and only by its owner,
+ * so a team agent the person can see is 403 `forbidden`, and the DM router's
+ * own question (router.ts `isOwnPersonalAgent`) is asked before the write,
+ * anything it refuses being the same 404. The routes hold no Slack client
  * and no vault: the domains do. The POSTs keep http-server's CSRF check and
  * cap their bodies; an unknown body key is a 400, so nothing in a body can
  * name another agent. The bot's request body can carry its picture, and a
@@ -62,10 +71,10 @@ import { checkUser } from './user-auth.js';
  * The request's `refreshToken` is optional (the one stored for the person is
  * used without it), but one that is there must look like a configuration
  * refresh token, so an access token pasted into that box never reaches Slack.
- * Install-url reads no body; Cancel, Disconnect and Claim take only the
- * install id of the bot the page showed (INSTALL_ID_RE, as Admin › Slack's
- * Disconnect does), so a page drawn before the bot was cancelled or
- * disconnected, and asked for again, can't take the new one.
+ * Install-url and the DM agent route read no body; Cancel, Disconnect and
+ * Claim take only the install id of the bot the page showed (INSTALL_ID_RE,
+ * as Admin › Slack's Disconnect does), so a page drawn before the bot was
+ * cancelled or disconnected, and asked for again, can't take the new one.
  * A rename's name must pass checkBotName (400 `invalid-bot-name` {reason}),
  * and a new picture parseIconPng (400 `invalid-icon` {reason}: here the
  * picture is the whole ask, so a bad one is refused, never skipped), both
@@ -110,11 +119,16 @@ export type AgentSlackStatus =
       botChannels?: AgentSlackBotChannel[];
     }
   /**
-   * `answersDms`: a DM from the owner reaches THIS agent, their oldest
-   * personal agent (router.ts `personalAgentFor`). Which one it does reach
-   * otherwise is never said.
+   * `answersDms`: a DM from the owner to the shared app reaches THIS agent:
+   * the personal agent they chose for their DMs, or, with no choice (or one
+   * that no longer qualifies), their oldest (router.ts `personalAgentFor`,
+   * TASK-1238). `dmAgentName`: when another of their personal agents is the
+   * one a DM reaches, its display name as they wrote it ('' when it has
+   * none), so the page can offer this one instead; null when this agent
+   * answers, or none does. Only the owner reads a personal agent's section
+   * (agents:resolve), so the agent named is always the reader's own.
    */
-  | { state: 'personal-agent'; botName: string; answersDms: boolean }
+  | { state: 'personal-agent'; botName: string; answersDms: boolean; dmAgentName: string | null }
   | {
       state: 'ready';
       botName: string;
@@ -134,13 +148,21 @@ export const AGENT_SLACK_PATH = '/settings/slack/:agentId';
 /**
  * What the section's routes read for themselves (invariant 5): the shared
  * install (is Slack connected, its names), the agent's own bot, and that
- * bot's channels, which it only lists. No Slack client and no vault:
+ * bot's channels, which it only lists; and, for a personal agent, its
+ * owner's choice of DM agent (TASK-1238). No Slack client and no vault:
  * whatever reaches Slack goes through the bot domains.
  */
 export interface AgentRoutesDeps {
   bus: HookBus;
   installs: Pick<InstallStore, 'current' | 'botForAgent'>;
   channels: Pick<ChannelStore, 'listForAgent'>;
+  /**
+   * Each person's choice of which personal agent answers their DMs
+   * (dm-agents.ts), read as the DM router reads it (router.ts
+   * `personalAgentFor`) to say which one does, and written by the DM agent
+   * route, for the person asking alone.
+   */
+  dmAgents: Pick<DmAgentStore, 'get' | 'set'>;
   logger: Logger;
 }
 
@@ -368,9 +390,17 @@ export function createAgentSlackRoutes(
         return json(200, { state: 'no-workspace', canManage: false, bot: NO_BOT } satisfies AgentSlackStatus);
       }
       // Only its owner sees a personal agent (agents:resolve), so the person
-      // asking is the one whose DMs are routed: asked exactly as the DM router asks.
-      const answersDms = (await personalAgentFor(d.bus, a.ctx, a.userId)) === a.agentId;
-      return json(200, { state: 'personal-agent', botName: install.botName, answersDms } satisfies AgentSlackStatus);
+      // asking is the one whose DMs are routed: asked exactly as the DM router
+      // asks, their choice included (TASK-1238).
+      const answering = await personalAgentFor(d.bus, a.ctx, a.userId, d.dmAgents);
+      const answersDms = answering !== null && answering.id === a.agentId;
+      return json(200, {
+        state: 'personal-agent',
+        botName: install.botName,
+        answersDms,
+        // The one a DM does reach, when it isn't this one: the reader's own agent, named for them alone.
+        dmAgentName: answering === null || answersDms ? null : answering.name,
+      } satisfies AgentSlackStatus);
     }
 
     const manage = await manages(a);
@@ -533,6 +563,30 @@ export function createAgentSlackRoutes(
   }
 
   /**
+   * Make this personal agent the one that answers its owner's DMs to the
+   * shared app (TASK-1238). Only its owner may: the person asking is the one
+   * whose choice is written, and the path is the only agent named (no body
+   * is read). Someone who can't see the agent gets the same 404 as a
+   * missing one; a team agent they can see, whatever their role, is 403,
+   * since a team agent is never anyone's DM agent. The rights read anything
+   * but a team agent as `personal-agent`, so the DM router's own question
+   * (router.ts `isOwnPersonalAgent`) is asked before the write: a choice
+   * the next DM would ignore is never stored, and an agent deleted before
+   * that list is read is the same 404. A delete landing between the list
+   * read and the write is not caught: it leaves a row for an agent that no
+   * longer exists, which is inert, since every DM checks the choice again
+   * and falls back to the oldest personal agent.
+   */
+  async function chooseDmAgent(a: Asked): Promise<Reply> {
+    const rights = await checkRights(d.bus, a.ctx, a.agentId, a.userId, 'view');
+    if (rights.ok) return json(403, { error: 'forbidden' });
+    if (rights.reason !== 'personal-agent') return NOT_FOUND;
+    if (!(await isOwnPersonalAgent(d.bus, a.ctx, a.userId, a.agentId))) return NOT_FOUND;
+    await d.dmAgents.set(a.userId, a.agentId);
+    return json(200, {});
+  }
+
+  /**
    * One route: the person, then the agent id's shape, then `run`, then
    * exactly one answer. A throw `run` didn't handle is a 500, logged
    * code-only with the route's stage. A POST's body is capped at
@@ -591,5 +645,7 @@ export function createAgentSlackRoutes(
     // Asking an AX admin instead (TASK-1169): a name and nothing else, so the plain cap.
     route('POST', '/bot-request', 'bot-request', askForBot),
     route('POST', '/bot-request/cancel', 'bot-request-cancel', cancelAsk),
+    // A personal agent's owner makes it their DM agent (TASK-1238): no body is read, so the plain cap.
+    route('POST', '/dm-agent', 'dm-agent', chooseDmAgent),
   ];
 }

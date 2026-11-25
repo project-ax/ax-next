@@ -8,7 +8,9 @@ import {
   AGENT_SLACK_BOT_CHANGE_COPY,
   AGENT_SLACK_CARD_COPY,
   AGENT_SLACK_COPY,
+  AGENT_SLACK_DM_COPY,
   AgentSlackError,
+  chooseSlackDmAgent,
   agentSlackBotTokenDead,
   botWho,
   agentSlackBotChangeErrorCopy,
@@ -108,15 +110,30 @@ describe('fetchAgentSlack', () => {
     answer = () => json(200, { state: 'no-workspace', canManage: false, bot: NO_BOT });
     await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'no-workspace', canManage: false, bot: NO_BOT });
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: false });
-    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: false });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: null });
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: true });
-    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true, dmAgentName: null });
   });
 
   it('an older host that omits answersDms is read as true; a wrong-typed one is a bad response', async () => {
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy' });
-    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ state: 'personal-agent', botName: 'canopy', answersDms: true, dmAgentName: null });
     answer = () => json(200, { state: 'personal-agent', botName: 'canopy', answersDms: 'no' });
+    await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
+  });
+
+  it('a personal-agent answer carries the agent that answers DMs', async () => {
+    const base = { state: 'personal-agent', botName: 'canopy', answersDms: false };
+    answer = () => json(200, { ...base, dmAgentName: 'Sprout' });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ ...base, dmAgentName: 'Sprout' });
+    answer = () => json(200, { ...base, dmAgentName: null });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ ...base, dmAgentName: null });
+    // An older host omits it; an empty name is no name.
+    answer = () => json(200, base);
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ ...base, dmAgentName: null });
+    answer = () => json(200, { ...base, dmAgentName: '' });
+    await expect(fetchAgentSlack('a1')).resolves.toEqual({ ...base, dmAgentName: null });
+    answer = () => json(200, { ...base, dmAgentName: 7 });
     await expect(fetchAgentSlack('a1')).rejects.toMatchObject({ code: 'bad-response' });
   });
 
@@ -366,6 +383,46 @@ describe("the agent's own bot", () => {
     expect(Object.keys(calls[0]?.body as object)).toEqual(['botName']);
     expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
     expect(calls[0]?.headers['content-type']).toBe('application/json');
+  });
+
+  it("chooseSlackDmAgent posts to the agent's dm-agent route with the write headers", async () => {
+    answer = () => json(200, {});
+    await expect(chooseSlackDmAgent('a/1')).resolves.toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      url: '/settings/slack/a%2F1/dm-agent',
+      method: 'POST',
+      credentials: 'include',
+      body: {},
+    });
+    expect(calls[0]?.headers['x-requested-with']).toBe('ax-admin');
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+  });
+
+  it("chooseSlackDmAgent: a team agent's 403 means the page is stale; a 500 does not", async () => {
+    answer = () => json(403, { error: 'forbidden' });
+    const forbidden = await chooseSlackDmAgent('a1').catch((e: unknown) => e);
+    expect(forbidden).toBeInstanceOf(AgentSlackError);
+    expect(agentSlackBotStale(forbidden)).toBe(true);
+    answer = () => json(500, { error: 'internal' });
+    const internal = await chooseSlackDmAgent('a1').catch((e: unknown) => e);
+    expect(internal).toBeInstanceOf(AgentSlackError);
+    expect(agentSlackBotStale(internal)).toBe(false);
+  });
+
+  it('the DM copy is plain: no product or plumbing words, and the same-name labels compose', () => {
+    const lines = [
+      AGENT_SLACK_DM_COPY.answersHere('Quill', 'canopy'),
+      AGENT_SLACK_DM_COPY.goesTo('canopy', AGENT_SLACK_DM_COPY.yourOther('Quill')),
+      AGENT_SLACK_DM_COPY.goesElsewhere('Quill', 'canopy'),
+      AGENT_SLACK_DM_COPY.useInstead(AGENT_SLACK_DM_COPY.thisOne('Quill')),
+      AGENT_SLACK_DM_COPY.switching,
+      AGENT_SLACK_DM_COPY.switched('canopy', 'Quill', 'Sprout'),
+      AGENT_SLACK_DM_COPY.notSwitched,
+    ];
+    expect(slackCardWordsFound(lines.join('\n'))).toEqual([]);
+    expect(AGENT_SLACK_DM_COPY.yourOther('Quill')).toBe('your other Quill');
+    expect(AGENT_SLACK_DM_COPY.thisOne('Quill')).toBe('this Quill');
   });
 
   it('cancelSlackBotRequest posts {} to /bot-request/cancel', async () => {

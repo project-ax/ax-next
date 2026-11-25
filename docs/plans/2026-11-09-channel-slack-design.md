@@ -71,7 +71,7 @@ the owner chose to put there.
 
 | Where | Agent | Who can use it | Turn runs as |
 |---|---|---|---|
-| 1:1 DM with the shared bot | Sender's personal agent | Only its owner | Owner, **attended** (`ctx.source: 'user'`) |
+| 1:1 DM with the shared bot | Sender's personal agent: the one they chose in its Slack settings, else their oldest | Only its owner | Owner, **attended** (`ctx.source: 'user'`) |
 | Public channel connected to an agent | That team agent | Any full company member | **Attended** if the sender is an AX user who passes `agents:resolve` for the agent; otherwise **external** (`ctx.source: 'external'`) |
 | Group DM, Slack Connect channel, guest, bot, other domain | — | No one | Ignored, or a short private refusal |
 
@@ -1782,10 +1782,7 @@ and the configuration token revoked. "Tested" means we watched it happen;
 
 1. ~~**Memory on external turns.**~~ **Decided 2026-11-12 (Vinay):** decide by
    who sees the reply. See §2a.
-2. **Choosing a personal agent.** Recommendation: the default is the owner's
-   personal agent, and a slash command can switch to another. Until then
-   (TASK-1093), a DM goes to the owner's OLDEST personal agent, so creating a
-   new one doesn't silently move their Slack thread.
+2. ~~**Choosing a personal agent.**~~ **Decided 2026-11-24 (Vinay; TASK-1238):** a button in a personal agent's Slack settings ("Use Juniper instead"), not a slash command. One choice per person, kept by channel-slack and checked on every DM: a chosen agent that is gone, or is no longer the person's own personal agent, falls back to the oldest. It applies to the messages after it; a turn already running or waiting finishes on its agent, and a reply in an older thread starts a new conversation with the chosen agent.
 3. ~~**Who counts as a Slack admin for phase 2 approvals?**~~ **Decided
    2026-11-18 (Vinay):** the agent's owner, or else an AX admin. See §4.
 4. **Telling the owner what goes to Slack.** Slack keeps a copy of everything

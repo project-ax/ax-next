@@ -3,7 +3,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
 /**
  * @ax/channel-slack owns the tables under the `channel_slack_v1_` prefix
  * (invariant 4: one source of truth). Nothing else reads or writes them, and
- * every query against them lives in store.ts or channel-store.ts.
+ * every query against them lives in store.ts, channel-store.ts or
+ * dm-agents.ts.
  *
  *   channel_slack_v1_installs — one row per Slack app AX created: `pending`
  *     until its Allow, then `active`. `kind` says which app it is. `shared`
@@ -108,6 +109,17 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  *     approving admin's browser draws the deployment's logo at Approve, as
  *     Connect's does. Keyed by a random id of our own (`request_id`).
  *
+ *   channel_slack_v1_dm_agents — which of a person's personal agents answers
+ *     their direct messages to the shared app (TASK-1238): one row per AX
+ *     user, naming the agent they chose from its Slack settings. With no
+ *     row, their oldest personal agent answers. Never trusted as stored:
+ *     every read checks that the agent is still the person's own personal
+ *     agent (router.ts), and the oldest answers when it isn't. Removed with
+ *     its agent (agents-deleted.ts). A reset leaves it, where it is inert: it
+ *     names an account and an agent that are gone, and every read checks it.
+ *     Keyed by the person, not by an install, so an admin's Disconnect and
+ *     Connect keep it. No secret, and no name.
+ *
  *   Dropped (TASK-1202, design §4c): `channel_slack_v1_memory_switches` and
  *     the channels table's `remember` column, the per-channel memory switch.
  *     A team agent's memory is shared with its team, so no channel is
@@ -123,8 +135,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * app of theirs. Nor is any AX account's
  * name: `connected_by_user_id` is an id in the installs, channels and
  * leftover apps tables, as `requested_by_user_id` is in the installs and bot
- * requests tables, and that person's name is read from auth when it is
- * shown (invariant 4).
+ * requests tables, and `user_id` in the DM agents table, and that person's
+ * name is read from auth when it is shown (invariant 4).
  * The one kind of person's name kept here is Slack's: `speaker_names` holds
  * members' Slack display names and ids as their sender labels showed them,
  * untrusted profile text for memory to compare against, never shown, logged
@@ -140,7 +152,8 @@ import { sql, type ColumnType, type Kysely } from 'kysely';
  * rows, so a thread kept out of memory stays out after Slack is disconnected
  * (with no binding left, the veto refuses every thread it knows of that
  * channel). A deleted agent's bindings and threads go together when the
- * agents plugin announces the delete (agents-deleted.ts).
+ * agents plugin announces the delete, and so does every DM choice naming it
+ * (agents-deleted.ts).
  * The hook's name is left unquoted here on purpose: the repo guard
  * (scripts/__tests__/agent-keyed-tables-are-cleaned.test.js) counts a quoted
  * one as the subscription, and a comment is not one.
@@ -223,12 +236,23 @@ export interface ChannelSlackBotRequestsTable {
   created_at: ColumnType<Date, Date | undefined, never>;
 }
 
+/**
+ * TASK-1238. One row per person, keyed by them: a second choice replaces the
+ * first (dm-agents.ts `set`), so the person never changes, only the agent.
+ */
+export interface ChannelSlackDmAgentsTable {
+  user_id: ColumnType<string, string, never>;
+  agent_id: string;
+  updated_at: ColumnType<Date, Date | undefined, Date>;
+}
+
 export interface ChannelSlackDatabase {
   channel_slack_v1_installs: ChannelSlackInstallsTable;
   channel_slack_v1_channels: ChannelSlackChannelsTable;
   channel_slack_v1_threads: ChannelSlackThreadsTable;
   channel_slack_v1_leftover_apps: ChannelSlackLeftoverAppsTable;
   channel_slack_v1_bot_requests: ChannelSlackBotRequestsTable;
+  channel_slack_v1_dm_agents: ChannelSlackDmAgentsTable;
 }
 
 export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
@@ -416,6 +440,21 @@ export async function runMigrations<DB>(db: Kysely<DB>): Promise<void> {
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS channel_slack_v1_bot_requests_agent
       ON channel_slack_v1_bot_requests (agent_id)
+  `.execute(db);
+  // Which personal agent answers each person's DMs to the shared app
+  // (TASK-1238): one row per AX user, the primary key. A rollback needs
+  // nothing: older code never names the table, and their oldest answers.
+  await sql`
+    CREATE TABLE IF NOT EXISTS channel_slack_v1_dm_agents (
+      user_id                TEXT PRIMARY KEY,
+      agent_id               TEXT NOT NULL,
+      updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `.execute(db);
+  // A deleted agent's choices are forgotten by it (agents-deleted.ts).
+  await sql`
+    CREATE INDEX IF NOT EXISTS channel_slack_v1_dm_agents_agent
+      ON channel_slack_v1_dm_agents (agent_id)
   `.execute(db);
   // Every boot (TASK-1202, design §4c): a team agent's memory is shared with
   // its team, so a channel can no longer be switched to "not remembered".

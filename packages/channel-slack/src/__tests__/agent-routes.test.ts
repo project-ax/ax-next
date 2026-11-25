@@ -11,6 +11,7 @@ import { fakeAgents, type FakeAgent } from './fake-agents.js';
 import { pngBase64, pngHeader } from './fake-png.js';
 import { CONFIG_REFRESH_PREFIX, fakeConfigAccessToken, fakeConfigRefreshToken } from './fake-slack-tokens.js';
 import { memoryChannelStore } from './memory-channel-store.js';
+import { memoryDmAgentStore } from './memory-dm-agent-store.js';
 
 /*
   The agent-settings Slack section, through its route handlers. Who may do
@@ -164,7 +165,8 @@ type Suffix =
   | '/bot/replace-token'
   | '/bot/claim'
   | '/bot-request'
-  | '/bot-request/cancel';
+  | '/bot-request/cancel'
+  | '/dm-agent';
 
 /** A token pasted into the bot form's refresh-token field, and one of the wrong kind. */
 const REFRESH = fakeConfigRefreshToken('ROUTESREFRESHSECRET');
@@ -186,8 +188,15 @@ const EVERY_ROUTE: Array<{ method: 'GET' | 'POST'; suffix: Suffix; body?: unknow
   // Asking an AX admin for the bot instead (TASK-1169).
   { method: 'POST', suffix: '/bot-request', body: { botName: 'Ada Bot' } },
   { method: 'POST', suffix: '/bot-request/cancel', body: {} },
+  // A personal agent's owner makes it their DM agent (TASK-1238): it reads no body; the web sends `{}`.
+  { method: 'POST', suffix: '/dm-agent', body: {} },
 ];
-const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '');
+/**
+ * The writes only a team admin of a team agent may make: the agent's own
+ * bot, and the ask for it. Choosing the DM agent is a personal agent's
+ * owner's alone (TASK-1238), so its rights are tested on their own.
+ */
+const WRITES = EVERY_ROUTE.filter((r) => r.suffix !== '' && r.suffix !== '/dm-agent');
 
 /** What the bot domain answers for an agent with no bot and a viewer with no token. */
 const NO_BOT: AgentSlackBot = { state: 'none', configTokenStored: false };
@@ -369,6 +378,8 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error } = {}
   const logger: Logger = { debug: at('debug'), info: at('info'), warn: at('warn'), error: at('error'), child: () => logger };
 
   const memory = memoryChannelStore();
+  // Each person's choice of DM agent (TASK-1238): none until a test plants one in `rows`.
+  const dm = memoryDmAgentStore();
   const state = {
     install: { ...INSTALL } as InstallRow | null,
     /** The agent's own bot (store.ts `botForAgent`, any status): none unless a test sets one. */
@@ -388,6 +399,7 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error } = {}
       },
     },
     channels: memory.store,
+    dmAgents: dm.store,
     logger,
   };
   const bots = stubBots();
@@ -438,6 +450,7 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error } = {}
     users,
     userLookups,
     memory,
+    dm,
     state,
     botLookups,
     lines,
@@ -450,6 +463,9 @@ function world(o: { workspaceAdminsMayManage?: boolean; authFault?: Error } = {}
       reply(call('POST', '/bot', agentId, as, body)),
     askForBot: (agentId: string, body: unknown, as: TestUser | null = ADA) =>
       reply(call('POST', '/bot-request', agentId, as, body)),
+    /** Make `agentId` the one that answers its owner's DMs (TASK-1238), with the `{}` the web sends unless a test says otherwise. */
+    chooseDmAgent: (agentId: string, as: TestUser | null = PAT, body: unknown = {}) =>
+      reply(call('POST', '/dm-agent', agentId, as, body)),
   };
 }
 
@@ -465,6 +481,29 @@ const answerOnBot = (w: ReturnType<typeof world>, channelId: string, channelName
     connectedByUserId: GRACE.id,
     channelName,
   });
+
+/** Pat's second personal agent, made after PATS: with no choice made, PATS (the oldest) answers Pat's DMs. */
+const PAT_LATER: FakeAgent = {
+  id: 'agt_pat_later',
+  displayName: 'Pat later',
+  visibility: 'personal',
+  ownerType: 'user',
+  ownerId: PAT.id,
+  createdAt: new Date('2026-10-02T00:00:00.000Z'),
+};
+
+/** Give Pat PAT_LATER, a day after PATS. */
+function addPatLater(w: ReturnType<typeof world>): FakeAgent {
+  w.people.agents.set(PATS.id, { ...PATS, createdAt: new Date('2026-10-01T00:00:00.000Z') });
+  w.people.addAgent(PAT_LATER);
+  return PAT_LATER;
+}
+
+/** A personal agent's section, as its owner reads it once Slack is connected. */
+const personalStatus = (answersDms: boolean, dmAgentName: string | null) => ({
+  status: 200,
+  body: { state: 'personal-agent', botName: 'canopy-works', answersDms, dmAgentName },
+});
 
 // ── The routes themselves ───────────────────────────────────────────────────
 
@@ -540,6 +579,13 @@ describe('the routes', () => {
         bypassCsrf: undefined,
         maxBodyBytes: ADMIN_BODY_MAX_BYTES,
       },
+      // A personal agent's owner makes it their DM agent (TASK-1238): it reads no body, so the plain cap.
+      {
+        method: 'POST',
+        path: '/settings/slack/:agentId/dm-agent',
+        bypassCsrf: undefined,
+        maxBodyBytes: ADMIN_BODY_MAX_BYTES,
+      },
     ]);
     for (const r of w.routes) expect(r).not.toHaveProperty('bypassCsrf');
   });
@@ -585,6 +631,7 @@ describe('rights', () => {
     }
     expect(w.people.calls).toEqual([]);
     expect(w.memory.calls).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
     expect(w.requests.calls).toEqual([]);
     expect(w.lines).toEqual([]);
@@ -624,6 +671,7 @@ describe('rights', () => {
       );
     }
     expect(w.memory.calls).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
     expect(w.bots.calls).toEqual([]);
     expect(w.requests.calls).toEqual([]);
   });
@@ -729,7 +777,7 @@ describe('rights', () => {
     const w = world();
     expect(await w.status(PATS.id, PAT)).toEqual({
       status: 200,
-      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true },
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true, dmAgentName: null },
     });
     for (const r of WRITES) {
       const a = await w.call(r.method, r.suffix, PATS.id, PAT, r.body);
@@ -744,33 +792,28 @@ describe('rights', () => {
     expect(await w.status(PATS.id, ADA)).toEqual(NOT_FOUND);
   });
 
-  it("says whether a personal agent is the one its owner's DMs reach: the oldest, never naming another", async () => {
+  it("says whether a personal agent is the one its owner's DMs reach, and names the one that does: with no choice, the oldest", async () => {
     const w = world();
-    // PATS is Pat's first personal agent; this one came later.
-    const later: FakeAgent = {
-      id: 'agt_pat_later',
-      displayName: 'Pat later',
-      visibility: 'personal',
-      ownerType: 'user',
-      ownerId: PAT.id,
-      createdAt: new Date('2026-10-02T00:00:00.000Z'),
-    };
-    w.people.agents.set(PATS.id, { ...PATS, createdAt: new Date('2026-10-01T00:00:00.000Z') });
-    w.people.addAgent(later);
+    // PATS is Pat's first personal agent; PAT_LATER came a day later.
+    const later = addPatLater(w);
 
     expect(await w.status(PATS.id, PAT)).toEqual({
       status: 200,
-      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true },
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: true, dmAgentName: null },
     });
-    // Exactly three keys: the agent a DM does reach is never named.
+    // The agent a DM does reach is named, so its owner can tell their agents apart (TASK-1238).
     expect(await w.status(later.id, PAT)).toEqual({
       status: 200,
-      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: false },
+      body: { state: 'personal-agent', botName: 'canopy-works', answersDms: false, dmAgentName: "Pat's agent" },
     });
-    // The same question the DM router asks: Pat's own agents, no teams.
+    // The same questions the DM router asks: Pat's own agents, no teams, and Pat's choice.
     expect(w.people.inputs('agents:list-for-user')).toEqual([
       { userId: PAT.id, teamIds: [] },
       { userId: PAT.id, teamIds: [] },
+    ]);
+    expect(w.dm.calls).toEqual([
+      { method: 'get', args: [PAT.id] },
+      { method: 'get', args: [PAT.id] },
     ]);
   });
 
@@ -783,6 +826,7 @@ describe('rights', () => {
       }
     }
     expect(w.people.calls).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
   });
 });
 
@@ -1715,6 +1759,164 @@ describe("the live bot's channels in the section", () => {
         expect(got.body, `${install === null ? 'no-workspace' : 'ready'} ${answer.state}`).not.toHaveProperty('botChannels');
       }
     }
+  });
+});
+
+// ── Which personal agent answers its owner's DMs (TASK-1238) ───────────────
+
+/*
+  A person's choice of DM agent is stored unchecked (dm-agents.ts), and the
+  section reads it exactly as the DM router does (router.ts
+  `personalAgentFor`): honored only while agents:list-for-user lists it as
+  their own personal agent, else the oldest answers. So the section never
+  says one agent answers while DMs reach another.
+*/
+describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
+  it("a stored choice moves the DMs, and the other agent's page names it", async () => {
+    const w = world();
+    const later = addPatLater(w);
+    w.dm.rows.set(PAT.id, later.id);
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(true, null));
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(false, 'Pat later'));
+    // Read, never written, by the section.
+    expect(w.dm.calls.map((c) => c.method)).toEqual(['get', 'get']);
+  });
+
+  it('a choice naming a team agent or a gone agent is ignored: the oldest answers, and the pages say so', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    for (const chosen of [SUPPORT.id, 'agt_gone']) {
+      w.dm.rows.set(PAT.id, chosen);
+      expect(await w.status(PATS.id, PAT), chosen).toEqual(personalStatus(true, null));
+      expect(await w.status(later.id, PAT), chosen).toEqual(personalStatus(false, "Pat's agent"));
+    }
+  });
+
+  it('an agent deleted while its section is read answers no DMs, and names no other', async () => {
+    const w = world();
+    const get = w.dm.store.get;
+    w.dm.store.get = async (userId) => {
+      // Deleted in another tab: after the rights saw it, before Pat's agents are listed.
+      w.people.agents.delete(PATS.id);
+      return get(userId);
+    };
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(false, null));
+  });
+
+  it("a choice store that can't be read is a 500 on the status, logged code-only", async () => {
+    const w = world();
+    w.dm.faults.get = Object.assign(new Error(`db down ${PAT.id}`), { code: 'ECONNRESET' });
+    expect(await w.status(PATS.id, PAT)).toEqual({ status: 500, body: { error: 'internal' } });
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'status', code: 'ECONNRESET' } },
+    ]);
+    expect(JSON.stringify(w.lines)).not.toContain(PAT.id);
+  });
+
+  it("a team agent's section never reads anyone's choice", async () => {
+    const w = world();
+    w.dm.rows.set(MEL.id, PATS.id);
+    expect(await w.status(SUPPORT.id, MEL)).toMatchObject({ status: 200, body: { state: 'ready' } });
+    expect(await w.status(SUPPORT.id, ADA)).toMatchObject({ status: 200, body: { state: 'ready' } });
+    expect(w.dm.calls).toEqual([]);
+  });
+
+  // ── POST /settings/slack/:agentId/dm-agent ──
+
+  it('the owner makes a later personal agent the DM agent: stored, and both pages say so', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    expect(await w.chooseDmAgent(later.id)).toEqual({ status: 200, body: {} });
+    expect(w.dm.rows.get(PAT.id)).toBe(later.id);
+    expect(w.dm.calls).toEqual([{ method: 'set', args: [PAT.id, later.id] }]);
+    // Asked of AX as the DM router asks it, before the write: Pat's own agents, no teams.
+    expect(w.people.inputs('agents:list-for-user')).toEqual([{ userId: PAT.id, teamIds: [] }]);
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(true, null));
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(false, 'Pat later'));
+    // What went right logs nothing.
+    expect(w.lines).toEqual([]);
+  });
+
+  it('choosing again replaces the choice, and choosing the same one twice is fine', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    expect(await w.chooseDmAgent(later.id)).toEqual({ status: 200, body: {} });
+    expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 200, body: {} });
+    expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 200, body: {} });
+    // One choice per person: the last one.
+    expect([...w.dm.rows]).toEqual([[PAT.id, PATS.id]]);
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(true, null));
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(false, "Pat's agent"));
+  });
+
+  it("someone else's personal agent and a missing one are the same 404, and nothing is stored", async () => {
+    const w = world();
+    const missing = await w.call('POST', '/dm-agent', 'agt_nobody', PAT, {});
+    expect({ status: missing.status, body: missing.body }).toEqual(NOT_FOUND);
+    // The whole answer, headers too: nothing tells "someone else's" from "doesn't exist".
+    expect(await w.call('POST', '/dm-agent', PATS.id, ADA, {})).toEqual(missing);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+  });
+
+  it('a team agent is never the DM agent: 403 to its members and team admins, 404 to someone outside the team', async () => {
+    const w = world();
+    // A plain member, team admins, and a workspace admin who is a plain member: they can all see it.
+    for (const as of [MEL, ADA, GRACE, WILL]) {
+      expect(await w.chooseDmAgent(SUPPORT.id, as), as.id).toEqual(FORBIDDEN);
+    }
+    // Someone who can't see it, a workspace admin outside the team included, learns nothing.
+    for (const as of [OTTO, WANDA, SAM]) {
+      expect(await w.chooseDmAgent(SUPPORT.id, as), as.id).toEqual(NOT_FOUND);
+    }
+    expect(w.dm.calls).toEqual([]);
+    // Refused on what agents:resolve says alone: nobody's manage rights, nor anyone's agents, are asked.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+    expect(w.people.inputs('agents:list-for-user')).toEqual([]);
+  });
+
+  it('an agent deleted after the rights saw it, before the DM router would, is a 404, and nothing is stored', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    const get = w.people.agents.get.bind(w.people.agents);
+    w.people.agents.get = (agentId: string) => {
+      const found = get(agentId);
+      // Deleted in another tab the moment agents:resolve has read it: Pat's list no longer has it.
+      if (agentId === later.id) w.people.agents.delete(agentId);
+      return found;
+    };
+    expect(await w.chooseDmAgent(later.id)).toEqual(NOT_FOUND);
+    expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: later.id, userId: PAT.id }]);
+    expect(w.people.inputs('agents:list-for-user')).toEqual([{ userId: PAT.id, teamIds: [] }]);
+    expect(w.dm.calls).toEqual([]);
+  });
+
+  it('the path decides, never the body', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    expect(await w.chooseDmAgent(PATS.id, PAT, { agentId: SUPPORT.id })).toEqual({ status: 200, body: {} });
+    expect(w.dm.rows.get(PAT.id)).toBe(PATS.id);
+    // Nor a body naming another of Pat's agents, or another person, or one that isn't JSON at all.
+    expect(await w.chooseDmAgent(later.id, PAT, { agentId: PATS.id, userId: ADA.id })).toEqual({ status: 200, body: {} });
+    expect(await w.chooseDmAgent(later.id, PAT, 'garbage')).toEqual({ status: 200, body: {} });
+    expect(w.dm.calls).toEqual([
+      { method: 'set', args: [PAT.id, PATS.id] },
+      { method: 'set', args: [PAT.id, later.id] },
+      { method: 'set', args: [PAT.id, later.id] },
+    ]);
+  });
+
+  it("a store that can't write is a 500, logged code-only", async () => {
+    const w = world();
+    w.dm.faults.set = Object.assign(new Error(`db down ${PAT.id} ${PATS.id}`), { code: 'ECONNRESET' });
+    expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 500, body: { error: 'internal' } });
+    expect(w.lines).toEqual([
+      { level: 'error', msg: 'slack_channel_route_failed', fields: { stage: 'dm-agent', code: 'ECONNRESET' } },
+    ]);
+    const logged = JSON.stringify(w.lines);
+    expect(logged).not.toContain(PAT.id);
+    expect(logged).not.toContain(PATS.id);
+    expect(w.dm.rows.size).toBe(0);
   });
 });
 

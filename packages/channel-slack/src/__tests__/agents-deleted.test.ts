@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { AGENTS_DELETED_KEY, subscribeAgentsDeleted } from '../agents-deleted.js';
 import { createBots, type Bots } from '../bots.js';
 import { createChannelStore, type ChannelStore } from '../channel-store.js';
+import { createDmAgentStore, type DmAgentStore } from '../dm-agents.js';
 import { runMigrations, type ChannelSlackDatabase } from '../migrations.js';
 import { createMutex, type Mutex } from '../mutex.js';
 import { SECRET_NAMES, configTokenRef, createSecretStore, secretRef } from '../secrets.js';
@@ -51,17 +52,23 @@ import { busVault } from './fake-vault.js';
   their token. Without it the bot would stay live in Slack, for an agent that
   no longer exists, and keep its approver's token alive.
 
+  And every person's choice of it as the agent that answers their Slack DMs
+  (TASK-1238). Every read checks a choice anyway, so a row naming a deleted
+  agent would be ignored, but nothing else ever deletes one: it goes with
+  its agent, before the bot, so it never waits for the app lock.
+
   A real bus and a real Postgres. The bot tests add the real install store,
   the real secret store over a fake vault on the bus (fake-vault.ts), and a
   fake Slack that retires a rotated refresh token at once
-  (fake-slack-config.ts). The stores' own contracts are channel-store.test.ts
-  and store.test.ts.
+  (fake-slack-config.ts). The stores' own contracts are channel-store.test.ts,
+  dm-agents.test.ts and store.test.ts.
 */
 
 let container: StartedPostgreSqlContainer;
 let pool: pg.Pool;
 let db: Kysely<ChannelSlackDatabase>;
 let channels: ChannelStore;
+let dmAgents: DmAgentStore;
 let installs: InstallStore;
 
 beforeAll(async () => {
@@ -70,17 +77,18 @@ beforeAll(async () => {
   db = new Kysely<ChannelSlackDatabase>({ dialect: new PostgresDialect({ pool }) });
   await runMigrations(db);
   channels = createChannelStore(db);
+  dmAgents = createDmAgentStore(db);
   installs = createInstallStore(db);
 }, 120_000);
 
 /**
- * No binding, thread, install, leftover app or open bot request: what every
- * test, and each case of a table-driven one, starts from.
+ * No binding, thread, install, leftover app, open bot request or DM agent
+ * choice: what every test, and each case of a table-driven one, starts from.
  */
 async function clearTables(): Promise<void> {
   await sql`
     TRUNCATE channel_slack_v1_channels, channel_slack_v1_threads, channel_slack_v1_installs,
-      channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests
+      channel_slack_v1_leftover_apps, channel_slack_v1_bot_requests, channel_slack_v1_dm_agents
   `.execute(db);
 }
 
@@ -175,9 +183,11 @@ async function threadsFor(agentId: string): Promise<number> {
   return r.rows[0]!.n;
 }
 
+/** Every binding, thread and DM agent choice, whichever agent they name. */
 async function total(): Promise<number> {
   const r = await sql<{ n: number }>`
-    SELECT (SELECT count(*) FROM channel_slack_v1_channels)::int + (SELECT count(*) FROM channel_slack_v1_threads)::int AS n
+    SELECT (SELECT count(*) FROM channel_slack_v1_channels)::int + (SELECT count(*) FROM channel_slack_v1_threads)::int
+         + (SELECT count(*) FROM channel_slack_v1_dm_agents)::int AS n
   `.execute(db);
   return r.rows[0]!.n;
 }
@@ -233,7 +243,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
     const bus = new HookBus();
     const plugin = captureLogger();
     const ctxLog = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await bind(INSTALL, SUPPORT, AGENT);
     await bind(INSTALL, SALES, AGENT);
     await bind(OTHER_INSTALL, SUPPORT, AGENT);
@@ -258,7 +268,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
   it('an agent whose channels were disconnected before it was deleted still loses its thread rows', async () => {
     const bus = new HookBus();
     const plugin = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await thread('conv_1', INSTALL, SUPPORT, AGENT);
 
     const fired = await fireDeleted(bus, deleted(AGENT), captureLogger().logger);
@@ -273,7 +283,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
   it('an agent with no channels removes nothing and logs nothing', async () => {
     const bus = new HookBus();
     const plugin = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await bind(INSTALL, GENERAL, OTHER_AGENT);
 
     const fired = await fireDeleted(bus, deleted(AGENT), captureLogger().logger);
@@ -287,20 +297,22 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
     const bus = new HookBus();
     const plugin = captureLogger();
     const ctxLog = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     // Rows a careless read of `agentId` would match: an empty id, and the
     // text a number turns into on the way to Postgres.
     await bind(INSTALL, SUPPORT, '');
     await bind(INSTALL, SALES, '42');
     await thread('conv_1', INSTALL, SUPPORT, '');
     await thread('conv_2', INSTALL, SALES, '42');
+    await dmAgents.set('usr_a', '');
+    await dmAgents.set('usr_b', '42');
 
     for (const payload of [undefined, null, {}, { agentId: '' }, { agentId: 42 }, 'agt_support']) {
       const fired = await fireDeleted(bus, payload, ctxLog.logger);
       expect(fired.rejected, JSON.stringify(payload)).toBe(false);
     }
 
-    expect(await total()).toBe(4);
+    expect(await total()).toBe(6);
     expect(plugin.lines).toEqual([]);
     expect(subscriberFailures(ctxLog.lines)).toEqual([]);
   });
@@ -309,7 +321,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
     const bus = new HookBus();
     const plugin = captureLogger();
     const ctxLog = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await bind(INSTALL, SUPPORT, AGENT);
     await thread('conv_1', INSTALL, SUPPORT, AGENT);
 
@@ -334,7 +346,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
   it("a thread delete that fails keeps the bindings too: both go, or neither does", async () => {
     const bus = new HookBus();
     const plugin = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await bind(INSTALL, SUPPORT, AGENT);
     await thread('conv_1', INSTALL, SUPPORT, AGENT);
 
@@ -358,7 +370,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
     const bus = new HookBus();
     const plugin = captureLogger({ throwOn: 'warn' });
     const ctxLog = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await bind(INSTALL, SUPPORT, AGENT);
 
     await withDeleteTrigger(`RAISE EXCEPTION 'refused in test'; RETURN OLD;`, async () => {
@@ -374,7 +386,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
     const bus = new HookBus();
     const plugin = captureLogger({ throwOn: 'info' });
     const ctxLog = captureLogger();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, plugin.logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, plugin.logger);
     await bind(INSTALL, SUPPORT, AGENT);
 
     const fired = await fireDeleted(bus, deleted(AGENT), ctxLog.logger);
@@ -387,7 +399,7 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
 
   it('subscribes under AGENTS_DELETED_KEY, so the plugin can take it off the bus by that name', async () => {
     const bus = new HookBus();
-    subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, captureLogger().logger);
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, captureLogger().logger);
     await bind(INSTALL, SUPPORT, AGENT);
 
     expect(bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(1);
@@ -397,13 +409,99 @@ describe("agents:deleted removes the deleted agent's channel bindings and thread
 
   it('the function it returns unsubscribes: a later delete leaves the bindings alone', async () => {
     const bus = new HookBus();
-    const off = subscribeAgentsDeleted(bus, { channels, bots: NO_BOT }, captureLogger().logger);
+    const off = subscribeAgentsDeleted(bus, { channels, dmAgents, bots: NO_BOT }, captureLogger().logger);
     await bind(INSTALL, SUPPORT, AGENT);
 
     off();
     await fireDeleted(bus, deleted(AGENT), captureLogger().logger);
     expect(await countFor(AGENT)).toBe(1);
     expect(bus.unsubscribe('agents:deleted', AGENTS_DELETED_KEY)).toBe(0);
+  });
+});
+
+// ── Each person's Slack DM agent choice (TASK-1238) ────────────────────────
+
+describe('agents:deleted forgets the Slack DM agent choices naming the deleted agent (TASK-1238)', () => {
+  it('deleting an agent forgets the DM choices naming it', async () => {
+    const bus = new HookBus();
+    const plugin = captureLogger();
+    const ctxLog = captureLogger();
+    // What usr_a's choice was when the bot's removal began: already gone,
+    // so the choices never wait for the app lock that removal takes.
+    let choiceAtBot: string | null | undefined;
+    const bots: Pick<Bots, 'removeForAgent'> = {
+      removeForAgent: async () => {
+        choiceAtBot = await dmAgents.get('usr_a');
+      },
+    };
+    subscribeAgentsDeleted(bus, { channels, dmAgents, bots }, plugin.logger);
+    await dmAgents.set('usr_a', 'agt_x');
+    await dmAgents.set('usr_b', 'agt_x');
+    await dmAgents.set('usr_c', 'agt_y');
+
+    const fired = await fireDeleted(bus, { agentId: 'agt_x', ownerId: 'usr_a', ownerType: 'user' }, ctxLog.logger);
+    expect(fired.rejected).toBe(false);
+
+    expect(await dmAgents.get('usr_a')).toBeNull();
+    expect(await dmAgents.get('usr_b')).toBeNull();
+    expect(await dmAgents.get('usr_c')).toBe('agt_y');
+    expect(choiceAtBot).toBeNull();
+    // Nothing failed, and no line names a person.
+    expect(plugin.lines).toEqual([]);
+    expect(subscriberFailures(ctxLog.lines)).toEqual([]);
+  });
+
+  it('a DM-choice cleanup that fails is logged code-only, and the bindings and the bot still go', async () => {
+    const bus = new HookBus();
+    const plugin = captureLogger();
+    const ctxLog = captureLogger();
+    const failing: Pick<DmAgentStore, 'removeForAgent'> = {
+      removeForAgent: async () => {
+        throw Object.assign(new Error(`refused for usr_a: ${FAILURE_CANARY}`), { code: 'ECONNRESET' });
+      },
+    };
+    const bots = { removeForAgent: vi.fn(async (_agentId: string) => {}) };
+    subscribeAgentsDeleted(bus, { channels, dmAgents: failing, bots }, plugin.logger);
+    await bind(INSTALL, SUPPORT, AGENT);
+    await thread('conv_1', INSTALL, SUPPORT, AGENT);
+
+    const fired = await fireDeleted(bus, deleted(AGENT), ctxLog.logger);
+    expect(fired.rejected).toBe(false);
+
+    // Exactly one warning, by its stage and code alone, after the bindings' own line.
+    expect(plugin.lines).toEqual([
+      { level: 'info', msg: 'slack_agent_channels_removed', bindings: { channels: 1, threads: 1 } },
+      { level: 'warn', msg: 'slack_agent_cleanup_failed', bindings: { stage: 'dm-agents', code: 'ECONNRESET' } },
+    ]);
+    const logged = JSON.stringify(plugin.lines);
+    expect(logged).not.toContain('usr_a');
+    expect(logged).not.toContain(FAILURE_CANARY);
+    // The bindings and threads went, and the bot goes all the same.
+    expect(await countFor(AGENT)).toBe(0);
+    expect(await threadsFor(AGENT)).toBe(0);
+    expect(bots.removeForAgent).toHaveBeenCalledTimes(1);
+    expect(bots.removeForAgent).toHaveBeenCalledWith(AGENT);
+    expect(subscriberFailures(ctxLog.lines)).toEqual([]);
+  });
+
+  it('a logger that throws while reporting that failure still lets the bot go, and never fails the agent delete', async () => {
+    const bus = new HookBus();
+    const plugin = captureLogger({ throwOn: 'warn' });
+    const ctxLog = captureLogger();
+    const failing: Pick<DmAgentStore, 'removeForAgent'> = {
+      removeForAgent: async () => {
+        throw new Error('refused in test');
+      },
+    };
+    const bots = { removeForAgent: vi.fn(async (_agentId: string) => {}) };
+    subscribeAgentsDeleted(bus, { channels, dmAgents: failing, bots }, plugin.logger);
+
+    const fired = await fireDeleted(bus, deleted(AGENT), ctxLog.logger);
+    expect(fired.rejected).toBe(false);
+
+    expect(plugin.lines.map((l) => l.msg)).toEqual(['slack_agent_cleanup_failed']);
+    expect(bots.removeForAgent).toHaveBeenCalledWith(AGENT);
+    expect(subscriberFailures(ctxLog.lines)).toEqual([]);
   });
 });
 
@@ -458,7 +556,7 @@ function botWorld(o: { installs?: InstallStore; lock?: Mutex; throwOn?: LogLine[
     now: () => NOW_MS,
     randomBytes: (n) => randomBytes(n),
   });
-  subscribeAgentsDeleted(bus, { channels, bots }, plugin.logger);
+  subscribeAgentsDeleted(bus, { channels, dmAgents, bots }, plugin.logger);
   return { bus, vault, vaultCalls, vaultFailures, slack, trail, lines: plugin.lines };
 }
 

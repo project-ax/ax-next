@@ -40,7 +40,7 @@ vi.mock('@/lib/workspace-api', async () => {
 
 vi.mock('@/lib/agent-slack', async (original) => ({
   ...(await original<typeof import('@/lib/agent-slack')>()),
-  fetchAgentSlack: vi.fn(async () => ({ state: 'personal-agent', botName: 'canopy', answersDms: false })),
+  fetchAgentSlack: vi.fn(async () => ({ state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: null })),
 }));
 
 vi.mock('@/lib/agent-apps', async (original) => ({

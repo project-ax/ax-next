@@ -28,6 +28,7 @@ import { createChannelCheck } from './channel-check.js';
 import { createChannelStore, type ChannelStore } from './channel-store.js';
 import { moveConfigTokens, releaseConfigToken } from './config-tokens.js';
 import { createDecisionAnswer } from './decision-answer.js';
+import { createDmAgentStore } from './dm-agents.js';
 import { EVENTS_ROUTE_PATH, createEventsHandler, createSeenEvents } from './events.js';
 import type { RouteSpec } from './http-types.js';
 import { INTERACTIONS_ROUTE_PATH, createInteractionsHandler } from './interactions.js';
@@ -103,7 +104,8 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //        in the path (ingress.ts)
 //   GET  /settings/slack/:agentId  — a team agent's Slack section, from its
 //        settings: its own bot and the channels the bot answers in; any
-//        member reads (agent-routes.ts)
+//        member reads (agent-routes.ts). A personal agent's says which of
+//        its owner's personal agents answers their DMs (TASK-1238)
 //   POST /settings/slack/:agentId/bot{,/install-url,/cancel,/disconnect,/rename,/icon,
 //        /replace-token,/claim} — the agent's own Slack bot (TASK-1167,
 //        bots.ts): a team admin of its team asks for it, picks it back up in
@@ -115,6 +117,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
 //        to approve it, without a token, and takes that ask back (TASK-1169,
 //        bot-requests.ts); CSRF-checked
+//   POST /settings/slack/:agentId/dm-agent  — a personal agent's owner makes
+//        it the one that answers their DMs to the shared app (TASK-1238,
+//        dm-agents.ts): their own personal agent only, no body read;
+//        CSRF-checked
 //   GET  /slack/bots/oauth/callback  — where Slack sends a bot's approver after
 //        Allow (bot-callback.ts): signed in, its OAuth state bound to the
 //        approver (the proof a GET carries), under the one app lock
@@ -128,17 +134,22 @@ import { followContinuation, type TurnDeps } from './turn.js';
 // every app of theirs (secrets.ts, TASK-1175), and one binding row per
 // channel a team agent's bot answers in, in `channel_slack_v1_channels`
 // (channel-store.ts), removed with the bot or when its agent is deleted
-// (agents-deleted.ts). A token an install kept under
-// its own ref before TASK-1175 moves to its admin at boot, before any route
-// registers (config-tokens.ts). Its only egress is
+// (agents-deleted.ts). Each person's choice of which of their personal agents
+// answers their DMs to the shared app is one row of theirs in
+// `channel_slack_v1_dm_agents` (dm-agents.ts, TASK-1238; no secret, checked
+// on every read, forgotten when that agent is deleted). A token an install
+// kept under its own ref before TASK-1175 moves to its admin at boot, before
+// any route registers (config-tokens.ts). Its only egress is
 // `https://slack.com/api/<method>`, through `fetchImpl` (slack-api.ts).
 //
 // A verified event goes to the router (router.ts): a 1:1 DM from an admitted
-// member whose verified email maps to an AX user becomes a turn of their
-// oldest personal agent, in the thread's conversation (origin 'slack'),
-// queued behind any other turn in it (turn-queue.ts). The reply streams into
-// the Slack thread (reply-stream.ts) from the turn's chat events, which one
-// subscriber per event hands to the running turn (turn-registry.ts).
+// member whose verified email maps to an AX user becomes a turn of the
+// personal agent they chose for their DMs, while it is still their own
+// personal agent, else of their oldest (TASK-1238), in the thread's
+// conversation (origin 'slack'), queued behind any other turn in it
+// (turn-queue.ts). The reply streams into the Slack thread (reply-stream.ts)
+// from the turn's chat events, which one subscriber per event hands to the
+// running turn (turn-registry.ts).
 //
 // A team agent's own bot (TASK-1167) answers @mentions in the public
 // channels someone invited it to: its first mention in one binds the channel
@@ -381,6 +392,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
 
         const store = createInstallStore(db);
         const channelStore = createChannelStore(db);
+        // Which personal agent answers each person's DMs (TASK-1238).
+        const dmAgents = createDmAgentStore(db);
         channelsReady(channelStore);
         // One store for the events route, the admin routes and the team
         // agents' bots, so every change the others make to an install's
@@ -529,6 +542,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
                 installs: store,
                 queue,
                 channels: channelStore,
+                // Read on every DM, never written here (TASK-1238).
+                dmAgents,
                 externalQueue,
                 channelCheck,
                 mentionNames,
@@ -584,9 +599,11 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           // The bot routes reach the same `bots` as agents:deleted, and `botChanges`,
           // both under the one app lock, and the ask routes the same `botRequests`
           // as Admin › Slack. The section itself reads only the stores: no Slack
-          // client and no vault (invariant 5).
+          // client and no vault (invariant 5). A personal agent's section reads
+          // its owner's DM choice as the router does, and its DM agent route
+          // writes it, for its owner alone (TASK-1238).
           ...createAgentSlackRoutes(
-            { bus, installs: store, channels: channelStore, logger },
+            { bus, installs: store, channels: channelStore, dmAgents, logger },
             bots,
             botRequests,
             botChanges,
@@ -618,7 +635,7 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
         undos.push(() => {
           bus.unsubscribe(RESET_CLEANUP, RESET_CLEANUP_KEY);
         });
-        undos.push(subscribeAgentsDeleted(bus, { channels: channelStore, bots }, logger));
+        undos.push(subscribeAgentsDeleted(bus, { channels: channelStore, dmAgents, bots }, logger));
         undos.push(subscribeTurnEvents(bus, registry, TURN_EVENTS_KEY));
         // Undone first: turns not yet started are dropped from both lanes,
         // and each install's count is logged once (those senders never get a

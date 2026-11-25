@@ -5,10 +5,12 @@
  * ships.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentSlack } from '../AgentSlack';
 import {
+  AGENT_SLACK_DM_COPY as DM,
   AgentSlackError,
+  chooseSlackDmAgent,
   cancelSlackBot,
   cancelSlackBotRequest,
   disconnectSlackBot,
@@ -25,6 +27,7 @@ import { slackCardText, slackCardWordsFound } from '@/test-utils/slack-card-word
 vi.mock('@/lib/agent-slack', async (original) => ({
   ...(await original<typeof import('@/lib/agent-slack')>()),
   fetchAgentSlack: vi.fn(),
+  chooseSlackDmAgent: vi.fn(),
   cancelSlackBot: vi.fn(),
   cancelSlackBotRequest: vi.fn(),
   disconnectSlackBot: vi.fn(),
@@ -43,6 +46,7 @@ const disconnectBot = vi.mocked(disconnectSlackBot);
 const request = vi.mocked(requestSlackBot);
 const avatar = vi.mocked(renderSlackAvatar);
 const rename = vi.mocked(renameAgentSlackBot);
+const choose_dm = vi.mocked(chooseSlackDmAgent);
 
 /** The bot's install id, as a manager's status carries it: the key its Remove from Slack takes. */
 const BOT_ID = 'Hb7Kq2Lw8vNc5Xr1Bm7KdA';
@@ -92,6 +96,9 @@ const liveTitle = (who: string) => screen.findByRole('heading', { level: 3, name
 
 afterEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps queued `mockResolvedValueOnce` values; reset these two so one test's leftovers can't answer the next.
+  fetchStatus.mockReset();
+  choose_dm.mockReset();
 });
 
 describe('the states', () => {
@@ -147,19 +154,126 @@ describe('the states', () => {
     await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
   });
 
-  it('a personal agent that answers direct messages: one line about the direct message', async () => {
-    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: true });
+  it('a personal agent that answers direct messages: one line about the direct message, no button', async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: true, dmAgentName: null });
     expect(await screen.findByText(/Quill is a personal agent.*direct message with canopy/)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
+  });
+
+  it('names the agent that answers, and offers this one', async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: 'Sprout' });
+    expect(await screen.findByText(DM.goesTo('canopy', 'Sprout'))).toBeInTheDocument();
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: DM.useInstead('Quill') })).toBeEnabled();
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
+  });
+
+  it('two agents with one name read as "your other" and "this"', async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: ' quill ' });
+    expect(await screen.findByText(DM.goesTo('canopy', DM.yourOther('quill')))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: DM.useInstead(DM.thisOne('Quill')) })).toBeInTheDocument();
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
+  });
+
+  it('a server that names no agent shows the old kind of line and no button', async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: null });
+    expect(await screen.findByText(DM.goesElsewhere('Quill', 'canopy'))).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(slackCardWordsFound(slackCardText())).toEqual([]);
+  });
+
+  it('an empty name from a mock that skipped the parser is no name', async () => {
+    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: '' });
+    expect(await screen.findByText(DM.goesElsewhere('Quill', 'canopy'))).toBeInTheDocument();
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it("a personal agent that isn't the one a direct message reaches says so, without naming another agent", async () => {
-    renderIt({ state: 'personal-agent', botName: 'canopy', answersDms: false });
-    const line = await screen.findByText(/Quill is a personal agent, so it can't join channels/);
-    expect(line).toHaveTextContent('A direct message to canopy');
-    expect(line).toHaveTextContent('your first personal agent, not Quill');
-    expect(line.textContent).not.toMatch(/answers in a direct message/);
-    expect(screen.queryByRole('button')).toBeNull();
+  describe('the switch', () => {
+    const elsewhere: AgentSlackRead = { state: 'personal-agent', botName: 'canopy', answersDms: false, dmAgentName: 'Sprout' };
+    const here: AgentSlackRead = { state: 'personal-agent', botName: 'canopy', answersDms: true, dmAgentName: null };
+
+    it('Use Quill instead switches, reads again, and says new messages go to Quill', async () => {
+      fetchStatus.mockResolvedValueOnce(elsewhere).mockResolvedValueOnce(here);
+      choose_dm.mockResolvedValue(undefined);
+      render(<AgentSlack agentId="a1" agentName="Quill" />);
+      fireEvent.click(await screen.findByRole('button', { name: DM.useInstead('Quill') }));
+      const note = await screen.findByText(DM.switched('canopy', 'Quill', 'Sprout'));
+      expect(choose_dm).toHaveBeenCalledTimes(1);
+      expect(choose_dm).toHaveBeenCalledWith('a1');
+      expect(fetchStatus).toHaveBeenCalledTimes(2);
+      expect(document.activeElement).not.toBeNull();
+      expect(note.closest('[role="alert"]')?.contains(document.activeElement)).toBe(true);
+      expect(screen.queryByRole('button')).toBeNull();
+      // Today's sentence still stands under it.
+      expect(screen.getByText(DM.answersHere('Quill', 'canopy'))).toBeInTheDocument();
+      expect(slackCardWordsFound(slackCardText())).toEqual([]);
+    });
+
+    it('while it switches, the button is disabled and two clicks before it re-renders send one request', async () => {
+      const gate = deferred<void>();
+      choose_dm.mockReturnValue(gate.promise);
+      fetchStatus.mockResolvedValueOnce(elsewhere).mockResolvedValueOnce(here);
+      render(<AgentSlack agentId="a1" agentName="Quill" />);
+      const button = await screen.findByRole('button', { name: DM.useInstead('Quill') });
+      // Two clicks before React renders the button disabled: only the in-flight ref stands between them.
+      // (Separate fireEvent calls each flush their own render, so the second would hit a disabled button.)
+      act(() => {
+        button.click();
+        button.click();
+      });
+      expect(choose_dm).toHaveBeenCalledTimes(1);
+      const busy = await screen.findByRole('button', { name: DM.switching });
+      expect(busy).toBeDisabled();
+      fireEvent.click(busy);
+      expect(choose_dm).toHaveBeenCalledTimes(1);
+      gate.resolve();
+      await screen.findByText(DM.switched('canopy', 'Quill', 'Sprout'));
+      expect(choose_dm).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed switch says nothing changed and keeps the button', async () => {
+      choose_dm.mockRejectedValue(new AgentSlackError(500, 'internal'));
+      fetchStatus.mockResolvedValue(elsewhere);
+      render(<AgentSlack agentId="a1" agentName="Quill" />);
+      fireEvent.click(await screen.findByRole('button', { name: DM.useInstead('Quill') }));
+      expect(await screen.findByText(DM.notSwitched)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: DM.useInstead('Quill') })).toBeEnabled();
+      expect(fetchStatus).toHaveBeenCalledTimes(1);
+      expect(slackCardWordsFound(slackCardText())).toEqual([]);
+    });
+
+    it('an out-of-date page reads again instead', async () => {
+      choose_dm.mockRejectedValue(new AgentSlackError(404, 'not-found'));
+      fetchStatus.mockResolvedValue(elsewhere);
+      render(<AgentSlack agentId="a1" agentName="Quill" />);
+      fireEvent.click(await screen.findByRole('button', { name: DM.useInstead('Quill') }));
+      await waitFor(() => expect(fetchStatus).toHaveBeenCalledTimes(2));
+      await screen.findByRole('button', { name: DM.useInstead('Quill') });
+      expect(screen.queryByText(DM.notSwitched)).toBeNull();
+    });
+
+    it('a switch that landed, with a re-read that fails, still says it switched, above the load error', async () => {
+      fetchStatus.mockResolvedValueOnce(elsewhere).mockRejectedValueOnce(new Error('boom'));
+      choose_dm.mockResolvedValue(undefined);
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      render(<AgentSlack agentId="a1" agentName="Quill" />);
+      fireEvent.click(await screen.findByRole('button', { name: DM.useInstead('Quill') }));
+      expect(await screen.findByText(DM.switched('canopy', 'Quill', 'Sprout'))).toBeInTheDocument();
+      expect(screen.getByText("We couldn't load the Slack settings.")).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+    });
+
+    it("another agent's page doesn't show the confirmation", async () => {
+      fetchStatus.mockResolvedValueOnce(elsewhere).mockResolvedValueOnce(here).mockResolvedValue(here);
+      choose_dm.mockResolvedValue(undefined);
+      const { rerender } = render(<AgentSlack agentId="a1" agentName="Quill" />);
+      fireEvent.click(await screen.findByRole('button', { name: DM.useInstead('Quill') }));
+      await screen.findByText(DM.switched('canopy', 'Quill', 'Sprout'));
+      rerender(<AgentSlack agentId="a2" agentName="Fern" />);
+      await screen.findByText(DM.answersHere('Fern', 'canopy'));
+      expect(screen.queryByText(DM.switched('canopy', 'Quill', 'Sprout'))).toBeNull();
+    });
   });
 
   it('a failed read offers a retry', async () => {

@@ -12,6 +12,13 @@
  * `#name`, a person is a name, and a problem shows up only when there is one.
  * Slack itself is set up once, in Admin settings; this page never asks for it.
  *
+ * A personal agent has no bot of its own. It says which of its owner's agents a
+ * direct message to the shared bot reaches, and offers to make this one it
+ * (`AgentSlackDms`, TASK-1238). The confirmation after a switch is held here,
+ * because the switch reads the status again and the loading face replaces
+ * everything below until it lands (and, should that read fail, the confirmation
+ * still shows above the load error: the switch happened).
+ *
  * A memory change is never optimistic (the `lib/agent-abilities.ts` rule):
  * while a write is in flight the row keeps its old state, and a failed write
  * leaves it there with a sentence saying nothing changed.
@@ -21,6 +28,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { logRequestFailure } from '@/lib/http';
+import { AgentSlackDms, AgentSlackDmsSwitched } from './AgentSlackDms';
 import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
 import type { RebuildFrom } from './AgentSlackBotLifecycle';
 import { fetchAgentSlack, type AgentSlackRead } from '@/lib/agent-slack';
@@ -43,12 +51,16 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   const [leftOver, setLeftOver] = useState<BotCancelled | null>(null);
   // The bot Set up again just took away, so the request form that follows can offer its name back (TASK-1173).
   const [rebuilding, setRebuilding] = useState<RebuildFrom | null>(null);
+  // The labels of a direct-message switch this page just made, for its confirmation (TASK-1238).
+  // `botName` rides along so the confirmation can still be drawn when the re-read fails.
+  const [switched, setSwitched] = useState<{ self: string; from: string; botName: string } | null>(null);
   const [leftOverFor, setLeftOverFor] = useState(agentId);
   if (leftOverFor !== agentId) {
     // Another agent: the note was about the one before (reset while rendering, so it never flashes).
     setLeftOverFor(agentId);
     setLeftOver(null);
     setRebuilding(null);
+    setSwitched(null);
   }
   const botCallbacks = {
     leftOver,
@@ -93,14 +105,17 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   }
   if (load.status === 'failed') {
     return (
-      <Alert variant="destructive">
-        <AlertDescription className="flex flex-col items-start gap-3">
-          <p>We couldn&apos;t load the Slack settings.</p>
-          <Button variant="outline" size="sm" onClick={read}>
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <div className="flex flex-col gap-3">
+        {switched !== null && <AgentSlackDmsSwitched botName={switched.botName} switched={switched} />}
+        <Alert variant="destructive">
+          <AlertDescription className="flex flex-col items-start gap-3">
+            <p>We couldn&apos;t load the Slack settings.</p>
+            <Button variant="outline" size="sm" onClick={read}>
+              Try again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </div>
     );
   }
 
@@ -137,11 +152,22 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
       );
     case 'personal-agent':
       return (
-        <p className="text-[13px] text-muted-foreground">
-          {state.answersDms
-            ? `${agentName} is a personal agent, so it answers in a direct message with ${state.botName} in Slack. Channels are for team agents.`
-            : `${agentName} is a personal agent, so it can't join channels. A direct message to ${state.botName} in Slack goes to your first personal agent, not ${agentName}.`}
-        </p>
+        <AgentSlackDms
+          agentId={agentId}
+          agentName={agentName}
+          botName={state.botName}
+          answersDms={state.answersDms}
+          dmAgentName={state.dmAgentName}
+          switched={switched}
+          onSwitched={(labels) => {
+            setSwitched({ ...labels, botName: state.botName });
+            read();
+          }}
+          onStale={() => {
+            setSwitched(null);
+            read();
+          }}
+        />
       );
     case 'ready':
       return (
