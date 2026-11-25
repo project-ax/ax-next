@@ -1,6 +1,6 @@
-import { RuleTester } from 'eslint';
+import { Linter, RuleTester } from 'eslint';
 import tseslint from 'typescript-eslint';
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import plugin from '../index.js';
 
@@ -225,4 +225,35 @@ tester.run('no-internal-imports', plugin.rules['no-internal-imports'], {
       errors: [{ messageId: 'noInternalImport' }],
     },
   ],
+});
+
+const REPLACED = [{ uiModules: ['alert'] }];
+const REL_FILE = '/r/packages/channel-web/src/components/workspace/X.tsx';
+tester.run('no-internal-imports (uiModules)', plugin.rules['no-internal-imports'], {
+  valid: [
+    { code: "import { Button } from '@/components/ui/button';", options: REPLACED },
+    { code: "import { Button } from '../ui/button';", options: REPLACED, filename: REL_FILE },
+    { code: "import { Alert } from '@project-ax/ui';", options: REPLACED },
+  ],
+  invalid: [
+    { code: "import { Alert } from '@/components/ui/alert';", options: REPLACED, errors: [{ messageId: 'noInternalImport' }] },
+    { code: "import { Alert } from '../ui/alert';", options: REPLACED, filename: REL_FILE, errors: [{ messageId: 'noInternalImport' }] },
+    { code: "import * as D from '@radix-ui/react-dialog';", options: REPLACED, errors: [{ messageId: 'noInternalImport' }] },
+    { code: "import x from '@project-ax/ui/internal/x';", options: REPLACED, errors: [{ messageId: 'noInternalImport' }] },
+  ],
+});
+
+describe('no-internal-imports schema', () => {
+  const verify = (options) =>
+    new Linter().verify(
+      'const a = 1;',
+      { plugins: { ui: plugin }, rules: { 'ui/no-internal-imports': ['error', ...options] } },
+      'a.js',
+    );
+  it('rejects non-string uiModules entries', () => {
+    expect(() => verify([{ uiModules: [1] }])).toThrow(/should be string/);
+  });
+  it('accepts a string list', () => {
+    expect(verify([{ uiModules: ['alert'] }])).toEqual([]);
+  });
 });

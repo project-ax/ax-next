@@ -316,10 +316,11 @@ export default tseslint.config(
     // tags Stack / Inline / Text / Heading replace. The element list and
     // component className widen as replacements ship, per area in S3–S6; S8
     // ends with the full lists. Existing violations are frozen either way.
-    // no-internal-imports turns on per
-    // area as S3–S6 replace each shadcn primitive. Each switch-on adds its rule
-    // to the root `lint:ui:suppress` script and regenerates
-    // eslint-suppressions.json. See
+    // no-internal-imports is on for Radix, @project-ax/ui internals and the
+    // shadcn modules replaced so far (alert, skeleton, empty — S3); its
+    // `uiModules` list widens per area as S4–S6 replace each shadcn primitive.
+    // Each switch-on adds its rule to the root `lint:ui:suppress` script and
+    // regenerates eslint-suppressions.json. See
     // docs/superpowers/plans/2026-11-24-project-ax-ui-roadmap.md.
     files: ['packages/channel-web/src/**/*.tsx'],
     ignores: ['packages/channel-web/src/components/ui/**', '**/__tests__/**', '**/*.test.tsx'],
@@ -330,7 +331,9 @@ export default tseslint.config(
       // Narrowed to shipped replacements; widens per area in S3–S6 (roadmap).
       'ax-ui/no-classname': ['error', { intrinsicOnly: true }],
       'ax-ui/no-raw-elements': ['error', { elements: ['div', 'span', 'p', 'h2', 'h3', 'h4', 'h5', 'h6'] }],
-      'ax-ui/no-internal-imports': 'off', // S3–S6, per area
+      // Radix, @project-ax/ui internals, and the shadcn modules S3 replaced.
+      // Widens per area in S4–S6 (spinner stays: whole-page boot + in-button).
+      'ax-ui/no-internal-imports': ['error', { uiModules: ['alert', 'skeleton', 'empty'] }],
     },
   },
 );
