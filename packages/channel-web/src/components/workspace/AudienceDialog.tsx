@@ -101,6 +101,8 @@ function OpenAudienceDialog({
   const [copyError, setCopyError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<ShareConfirmDialogProps['who'] | null>(null);
   const [choices, setChoices] = useState<AdminAgent[]>([]);
+  /** The agent's attached connector ids, from the read Save makes. */
+  const [attachedConnectorIds, setAttachedConnectorIds] = useState<readonly string[]>([]);
   const live = useRef(true);
 
   useEffect(() => {
@@ -179,10 +181,13 @@ function OpenAudienceDialog({
     setSaving(true);
     setError(null);
     let current: DraftAudience;
+    let attached: readonly string[];
     try {
-      const audience = (await getAdminAgent(agentId)).sharing?.audience;
+      const fresh = await getAdminAgent(agentId);
+      const audience = fresh.sharing?.audience;
       if (audience === undefined) throw new Error('no sharing on the agent');
       current = draftFrom(audience);
+      attached = fresh.connectorAttachments ?? [];
     } catch {
       if (live.current) {
         setError(SHARING_COPY.errors.generic);
@@ -193,6 +198,7 @@ function OpenAudienceDialog({
     if (!live.current) return;
     if (isWidening(current, draft)) {
       setSaving(false);
+      setAttachedConnectorIds(attached);
       setConfirming(
         draft.kind === 'everyone'
           ? { kind: 'everyone' }
@@ -297,6 +303,7 @@ function OpenAudienceDialog({
             open
             agentId={agentId}
             agentName={agentName}
+            attachedConnectorIds={attachedConnectorIds}
             who={confirming}
             saving={saving}
             error={error}

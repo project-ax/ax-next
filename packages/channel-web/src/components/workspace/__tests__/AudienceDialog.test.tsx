@@ -105,6 +105,21 @@ describe('AudienceDialog — Save reads what is saved now', () => {
     expect(setAudienceMock).not.toHaveBeenCalled();
   });
 
+  it('the confirmation fails closed when the agent has connections attached but the read names none', async () => {
+    getAgentMock.mockResolvedValue({ ...agentNow({ kind: 'just-me' }), connectorAttachments: ['gmail'] });
+    const dialog = renderDialog({ kind: 'just-me' });
+    await pickCarol(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: SHARING_COPY.picker.save }));
+
+    const confirm = await screen.findByRole('dialog', {
+      name: SHARING_COPY.confirm.title('Juniper', ['Carol']),
+    });
+    expect(
+      await within(confirm).findByText(SHARING_COPY.confirm.connectionsFailed('Juniper')),
+    ).toBeTruthy();
+    expect(within(confirm).getByRole('button', { name: SHARING_COPY.confirm.share })).toBeDisabled();
+  });
+
   it('if the fresh read fails, says so and saves nothing', async () => {
     getAgentMock.mockRejectedValue(new Error('read agent: 500'));
     const dialog = renderDialog({ kind: 'everyone' });

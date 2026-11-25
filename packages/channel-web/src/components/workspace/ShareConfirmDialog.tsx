@@ -18,7 +18,9 @@
  * them would describe a share that doesn't happen. Every other row is named,
  * signed in or not, including a source this client doesn't know yet: an
  * over-full list is safe, a short one isn't. An agent whose runner loads no
- * connectors (`connectorsSupported: false`) shares none.
+ * connectors (`connectorsSupported: false`) shares none, unless the agent has
+ * connections attached: then a read that names none of them is not believed,
+ * and is shown as failed (see `travelling`).
  *
  * Words come from `SHARING_COPY.confirm`. Connection and person names go
  * through `personLabel` (fenced). The account is provider text, sanitized where
@@ -46,6 +48,12 @@ export interface ShareConfirmDialogProps {
   open: boolean;
   agentId: string;
   agentName: string;
+  /**
+   * The connector ids attached to the agent, from its own record. If there
+   * are any and the connections read names none of them, the read is treated
+   * as failed (Share off, Try again).
+   */
+  attachedConnectorIds: readonly string[];
   who: { kind: 'everyone' } | { kind: 'people'; added: PersonView[] };
   saving: boolean;
   /** A failed Share, shown inside the dialog. */
@@ -60,11 +68,34 @@ type ConnectionsRead =
   | { status: 'failed' }
   | { status: 'ready'; connections: AgentConnectorRow[] };
 
-/** The connections that travel with the agent (see the header). Throws on an
- *  answer it can't read, which the caller turns into "couldn't check". */
-function travelling(read: AgentConnectorsRead): AgentConnectorRow[] {
-  if (read.connectorsSupported === false) return [];
-  return read.connectors.filter((row) => row.source !== 'legacy-owned');
+/** The read answered, but in a way that contradicts what the agent has attached. */
+class ConnectionsMismatch extends Error {
+  constructor() {
+    super('the connections read names none of the connections attached to the agent');
+    this.name = 'ConnectionsMismatch';
+  }
+}
+
+/**
+ * The connections that travel with the agent (see the header). Throws on an
+ * answer it can't read, which the caller turns into "couldn't check".
+ *
+ * Also throws when the agent has connections attached but the read names none
+ * of them (an empty list, only legacy rows, or `connectorsSupported: false`):
+ * a 200 that lost the attached rows on the way must not read as "nothing to
+ * share". Naming at least one is enough: an attachment whose connector has
+ * since left the catalog drops out of the read for good, and requiring every
+ * one would lock Share off forever.
+ */
+function travelling(read: AgentConnectorsRead, attachedIds: readonly string[]): AgentConnectorRow[] {
+  const rows =
+    read.connectorsSupported === false
+      ? []
+      : read.connectors.filter((row) => row.source !== 'legacy-owned');
+  if (attachedIds.length > 0 && !rows.some((row) => attachedIds.includes(row.id))) {
+    throw new ConnectionsMismatch();
+  }
+  return rows;
 }
 
 /*
@@ -133,6 +164,7 @@ export function ShareConfirmDialog(props: ShareConfirmDialogProps) {
 function ShareConfirmBody({
   agentId,
   agentName,
+  attachedConnectorIds,
   who,
   saving,
   error,
@@ -147,7 +179,7 @@ function ShareConfirmBody({
     let live = true;
     workspaceApi
       .connectors(agentId)
-      .then(travelling)
+      .then((answer) => travelling(answer, attachedConnectorIds))
       .then(
         (connections) => {
           if (live) setRead({ status: 'ready', connections });
@@ -159,7 +191,7 @@ function ShareConfirmBody({
     return () => {
       live = false;
     };
-  }, [agentId, attempt]);
+  }, [agentId, attempt, attachedConnectorIds]);
 
   const connections = read.status === 'ready' ? read.connections : [];
   const canShare = read.status === 'ready' && !saving;

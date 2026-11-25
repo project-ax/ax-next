@@ -66,6 +66,7 @@ function props(over: Partial<ShareConfirmDialogProps> = {}): ShareConfirmDialogP
     open: true,
     agentId: 'a-fern',
     agentName: AGENT,
+    attachedConnectorIds: [],
     who: { kind: 'everyone' },
     saving: false,
     error: null,
@@ -175,6 +176,35 @@ describe('ShareConfirmDialog', () => {
       expect(p.onShare).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each([
+    ['an empty list', answer([])],
+    ['a runner that loads no connectors', answer([GMAIL], { connectorsSupported: false })],
+    ["only the viewer's own legacy connectors", answer([NOTION])],
+  ])(
+    'when the agent has connections attached but the read names none of them (%s), Share stays off and Try again reads again',
+    async (_, read) => {
+      connectorsMock.mockResolvedValueOnce(read).mockResolvedValueOnce(answer([GMAIL]));
+      const { props: p } = renderDialog({ attachedConnectorIds: ['gmail'] });
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(SHARING_COPY.confirm.connectionsFailed(AGENT));
+      expect(shareButton()).toBeDisabled();
+      fireEvent.click(shareButton());
+      expect(p.onShare).not.toHaveBeenCalled();
+
+      fireEvent.click(within(alert).getByRole('button', { name: SHARING_COPY.confirm.tryAgain }));
+      await readLanded();
+      expect(paragraph(SHARING_COPY.confirm.connections(AGENT, [named(GMAIL)]))).toBeInTheDocument();
+    },
+  );
+
+  it('an attached connection the read does name is enough to share', async () => {
+    connectorsMock.mockResolvedValue(answer([GMAIL]));
+    renderDialog({ attachedConnectorIds: ['gmail', 'gone-from-the-catalog'] });
+    await readLanded();
+    expect(paragraph(SHARING_COPY.confirm.connections(AGENT, [named(GMAIL)]))).toBeInTheDocument();
+  });
 
   it('Share stays off while the connections are loading', async () => {
     let land!: (read: AgentConnectorsRead) => void;
