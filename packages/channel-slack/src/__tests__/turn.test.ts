@@ -704,6 +704,7 @@ describe('runTurn: a failed turn says why (TASK-1250)', () => {
   });
 
   it("the orchestrator's order (turn-error, then terminated): dev-service-failed shows its detail", async () => {
+    vi.useFakeTimers();
     const h = harness({
       chunks: [],
       end: 'turn-error',
@@ -712,6 +713,9 @@ describe('runTurn: a failed turn says why (TASK-1250)', () => {
     });
     await h.run('dm');
     expect(h.reply()).toBe(`${SERVICE_FAILED}\n\n\u200B${DIAG}`);
+    // Its turn-error decided first, so the outcome after it arms no wait: nothing is left behind.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('an unknown reason keeps the generic line', async () => {
