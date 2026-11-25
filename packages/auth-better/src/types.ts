@@ -15,7 +15,8 @@
  *      (`{userId, isAdmin}` for an actor payload), that's fine — subsets
  *      don't break alternate impls.
  *   2. Tenant tables (`auth_better_v1_*`) are scoped to this package's
- *      `migrations.ts` + `plugin.ts`. Alternate impls own their own tables.
+ *      `migrations.ts` + `plugin.ts` (and `people-search.ts`, the read behind
+ *      GET /admin/people). Alternate impls own their own tables.
  *   3. IdP-callback error sanitization is part of the contract, not the
  *      impl: an alternate auth plugin MUST log only `error.code`,
  *      NEVER `error.message` (raw IdP errors carry user-controlled
