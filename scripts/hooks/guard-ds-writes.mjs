@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // PreToolUse hook: packages/ui and packages/eslint-plugin-ui are the design
 // system. Writes there need a `.ax-ds-task` marker in the worktree root.
-// Fails open (exit 0) on malformed input so a broken hook never blocks edits.
+// Fails open (exit 0) on malformed hook input so a broken hook never blocks
+// edits; fails closed (exit 2) when a well-formed path can't be resolved.
 import fs from 'node:fs';
 import path from 'node:path';
 import { locateInWorktree } from './worktree-root.mjs';
@@ -14,12 +15,43 @@ try {
 }
 if (typeof filePath !== 'string' || filePath === '') process.exit(0);
 
-const located = locateInWorktree(filePath);
+// Compare real paths, not the path as typed: a symlink or (on macOS and
+// Windows) different capitalisation reaches the same directory. Resolve the
+// nearest existing ancestor with the native realpath (which returns on-disk
+// case) and re-append the not-yet-created tail.
+function realTarget(file) {
+  let existing = path.resolve(file);
+  const tail = [];
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(existing), ...tail);
+    } catch (err) {
+      if (err?.code !== 'ENOENT' && err?.code !== 'ENOTDIR') throw err;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw err;
+      tail.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+let located;
+try {
+  located = locateInWorktree(realTarget(filePath));
+} catch {
+  // Can't tell where this write lands (ELOOP, EACCES, …): fail closed.
+  process.stderr.write(`guard-ds-writes: could not resolve ${filePath}; refusing the write.\n`);
+  process.exit(2);
+}
 if (located === null) process.exit(0); // no worktree found
 const { root, resolved } = located;
 
+// The tail that doesn't exist yet keeps its typed case, so compare without
+// case where the filesystem ignores it.
+const foldCase = process.platform === 'darwin' || process.platform === 'win32';
+const norm = (p) => (foldCase ? p.toLowerCase() : p);
 const inside = (dir) => {
-  const rel = path.relative(path.join(root, dir), resolved);
+  const rel = path.relative(norm(path.join(root, dir)), norm(resolved));
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 };
 

@@ -62,6 +62,39 @@ describe('guard-ds-writes', () => {
     const root2 = fakeRoot({ gitFile: true });
     expect(run(GUARD, edit(path.join(root2, 'packages/ui/a.ts'))).status).toBe(2);
   });
+  it('blocks a write reached through a symlink', () => {
+    const root = fakeRoot();
+    mkdirSync(path.join(root, 'packages/ui'), { recursive: true });
+    symlinkSync(path.join(root, 'packages/ui'), path.join(root, 'ui-link'));
+    expect(run(GUARD, edit(path.join(root, 'ui-link/a.ts'))).status).toBe(2);
+  });
+  it('blocks a symlink to packages/ui from outside the worktree', () => {
+    const root = fakeRoot();
+    mkdirSync(path.join(root, 'packages/ui'), { recursive: true });
+    const outside = realpathSync(mkdtempSync(path.join(tmpdir(), 'ax-hook-out-')));
+    cleanup.push(outside);
+    symlinkSync(path.join(root, 'packages/ui'), path.join(outside, 'ui'));
+    expect(run(GUARD, edit(path.join(outside, 'ui/new/a.ts'))).status).toBe(2);
+  });
+  it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
+    'blocks a differently-capitalised path on a case-insensitive filesystem',
+    () => {
+      const root = fakeRoot();
+      // existing dir: native realpath restores on-disk case
+      mkdirSync(path.join(root, 'packages/ui'), { recursive: true });
+      expect(run(GUARD, edit(path.join(root, 'Packages/UI/a.ts'))).status).toBe(2);
+      // dir not created yet: the case-folded comparison catches it
+      const root2 = fakeRoot();
+      expect(run(GUARD, edit(path.join(root2, 'packages/Eslint-Plugin-UI/a.js'))).status).toBe(2);
+    },
+  );
+  it('fails closed when the path cannot be resolved', () => {
+    const root = fakeRoot();
+    symlinkSync(path.join(root, 'loop'), path.join(root, 'loop'));
+    const r = run(GUARD, edit(path.join(root, 'loop/a.ts')));
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('could not resolve');
+  });
   it('fails open on malformed input', () => {
     expect(run(GUARD, 'not json').status).toBe(0);
     expect(run(GUARD, '{}').status).toBe(0);
