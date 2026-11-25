@@ -66,6 +66,26 @@ describe('searchPeople', () => {
     expect(init.signal).toBe(ctl.signal);
     expect(init.method ?? 'GET').toBe('GET');
   });
+
+  it('keeps only well-formed people and only id and displayName', async () => {
+    stub(
+      json(200, {
+        people: [
+          { id: 'p1', displayName: 'Pat', email: 'pat@example.com' },
+          { id: 'p2' },
+          { id: 3, displayName: 'Three' },
+          { id: 'p4', displayName: null },
+          null,
+          'p5',
+          { id: 'p6', displayName: 'Sam' },
+        ],
+      }),
+    );
+    expect(await searchPeople('pat')).toEqual([
+      { id: 'p1', displayName: 'Pat' },
+      { id: 'p6', displayName: 'Sam' },
+    ]);
+  });
 });
 
 describe('refusals', () => {

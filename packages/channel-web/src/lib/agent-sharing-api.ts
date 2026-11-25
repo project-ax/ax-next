@@ -84,7 +84,15 @@ export async function searchPeople(query: string, signal?: AbortSignal): Promise
   const path = `/admin/people?q=${encodeURIComponent(query)}`;
   const body = await call(path, signal === undefined ? {} : { signal });
   if (!Array.isArray(body.people)) throw new SharingRequestError(path, 200, null);
-  return body.people as PersonMatch[];
+  // Keep only what the picker uses: a string id and a string name. Anything
+  // else on an entry (an email, say) is dropped here and never travels on.
+  const people: PersonMatch[] = [];
+  for (const entry of body.people as unknown[]) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const { id, displayName } = entry as { id?: unknown; displayName?: unknown };
+    if (typeof id === 'string' && typeof displayName === 'string') people.push({ id, displayName });
+  }
+  return people;
 }
 
 /** The words for a sharing write that didn't land. The server's code picks the

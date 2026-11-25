@@ -41,12 +41,19 @@ export function toAudienceBody(d: DraftAudience): AgentAudience {
   return { kind: 'list', members: d.members.map((m) => ({ type: 'user', id: m.id })) };
 }
 
+/** An empty list names nobody, which is Just me (see `toAudienceBody`). */
+function normalized(d: DraftAudience): DraftAudience {
+  return d.kind === 'list' && d.members.length === 0 ? { kind: 'just-me' } : d;
+}
+
 function ids(d: DraftAudience): Set<string> {
   return new Set(d.kind === 'list' ? d.members.map((m) => m.id) : []);
 }
 
 /** Is it the same audience? List membership is compared as a set of ids. */
-export function sameAudience(a: DraftAudience, b: DraftAudience): boolean {
+export function sameAudience(rawA: DraftAudience, rawB: DraftAudience): boolean {
+  const a = normalized(rawA);
+  const b = normalized(rawB);
   if (a.kind !== b.kind) return false;
   if (a.kind !== 'list' || b.kind !== 'list') return true;
   const x = ids(a);
@@ -57,7 +64,9 @@ export function sameAudience(a: DraftAudience, b: DraftAudience): boolean {
 }
 
 /** Does the change let someone use the agent who couldn't before? */
-export function isWidening(from: DraftAudience, to: DraftAudience): boolean {
+export function isWidening(rawFrom: DraftAudience, rawTo: DraftAudience): boolean {
+  const from = normalized(rawFrom);
+  const to = normalized(rawTo);
   if (to.kind === 'just-me') return false;
   if (from.kind === 'everyone') return false;
   if (to.kind === 'everyone') return true;
@@ -67,7 +76,9 @@ export function isWidening(from: DraftAudience, to: DraftAudience): boolean {
 }
 
 /** Does the change take the agent away from someone who had it? */
-export function isNarrowing(from: DraftAudience, to: DraftAudience): boolean {
+export function isNarrowing(rawFrom: DraftAudience, rawTo: DraftAudience): boolean {
+  const from = normalized(rawFrom);
+  const to = normalized(rawTo);
   if (from.kind === 'just-me') return false;
   if (to.kind === 'just-me') return true;
   if (from.kind === 'everyone') return to.kind === 'list';

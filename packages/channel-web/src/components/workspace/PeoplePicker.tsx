@@ -44,6 +44,9 @@ export interface PeoplePickerProps {
   onPickFixed?: (id: string) => void;
   onPickPerson: (person: PersonMatch) => void;
   disabled?: boolean;
+  /** Switch off only the people search (e.g. the list is full): the fixed
+   *  options stay choosable. */
+  peopleDisabled?: boolean;
 }
 
 type SearchState =
@@ -61,6 +64,7 @@ export function PeoplePicker({
   onPickFixed,
   onPickPerson,
   disabled = false,
+  peopleDisabled = false,
 }: PeoplePickerProps) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
@@ -73,7 +77,7 @@ export function PeoplePicker({
   // Search once the typing pauses. Re-running (or leaving) aborts the request
   // in flight and moves the number on, so its answer never lands.
   useEffect(() => {
-    if (query.length < MIN_QUERY) {
+    if (peopleDisabled || query.length < MIN_QUERY) {
       setSearch({ kind: 'idle' });
       return;
     }
@@ -104,17 +108,18 @@ export function PeoplePicker({
       inFlight.current = null;
       latest.current += 1;
     };
-  }, [query]);
+  }, [query, peopleDisabled]);
 
   const finish = () => {
     setText('');
     setOpen(false);
   };
 
-  const people = search.kind === 'ready' ? search.people.filter((p) => !excludeIds.has(p.id)) : [];
+  const people = !peopleDisabled && search.kind === 'ready' ? search.people.filter((p) => !excludeIds.has(p.id)) : [];
 
   let status: string | null = null;
-  if (query.length > 0 && query.length < MIN_QUERY) status = SHARING_COPY.picker.keepTyping;
+  if (peopleDisabled) status = null;
+  else if (query.length > 0 && query.length < MIN_QUERY) status = SHARING_COPY.picker.keepTyping;
   else if (search.kind === 'searching') status = SHARING_COPY.picker.searching;
   else if (search.kind === 'rate-limited') status = SHARING_COPY.picker.searchRateLimited;
   else if (search.kind === 'failed') status = SHARING_COPY.picker.searchFailed;
@@ -143,6 +148,7 @@ export function PeoplePicker({
             value={text}
             onValueChange={setText}
             maxLength={MAX_QUERY}
+            disabled={peopleDisabled}
           />
           <CommandList>
             {fixedOptions.length > 0 && (

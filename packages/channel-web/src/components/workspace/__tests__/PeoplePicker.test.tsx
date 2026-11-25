@@ -174,6 +174,47 @@ describe('PeoplePicker', () => {
     expect(onPickFixed).toHaveBeenCalledWith('everyone');
   });
 
+  it('a search aborted by newer typing never shows a failure', async () => {
+    let rejectFirst: (e: unknown) => void = () => {};
+    searchMock.mockImplementationOnce(
+      () =>
+        new Promise<PersonMatch[]>((_r, rej) => {
+          rejectFirst = rej;
+        }),
+    );
+    renderPicker();
+    openPicker();
+    type('ali');
+    await pause();
+    expect(searchMock).toHaveBeenCalledTimes(1);
+    // Typing again aborts the first request; it rejects before the debounce fires.
+    type('alic');
+    await act(async () => {
+      rejectFirst(new DOMException('aborted', 'AbortError'));
+    });
+    expect(screen.queryByText(SHARING_COPY.picker.searchFailed)).toBeNull();
+    expect(screen.getByText(SHARING_COPY.picker.searching)).toBeTruthy();
+  });
+
+  it('with people disabled, the fixed options still work and nobody is searched for', async () => {
+    searchMock.mockResolvedValue([ALICE]);
+    const onPickFixed = vi.fn();
+    renderPicker({
+      peopleDisabled: true,
+      fixedOptions: [{ id: 'everyone', label: SHARING_COPY.picker.everyoneOption }],
+      onPickFixed,
+    });
+    expect((trigger() as HTMLButtonElement).disabled).toBe(false);
+    openPicker();
+    expect((searchBox() as HTMLInputElement).disabled).toBe(true);
+    type('ali');
+    await pause();
+    expect(searchMock).not.toHaveBeenCalled();
+    expect(screen.queryByText(personLabel(ALICE.displayName))).toBeNull();
+    fireEvent.click(screen.getByText(SHARING_COPY.picker.everyoneOption));
+    expect(onPickFixed).toHaveBeenCalledWith('everyone');
+  });
+
   it('cannot be opened when disabled', () => {
     renderPicker({ disabled: true });
     expect((trigger() as HTMLButtonElement).disabled).toBe(true);

@@ -120,6 +120,21 @@ describe('sameAudience', () => {
   });
 });
 
+describe('an empty list is Just me', () => {
+  const EMPTY: DraftAudience = { kind: 'list', members: [] };
+  it('is the same audience as Just me, in both directions', () => {
+    expect(sameAudience(JUST_ME, EMPTY)).toBe(true);
+    expect(sameAudience(EMPTY, JUST_ME)).toBe(true);
+    expect(sameAudience(EMPTY, EVERYONE)).toBe(false);
+  });
+  it('is neither widening nor narrowing against Just me', () => {
+    expect(isWidening(JUST_ME, EMPTY)).toBe(false);
+    expect(isNarrowing(EMPTY, JUST_ME)).toBe(false);
+    expect(isNarrowing(list('a'), EMPTY)).toBe(true);
+    expect(isWidening(EMPTY, list('a'))).toBe(true);
+  });
+});
+
 describe('addedPeople', () => {
   it('names only the new people', () => {
     expect(addedPeople(list('a'), list('a', 'b', 'c')).map((x) => x.id)).toEqual(['b', 'c']);

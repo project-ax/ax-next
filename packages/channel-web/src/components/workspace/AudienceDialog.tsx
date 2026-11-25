@@ -213,7 +213,8 @@ function OpenAudienceDialog({
             ]}
             onPickFixed={(id) => edit(id === EVERYONE ? { kind: 'everyone' } : { kind: 'just-me' })}
             onPickPerson={pickPerson}
-            disabled={atCap || saving}
+            disabled={saving}
+            peopleDisabled={atCap}
           />
           {atCap && <Text role="meta">{SHARING_COPY.picker.peopleCap}</Text>}
           {choices.length > 0 && (
