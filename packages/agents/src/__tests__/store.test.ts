@@ -596,6 +596,40 @@ describe('store sharing rows (TASK-1246)', () => {
     expect(await ownersOf(db, createdId)).toEqual([]);
   });
 
+  it('a personal create without a caller tx is atomic: a failed owner insert leaves no agent row', async () => {
+    const { db, store } = await seed();
+    const validated = validateCreateInput(makeInput(), vctx);
+    // A trigger that refuses this one creator's owner row. A plain constraint
+    // would be skipped by ON CONFLICT handling; a trigger always fires.
+    await sql`
+      CREATE FUNCTION agents_v1_test_refuse_owner() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.user_id = 'boom' THEN RAISE EXCEPTION 'owner insert refused'; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql
+    `.execute(db);
+    await sql`
+      CREATE TRIGGER agents_v1_test_refuse_owner BEFORE INSERT ON agents_v1_owners
+        FOR EACH ROW EXECUTE FUNCTION agents_v1_test_refuse_owner()
+    `.execute(db);
+    try {
+      await expect(
+        store.create({ ownerId: 'boom', ownerType: 'user', validated }),
+      ).rejects.toThrow(/owner insert refused/);
+
+      const rows = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM agents_v1_agents WHERE owner_id = 'boom'
+      `.execute(db);
+      expect(rows.rows[0]?.n).toBe(0);
+      // Control: the trigger refuses only that creator.
+      const ok = await store.create({ ownerId: 'u1', ownerType: 'user', validated });
+      expect(await ownersOf(db, ok.id)).toEqual(['u1']);
+    } finally {
+      await sql`DROP TRIGGER agents_v1_test_refuse_owner ON agents_v1_owners`.execute(db);
+      await sql`DROP FUNCTION agents_v1_test_refuse_owner()`.execute(db);
+    }
+  });
+
   it('a team agent gets no owner row', async () => {
     const { db, store } = await seed();
     const team = await store.create({

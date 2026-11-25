@@ -641,6 +641,13 @@ describe('runAgentsMigration', () => {
         { agent_id: 'p2', audience: 'just-me' },
         { agent_id: 't1', audience: 'just-me' },
       ]);
+
+      // Two runs over a populated table added the named CHECK exactly once.
+      const checks = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM pg_constraint
+         WHERE conrelid = 'agents_v1_agents'::regclass AND conname = 'agents_v1_audience_check'
+      `.execute(db);
+      expect(checks.rows[0]?.n).toBe(1);
     });
 
     it('CHECK refuses an unknown audience', async () => {

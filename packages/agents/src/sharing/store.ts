@@ -54,6 +54,7 @@ async function lockAgent(trx: Transaction<AgentsDatabase>, agentId: string): Pro
     .selectFrom('agents_v1_agents')
     .select('agent_id')
     .where('agent_id', '=', agentId)
+    // Serialises sharing writes against deleteById; lock strength is not unit-tested.
     .forUpdate()
     .executeTakeFirst();
   if (agent === undefined) {
@@ -143,6 +144,8 @@ export function createSharingStore(db: Kysely<AgentsDatabase>): SharingStore {
                 member_id: m.id,
               })),
             )
+            // A person named twice is one member (same as setOwners).
+            .onConflict((oc) => oc.doNothing())
             .execute();
         }
       });

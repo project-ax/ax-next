@@ -147,6 +147,30 @@ describe('sharing store (TASK-1246)', () => {
     expect(await memberRows(db, other)).toEqual(['user:erin']);
   });
 
+  it('setAudience(list) over a list replaces every member row, group rows included', async () => {
+    const { db, sharing, personal } = await setup();
+    const fern = await personal('alice');
+    await sharing.setAudience(fern, { kind: 'list', members: [user('dave'), user('carol')] });
+    await sql`
+      INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id)
+      VALUES (${fern}, 'group', 'g1')
+    `.execute(db);
+
+    await sharing.setAudience(fern, { kind: 'list', members: [user('erin')] });
+    expect(await memberRows(db, fern)).toEqual(['user:erin']);
+  });
+
+  it('setAudience(list) tolerates a member named twice', async () => {
+    const { db, sharing, personal } = await setup();
+    const fern = await personal('alice');
+    await sharing.setAudience(fern, {
+      kind: 'list',
+      members: [user('carol'), user('dave'), user('carol')],
+    });
+    expect(await memberRows(db, fern)).toEqual(['user:carol', 'user:dave']);
+    expect(await sharing.listMembers(fern)).toEqual([user('carol'), user('dave')]);
+  });
+
   it('setOwners replaces the owner set', async () => {
     const { sharing, personal } = await setup();
     const fern = await personal('zoe');
