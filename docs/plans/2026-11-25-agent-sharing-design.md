@@ -85,6 +85,7 @@ Each phase ships on its own and is reversible, up to the migration in phase 3.
 ## 7. Security
 
 - Sharing an agent shares **its connections**. That's the one real risk, and the confirmation screen names each connection by name before sharing.
+- **Adding an owner lets them change everything the agent does with your connections, including its routines.** Co-owners are fully trusted in phase 1. They can change tools, Instructions, model, skill credential bindings and connectors. The creator's routines and connections act with the creator's identity. So card B's Add-owner confirmation must say this plainly.
 - Only owners can change who can use the agent. Only AX admins can change groups. Every write route checks this server-side and fails closed on an unknown audience (TASK-1209's lesson).
 - Memory follows §4c: shared with whoever can use the agent. "Before today" memory is included only because the screen says so. There is no hidden split.
 - The security checklist runs on phases 1 and 3.
@@ -95,3 +96,13 @@ Each phase ships on its own and is reversible, up to the migration in phase 3.
 2. **Slack bot creation for a shared agent:** any owner can set up its bot (the token is theirs). Proposed: yes.
 3. **"Specific people" for people outside AX:** no. Only AX accounts can be listed, and Slack outsiders keep today's channel rules.
 4. **Should "Same people as…" copy the list or link to it?** Proposed: copy. Linking is what groups are for.
+
+## 9. Found while building phase 1A (TASK-1246)
+
+- Eight write paths took "resolved + personal" as "owner". Phase 1A guards them.
+- The creator stays an owner in phase 1.
+- Co-owners change settings. Delete, routines and webhooks stay the creator's.
+- Memory refuses non-creators until card C. Card B's shared-agent lists should follow card C.
+- Sharing also exposes files, artifacts (rename, delete, public link), the routine list, Instructions, and the agent's self-identity updates. Card B's confirmation copy should name them, or card C should restrict them.
+- The sharing settings view carries only id and display name, no email. An unknown person is refused with a generic `unknown-person` that doesn't name the id. So the route can't be used as an account or email lookup. A people-search route for card B's picker is card B's to design.
+- The agent's own `update_identity` (author `agent`) and `complete-bootstrap` stay open to anyone who can use the agent. Someone an agent is shared with can steer its identity via chat. Card C should decide.
