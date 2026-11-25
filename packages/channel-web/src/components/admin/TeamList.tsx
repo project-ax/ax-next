@@ -34,12 +34,18 @@ export function TeamList() {
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Bumped by "Try again" so the effect re-reads.
+  const [attempt, setAttempt] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const result = await listTeams();
-        if (!cancelled) setTeams(result);
+        if (!cancelled) {
+          setTeams(result);
+          setError(null);
+        }
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : String(err));
@@ -48,7 +54,13 @@ export function TeamList() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
+
+  function retry() {
+    setError(null);
+    setTeams(null);
+    setAttempt((n) => n + 1);
+  }
 
   return (
     <div className="font-sans">
@@ -58,7 +70,7 @@ export function TeamList() {
         status={error ? 'error' : teams === null ? 'loading' : teams.length === 0 ? 'empty' : 'ready'}
         skeleton="rows"
         loadingLabel="Loading teams…"
-        error={{ message: error ?? '' }}
+        error={{ message: error ?? '', onRetry: retry }}
         empty={{
           title: 'No teams yet',
           description:

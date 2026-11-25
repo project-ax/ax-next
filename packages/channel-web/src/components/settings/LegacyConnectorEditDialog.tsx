@@ -1146,27 +1146,26 @@ export function LegacyConnectorEditDialog({
               {form.mechanism === 'mcp' && (
                 <Field>
                   <FieldTitle>OAuth hosts from MCP metadata</FieldTitle>
-                  <div role="status" aria-live="polite" className="min-w-0">
-                    {discoveringHosts ? (
-                      <AsyncState status="loading" skeleton="lines" loadingLabel="Discovering OAuth hosts" />
-                    ) : currentDiscovery?.status === 'ready' ? (
-                      <>
-                        <ul className="flex flex-col gap-1 text-sm">
-                          {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
-                        </ul>
-                        <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
-                      </>
-                    ) : currentDiscovery?.status === 'error' ? (
-                      <Notice
-                        tone="danger"
-                        action={{ label: 'Try again', onClick: () => setDiscoveryRetry((n) => n + 1) }}
-                      >
-                        Could not discover OAuth hosts. Check the URL, try again, or enter the hosts manually above.
-                      </Notice>
-                    ) : (
-                      <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
-                    )}
-                  </div>
+                  {/* No live wrapper: AsyncState and Notice carry their own live roles, and live regions must not nest. */}
+                  {discoveringHosts ? (
+                    <AsyncState status="loading" skeleton="lines" loadingLabel="Discovering OAuth hosts" />
+                  ) : currentDiscovery?.status === 'ready' ? (
+                    <>
+                      <ul className="flex flex-col gap-1 text-sm">
+                        {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
+                      </ul>
+                      <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
+                    </>
+                  ) : currentDiscovery?.status === 'error' ? (
+                    <Notice
+                      tone="danger"
+                      action={{ label: 'Try again', onClick: () => setDiscoveryRetry((n) => n + 1) }}
+                    >
+                      Could not discover OAuth hosts. Check the URL, try again, or enter the hosts manually above.
+                    </Notice>
+                  ) : (
+                    <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
+                  )}
                 </Field>
               )}
             </FieldGroup>

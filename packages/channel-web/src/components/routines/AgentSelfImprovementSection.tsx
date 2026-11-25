@@ -29,7 +29,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
-import { AsyncState } from '@project-ax/ui';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { useAgentStore } from '@/lib/agent-store';
 import { routineApi } from '@/lib/routines';
 
@@ -45,6 +45,9 @@ interface RowState {
    *  (e.g. global master switch removed it from the catalog). */
   enabled: boolean | null | undefined;
   saving: boolean;
+  /** The read of this agent's defaults failed. */
+  readError: string | null;
+  /** Flipping the switch failed. */
   error: string | null;
 }
 
@@ -62,12 +65,15 @@ function AgentToggleRow({
   const [state, setState] = useState<RowState>({
     enabled: undefined,
     saving: false,
+    readError: null,
     error: null,
   });
+  // Bumped by "Try again" so the read runs again.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    setState({ enabled: undefined, saving: false, error: null });
+    setState({ enabled: undefined, saving: false, readError: null, error: null });
     void (async () => {
       try {
         const defaults = await routineApi.listAgentDefaults(agentId);
@@ -78,21 +84,21 @@ function AgentToggleRow({
         setState((s) => ({
           ...s,
           enabled: reflection ? reflection.enabled : null,
-          error: null,
+          readError: null,
         }));
       } catch (err) {
         if (cancelled) return;
         setState((s) => ({
           ...s,
           enabled: undefined,
-          error: err instanceof Error ? err.message : String(err),
+          readError: err instanceof Error ? err.message : String(err),
         }));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, attempt]);
 
   async function onToggle(next: boolean): Promise<void> {
     const previous = state.enabled;
@@ -143,14 +149,18 @@ function AgentToggleRow({
         <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{agentName} reviews what it has learned and writes skills from procedures it keeps repeating.</p>
         {state.enabled !== undefined && <p className="text-xs text-muted-foreground">{state.enabled ? 'Turn this off to stop new self-improvement runs.' : `Off. ${agentName}’s existing skills stay installed.`}</p>}
       </>}
-      {state.error !== null && (
+      {state.readError !== null && (
         <AsyncState
           status="error"
           skeleton="lines"
-          loadingLabel="Saving…"
-          error={{ message: `Couldn't save: ${state.error}` }}
+          loadingLabel={`Loading ${agentName}’s setting`}
+          error={{
+            message: `Couldn't load this setting: ${state.readError}`,
+            onRetry: () => setAttempt((n) => n + 1),
+          }}
         />
       )}
+      {state.error !== null && <Notice tone="danger">{`Couldn't save: ${state.error}`}</Notice>}
     </div>
   );
 }
@@ -219,12 +229,16 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
   const [rows, setRows] = useState<
     import('@/lib/routines').AgentDefaultState[] | null
   >(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Bumped by "Try again" so the read runs again.
+  const [attempt, setAttempt] = useState(0);
   const flight = useRef(false);
   useEffect(() => {
     let active = true;
     setRows(null);
+    setReadError(null);
     setError(null);
     void routineApi
       .listAgentDefaults(agentId)
@@ -235,12 +249,12 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
           );
       })
       .catch(() => {
-        if (active) setError('Default routines are unavailable.');
+        if (active) setReadError('Default routines are unavailable.');
       });
     return () => {
       active = false;
     };
-  }, [agentId]);
+  }, [agentId, attempt]);
   return (
     <Card>
       <CardHeader>
@@ -250,10 +264,16 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {error && (
-          <AsyncState status="error" skeleton="rows" loadingLabel="Loading default routines…" error={{ message: error }} />
+        {readError !== null && (
+          <AsyncState
+            status="error"
+            skeleton="rows"
+            loadingLabel="Loading default routines…"
+            error={{ message: readError, onRetry: () => setAttempt((n) => n + 1) }}
+          />
         )}
-        {rows === null && !error && (
+        {error !== null && <Notice tone="danger">{error}</Notice>}
+        {rows === null && readError === null && (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading default routines…" />
         )}
         {rows?.map((row) => (

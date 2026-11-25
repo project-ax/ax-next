@@ -16,7 +16,7 @@
  * components are unchanged and can be tested in isolation.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AdminTeamWire } from '@ax/teams';
 import { TeamList } from '../components/admin/TeamList';
 
@@ -89,9 +89,27 @@ describe('AdminSettings — Teams tab', () => {
     await waitFor(() =>
       expect(screen.getByText(/list teams/i)).toBeTruthy(),
     );
-    // A failed list is announced as an alert, and there is nothing to retry here.
     expect(screen.getByRole('alert')).toHaveTextContent(/list teams/i);
-    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  it('Try again re-reads the list', async () => {
+    const team: AdminTeamWire = {
+      id: 'team_1',
+      displayName: 'Engineering',
+      createdBy: 'u1',
+      createdAt: '2026-09-01T12:00:00.000Z',
+    };
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    fetchMock.mockResolvedValueOnce(jsonOk({ teams: [team] }));
+
+    render(<TeamList />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Engineering')).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('announces the load as a busy status, then says there are no teams yet', async () => {
