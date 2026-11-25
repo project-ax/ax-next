@@ -59,7 +59,8 @@ import {
 } from '@/lib/workspace-steps';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
-import { turnErrorText } from '@/lib/turn-error-labels';
+import { askOwnerInstead, turnErrorText } from '@/lib/turn-error-labels';
+import { canManageAgent } from '@/lib/agent-sharing';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
@@ -220,7 +221,7 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
 }
 
 interface Props {
-  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  agent: Pick<WorkspaceAgent, 'id' | 'name' | 'access'>;
   thread: ThreadMessage[];
   /**
    * The conversation `thread` was read from, or `null` when the agent has
@@ -1065,7 +1066,7 @@ function Message({
 }: {
   m: ThreadMessage;
   onOpenArtifact?: (artifactId: string) => void;
-  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  agent: Pick<WorkspaceAgent, 'id' | 'name' | 'access'>;
   /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
   /**
@@ -1308,7 +1309,9 @@ function Message({
           <Alert variant="destructive" className="max-w-[600px]">
             <AlertTriangle size={14} />
             <AlertDescription className="whitespace-pre-line">
-              {turnErrorText(m.reason, m.detail)}
+              {canManageAgent(agent)
+                ? turnErrorText(m.reason, m.detail)
+                : askOwnerInstead(turnErrorText(m.reason, m.detail))}
             </AlertDescription>
           </Alert>
           {failedAt !== null && (
@@ -1424,7 +1427,7 @@ function AgentReply({
   onOpenArtifact,
 }: {
   reply: ReplyGroup;
-  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  agent: Pick<WorkspaceAgent, 'id' | 'name' | 'access'>;
   conversationId: string | null;
   fileRecheckKey: number;
   onOpenArtifact?: (artifactId: string) => void;

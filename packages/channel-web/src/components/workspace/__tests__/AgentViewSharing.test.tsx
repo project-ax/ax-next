@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi, type AgentDetail, type WorkspaceAgent } from '@/lib/workspace-api';
 import type { AgentAccess } from '@/lib/workspace-types';
+import { ERROR_LABELS, askOwnerInstead } from '@/lib/turn-error-labels';
 import { AgentView } from '../AgentView';
 import { rail as railFixture } from './rail-fixture';
 
@@ -42,6 +43,7 @@ vi.mock('@/lib/workspace-api', async () => {
 
 const agentMock = vi.mocked(workspaceApi.agent);
 const sendMock = vi.mocked(workspaceApi.sendMessage);
+const connectorsMock = vi.mocked(workspaceApi.connectors);
 const streamMock = vi.mocked(workspaceApi.streamReply);
 
 function detail(access: AgentAccess): AgentDetail {
@@ -102,7 +104,8 @@ describe('AgentView — the settings address', () => {
     const onTab = vi.fn();
     renderView({ settingsSection: 'connectors', onSettingsSection: vi.fn(), onTab });
 
-    await waitFor(() => expect(onTab).toHaveBeenCalledWith('chat'));
+    // REPLACE the history entry: a push would make Back return to this address and bounce again.
+    await waitFor(() => expect(onTab).toHaveBeenCalledWith('chat', { replace: true }));
     expect(settingsNav()).toBeNull();
     expect(screen.queryByRole('heading', { level: 1, name: 'Quill settings' })).toBeNull();
   });
@@ -135,7 +138,7 @@ describe('AgentView — a turn error that points at Connectors', () => {
     const box = await screen.findByPlaceholderText('Message Quill');
     fireEvent.change(box, { target: { value: 'check my inbox' } });
     fireEvent.keyDown(box, { key: 'Enter' });
-    await screen.findByText(/needs you to sign in again/);
+    await screen.findByRole('button', { name: 'Dismiss' });
   }
 
   it('offers Open Connectors only to someone who manages the agent', async () => {
@@ -147,6 +150,14 @@ describe('AgentView — a turn error that points at Connectors', () => {
     expect(onSettingsSection).toHaveBeenCalledWith('connectors');
   });
 
+  it('tells someone the agent is only shared with to ask its owner, not to open Connectors', async () => {
+    agentMock.mockResolvedValue(detail('audience'));
+    renderView({ onSettingsSection: vi.fn() });
+    await failTurnNeedingSignIn();
+    expect(await screen.findByText(askOwnerInstead(ERROR_LABELS['connector-needs-reconnect']!))).toBeTruthy();
+    expect(document.body.textContent ?? '').not.toContain('Open Connectors,');
+  });
+
   it('leaves Open Connectors out for someone the agent is only shared with', async () => {
     agentMock.mockResolvedValue(detail('audience'));
     renderView({ onSettingsSection: vi.fn() });
@@ -154,5 +165,42 @@ describe('AgentView — a turn error that points at Connectors', () => {
     expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
     // The way out that remains is the one that works for them.
     expect(screen.getByRole('button', { name: 'Resend' })).toBeTruthy();
+  });
+});
+
+describe('AgentView — the "signed out of a connection" notice', () => {
+  const GMAIL_NEEDS_SIGN_IN = {
+    connectors: [
+      {
+        id: 'gmail',
+        name: 'Gmail',
+        source: 'attached' as const,
+        editable: false,
+        health: 'needs-sign-in' as const,
+        removable: true,
+      },
+    ],
+    shared: false,
+    manageable: true,
+    sharedCredentials: false,
+    connectorsSupported: true,
+  };
+
+  it('links to Connectors for an owner', async () => {
+    agentMock.mockResolvedValue(detail('co-owner'));
+    connectorsMock.mockResolvedValue(GMAIL_NEEDS_SIGN_IN);
+    const onSettingsSection = vi.fn();
+    renderView({ onSettingsSection });
+    await screen.findByRole('note');
+    fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
+    expect(onSettingsSection).toHaveBeenCalledWith('connectors');
+  });
+
+  it('shows the notice without that link for someone the agent is only shared with', async () => {
+    agentMock.mockResolvedValue(detail('audience'));
+    connectorsMock.mockResolvedValue(GMAIL_NEEDS_SIGN_IN);
+    renderView({ onSettingsSection: vi.fn() });
+    expect(await screen.findByRole('note')).toHaveTextContent('Gmail');
+    expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
   });
 });

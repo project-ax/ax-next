@@ -182,12 +182,17 @@ function Inner({
    * Move, and leave an address behind. Pushes only when the URL would
    * actually change, so re-selecting the view already on screen doesn't stack
    * a history entry the reader then has to press Back through twice.
+   *
+   * `replace` swaps the current entry instead of adding one, for a move that
+   * is a redirect rather than a choice (TASK-1247: an address the reader may
+   * not open), so Back doesn't return to the address that bounced them.
    */
-  const navigate = useCallback((next: WorkspaceRoute) => {
+  const navigate = useCallback((next: WorkspaceRoute, opts?: { replace?: boolean }) => {
     setRoute(next);
     const path = workspaceRoutePath(next);
     if (path !== window.location.pathname) {
-      window.history.pushState(null, '', path);
+      if (opts?.replace === true) window.history.replaceState(null, '', path);
+      else window.history.pushState(null, '', path);
     }
   }, [setRoute]);
 
@@ -1136,7 +1141,7 @@ function Inner({
               key={route.id}
               agentId={route.id}
               tab={route.kind === 'agent' ? route.tab : 'chat'}
-              onTab={(t) => navigate({ kind: 'agent', id: route.id, tab: t })}
+              onTab={(t, opts) => navigate({ kind: 'agent', id: route.id, tab: t }, opts)}
               /*
                 TASK-888 — the agent's settings page is drawn BY the same
                 mounted AgentView, never a sibling of it. Same element, same

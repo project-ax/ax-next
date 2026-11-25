@@ -184,6 +184,37 @@ const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
   'connectors-need-reconnect',
 ]);
 
+/**
+ * What the connector sentences above say to someone who can't open Connectors
+ * (TASK-1247): a person an agent is only shared with has no settings page and
+ * no button, and the sign-in isn't theirs to renew. So they're told who can.
+ * Keyed by the same reason codes as `ERROR_LABELS`; each swaps only that label.
+ */
+const ASK_OWNER_LABELS: Record<string, string> = {
+  'connector-needs-reconnect':
+    'One of this agent’s connections needs to be signed in again, and only its owner can do that. Ask them to reconnect it, then retry.',
+  'connectors-need-reconnect':
+    'Some of this agent’s connections need to be signed in again, and only its owner can do that. Ask them to reconnect each one, then retry.',
+  'connector-needs-sign-in':
+    'One of this agent’s connections isn’t signed in yet, and only its owner can do that. Ask them to sign in, then retry.',
+  'provider-key-missing-connector-needs-sign-in':
+    'This agent can’t run right now. The AI service it uses isn’t set up on this server, and one of its connections isn’t signed in yet. Ask an admin about the first one, and the agent’s owner about the second, then retry.',
+};
+
+/**
+ * `text` (from `turnErrorText`, or a live error frame's sentence) for someone
+ * who can't manage the agent: a connector sentence that says "Open Connectors"
+ * becomes one that says to ask the owner. The detail line under it, if any, is
+ * kept. Any other sentence comes back unchanged.
+ */
+export function askOwnerInstead(text: string): string {
+  for (const [reason, swap] of Object.entries(ASK_OWNER_LABELS)) {
+    const label = ERROR_LABELS[reason];
+    if (label !== undefined && text.startsWith(label)) return swap + text.slice(label.length);
+  }
+  return text;
+}
+
 /** True when the turn failed for a reason the Connectors tab fixes. */
 export function turnErrorOpensConnectors(reason: string | null | undefined): boolean {
   return typeof reason === 'string' && CONNECTORS_TAB_REASONS.has(reason);

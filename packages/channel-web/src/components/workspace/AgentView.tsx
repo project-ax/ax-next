@@ -31,6 +31,7 @@ import {
 } from '@/lib/use-conversation-memory';
 import { jumpToSource, turnSources } from '@/lib/thread-jump';
 import { canManageAgent } from '@/lib/agent-sharing';
+import { askOwnerInstead } from '@/lib/turn-error-labels';
 import { useUser } from '@/lib/user-context';
 import {
   NAV_TRIGGER_ATTR,
@@ -132,7 +133,8 @@ interface Props {
   onConversationScope?: (scope: {agentId:string;conversationId:string} | null) => void;
   agentId: string;
   tab: AgentTab;
-  onTab: (t: AgentTab) => void;
+  /** `replace`: swap the history entry rather than add one (a redirect, not a choice). */
+  onTab: (t: AgentTab, opts?: { replace?: boolean }) => void;
   /**
    * TASK-888 — the settings section on screen, or `null` for the chat. When
    * set, this view draws the agent's settings page in place of the
@@ -1665,7 +1667,8 @@ export function AgentView({
   */
   const canManage = detail === null || canManageAgent(detail.agent);
   useEffect(() => {
-    if (!canManage && settingsSection !== null) onTab('chat');
+    // REPLACE: a push would leave the settings address one Back away, and Back would bounce straight here again.
+    if (!canManage && settingsSection !== null) onTab('chat', { replace: true });
   }, [canManage, settingsSection, onTab]);
 
   if (loadError !== null) {
@@ -2152,7 +2155,8 @@ export function AgentView({
                       */}
                       {turnError.sentence !== null && (
                         <span className="whitespace-pre-line text-muted-foreground">
-                          {turnError.sentence}
+                          {/* Someone who can't open Connectors is told who can. */}
+                          {canManage ? turnError.sentence : askOwnerInstead(turnError.sentence)}
                         </span>
                       )}
                       <div className="flex items-center gap-2">

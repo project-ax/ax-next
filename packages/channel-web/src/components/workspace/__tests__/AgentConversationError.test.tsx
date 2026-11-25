@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
-import { DEFAULT_TURN_ERROR, ERROR_LABELS } from '@/lib/turn-error-labels';
+import { DEFAULT_TURN_ERROR, ERROR_LABELS, askOwnerInstead } from '@/lib/turn-error-labels';
 import { localTime } from '@/lib/workspace-time';
 
 const quill: WorkspaceAgent = {
@@ -34,9 +34,12 @@ const quill: WorkspaceAgent = {
   stoppedReason: null,
 };
 
-function renderThread(thread: ThreadMessage[]): ReturnType<typeof render> {
+function renderThread(
+  thread: ThreadMessage[],
+  agent: ComponentProps<typeof AgentConversation>['agent'] = quill,
+): ReturnType<typeof render> {
   const props: ComponentProps<typeof AgentConversation> = {
-    agent: quill,
+    agent,
     thread,
     conversationId: 'c1',
     decisions: [],
@@ -209,5 +212,20 @@ describe('a replayed turn failure', () => {
       errorRow({ id: 'turn-error:r2', reason: 'dev-service-failed' }),
     ]);
     expect(screen.getAllByRole('alert')).toHaveLength(2);
+  });
+});
+
+describe('a replayed connector failure, for someone the agent is only shared with (TASK-1247)', () => {
+  it('asks them to ask the owner instead of pointing at Connectors they have no way into', () => {
+    const row = errorRow({ reason: 'connector-needs-reconnect', detail: 'Connector: Gmail' });
+    renderThread([row], { ...quill, access: 'audience' });
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toBe(askOwnerInstead(ERROR_LABELS['connector-needs-reconnect']!) + '\nConnector: Gmail');
+    expect(alert.textContent ?? '').not.toContain('Open Connectors');
+  });
+
+  it('an owner still reads the Open Connectors sentence', () => {
+    renderThread([errorRow({ reason: 'connector-needs-reconnect' })], { ...quill, access: 'co-owner' });
+    expect(screen.getByRole('alert')).toHaveTextContent(ERROR_LABELS['connector-needs-reconnect']!);
   });
 });
