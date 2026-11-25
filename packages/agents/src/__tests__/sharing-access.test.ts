@@ -263,6 +263,54 @@ describe('who can use a personal agent (TASK-1246)', () => {
     expect(await s.list('ghost')).toEqual([]);
   });
 
+  it('a group member row on a list agent admits nobody, even a person with that id', async () => {
+    const s = await boot();
+    const L = await s.create('L');
+    await s.sharing.setAudience(L, { kind: 'list', members: [user('carol')] });
+    // Phase 2 writes group rows; phase 1 must never read one as a person.
+    // 'dave' here is a GROUP id, whatever account shares the string.
+    await sql`
+      INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id)
+      VALUES (${L}, 'group', 'dave')
+    `.execute(s.db);
+
+    expect(await s.resolve(L, 'dave')).toBe('forbidden');
+    expect(await s.list('dave')).toEqual([]);
+    // The person the list does name keeps it.
+    expect((await s.list('carol')).map((a) => a.id)).toEqual([L]);
+  });
+
+  it('the owner rows decide, not the creator: once bob is the only owner, alice is out of both hooks', async () => {
+    const s = await boot();
+    const X = await s.create('X');
+    // Straight to the store, past the service's creator-required check: the
+    // rows a later phase (or a bad write) could leave behind.
+    await s.sharing.setOwners(X, ['bob']);
+
+    expect(await s.resolve(X, 'alice')).toBe('forbidden');
+    expect(await s.list('alice')).toEqual([]);
+    // bob owns it on both hooks, while `ownerId` still names its creator.
+    expect(await s.resolve(X, 'bob')).toMatchObject({ id: X, ownerId: 'alice', isOwner: true });
+    const bobs = await s.list('bob');
+    expect(bobs.map((a) => a.id)).toEqual([X]);
+    expect(bobs[0]).toMatchObject({ ownerId: 'alice', isOwner: true });
+  });
+
+  it('a stray owner row on a team agent makes nobody its owner, on either hook', async () => {
+    const s = await boot();
+    const T = await s.create('T', { visibility: 'team', teamId: 'team-1' });
+    // A team agent has no owner rows in phase 1; one written anyway (raw SQL)
+    // must not make its member an owner.
+    await sql`INSERT INTO agents_v1_owners (agent_id, user_id) VALUES (${T}, 'dave')`.execute(s.db);
+
+    expect(await s.resolve(T, 'dave')).toMatchObject({ id: T, isOwner: false });
+    const listed = await s.list('dave', ['team-1']);
+    expect(listed.map((a) => a.id)).toEqual([T]);
+    expect(listed[0]).toMatchObject({ shared: true, isOwner: false });
+    // Nor does it reach dave outside the team arm: owner rows admit to personal agents only.
+    expect(await s.list('dave')).toEqual([]);
+  });
+
   it('a team agent resolves for a member with shared true, isOwner false and no audience; agents:list-for-user returns it only with teamIds', async () => {
     const s = await boot();
     const T = await s.create('T', { visibility: 'team', teamId: 'team-1' });
