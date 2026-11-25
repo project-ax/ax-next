@@ -201,7 +201,7 @@ One `agent:invoke` call does roughly:
 2. **`agents:resolve`** (hard dep since Week 9.5) — the tenant ACL gate. Every
    chat resolves through an agent record before a sandbox is spawned. This forces
    any preset wiring the orchestrator to also wire `@ax/agents` (intended coupling).
-   It admits a personal agent's owners and its audience (`just-me | everyone | list`). Its answer carries `shared` and `isOwner`, and settings writes on a personal agent need an owner.
+   It admits a personal agent's owners and its audience (`just-me | everyone | list`). Its answer carries `shared` and `isOwner`, and settings writes on a personal agent need an owner. People search is `GET /admin/people` in @ax/auth-better (names only), and the workspace roster carries each agent's `access` and `sharedBy`.
 3. **Route-vs-fresh decision (ARCH J6).** If `ctx.conversationId` is set and its
    `active_session_id` points at a live session, **route** the message into that
    warm runner's inbox (skip the sandbox spawn). Otherwise **open fresh**.

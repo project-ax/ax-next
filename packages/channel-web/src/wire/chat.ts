@@ -269,8 +269,10 @@ export const GetConversationResponse = z.object({
 export type GetConversationResponse = z.infer<typeof GetConversationResponse>;
 
 // ---------------------------------------------------------------------------
-// GET /api/chat/agents — list the user's agents (Settings agent switcher,
-// `lib/hydrate-agents.ts`, and the workspace's per-surface agent pickers).
+// GET /api/chat/agents — list the agents the user manages (Settings agent
+// switcher and `lib/hydrate-agents.ts`). Never lists an agent that is only
+// shared with them. The workspace pickers use `/api/workspace/state` and
+// `/tasks/agents`.
 //
 // Display-relevant subset of @ax/agents' `Agent` shape. We deliberately
 // drop `systemPrompt`, `allowedTools`, `mcpConfigIds`, `model`, and
