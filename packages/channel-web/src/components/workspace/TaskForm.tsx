@@ -25,7 +25,7 @@ import {
   ROUTINE_NAME_MAX_CHARS,
   type RoutineDefinition,
 } from '@ax/routines-contract';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -306,10 +306,12 @@ export function TaskForm({
         <FieldDescription id={`${id}-kind-help`} className="text-[13px]">{KIND_HELP[form.kind]}</FieldDescription>
       </Field>
       {mode === 'edit' && form.kind !== initial.kind && (
-        <Alert id={`${id}-kind-switch`}><AlertDescription>
-          Switching kinds starts this task over. Its steps, latest update, notes and finish date will be cleared.
-          {kindDropsWaiting && ' Any app updates still waiting to run will be cancelled.'}
-        </AlertDescription></Alert>
+        <Stack id={`${id}-kind-switch`}>
+          <Notice tone="warning">
+            Switching kinds starts this task over. Its steps, latest update, notes and finish date will be cleared.
+            {kindDropsWaiting && ' Any app updates still waiting to run will be cancelled.'}
+          </Notice>
+        </Stack>
       )}
 
       <FieldGroup className="gap-3">
@@ -556,23 +558,21 @@ export function TaskForm({
       {editDropsWaiting && (
         // Not role="alert": it appears mid-typing. It is read through Save's description; a status mounted
         // with its text may not be announced on its own.
-        <Alert id={`${id}-save-waiting`} role="status"><AlertDescription>Saving these changes cancels any app updates still waiting to run.</AlertDescription></Alert>
+        <Stack id={`${id}-save-waiting`}>
+          <Notice tone="warning">Saving these changes cancels any app updates still waiting to run.</Notice>
+        </Stack>
       )}
       {shown.has('form') && <FieldError id={errorId('form')} ref={register('form')} tabIndex={-1}>{shown.get('form')}</FieldError>}
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>
-            {taskSaveError(errorCode, refusedField !== null && refusedField !== 'form')}
-            {conflict && onReload && (
-              <Button type="button" variant="outline" onClick={onReload}>Reload and discard my changes</Button>
-            )}
-            {uncertain && <p>We couldn’t confirm the result. Retry sends the same change.</p>}
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="danger"
+          {...(conflict && onReload ? { action: { label: 'Reload and discard my changes', onClick: onReload } } : {})}
+        >
+          {taskSaveError(errorCode, refusedField !== null && refusedField !== 'form')}
+          {uncertain && <p>We couldn’t confirm the result. Retry sends the same change.</p>}
+        </Notice>
       )}
-      {!canEdit && (
-        <Alert><AlertDescription>You don’t have permission to edit this task.</AlertDescription></Alert>
-      )}
+      {!canEdit && <Notice tone="info">You don’t have permission to edit this task.</Notice>}
 
       <div className="sticky bottom-0 -mx-6 -mb-6 flex items-center gap-2 bg-background px-6 pb-6 pt-3">
         <IconAction icon={Ellipsis} label="More options" variant="ghost" aria-expanded={more} aria-controls={`${id}-more`}

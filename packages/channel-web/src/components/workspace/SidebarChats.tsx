@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { EllipsisVertical, Plus, Search, X } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -26,7 +25,7 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from '@/components/ui/input-group';
-import { ConfirmAction } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { conversationControls } from '@/lib/conversation-controls';
 import { filterChatsByTitle, type SidebarChatList } from '@/lib/sidebar-chats';
@@ -236,14 +235,18 @@ export function SidebarChats({
         </h2>
         <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-3">
           {actionError && !editing && (
-            <Alert variant="destructive" className="mb-2">
-              <AlertDescription>{actionError}</AlertDescription>
-            </Alert>
+            <div className="mb-2">
+              <Notice tone="danger">{actionError}</Notice>
+            </div>
           )}
           {error && chats === null && (
-            <p className="px-2 py-1.5 text-[12.5px] text-muted-foreground">
-              We couldn’t load these chats just now.
-            </p>
+            // `onChanged` is the shell's re-read: it bumps the read this list is waiting on.
+            <AsyncState
+              status="error"
+              skeleton="rows"
+              loadingLabel="Loading chats"
+              error={{ message: 'We couldn’t load these chats just now.', onRetry: onChanged }}
+            />
           )}
           {chats !== null && (
             <ul className="flex flex-col">
@@ -301,11 +304,7 @@ export function SidebarChats({
               />
             </Field>
           </FieldGroup>
-          {actionError && (
-            <Alert variant="destructive">
-              <AlertDescription>{actionError}</AlertDescription>
-            </Alert>
-          )}
+          {actionError && <Notice tone="danger">{actionError}</Notice>}
           <DialogFooter>
             <Button variant="outline" disabled={actionBusy} onClick={() => setEditing(null)}>
               Cancel

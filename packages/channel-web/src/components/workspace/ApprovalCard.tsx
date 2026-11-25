@@ -45,7 +45,7 @@
  */
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
@@ -387,7 +387,7 @@ export function ApprovalCard({
         <DialogContent>
           <DialogHeader><DialogTitle>Edit the draft</DialogTitle><DialogDescription>We’ll cancel the current draft and ask the agent to prepare this version. It will ask again before sending.</DialogDescription></DialogHeader>
           <FieldGroup><Field><FieldLabel htmlFor={`draft-${d.id}`}>Draft</FieldLabel><Textarea id={`draft-${d.id}`} value={draft} maxLength={8000} onChange={e => setDraft(e.target.value)} rows={5} /></Field></FieldGroup>
-          {editError && <Alert variant="destructive"><AlertDescription>{editError}</AlertDescription></Alert>}
+          {editError && <Notice tone="danger">{editError}</Notice>}
           <DialogFooter><Button variant="outline" disabled={editBusy} onClick={() => setEditing(false)}>Cancel</Button><Button disabled={editBusy || !draft.trim()} onClick={() => {
             if (!onEdit) return;
             setEditBusy(true); setEditError(null);

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Download, FileText } from 'lucide-react';
 import { Spinner } from '@/components/ui/spinner';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { clampAttachmentName } from '@/lib/attachment-name';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveBlob, saveFromUrl } from '@/lib/file-download';
 import { httpFetch, HttpError, logRequestFailure } from '@/lib/http';
@@ -181,7 +181,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
         {busy ? <Spinner data-icon="inline-end" aria-hidden="true" />
           : !gone && <Download data-icon="inline-end" aria-hidden="true" />}
       </Button>
-      {error !== null && <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>}
+      {error !== null && <Notice tone="danger">{error}</Notice>}
     </div>
   );
 }

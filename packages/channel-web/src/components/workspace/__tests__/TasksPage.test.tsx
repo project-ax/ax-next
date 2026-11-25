@@ -137,7 +137,7 @@ describe('TasksPage (TASK-909)', () => {
     await screen.findByText('No tasks yet');
     fireEvent.click(screen.getByRole('button', { name: 'New task' }));
     expect(await screen.findByRole('dialog', { name: 'New task' })).toBeVisible();
-    expect(await screen.findByText('No agents are available for a new task. Join an agent or create one first.')).toBeVisible();
+    expect(await screen.findByText('No agents are available for a new task')).toBeVisible();
     expect(screen.queryByRole('combobox', { name: 'Agent' })).not.toBeInTheDocument();
   });
   it('shows Repeat failures and durable waiting counts on one line, without a fabricated report or Today task', async () => {
@@ -168,9 +168,11 @@ describe('TasksPage (TASK-909)', () => {
     expect(column).toHaveClass('mx-auto', 'max-w-[900px]', 'px-6');
     expect(within(column).getByRole('button', { name: 'New task' })).toBeInTheDocument();
     expect(column.firstElementChild).toBe(screen.getByRole('button', { name: 'Open navigation' }));
-    expect(screen.getByRole('status', { name: 'Loading' }).closest('.max-w-\\[900px\\]')).not.toBeNull();
+    const loading = screen.getByRole('status');
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    expect(loading).toHaveTextContent('Loading tasks');
+    expect(loading.closest('.max-w-\\[900px\\]')).not.toBeNull();
     expect(screen.queryByText('What your agents are looking after')).not.toBeInTheDocument();
-    expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
     // Below `md` the shell's nav trigger is the only door to the sidebar.
     expect(screen.getByRole('button', { name: 'Open navigation' })).toBeInTheDocument();
     // No agent filter until there are rows from more than one agent.
@@ -362,14 +364,16 @@ describe('TasksPage (TASK-909)', () => {
     expect(screen.getByText('Support queue')).toBeInTheDocument();
     // Red, and no title: it sits over rows the page can still show (lib/read-register.ts).
     const alert = note.closest('[role="alert"]') as HTMLElement;
-    expect(alert.className).toContain('destructive');
+    expect(alert).not.toBeNull();
     expect(within(alert).queryByRole('heading')).not.toBeInTheDocument();
 
     const retry = within(alert).getByRole('button', { name: 'Try again' });
     expect(retry).toBeEnabled();
     fireEvent.click(retry);
     expect(tasksMock).toHaveBeenCalledTimes(2);
-    expect(retry).toBeDisabled();
+    // Busy, not disabled: it keeps its place and its label while the re-read runs.
+    expect(retry).toHaveAttribute('aria-busy', 'true');
+    expect(retry).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getByText('Support queue')).toBeInTheDocument();
 
     await act(async () => refresh.resolve(page([row('Support queue', { task: report('on-track') })])));

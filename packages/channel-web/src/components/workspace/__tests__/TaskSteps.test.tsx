@@ -614,15 +614,13 @@ describe('TaskSteps: one change at a time (TASK-949)', () => {
 
 describe('TaskSteps: a change on its way (TASK-956)', () => {
   const rowOf = (text: string) => box(text).closest('li')!;
-  // The spinner is aria-hidden (as ConnectorDetails' is), so it is found with `hidden`.
-  const spinnerIn = (el: HTMLElement) => within(el).queryByRole('status', { hidden: true });
+  // The in-flight mark is `aria-busy` on the row (no spinner: rule 7 keeps those for buttons and page boot).
 
-  it('while a tick is out, its step shows a spinner and is busy, its box keeps focus and ignores presses, and every other control waits', async () => {
+  it('while a tick is out, its step is busy, its box keeps focus and ignores presses, and every other control waits', async () => {
     const d = deferred<TaskStepsResponse>();
     setStepsMock.mockReturnValueOnce(d.promise);
     renderSteps();
     // Before anything is out, no row shows one.
-    expect(spinnerIn(rowOf('Check the redirects'))).toBeNull();
     const redirects = box('Check the redirects');
     redirects.focus();
     fireEvent.click(redirects);
@@ -631,11 +629,9 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(redirects).toHaveAttribute('aria-disabled', 'true');
     expect(document.activeElement).toBe(redirects);
     expect(rowOf('Check the redirects')).toHaveAttribute('aria-busy', 'true');
-    expect(spinnerIn(rowOf('Check the redirects'))).not.toBeNull();
     for (const other of ['Export every article', 'Tell the team']) {
       expect(box(other)).toBeDisabled();
       expect(rowOf(other)).not.toHaveAttribute('aria-busy');
-      expect(spinnerIn(rowOf(other))).toBeNull();
     }
     for (const control of screen.getAllByRole('button', { name: 'Step options' })) expect(control).toBeDisabled();
     expect(addStep()).toBeDisabled();
@@ -646,7 +642,6 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(box('Check the redirects')).toBeChecked();
     expect(box('Check the redirects')).not.toHaveAttribute('aria-disabled');
     expect(rowOf('Check the redirects')).not.toHaveAttribute('aria-busy');
-    expect(spinnerIn(rowOf('Check the redirects'))).toBeNull();
     expect(document.activeElement).toBe(box('Check the redirects'));
   });
 
@@ -662,29 +657,25 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(first).toHaveAttribute('aria-disabled', 'true');
     expect(first).toBeChecked();
     expect(rowOf('Export every article')).toHaveAttribute('aria-busy', 'true');
-    expect(spinnerIn(rowOf('Export every article'))).not.toBeNull();
     await act(async () => d.resolve(answer(withStep(PLAN, 's1', { done: false }))));
     expect(box('Export every article')).not.toBeChecked();
-    expect(spinnerIn(rowOf('Export every article'))).toBeNull();
   });
 
-  it('a failed tick takes its spinner away and leaves focus on its box', async () => {
+  it('a failed tick takes its busy mark away and leaves focus on its box', async () => {
     const d = deferred<TaskStepsResponse>();
     setStepsMock.mockReturnValueOnce(d.promise);
     renderSteps();
     box('Check the redirects').focus();
     fireEvent.click(box('Check the redirects'));
-    expect(spinnerIn(rowOf('Check the redirects'))).not.toBeNull();
     await act(async () => d.reject(new WorkspaceApiError('/x', 503)));
     expect(screen.getByRole('alert').textContent).toBe(UNCONFIRMED);
-    expect(spinnerIn(rowOf('Check the redirects'))).toBeNull();
     expect(rowOf('Check the redirects')).not.toHaveAttribute('aria-busy');
     expect(box('Check the redirects')).toBeEnabled();
     expect(box('Check the redirects')).not.toHaveAttribute('aria-disabled');
     expect(document.activeElement).toBe(box('Check the redirects'));
   });
 
-  it('while a Delete is out, its step shows a spinner, and its options button keeps focus and opens no menu', async () => {
+  it('while a Delete is out, its step is busy, and its options button keeps focus and opens no menu', async () => {
     const d = deferred<TaskStepsResponse>();
     setStepsMock.mockReturnValueOnce(d.promise);
     renderSteps();
@@ -695,7 +686,6 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(trigger).toHaveAttribute('aria-disabled', 'true');
     expect(document.activeElement).toBe(trigger);
     expect(rowOf('Tell the team')).toHaveAttribute('aria-busy', 'true');
-    expect(spinnerIn(rowOf('Tell the team'))).not.toBeNull();
     expect(box('Tell the team')).toBeDisabled();
     // Neither the keyboard nor the pointer opens its menu.
     // Each press is checked on its own, so one that opens nothing can't hide one that does.
@@ -717,14 +707,13 @@ describe('TaskSteps: a change on its way (TASK-956)', () => {
     expect(document.activeElement).toBe(box('Check the redirects'));
   });
 
-  it('a failed Delete brings its options button back, working, with its spinner gone', async () => {
+  it('a failed Delete brings its options button back, working, with its busy mark gone', async () => {
     const d = deferred<TaskStepsResponse>();
     setStepsMock.mockReturnValueOnce(d.promise);
     renderSteps();
     await choose('Tell the team', 'Delete');
     await waitFor(() => expect(setStepsMock).toHaveBeenCalledTimes(1));
     await act(async () => d.reject(new WorkspaceApiError('/x', 503)));
-    expect(spinnerIn(rowOf('Tell the team'))).toBeNull();
     expect(rowOf('Tell the team')).not.toHaveAttribute('aria-busy');
     expect(options('Tell the team')).not.toHaveAttribute('aria-disabled');
     expect(document.activeElement).toBe(options('Tell the team'));
@@ -874,7 +863,10 @@ describe('TaskSteps: when a change fails (TASK-949)', () => {
       setStepsMock.mockRejectedValueOnce(fail());
       const { onChanged } = renderSteps();
       fireEvent.click(box('Check the redirects'));
-      const alert = await screen.findByRole('alert');
+      // An ended session is neutral news (status); every other failure interrupts (alert).
+      const alert = line === HTTP_SESSION_ENDED
+        ? (await screen.findByText(line)).closest<HTMLElement>('[role="status"]')!
+        : await screen.findByRole('alert');
       expect(alert.textContent).toBe(line);
       expect(screen.getByRole('list').compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(box('Check the redirects')).not.toBeChecked();
@@ -931,10 +923,11 @@ describe('TaskSteps: when a change fails (TASK-949)', () => {
       .mockRejectedValueOnce(new WorkspaceApiError('/x', 404));
     renderSteps();
     fireEvent.click(box('Check the redirects'));
-    expect((await screen.findByRole('alert')).className).not.toContain('text-destructive');
+    // Neutral (info) is a status; a malfunction (danger) is an alert.
+    expect((await screen.findByText(HTTP_SESSION_ENDED)).closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     fireEvent.click(box('Check the redirects'));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(NOT_FOUND));
-    expect(screen.getByRole('alert').className).toContain('text-destructive');
   });
 });
 

@@ -81,7 +81,7 @@ describe('private task app setup', () => {
   it('reloads setup after a transient error without drawing provider details', async () => {
     vi.mocked(routineApi.get).mockRejectedValueOnce(new Error('PRIVATE-provider-detail'));
     show();
-    fireEvent.click(await screen.findByRole('button', { name: 'Reload app setup' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
     await screen.findByLabelText('Webhook URL');
     expect(document.body).not.toHaveTextContent('PRIVATE-provider-detail');
   });

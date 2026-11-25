@@ -125,11 +125,11 @@ describe('useMarkDone', () => {
     const onDone = vi.fn();
     render(<Harness unticked={n} onDone={onDone} />);
     press();
-    expect(screen.getByRole('alert').textContent).toContain(line);
+    expect(screen.getByRole('status').textContent).toContain(line);
     expect(completeMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
     expect(completeMock).not.toHaveBeenCalled();
 
     press();
@@ -274,7 +274,7 @@ describe('useMarkDone', () => {
     const view = render(<Harness unticked={2} onDone={onDone} />);
     press();
     view.rerender(<Harness unticked={1} onDone={onDone} />);
-    expect(screen.getByRole('alert').textContent).toContain('1 step isn’t ticked. It’ll stay on the task as it is.');
+    expect(screen.getByRole('status').textContent).toContain('1 step isn’t ticked. It’ll stay on the task as it is.');
     view.rerender(<Harness unticked={0} onDone={onDone} />);
     expect(screen.queryByRole('button', { name: 'Mark done anyway' })).toBeNull();
     expect(screen.queryByText(/ticked/)).toBeNull();

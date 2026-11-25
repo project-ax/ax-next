@@ -435,7 +435,8 @@ describe('TaskCheckinPage (TASK-911)', () => {
   it('says only that it’s a check-in while it loads, and when its time can’t be read', async () => {
     checkinMock.mockReturnValueOnce(new Promise<TaskCheckin>(() => {}));
     const first = renderPage();
-    expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading check-in');
     expect(screen.getByRole('heading', { level: 1, name: 'Check-in' })).toBeInTheDocument();
     const crumbs = screen.getByRole('navigation', { name: 'breadcrumb' });
     expect(within(crumbs).getByRole('link', { name: 'Task' })).toHaveAttribute(
@@ -497,8 +498,9 @@ describe('TaskCheckinPage (TASK-911)', () => {
       screen.getByRole('heading', { level: 1, name: `Check-in at ${localTime(FIRED)}` }),
     ).toBeInTheDocument();
     expect(within(transcript()).getByText('Checking the queue.')).toBeInTheDocument();
+    // A failure interrupts: danger is the alert role.
     const alert = line.closest('[role="alert"]') as HTMLElement;
-    expect(alert.className).toContain('destructive');
+    expect(alert).not.toBeNull();
     fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(checkinMock).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(screen.queryByText(REFRESH_FAILED)).toBeNull());

@@ -31,8 +31,9 @@
  * a blind crawl away. The row also declares no consent region of its own —
  * `TodayView` owns that, because the node has to outlive the row.
  */
+import type { ReactNode } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   RESOLUTION_FOCUS_RING,
@@ -320,19 +321,10 @@ export function DecisionRow({
               `<body>` in front of a row that looks unchanged.
             */}
             {stale && d.staleReason && (
-              <Alert
-                ref={answerRef}
-                tabIndex={-1}
-                // Voiced by the shared region above, not here (TASK-535).
-                role={undefined}
-                variant="destructive"
-                className={`mb-4 ${RESOLUTION_FOCUS_RING}`}
-              >
-                <AlertDescription className="text-[13px] leading-relaxed">
-                  <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
-                  {d.staleReason} {DECISION_STALE_ADVICE}
-                </AlertDescription>
-              </Alert>
+              <AnswerNotice ref={answerRef} margin="mb-4">
+                <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
+                {d.staleReason} {DECISION_STALE_ADVICE}
+              </AnswerNotice>
             )}
 
             <p className="max-w-[660px] text-[13.5px] leading-relaxed text-muted-foreground">
@@ -383,18 +375,7 @@ export function DecisionRow({
               `<body>` with an unread error behind them.
             */}
             {notice !== null && (
-              <Alert
-                ref={answerRef}
-                tabIndex={-1}
-                // Voiced by the shared region above, not here (TASK-535).
-                role={undefined}
-                variant="destructive"
-                className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
-              >
-                <AlertDescription className="text-[13px] leading-relaxed">
-                  {notice}
-                </AlertDescription>
-              </Alert>
+              <AnswerNotice ref={answerRef} margin="mt-3 max-w-[660px]">{notice}</AnswerNotice>
             )}
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -410,7 +391,7 @@ export function DecisionRow({
               </Button>
             {d.approvalScopes?.includes('agent-routines') && <>
               <Button size="sm" variant="outline" disabled={busy} onClick={() => { armForResolution(); onApprove('agent-routines'); }}>Always Allow</Button>
-              <p className="text-xs text-muted-foreground">{alwaysAllowRoutinesLine(agent.name)}</p>
+              <Text role="caption">{alwaysAllowRoutinesLine(agent.name)}</Text>
             </>}
               <Button
                 size="sm"
@@ -476,6 +457,30 @@ export function DecisionRow({
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * A danger note the person is moved to when an answer did not land (TASK-427).
+ * It is a focus target (`tabIndex={-1}`, a destination rather than a Tab stop) and
+ * is voiced by the shared region above, not here (TASK-535), so the Notice has no
+ * live role of its own. One element for both sites that need it.
+ */
+function AnswerNotice({
+  ref,
+  margin,
+  children,
+}: {
+  ref: (node: HTMLElement | null) => void;
+  margin: string;
+  children: ReactNode;
+}) {
+  return (
+    <div ref={ref} tabIndex={-1} className={`${margin} ${RESOLUTION_FOCUS_RING}`}>
+      <Notice tone="danger" announce={false}>
+        {children}
+      </Notice>
+    </div>
   );
 }
 

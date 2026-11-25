@@ -92,7 +92,7 @@ import {
   RoutineStepTextSchema,
   type RoutineStepOp,
 } from '@ax/routines-contract';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -108,7 +108,7 @@ import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, isSessionEnded, logRequestFailure } from '@/lib/http';
-import type { AlertRegister } from '@/lib/read-register';
+import { registerNoticeTone, type AlertRegister } from '@/lib/read-register';
 import { cn } from '@/lib/utils';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { TaskStep, TaskStepsResponse } from '@/lib/workspace-types';
@@ -554,9 +554,7 @@ export function TaskSteps({
           </ul>
         )}
         {listFailure !== null && (
-          <Alert variant={listFailure.register}>
-            <AlertDescription>{listFailure.line}</AlertDescription>
-          </Alert>
+          <Notice tone={registerNoticeTone(listFailure.register)}>{listFailure.line}</Notice>
         )}
         {readOnly ? null : editor?.kind === 'add' ? (
           <StepEditor
@@ -673,7 +671,7 @@ function StepRow({
   return (
     <li
       aria-busy={sent !== null || undefined}
-      className="flex min-w-0 items-start gap-2 text-[14px] leading-relaxed"
+      className={cn('flex min-w-0 items-start gap-2 text-[14px] leading-relaxed', sent !== null && 'opacity-60')}
     >
       <Checkbox
         ref={boxRef}
@@ -705,9 +703,6 @@ function StepRow({
         )}
         {children}
       </div>
-      {sent !== null && (
-        <Spinner aria-hidden="true" className="mt-2 size-3.5 shrink-0 text-muted-foreground" />
-      )}
       {!editing && (
         <StepOptions
           textId={textId}

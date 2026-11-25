@@ -55,7 +55,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -65,6 +65,7 @@ import {
 import { Separator } from '@/components/ui/separator';
 import { Spinner } from '@/components/ui/spinner';
 import { returnFocusToConsentRegion } from '@/lib/consent-focus';
+import { registerNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS, type TodayTaskReason } from '@/lib/task-groups';
 import { AUTO_PAUSED_LINE, missSummary } from '@/lib/task-miss';
@@ -340,9 +341,7 @@ export function TodayTaskGroup({
               </p>
             )}
             {claimed && markDone.failure !== null && (
-              <Alert variant={markDone.failure.register}>
-                <AlertDescription>{markDone.failure.text}</AlertDescription>
-              </Alert>
+              <Notice tone={registerNoticeTone(markDone.failure.register)}>{markDone.failure.text}</Notice>
             )}
           </div>
           {boxRow !== null && (

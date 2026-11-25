@@ -555,7 +555,6 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'We couldn’t confirm the check-in started. Try again, and it won’t start twice.',
     );
-    expect(alert.className).toContain('destructive');
     await settled(check, 2);
 
     fireEvent.click(check);
@@ -766,7 +765,6 @@ describe('TaskPage (TASK-910)', () => {
     expect(alert).toHaveTextContent(
       'This task changed while you had it open. We’ve loaded the latest, so try again.',
     );
-    expect(alert.className).toContain('destructive');
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Zero open tickets, edited' }),
     ).toBeInTheDocument();
@@ -832,7 +830,6 @@ describe('TaskPage (TASK-910)', () => {
     fireEvent.click(screen.getByRole('button', { name: press }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(says);
-    expect(alert.className).toContain('destructive');
     // `RoutineApiError.message` speaks of routines; this page never says it.
     expect(document.body.textContent).not.toMatch(/routine/i);
     await waitFor(() => expect(taskMock).toHaveBeenCalledTimes(2));
@@ -856,7 +853,6 @@ describe('TaskPage (TASK-910)', () => {
     fireEvent.click(check);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('We couldn’t start the check-in. Try again.');
-    expect(alert.className).toContain('destructive');
     await settled(check, 2);
 
     fireEvent.click(check);
@@ -871,9 +867,10 @@ describe('TaskPage (TASK-910)', () => {
     updateMock.mockRejectedValue(new RoutineApiError(401));
     await renderReady();
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(HTTP_SESSION_ENDED);
-    expect(alert.className).not.toContain('destructive');
+    // The quiet register: an ended session is neutral news (status), not a failure (alert).
+    const note = (await screen.findByText(HTTP_SESSION_ENDED)).closest('[role="status"]');
+    expect(note).not.toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('draws what the agent wrote as plain text', async () => {
@@ -968,7 +965,7 @@ describe('TaskPage (TASK-910)', () => {
     taskMock.mockReturnValue(new Promise<TaskDetail>(() => {}));
     const { onNavigate } = renderPage();
     // There while the task loads, and the title says only that it's a task.
-    expect(screen.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(screen.getByText('Loading task').closest('[role="status"]')).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByRole('heading', { level: 1, name: 'Task' })).toBeInTheDocument();
     const crumb = screen.getByRole('link', { name: 'Tasks' });
     expect(crumb).toHaveAttribute('href', '/workspace/tasks');
@@ -2836,9 +2833,12 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     duplicateMock.mockRejectedValue(new WorkspaceApiError('/x', status));
     await renderReady();
     await chooseDuplicate();
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(text);
-    expect(alert.className.includes('destructive')).toBe(destructive);
+    // A refusal interrupts (alert); an ended session is neutral news (status).
+    const note = destructive
+      ? await screen.findByRole('alert')
+      : (await screen.findByText(text)).closest('[role="status"]');
+    expect(note).toHaveTextContent(text);
+    if (!destructive) expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('after a failed Duplicate, focus goes back to the ⋯', async () => {
@@ -2885,7 +2885,8 @@ describe('TaskPage: ⋯ › Duplicate and the paused copy (TASK-953)', () => {
     taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
     await renderReady({ justCopied: true });
     expect(screen.getByText(COPY_LINE)).toBeInTheDocument();
-    expect(within(screen.getByRole('alert')).getByRole('button', { name: 'Edit task' })).toBeEnabled();
+    const note = screen.getByText(COPY_LINE).closest<HTMLElement>('[role="status"]')!;
+    expect(within(note).getByRole('button', { name: 'Edit task' })).toBeEnabled();
   });
 
   it.each([

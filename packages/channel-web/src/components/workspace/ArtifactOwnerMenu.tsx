@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { Ellipsis } from 'lucide-react';
 import { ARTIFACT_TITLE_MAX } from '@ax/ipc-protocol/content-blocks';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -221,11 +221,7 @@ export function ArtifactOwnerMenu({
               </Field>
             </FieldGroup>
           </form>
-          {error !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+          {error !== null && <Notice tone="danger">{error}</Notice>}
           <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={() => setPending(null)}>
               Cancel

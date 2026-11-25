@@ -881,9 +881,6 @@
   },
   "packages/channel-web/src/components/workspace/AddKeyDialog.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
-    },
-    "ax-ui/no-raw-elements": {
       "count": 1
     }
   },
@@ -900,13 +897,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentAdvancedLimits.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 6
+      "count": 5
     },
     "ax-ui/no-classname": {
-      "count": 6
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/channel-web/src/components/workspace/AgentApps.tsx": {
@@ -955,16 +952,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentConversation.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 32
+      "count": 26
     },
     "ax-ui/no-classname": {
-      "count": 55
+      "count": 54
     },
     "ax-ui/no-raw-elements": {
       "count": 43
-    },
-    "ax-ui/no-style-prop": {
-      "count": 1
     }
   },
   "packages/channel-web/src/components/workspace/AgentFiles.tsx": {
@@ -1090,10 +1084,10 @@
       "count": 6
     },
     "ax-ui/no-classname": {
-      "count": 14
+      "count": 13
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
+      "count": 12
     }
   },
   "packages/channel-web/src/components/workspace/AppGrantEditor.tsx": {
@@ -1218,7 +1212,7 @@
   },
   "packages/channel-web/src/components/workspace/DecisionRow.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 21
+      "count": 18
     },
     "ax-ui/no-classname": {
       "count": 23
@@ -1327,7 +1321,7 @@
   },
   "packages/channel-web/src/components/workspace/SidebarChats.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 5
+      "count": 4
     },
     "ax-ui/no-classname": {
       "count": 9
@@ -1368,17 +1362,14 @@
       "count": 10
     },
     "ax-ui/no-classname": {
-      "count": 18
+      "count": 16
     },
     "ax-ui/no-raw-elements": {
-      "count": 17
+      "count": 15
     }
   },
   "packages/channel-web/src/components/workspace/TaskDialog.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 1
-    },
-    "ax-ui/no-raw-elements": {
       "count": 1
     }
   },
@@ -1405,11 +1396,8 @@
     }
   },
   "packages/channel-web/src/components/workspace/TaskMarkDone.tsx": {
-    "ax-ui/no-classname": {
-      "count": 1
-    },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/workspace/TaskNotes.tsx": {
@@ -1439,10 +1427,10 @@
       "count": 32
     },
     "ax-ui/no-classname": {
-      "count": 69
+      "count": 65
     },
     "ax-ui/no-raw-elements": {
-      "count": 65
+      "count": 62
     }
   },
   "packages/channel-web/src/components/workspace/TaskReadingBlock.tsx": {
@@ -1494,10 +1482,10 @@
       "count": 10
     },
     "ax-ui/no-classname": {
-      "count": 25
+      "count": 23
     },
     "ax-ui/no-raw-elements": {
-      "count": 27
+      "count": 25
     }
   },
   "packages/channel-web/src/components/workspace/TodayTaskGroup.tsx": {
@@ -1513,13 +1501,13 @@
   },
   "packages/channel-web/src/components/workspace/TodayView.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 14
+      "count": 9
     },
     "ax-ui/no-classname": {
-      "count": 19
+      "count": 17
     },
     "ax-ui/no-raw-elements": {
-      "count": 19
+      "count": 17
     }
   },
   "packages/channel-web/src/components/workspace/WorkspaceAttachmentChip.tsx": {

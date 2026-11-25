@@ -18,7 +18,7 @@
  */
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   workspaceApi,
   WorkspaceApiError,
@@ -280,24 +280,21 @@ describe('AgentView loading pane name', () => {
 });
 
 /*
-  The loading pane is a blank pane with a small spinner, not skeleton bubbles.
-  An agent switch remounts AgentView, so this pane flashes by on every switch;
-  #829's two skeletons (a short bar and a tall block, laid out in a row) read
-  as two chat bubbles on one line for a few milliseconds. jsdom has no CSS, so
-  this pins the markup — no `animate-pulse` placeholders, one decorative
-  spinner — not pixels or timing.
-
-  VACUITY: against #829's pane both assertions fail (two pulse blocks, no spin).
+  The loading pane is a blank pane, then a skeleton that fades in after a beat —
+  not bubbles and not a spinner (rule 7: spinners are for buttons and page
+  boot). An agent switch remounts AgentView, so this pane flashes by on every
+  switch; jsdom has no CSS, so this pins the markup: one busy status naming
+  what is loading, and no spinner.
 */
 describe('AgentView loading pane contents', () => {
-  it('shows a spinner rather than placeholder bubbles', () => {
+  it('shows a busy status rather than a spinner', () => {
     agentMock.mockReturnValue(new Promise<AgentDetail>(() => {}));
     renderView({ tab: 'chat' });
 
     const pane = screen.getByRole('region', { name: 'Loading agent' });
-    expect(pane.querySelectorAll('.animate-pulse')).toHaveLength(0);
-    const spinners = pane.querySelectorAll('svg.animate-spin');
-    expect(spinners).toHaveLength(1);
-    expect(spinners[0]).toHaveAttribute('aria-hidden', 'true');
+    const status = within(pane).getByRole('status');
+    expect(status).toHaveAttribute('aria-busy', 'true');
+    expect(status).toHaveTextContent('Loading agent');
+    expect(pane.querySelectorAll('svg.animate-spin')).toHaveLength(0);
   });
 });

@@ -135,7 +135,7 @@
  * "{agent} finished the run.", "The run didn’t finish. The reason is under Run
  * history."), and while it is watching a run the Runs card's own live line
  * keeps quiet (`RepeatTaskBody`'s `quiet`), so each outcome is said once. A
- * failure is an `Alert`. None of them ever takes focus, so none is heard
+ * failure is a `Notice`. None of them ever takes focus, so none is heard
  * twice. The 10-second re-reads are quiet (`refreshQuietly`): they
  * leave the buttons pressable and raise no alert when one fails.
  *
@@ -185,8 +185,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -201,7 +200,7 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
 import { HTTP_SESSION_ENDED, isConfirmedRefusal, logRequestFailure } from '@/lib/http';
-import { readNoticeTone, type AlertRegister } from '@/lib/read-register';
+import { readNoticeTone, registerNoticeTone, type AlertRegister } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { taskGroup, TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups';
@@ -392,7 +391,7 @@ function duplicateFailure(e: unknown): { text: string; register: AlertRegister }
 }
 
 /** What the last press left on the page when it failed: an alert. Success speaks through the poll. */
-type Notice = { failed: string; register: AlertRegister } | null;
+type PageNotice = { failed: string; register: AlertRegister } | null;
 
 type TaskPoll = ReturnType<typeof useTaskPoll>;
 
@@ -412,7 +411,7 @@ function useTaskActions(
   onWriteSucceeded: () => void,
 ) {
   const [acting, setActing] = useState<ActionKind | null>(null);
-  const [notice, setNotice] = useState<Notice>(null);
+  const [notice, setNotice] = useState<PageNotice>(null);
   // Duplicate keeps its own slot: a copy whose answer never came must survive
   // any Check now, Pause or Resume in between (and theirs must survive it), or
   // the retry mints a new id and the server makes a second copy (or check-in).
@@ -768,9 +767,7 @@ export function TaskPage({
           </header>
           <div className="flex min-w-0 flex-col gap-4 md:col-span-2 md:row-start-3 md:mt-2">
             {state.kind === 'loading' && (
-              <div className="flex justify-center py-10">
-                <Spinner />
-              </div>
+              <AsyncState status="loading" skeleton="block" loadingLabel="Loading task" />
             )}
             {state.kind === 'failed' && (
               <AsyncState
@@ -1113,7 +1110,7 @@ function PageAlerts({
   onRefresh: () => void;
   /** This page was just opened by Duplicate, the copy hasn't run, and the viewer may edit it (TASK-953). */
   copyLine: boolean;
-  notice: Notice;
+  notice: PageNotice;
   onEdit: () => void;
 }) {
   return (
@@ -1123,34 +1120,19 @@ function PageAlerts({
         nothing about what it couldn't load (`lib/read-register.ts`).
       */}
       {refreshFailed && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span className="min-w-0">{REFRESH_FAILED}</span>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="ml-auto"
-              onClick={onRefresh}
-              disabled={refreshing}
-            >
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="danger"
+          action={{ label: 'Try again', onClick: onRefresh, busy: refreshing }}
+        >
+          {REFRESH_FAILED}
+        </Notice>
       )}
       {copyLine && (
-        <Alert>
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span className="min-w-0">{COPY_LINE}</span>
-            <Button variant="outline" size="sm" className="ml-auto" onClick={onEdit}>Edit task</Button>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info" action={{ label: 'Edit task', onClick: onEdit }}>
+          {COPY_LINE}
+        </Notice>
       )}
-      {notice !== null && (
-        <Alert variant={notice.register}>
-          <AlertDescription>{notice.failed}</AlertDescription>
-        </Alert>
-      )}
+      {notice !== null && <Notice tone={registerNoticeTone(notice.register)}>{notice.failed}</Notice>}
     </>
   );
 }
@@ -1460,11 +1442,7 @@ function PollLine({ poll, agentName, repeat }: { poll: TaskPoll; agentName: stri
     case 'checking':
       return (
         // The reply box already said a reply started it: shown, not said again.
-        <span
-          aria-hidden={poll.startedBy === 'reply' || undefined}
-          className="inline-flex items-center gap-1.5"
-        >
-          <Spinner aria-hidden="true" />
+        <span aria-hidden={poll.startedBy === 'reply' || undefined}>
           {repeat ? RUNNING : CHECKING_IN}
         </span>
       );
@@ -2022,9 +2000,7 @@ function MarkDoneControls({
         </div>
       )}
       {markDone.failure !== null && (
-        <Alert variant={markDone.failure.register}>
-          <AlertDescription>{markDone.failure.text}</AlertDescription>
-        </Alert>
+        <Notice tone={registerNoticeTone(markDone.failure.register)}>{markDone.failure.text}</Notice>
       )}
     </div>
   );

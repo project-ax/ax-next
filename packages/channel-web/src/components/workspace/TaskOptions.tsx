@@ -28,7 +28,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Pause, Trash2 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -169,9 +169,7 @@ export function TaskDeleteDialog({
           <p className="text-[14px]">Just need it to stop for a while? Pause it instead.</p>
         )}
         {failure !== null && (
-          <Alert variant={failure === 'expired' ? 'default' : 'destructive'}>
-            <AlertDescription>{FAILURE_COPY[failure]}</AlertDescription>
-          </Alert>
+          <Notice tone={failure === 'expired' ? 'info' : 'danger'}>{FAILURE_COPY[failure]}</Notice>
         )}
         <DialogFooter className="gap-2 sm:gap-0">
           <Button variant="outline" disabled={busy} onClick={() => change(false)}>

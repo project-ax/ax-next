@@ -32,8 +32,7 @@
  * browser fetch, and it leaves file links out of prose.
  */
 import { useId, useLayoutEffect, useState, type ReactNode } from 'react';
-import { AsyncState } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -41,8 +40,6 @@ import {
   BreadcrumbList,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
-import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
@@ -177,9 +174,7 @@ export function TaskCheckinPage({
           <div className="flex-1 overflow-y-auto">
             <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
               {state.kind === 'loading' ? (
-                <div className="flex justify-center py-10">
-                  <Spinner />
-                </div>
+                <AsyncState status="loading" skeleton="block" loadingLabel="Loading check-in" />
               ) : (
                 <AsyncState
                   status="error"
@@ -202,20 +197,12 @@ export function TaskCheckinPage({
             */}
             {state.refreshFailed && (
               <div className="px-6 pt-4">
-                <Alert variant="destructive">
-                  <AlertDescription className="flex flex-wrap items-center gap-3">
-                    <span className="min-w-0">{REFRESH_FAILED}</span>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="ml-auto"
-                      onClick={refresh}
-                      disabled={state.refreshing}
-                    >
-                      Try again
-                    </Button>
-                  </AlertDescription>
-                </Alert>
+                <Notice
+                  tone="danger"
+                  action={{ label: 'Try again', onClick: refresh, busy: state.refreshing }}
+                >
+                  {REFRESH_FAILED}
+                </Notice>
               </div>
             )}
             {state.page.kind === 'repeat' ? <p className="mx-auto w-full max-w-[900px] px-6 py-3 text-sm text-muted-foreground">

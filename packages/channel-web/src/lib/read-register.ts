@@ -262,3 +262,13 @@ export function readAlertVariant(
 export function readNoticeTone(kind: ReadOutcome, opts?: { retrying?: boolean }): 'info' | 'danger' {
   return readAlertVariant(kind, opts) === 'default' ? 'info' : 'danger';
 }
+
+/**
+ * A register somebody already holds (a failure object carrying `default` or
+ * `destructive`, such as a failed write's) spoken in `@project-ax/ui`'s words.
+ * Same two-way mapping as `readNoticeTone`, for callers that no longer have the
+ * outcome it was decided from.
+ */
+export function registerNoticeTone(register: AlertRegister): 'info' | 'danger' {
+  return register === 'default' ? 'info' : 'danger';
+}

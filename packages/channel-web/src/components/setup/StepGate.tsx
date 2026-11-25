@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -76,11 +76,7 @@ export function StepGate({ autoToken, onClaimed }: Props) {
             className="font-mono"
           />
         </div>
-        {err !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{err}</AlertDescription>
-          </Alert>
-        )}
+        {err !== null && <Notice tone="danger">{err}</Notice>}
         <Button type="submit" disabled={busy || token.length === 0}>
           {busy ? 'Verifying…' : 'Continue'}
         </Button>

@@ -19,8 +19,7 @@
  * before it calls back.
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@project-ax/ui';
+import { Button, Notice } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -173,11 +172,7 @@ function ReplaceForm({
           disabled={busy}
         />
       </FieldGroup>
-      {error !== null && error.field === null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
-      )}
+      {error !== null && error.field === null && <Notice tone="danger">{error.message}</Notice>}
       <DialogFooter className="gap-2">
         <Button type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel

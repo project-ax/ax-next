@@ -13,6 +13,7 @@ import { HttpError } from '../lib/http';
 import {
   readAlertVariant,
   readNoticeTone,
+  registerNoticeTone,
   toReadOutcome,
   type ReadOutcome,
 } from '../lib/read-register';
@@ -166,5 +167,12 @@ describe('readNoticeTone', () => {
     expect(readNoticeTone('expired')).toBe('info');
     expect(readNoticeTone('failed')).toBe('danger');
     expect(readNoticeTone('gone')).toBe('danger');
+  });
+});
+
+describe('registerNoticeTone', () => {
+  it('speaks a held register in the design system\'s words: default is info, destructive is danger', () => {
+    expect(registerNoticeTone('default')).toBe('info');
+    expect(registerNoticeTone('destructive')).toBe('danger');
   });
 });

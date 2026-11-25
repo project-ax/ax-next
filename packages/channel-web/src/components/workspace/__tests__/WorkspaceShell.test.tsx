@@ -834,7 +834,9 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     const tryAgain = within(box).getByRole('button', { name: 'Try again' });
     fireEvent.click(tryAgain);
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
-    expect(tryAgain).toBeDisabled();
+    // Busy, not disabled: it keeps its place and its label while the read runs.
+    expect(tryAgain).toHaveAttribute('aria-busy', 'true');
+    expect(tryAgain).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(tryAgain);
     expect(tasksMock).toHaveBeenCalledTimes(2);
 

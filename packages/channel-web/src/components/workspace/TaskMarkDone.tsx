@@ -42,7 +42,7 @@
  * region.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Inline, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { takeResolutionFocus } from '@/lib/consent-focus';
@@ -214,10 +214,10 @@ export function MarkDoneConfirmation({
     first.current?.focus();
   }, []);
   return (
-    <Alert>
-      <AlertDescription>
+    <Notice tone="info">
+      <Stack gap="md" align="start">
         <p>{untickedLine(unticked)}</p>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Inline gap="sm" wrap>
           <Button
             ref={first}
             type="button"
@@ -232,8 +232,8 @@ export function MarkDoneConfirmation({
           <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
             Cancel
           </Button>
-        </div>
-      </AlertDescription>
-    </Alert>
+        </Inline>
+      </Stack>
+    </Notice>
   );
 }
