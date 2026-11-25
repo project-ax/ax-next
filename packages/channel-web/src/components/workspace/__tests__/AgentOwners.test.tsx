@@ -139,9 +139,9 @@ describe('AgentOwners — Add owner asks first', () => {
     const confirm = await confirmationFor('Ca', 'Carol');
 
     // The consequences are what the confirmation says, and what it announces.
-    expect(within(confirm).getByText(SHARING_COPY.owners.consequences(FERN, 'you'))).toBeTruthy();
+    expect(within(confirm).getByText(SHARING_COPY.owners.consequences(FERN, { kind: 'you' }))).toBeTruthy();
     expect(
-      screen.getByRole('dialog', { description: SHARING_COPY.owners.consequences(FERN, 'you') }),
+      screen.getByRole('dialog', { description: SHARING_COPY.owners.consequences(FERN, { kind: 'you' }) }),
     ).toBe(confirm);
     expect(setOwnersMock).not.toHaveBeenCalled();
 
@@ -170,13 +170,23 @@ describe('AgentOwners — Add owner asks first', () => {
     renderOwners([VINAY, BOB], AS_BOB);
     const confirm = await confirmationFor('Ca', 'Carol');
 
-    expect(within(confirm).getByText(SHARING_COPY.owners.consequences(FERN, 'Vinay'))).toBeTruthy();
-    expect(within(confirm).queryByText(SHARING_COPY.owners.consequences(FERN, 'you'))).toBeNull();
+    expect(within(confirm).getByText(SHARING_COPY.owners.consequences(FERN, { kind: 'name', name: 'Vinay' }))).toBeTruthy();
+    expect(within(confirm).queryByText(SHARING_COPY.owners.consequences(FERN, { kind: 'you' }))).toBeNull();
 
     fireEvent.click(within(confirm).getByRole('button', { name: SHARING_COPY.owners.confirm }));
     await waitFor(() =>
       expect(setOwnersMock).toHaveBeenCalledWith('agt_fern', ['vinay', 'bob', 'carol']),
     );
+  });
+
+  it('a creator whose name is literally "you" is still named, not read as the viewer', async () => {
+    const creatorYou: Owner = { id: 'vinay', displayName: 'you', creator: true };
+    renderOwners([creatorYou, BOB], AS_BOB);
+    const confirm = await confirmationFor('Ca', 'Carol');
+
+    const named = SHARING_COPY.owners.consequences(FERN, { kind: 'name', name: 'you' });
+    expect(within(confirm).getByText(named)).toBeTruthy();
+    expect(confirm.textContent).not.toContain('your connections');
   });
 
   it('never offers someone who is already an owner', async () => {

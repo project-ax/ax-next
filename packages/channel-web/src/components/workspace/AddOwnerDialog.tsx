@@ -31,7 +31,7 @@ import {
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
 import { setOwners, sharingErrorMessage, type PersonMatch } from '@/lib/agent-sharing-api';
-import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
+import { SHARING_COPY, personLabel, type RoutinesRunAs } from '@/lib/sharing-copy';
 import { useUser } from '@/lib/user-context';
 import { PeoplePicker } from './PeoplePicker';
 
@@ -68,8 +68,10 @@ function OpenAddOwnerDialog({ agentId, agentName, owners, onSaved, onClose }: Ad
   const ownerIds = useMemo(() => new Set(owners.map((o) => o.id)), [owners]);
   // The routines run as the creator: "you" when that's who is reading.
   const creator = owners.find((o) => o.creator);
-  const routinesRunAs =
-    creator !== undefined && creator.id === me ? 'you' : personLabel(creator?.displayName);
+  const routinesRunAs: RoutinesRunAs =
+    creator !== undefined && creator.id === me
+      ? { kind: 'you' }
+      : { kind: 'name', name: personLabel(creator?.displayName) };
 
   const add = async (chosen: PersonMatch) => {
     setSaving(true);

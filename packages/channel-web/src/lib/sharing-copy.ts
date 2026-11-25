@@ -18,6 +18,9 @@
 
 import { fenceLine } from './fence-line';
 
+/** Who an agent's routines run as: the reader, or a (fenced) name. */
+export type RoutinesRunAs = { kind: 'you' } | { kind: 'name'; name: string };
+
 /** Longest name the screens show before it is cut. */
 const NAME_MAX = 80;
 
@@ -130,12 +133,15 @@ export const SHARING_COPY = {
      * what those routines do. Only the creator deletes the agent or edits its
      * routines (TASK-1246).
      */
-    consequences: (agent: string, routinesRunAs: 'you' | string): string => {
-      const whose = routinesRunAs === 'you' ? 'your' : `${routinesRunAs}'s`;
+    consequences: (agent: string, routinesRunAs: RoutinesRunAs): string => {
+      // Tagged, not a 'you' string: a creator whose name is literally "you"
+      // is a name, and must not read as the person looking at the screen.
+      const who = routinesRunAs.kind === 'you' ? 'you' : routinesRunAs.name;
+      const whose = routinesRunAs.kind === 'you' ? 'your' : `${routinesRunAs.name}'s`;
       return (
         `Owners can change everything ${agent} does with ${whose} connections: its Instructions, tools, connections and who can use it. ` +
-        `${agent}'s routines run as ${routinesRunAs}, so an owner's changes also change what those routines do. ` +
-        `Only ${routinesRunAs} can delete ${agent} or edit its routines. ` +
+        `${agent}'s routines run as ${who}, so an owner's changes also change what those routines do. ` +
+        `Only ${who} can delete ${agent} or edit its routines. ` +
         `Only add someone you'd trust with ${whose} accounts.`
       );
     },

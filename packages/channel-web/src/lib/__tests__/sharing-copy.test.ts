@@ -28,7 +28,10 @@ const ARGS: Record<string, unknown[][]> = {
   'owners.remove': [['Ali']],
   'owners.addTitle': [['Fern']],
   'owners.confirmTitle': [['Ali', 'Fern']],
-  'owners.consequences': [['Fern', 'you'], ['Fern', 'Vinay']],
+  'owners.consequences': [
+    ['Fern', { kind: 'you' }],
+    ['Fern', { kind: 'name', name: 'Vinay' }],
+  ],
   team: [['Fern']],
   sharedBy: [['Vinay'], [null]],
   'errors.forbidden': [['Fern']],
@@ -116,16 +119,23 @@ describe('SHARING_COPY', () => {
   });
 
   it('the owner confirmation names routines and who they run as', () => {
-    const own = SHARING_COPY.owners.consequences('Fern', 'you');
+    const own = SHARING_COPY.owners.consequences('Fern', { kind: 'you' });
     expect(own).toMatch(/routine/i);
     expect(own).toMatch(/delete/i);
-    const other = SHARING_COPY.owners.consequences('Fern', 'Vinay');
+    const other = SHARING_COPY.owners.consequences('Fern', { kind: 'name', name: 'Vinay' });
     expect(other).toContain('Vinay');
     expect(other).toMatch(/routine/i);
   });
 
+  it('a creator literally named "you" is a name, not the reader', () => {
+    const named = SHARING_COPY.owners.consequences('Fern', { kind: 'name', name: 'you' });
+    expect(named).not.toBe(SHARING_COPY.owners.consequences('Fern', { kind: 'you' }));
+    expect(named).not.toContain('your connections');
+    expect(named).toContain("you's connections");
+  });
+
   it('the owner confirmation says what owners can change', () => {
-    const text = SHARING_COPY.owners.consequences('Fern', 'you');
+    const text = SHARING_COPY.owners.consequences('Fern', { kind: 'you' });
     for (const word of ['Instructions', 'tools', 'connections']) expect(text).toContain(word);
     expect(text).toMatch(/who can use/i);
   });
