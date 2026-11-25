@@ -7,7 +7,7 @@ The user's directive for this migration applies: **the functionality must stay t
 ## Should become cards
 
 - **Retry drops focus.** Pressing "Try again" switches `AsyncState` from error to loading, so the button unmounts and keyboard focus falls to `<body>`. Fix it once in `packages/ui`, for example by focusing the status container on retry.
-- **GeneratedFileChip layout.** It is now a two-line `Stack` inside a fixed-height `Button` that doesn't wrap. That is a `div` inside a `button`, and long names likely overflow instead of truncating. Function is kept: the accessible name is "Download {name}". Check it in a browser, then make it a composite or the S4 `FileTile`.
+- **GeneratedFileChip stays on its own markup until S4 `FileTile`.** Moving it onto the one-line ui `Button` (fixed 40px height, no wrap) made long names overflow the chip and cover the next one, checked on kind; the change was reverted in #1262. Its shadcn button still sets `disabled` while busy, which drops focus.
 - **IconAction busy sites need a disabled-reason tooltip.** The sites are TaskPage 907/971/992/1019 and TaskReplyBox 316. The package `IconButton` shows no tooltip while disabled. Do this in S6a.
 - **Delete task dialog.** It stays a `Dialog` because it offers "Pause instead". Moving it to `ConfirmAction` would drop that choice, which needs product sign-off; revisit in S6b. Pause agents also stays a `Dialog`, because it has a Reason field.
 - **Conversation welcome needs a hero treatment.** Either a title role or an `EmptyState` size variant. S5b/S7.

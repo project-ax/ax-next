@@ -1242,10 +1242,10 @@
   },
   "packages/channel-web/src/components/workspace/GeneratedFileChip.tsx": {
     "ax-ui/no-classname": {
-      "count": 1
+      "count": 6
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 6
     }
   },
   "packages/channel-web/src/components/workspace/GrantRow.tsx": {

@@ -116,8 +116,7 @@ describe('GeneratedFileChip', () => {
     fireEvent.click(button);
     fireEvent.click(button);
     expect(fetch).toHaveBeenCalledOnce();
-    expect(button).toHaveAttribute('aria-busy', 'true');
-    expect(button).toHaveAccessibleName('Downloading budget.csv');
+    expect(button).toBeDisabled();
     expect(screen.getByText('Downloading…')).toBeVisible();
     resolve(new Response('{}', { status: 404 }));
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This file is no longer available'));
