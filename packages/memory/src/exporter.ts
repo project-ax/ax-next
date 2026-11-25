@@ -142,10 +142,11 @@ export function createMemoryExporter(bus: HookBus, config: MemoryExportConfig) {
     // An unreadable row is refused by code before a subject is read below.
     validateExportRows(rows);
     // How each member's key reads in the file (TASK-1213): the names recall
-    // and the block show (`memberLabels`: a team agent only, current members
-    // only, cleaned, collision-checked, 2 s at most), decided by this pass's
-    // own turn. No `self`: one file per agent serves every session that
-    // mounts it, so nobody in it reads "you". Empty on a personal agent.
+    // and the block show (`memberLabels`: an agent whose memory is shared
+    // only, people who can use it now only, cleaned, collision-checked, 2 s
+    // at most), decided by this pass's own turn. No `self`: one file per
+    // agent serves every session that mounts it, so nobody in it reads
+    // "you". Empty on a Just-me agent.
     const labels = await memberLabels(bus, ctx, access, rows.map((row) => row.about), undefined);
     const desired = buildFactsExport(rows, access, labels);
     // Again before publishing: access can be revoked while the scan runs.

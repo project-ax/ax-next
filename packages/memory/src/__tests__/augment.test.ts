@@ -1512,6 +1512,39 @@ describe('system-prompt:augment:optional:memory — shared team agents', () => {
     },
   );
 
+  // TASK-1248: a personal agent shared with other people names them the
+  // same way. The proof is `agents:resolve` admitting Bob to this agent:
+  // there is no team to ask.
+  it('the injected block names a person the agent is shared with', async () => {
+    const h = await makeHarness({
+      agent: { visibility: 'personal', shared: true, members: new Set([BOB]) },
+      authUser: (userId: string) => ({
+        id: userId,
+        displayName: userId === BOB ? 'Bob Smith' : 'Alice Jones',
+        email: `${userId}@x.test`,
+        isAdmin: false,
+      }),
+    });
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      {
+        about: `user:${BOB}`,
+        relation: 'mentioned',
+        value: 'a thing Bob said',
+        when: JUN,
+        ownerUserId: BOB,
+        conversationId: 'conv-bob',
+      },
+    ]);
+
+    const body = await augment(h, h.ctx({ userId: ALICE }));
+    expect(body).toContain('Bob Smith mentioned: a thing Bob said');
+    expect(body).not.toContain('user:user-bob');
+    expect(body).not.toContain('you mentioned: a thing Bob said');
+    expect(body).not.toContain('bob@x.test');
+    expect(h.resolveCalls).toContain(BOB);
+    expect(h.memberCalls).toEqual([]);
+  });
+
   it('excludes a foreign-owner raw-engine row on a personal agent', async () => {
     const h = await makeHarness();
     await engineRecord(h.bus, h.ctx(), [

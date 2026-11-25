@@ -865,12 +865,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 // design §6.1's "never post-filter a widened pool". It is also
                 // the only version that works at all: the engine's `FactRecord`
                 // does not carry an owner, so there is nothing here to filter
-                // ON. A team agent widens the same push-down deliberately:
-                // `memoryReadScope` omits the owner filter only after
-                // `agents:resolve` proved this caller is a current member of a
-                // team agent, and the rows are that agent's shared knowledge —
+                // ON. An agent whose memory is shared (a team agent, or a
+                // personal agent shared with other people, TASK-1248) widens
+                // the same push-down deliberately: `memoryReadScope` omits the
+                // owner filter only after `agents:resolve` let this caller use
+                // that agent, and the rows are that agent's shared knowledge —
                 // never another agent's, never another person's under a
-                // personal agent.
+                // Just-me agent.
                 //
                 // The conversation feed (TASK-626) is the one read that does NOT
                 // widen on a team agent: a conversation belongs to one person,
@@ -1095,12 +1096,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // own key: only owner routes send them.)
           const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
           // Every other member's key on this page, by their display name
-          // (TASK-1209): only on a team agent, only in a turn whose recall
-          // reads everything, only for a current member of its team, and
-          // never failing the read. The caller (`ownSubject`) is asked too
-          // when another member key is on the page, only so a teammate who
-          // takes their name reads "a teammate" (TASK-1213). Empty on a
-          // personal agent, which asks nobody.
+          // (TASK-1209): only on an agent whose memory is shared (a team
+          // agent, or a personal agent shared with other people, TASK-1248),
+          // only in a turn whose recall reads everything, only for someone
+          // who can use the agent now, and never failing the read. The
+          // caller (`ownSubject`) is asked too when another member key is on
+          // the page, only so a teammate who takes their name reads "a
+          // teammate" (TASK-1213). Empty on a Just-me agent, which asks
+          // nobody.
           const labels = await memberLabels(bus, ctx, access, page.map((row) => row.about), ownSubject);
 
           // Per-answer conversation ordinals (design doc "Signal" section,
@@ -1141,10 +1144,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               return {
                 ...mapped,
                 // Another person's speaker subject is `user:<their id>`; a
-                // caller is never handed that id. On a team agent a current
-                // member's reads as their display name where `memberLabels`
-                // has one; anyone else's, "a teammate". Only the caller's own
-                // key reads `you`.
+                // caller is never handed that id. On an agent whose memory is
+                // shared a current member's reads as their display name where
+                // `memberLabels` has one; anyone else's, "a teammate". Only
+                // the caller's own key reads `you`.
                 aboutText:
                   ownSubject !== undefined && row.about === ownSubject
                     ? 'you'

@@ -89,9 +89,11 @@ export interface MemoryStatement {
    * own key, and for no one else: never in an outsider's turn, never for a
    * member whose name reads as "you". On a team agent the key of another
    * current member of its team reads as their display name (TASK-1209,
-   * `member-names.ts`). Any other person's key reads `a teammate`, as it does
-   * on a personal agent. Never a raw id, never an email. Any other subject
-   * reads as its words (`launch_plan` → `launch plan`).
+   * `member-names.ts`), and so, on a personal agent shared with other people,
+   * does the key of anyone who can use it now (TASK-1248). Any other person's
+   * key reads `a teammate`, as it does on a Just-me agent. Never a raw id,
+   * never an email. Any other subject reads as its words (`launch_plan` →
+   * `launch plan`).
    */
   aboutText?: string;
   /**

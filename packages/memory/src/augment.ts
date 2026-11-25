@@ -15,10 +15,12 @@
  * it recalls everything else a member's turn does (TASK-1209), and the
  * requester's key reads as any member's.
  *
- * On a team agent a member's key reads as their display name, or "a teammate"
- * (TASK-1209, `member-names.ts`): never the raw id. Asking costs up to two
- * reads per member the block shows (`teams:is-member`, then `auth:get-user`),
- * in parallel, after the store queries. A personal agent asks nobody.
+ * On an agent whose memory is shared (a team agent, or a personal agent shared
+ * with other people, TASK-1248) a member's key reads as their display name, or
+ * "a teammate" (TASK-1209, `member-names.ts`): never the raw id. Asking costs
+ * up to two reads per member the block shows (a membership check,
+ * `teams:is-member` or `agents:resolve`, then `auth:get-user`), in parallel,
+ * after the store queries. A Just-me agent asks nobody.
  *
  * Soft cap ~800 tokens; over it, parts drop **digest → recent → profile**. The
  * degraded notice and the section heading never drop.
@@ -318,11 +320,11 @@ function provenanceTag(raw: unknown): string {
  *
  * The caller's own subject key is `user:<userId>`, and putting that in the
  * prompt would spend tokens on an opaque id and leak an internal identifier
- * into text the model may repeat back. It renders as `you`. On a team agent
- * another member's key renders as its label (TASK-1209, {@link memberLabels}:
- * the member's display name, else "a teammate"), never the raw id. Everything
- * else (and on a personal agent, every other key) is an extractor-canonical
- * subject and renders as written. Both escaped: a name is account-holder
+ * into text the model may repeat back. It renders as `you`. On an agent whose
+ * memory is shared another member's key renders as its label (TASK-1209,
+ * {@link memberLabels}: the member's display name, else "a teammate"), never
+ * the raw id. Everything else (and on a Just-me agent, every other key) is an
+ * extractor-canonical subject and renders as written. Both escaped: a name is account-holder
  * text, already cleaned, and `escapeStatementText` still runs on it.
  *
  * `self` is the caller's own key, or `undefined` in an outsider's turn
@@ -615,10 +617,11 @@ export function assembleUnderCap(parts: BlockPart[], maxTokens: number): Assembl
  * contribution is dropped by the orchestrator, so an agent with no memory yet
  * gets a prompt byte-identical to the un-augmented one.
  *
- * Who a subject is: the caller's own key reads `you`. On a team agent another
- * member's key reads as their display name, or "a teammate" (TASK-1209,
- * {@link memberLabels}: only current members of its team, only in a turn
- * whose recall reads everything). On a personal agent it reads as written.
+ * Who a subject is: the caller's own key reads `you`. On an agent whose memory
+ * is shared another member's key reads as their display name, or "a
+ * teammate" (TASK-1209, {@link memberLabels}: only people who can use the
+ * agent now, only in a turn whose recall reads everything). On a Just-me
+ * agent it reads as written.
  */
 export async function buildMemoryBlock(
   bus: HookBus,
@@ -746,12 +749,13 @@ export async function buildMemoryBlock(
   const profile = renderProfile(profileOut.statements, profileChainOut.statements, cfg.profileRows);
   const groups = recentGroups(recentRows, cfg.recentConversations, cfg.recentPerConversation);
   const ranked = rankDigestSubjects(digestOut.statements, self, cfg.digestSubjects);
-  // On a team agent, the members these show, by name (TASK-1209): asked once,
-  // only about the subjects Recent's groups and the ranked Digest hold (at
-  // most 9 + 20 keys by default, never every scanned row), and never failing
-  // the block. The caller (`self`) is asked too when another member key is
-  // there, only so a teammate who takes their name reads "a teammate"
-  // (TASK-1213). Empty on a personal agent, which asks nobody.
+  // On an agent whose memory is shared, the members these show, by name
+  // (TASK-1209, TASK-1248): asked once, only about the subjects Recent's
+  // groups and the ranked Digest hold (at most 9 + 20 keys by default, never
+  // every scanned row), and never failing the block. The caller (`self`) is
+  // asked too when another member key is there, only so a teammate who takes
+  // their name reads "a teammate" (TASK-1213). Empty on a Just-me agent,
+  // which asks nobody.
   const labels = await memberLabels(
     bus,
     ctx,
