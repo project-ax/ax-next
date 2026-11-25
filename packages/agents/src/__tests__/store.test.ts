@@ -3,7 +3,7 @@ import {
   stopPostgresContainer,
   startTestContainer,
 } from '@ax/test-harness';
-import { Kysely, PostgresDialect, sql } from 'kysely';
+import { Kysely, PostgresDialect, sql, type Transaction } from 'kysely';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -59,6 +59,8 @@ afterEach(async () => {
   while (opened.length > 0) {
     const k = opened.pop()!;
     try {
+      await k.schema.dropTable('agents_v1_owners').ifExists().execute();
+      await k.schema.dropTable('agents_v1_audience_members').ifExists().execute();
       await k.schema.dropTable('agents_v1_agents').ifExists().execute();
     } catch {
       /* drained pool */
@@ -515,6 +517,169 @@ describe('store + scopedAgents', () => {
     expect(await store.deleteById(created.id)).toBe(true);
     expect(await store.deleteById(created.id)).toBe(false);
     expect(await store.getById(created.id)).toBeNull();
+  });
+});
+
+// TASK-1246 — sharing phase 1A. The agent store writes a personal agent's first
+// owner (its creator), reads the audience, and clears the sharing rows on delete.
+describe('store sharing rows (TASK-1246)', () => {
+  const vctx = { allowedModels: ALLOWED };
+
+  async function ownersOf(db: Kysely<AgentsDatabase>, agentId: string): Promise<string[]> {
+    const r = await sql<{ user_id: string }>`
+      SELECT user_id FROM agents_v1_owners WHERE agent_id = ${agentId} ORDER BY user_id
+    `.execute(db);
+    return r.rows.map((o) => o.user_id);
+  }
+
+  async function membersOf(db: Kysely<AgentsDatabase>, agentId: string): Promise<string[]> {
+    const r = await sql<{ member_type: string; member_id: string }>`
+      SELECT member_type, member_id FROM agents_v1_audience_members
+       WHERE agent_id = ${agentId} ORDER BY member_type, member_id
+    `.execute(db);
+    return r.rows.map((m) => `${m.member_type}:${m.member_id}`);
+  }
+
+  async function seed(): Promise<{ db: Kysely<AgentsDatabase>; store: ReturnType<typeof createAgentStore> }> {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    return { db, store: createAgentStore(db) };
+  }
+
+  it('create inserts the creator as owner: without a tx, inside a caller tx that commits, and with bootstrap pending', async () => {
+    const { db, store } = await seed();
+    const validated = validateCreateInput(makeInput(), vctx);
+
+    const plain = await store.create({ ownerId: 'u1', ownerType: 'user', validated });
+    expect(await ownersOf(db, plain.id)).toEqual(['u1']);
+
+    const inTx = await db
+      .transaction()
+      .execute((trx) =>
+        store.create({ ownerId: 'u2', ownerType: 'user', validated, tx: trx as unknown as Transaction<unknown> }),
+      );
+    expect(await ownersOf(db, inTx.id)).toEqual(['u2']);
+
+    const settingUp = await store.create({ ownerId: 'u3', ownerType: 'user', validated, bootstrap: 'pending' });
+    expect(await ownersOf(db, settingUp.id)).toEqual(['u3']);
+    const identity = await sql<{ bootstrap: string }>`
+      SELECT bootstrap FROM agents_v1_identity WHERE agent_id = ${settingUp.id}
+    `.execute(db);
+    expect(identity.rows).toEqual([{ bootstrap: 'pending' }]);
+  });
+
+  it('a caller tx that rolls back leaves no owner row', async () => {
+    const { db, store } = await seed();
+    const validated = validateCreateInput(makeInput(), vctx);
+    let createdId = '';
+    await expect(
+      db.transaction().execute(async (trx) => {
+        const agent = await store.create({
+          ownerId: 'u1',
+          ownerType: 'user',
+          validated,
+          tx: trx as unknown as Transaction<unknown>,
+        });
+        createdId = agent.id;
+        throw new Error('the caller rolls back');
+      }),
+    ).rejects.toThrow('the caller rolls back');
+
+    expect(createdId).toMatch(/^agt_/);
+    expect(await store.getById(createdId)).toBeNull();
+    expect(await ownersOf(db, createdId)).toEqual([]);
+  });
+
+  it('a team agent gets no owner row', async () => {
+    const { db, store } = await seed();
+    const team = await store.create({
+      ownerId: 't1',
+      ownerType: 'team',
+      validated: validateCreateInput(makeInput({ visibility: 'team', teamId: 't1' }), vctx),
+    });
+    expect(await ownersOf(db, team.id)).toEqual([]);
+  });
+
+  it('a personal agent reads audience just-me and shared false; a team agent has no audience and shared true', async () => {
+    const { db, store } = await seed();
+    const personal = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), vctx),
+    });
+    const team = await store.create({
+      ownerId: 't1',
+      ownerType: 'team',
+      validated: validateCreateInput(makeInput({ visibility: 'team', teamId: 't1' }), vctx),
+    });
+
+    // Every read path: the INSERT's and the UPDATEs' RETURNING lists, getById,
+    // the scoped list, and the row-locked connector edit.
+    const personalReads = [
+      personal,
+      await store.getById(personal.id),
+      (await store.listScoped({ userId: 'u1', teamIds: [] }))[0],
+      await store.update(personal.id, validateUpdatePatch({ displayName: 'Renamed' }, vctx)),
+      await store.setSkillAttachments(personal.id, []),
+      (await store.attachConnector(personal.id, 'gh')).agent,
+    ];
+    for (const read of personalReads) {
+      expect(read).toMatchObject({ id: personal.id, audience: 'just-me', shared: false });
+    }
+    const teamReads = [
+      team,
+      await store.getById(team.id),
+      await store.update(team.id, validateUpdatePatch({ displayName: 'Renamed' }, vctx)),
+      await store.setSkillAttachments(team.id, []),
+    ];
+    for (const read of teamReads) {
+      expect(read).toMatchObject({ id: team.id, shared: true });
+      expect(read).not.toHaveProperty('audience');
+    }
+
+    // Any audience but just-me shares a personal agent.
+    for (const audience of ['everyone', 'list']) {
+      await sql`UPDATE agents_v1_agents SET audience = ${audience} WHERE agent_id = ${personal.id}`.execute(db);
+      expect(await store.getById(personal.id)).toMatchObject({ audience, shared: true });
+    }
+  });
+
+  it('a personal row with an unknown audience is a corrupt row', async () => {
+    const { db, store } = await seed();
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), vctx),
+    });
+    // Only a hand edit past the CHECK can store one; the read fails closed.
+    await sql`ALTER TABLE agents_v1_agents DROP CONSTRAINT agents_v1_audience_check`.execute(db);
+    await sql`UPDATE agents_v1_agents SET audience = 'friends' WHERE agent_id = ${created.id}`.execute(db);
+
+    await expect(store.getById(created.id)).rejects.toMatchObject({ code: 'corrupt-row' });
+    await expect(store.listScoped({ userId: 'u1', teamIds: [] })).rejects.toMatchObject({
+      code: 'corrupt-row',
+    });
+  });
+
+  it("deleteById removes the agent's owner and member rows", async () => {
+    const { db, store } = await seed();
+    const validated = validateCreateInput(makeInput(), vctx);
+    const doomed = await store.create({ ownerId: 'u1', ownerType: 'user', validated });
+    const survivor = await store.create({ ownerId: 'u1', ownerType: 'user', validated });
+    for (const id of [doomed.id, survivor.id]) {
+      await sql`INSERT INTO agents_v1_owners (agent_id, user_id) VALUES (${id}, 'u2')`.execute(db);
+      await sql`
+        INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id)
+        VALUES (${id}, 'user', 'u3'), (${id}, 'group', 'g1')
+      `.execute(db);
+    }
+
+    expect(await store.deleteById(doomed.id)).toBe(true);
+
+    expect(await ownersOf(db, doomed.id)).toEqual([]);
+    expect(await membersOf(db, doomed.id)).toEqual([]);
+    expect(await ownersOf(db, survivor.id)).toEqual(['u1', 'u2']);
+    expect(await membersOf(db, survivor.id)).toEqual(['group:g1', 'user:u3']);
   });
 });
 

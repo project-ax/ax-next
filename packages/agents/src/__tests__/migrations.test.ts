@@ -35,6 +35,8 @@ afterEach(async () => {
     const k = opened.pop()!;
     try {
       await k.schema.dropTable('agents_v1_identity').ifExists().execute();
+      await k.schema.dropTable('agents_v1_owners').ifExists().execute();
+      await k.schema.dropTable('agents_v1_audience_members').ifExists().execute();
       await k.schema.dropTable('agents_v1_agents').ifExists().execute();
     } catch {
       /* drained pool — ignore */
@@ -572,6 +574,205 @@ describe('runAgentsMigration', () => {
     expect(row.rows).toEqual([
       { identity: 'I am Pip', soul: 'Kind', identity_changed_by_agent_at: null, soul_changed_by_agent_at: null },
     ]);
+  });
+
+  // TASK-1246 — sharing phase 1A: who can use a personal agent (its audience)
+  // and who can change it (its owners). Additive: existing agents read
+  // `just-me`, and each personal agent's creator becomes its first owner.
+  describe('sharing (TASK-1246)', () => {
+    /** Raw agent rows, as any earlier release wrote them (no owner rows). */
+    async function seedAgents(db: Kysely<AgentsDatabase>): Promise<void> {
+      await sql`
+        INSERT INTO agents_v1_agents
+          (agent_id, owner_id, owner_type, visibility, display_name,
+           allowed_tools, mcp_config_ids, model)
+        VALUES
+          ('p1', 'alice', 'user', 'personal', 'P1', '[]', '[]', 'anthropic/claude-opus-4-7'),
+          ('p2', 'bob', 'user', 'personal', 'P2', '[]', '[]', 'anthropic/claude-opus-4-7'),
+          ('t1', 'team-1', 'team', 'team', 'T1', '[]', '[]', 'anthropic/claude-opus-4-7')
+      `.execute(db);
+    }
+
+    /** The database as a release before TASK-1246 left it. */
+    async function dropSharing(db: Kysely<AgentsDatabase>): Promise<void> {
+      await sql`ALTER TABLE agents_v1_agents DROP COLUMN audience`.execute(db);
+      await sql`DROP TABLE agents_v1_owners`.execute(db);
+      await sql`DROP TABLE agents_v1_audience_members`.execute(db);
+    }
+
+    async function owners(db: Kysely<AgentsDatabase>): Promise<Array<[string, string]>> {
+      const r = await sql<{ agent_id: string; user_id: string }>`
+        SELECT agent_id, user_id FROM agents_v1_owners ORDER BY agent_id, user_id
+      `.execute(db);
+      return r.rows.map((o) => [o.agent_id, o.user_id]);
+    }
+
+    async function failure(db: Kysely<AgentsDatabase>, statement: ReturnType<typeof sql>): Promise<unknown> {
+      try {
+        await statement.execute(db);
+      } catch (err) {
+        return err;
+      }
+      return undefined;
+    }
+
+    it("adds audience TEXT NOT NULL DEFAULT 'just-me' and existing rows read just-me", async () => {
+      const db = makeKysely();
+      await runAgentsMigration(db);
+      await dropSharing(db);
+      await seedAgents(db);
+
+      await runAgentsMigration(db);
+      await runAgentsMigration(db); // a second run is a no-op
+
+      const cols = await sql<{ data_type: string; is_nullable: string; column_default: string | null }>`
+        SELECT data_type, is_nullable, column_default FROM information_schema.columns
+         WHERE table_name = 'agents_v1_agents' AND column_name = 'audience'
+      `.execute(db);
+      expect(cols.rows).toHaveLength(1);
+      expect(cols.rows[0]).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+      expect(cols.rows[0]?.column_default ?? '').toContain('just-me');
+
+      const rows = await sql<{ agent_id: string; audience: string }>`
+        SELECT agent_id, audience FROM agents_v1_agents ORDER BY agent_id
+      `.execute(db);
+      expect(rows.rows).toEqual([
+        { agent_id: 'p1', audience: 'just-me' },
+        { agent_id: 'p2', audience: 'just-me' },
+        { agent_id: 't1', audience: 'just-me' },
+      ]);
+    });
+
+    it('CHECK refuses an unknown audience', async () => {
+      const db = makeKysely();
+      await runAgentsMigration(db);
+      await runAgentsMigration(db); // the named CHECK survives a re-run, once
+      await seedAgents(db);
+
+      for (const kind of ['everyone', 'list', 'just-me']) {
+        await sql`UPDATE agents_v1_agents SET audience = ${kind} WHERE agent_id = 'p1'`.execute(db);
+      }
+      const err = await failure(db, sql`UPDATE agents_v1_agents SET audience = 'friends' WHERE agent_id = 'p1'`);
+      expect(err).toMatchObject({ code: '23514' });
+      expect(String((err as Error).message)).toMatch(/agents_v1_audience_check/);
+
+      const checks = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM pg_constraint
+         WHERE conrelid = 'agents_v1_agents'::regclass AND conname = 'agents_v1_audience_check'
+      `.execute(db);
+      expect(checks.rows[0]?.n).toBe(1);
+    });
+
+    it('creates agents_v1_owners and agents_v1_audience_members', async () => {
+      const db = makeKysely();
+      await runAgentsMigration(db);
+      await runAgentsMigration(db); // idempotent
+
+      const columns = async (table: string): Promise<string[][]> => {
+        const r = await sql<{ column_name: string; data_type: string; is_nullable: string }>`
+          SELECT column_name, data_type, is_nullable FROM information_schema.columns
+           WHERE table_name = ${table} ORDER BY ordinal_position
+        `.execute(db);
+        return r.rows.map((c) => [c.column_name, c.data_type, c.is_nullable]);
+      };
+      expect(await columns('agents_v1_owners')).toEqual([
+        ['agent_id', 'text', 'NO'],
+        ['user_id', 'text', 'NO'],
+        ['created_at', 'timestamp with time zone', 'NO'],
+      ]);
+      expect(await columns('agents_v1_audience_members')).toEqual([
+        ['agent_id', 'text', 'NO'],
+        ['member_type', 'text', 'NO'],
+        ['member_id', 'text', 'NO'],
+        ['created_at', 'timestamp with time zone', 'NO'],
+      ]);
+
+      // Owners: one row per (agent, person). The same person may own two
+      // agents, and an agent may have two owners.
+      await sql`
+        INSERT INTO agents_v1_owners (agent_id, user_id)
+        VALUES ('a1', 'alice'), ('a1', 'bob'), ('a2', 'alice')
+      `.execute(db);
+      expect(
+        await failure(db, sql`INSERT INTO agents_v1_owners (agent_id, user_id) VALUES ('a1', 'alice')`),
+      ).toMatchObject({ code: '23505' });
+
+      // Members: one row per (agent, type, id). `group` is accepted (room for
+      // phase 2) and is a different member from a `user` with the same id.
+      await sql`
+        INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id)
+        VALUES ('a1', 'user', 'carol'), ('a1', 'group', 'carol'), ('a2', 'user', 'carol')
+      `.execute(db);
+      expect(
+        await failure(
+          db,
+          sql`INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id) VALUES ('a1', 'user', 'carol')`,
+        ),
+      ).toMatchObject({ code: '23505' });
+      expect(
+        await failure(
+          db,
+          sql`INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id) VALUES ('a1', 'team', 't1')`,
+        ),
+      ).toMatchObject({ code: '23514', constraint: 'agents_v1_audience_member_type_check' });
+
+      // The "agents I own / agents listing me" lookups have an index each.
+      const indexes = await sql<{ indexname: string; indexdef: string }>`
+        SELECT indexname, indexdef FROM pg_indexes
+         WHERE indexname IN ('agents_v1_owners_user', 'agents_v1_audience_members_member')
+         ORDER BY indexname
+      `.execute(db);
+      expect(indexes.rows.map((i) => i.indexname)).toEqual([
+        'agents_v1_audience_members_member',
+        'agents_v1_owners_user',
+      ]);
+      expect(indexes.rows[0]!.indexdef).toContain('(member_type, member_id)');
+      expect(indexes.rows[1]!.indexdef).toContain('(user_id)');
+
+      // No foreign key to agents_v1_agents: dropping the agents table must never
+      // be blocked by sharing rows (every downstream teardown does exactly that).
+      const fks = await sql<{ n: number }>`
+        SELECT count(*)::int AS n FROM information_schema.table_constraints
+         WHERE table_name IN ('agents_v1_owners', 'agents_v1_audience_members')
+           AND constraint_type = 'FOREIGN KEY'
+      `.execute(db);
+      expect(fks.rows[0]?.n).toBe(0);
+    });
+
+    it('backfills the creator as owner of each personal agent, none for team agents', async () => {
+      const db = makeKysely();
+      await runAgentsMigration(db);
+      await dropSharing(db);
+      await seedAgents(db);
+
+      await runAgentsMigration(db);
+      expect(await owners(db)).toEqual([
+        ['p1', 'alice'],
+        ['p2', 'bob'],
+      ]);
+
+      await runAgentsMigration(db); // still one row per personal agent
+      expect(await owners(db)).toEqual([
+        ['p1', 'alice'],
+        ['p2', 'bob'],
+      ]);
+    });
+
+    it('does not re-add the creator when the agent already has another owner', async () => {
+      const db = makeKysely();
+      await runAgentsMigration(db);
+      await seedAgents(db);
+      await runAgentsMigration(db); // backfills alice on p1, bob on p2
+      await sql`INSERT INTO agents_v1_owners (agent_id, user_id) VALUES ('p1', 'carol')`.execute(db);
+      await sql`DELETE FROM agents_v1_owners WHERE agent_id = 'p1' AND user_id = 'alice'`.execute(db);
+
+      await runAgentsMigration(db);
+
+      expect(await owners(db)).toEqual([
+        ['p1', 'carol'],
+        ['p2', 'bob'],
+      ]);
+    });
   });
 
   it('additive migration leaves existing rows null', async () => {

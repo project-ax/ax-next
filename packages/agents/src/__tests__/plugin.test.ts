@@ -108,6 +108,8 @@ afterEach(async () => {
   await cleanup.connect();
   try {
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_identity');
+    await cleanup.query('DROP TABLE IF EXISTS agents_v1_owners');
+    await cleanup.query('DROP TABLE IF EXISTS agents_v1_audience_members');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
   } finally {
     await cleanup.end().catch(() => {});
@@ -258,7 +260,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
   it('bootstrap:reset-cleanup wipes every agent row so the wizard can re-seed', async () => {
     const h = await makeHarness();
     const ctx = h.ctx({ userId: 'u1' });
-    await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+    const first = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
       actor: { userId: 'u1', isAdmin: false },
       input: makeInput(),
     });
@@ -273,18 +275,26 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       h.ctx(),
       {},
     );
-    let count = await sql<{ count: string }>`
-      SELECT count(*)::text AS count FROM agents_v1_agents
+    // TASK-1246 — each personal agent has its creator as owner; give one a
+    // listed person too, so both sharing tables hold rows before the reset.
+    await sql`
+      INSERT INTO agents_v1_audience_members (agent_id, member_type, member_id)
+      VALUES (${first.agent.id}, 'user', 'u2')
     `.execute(db);
-    expect(count.rows[0]?.count).toBe('2');
+    const counts = async (): Promise<Record<string, string>> => {
+      const r = await sql<{ agents: string; owners: string; members: string }>`
+        SELECT (SELECT count(*) FROM agents_v1_agents)::text AS agents,
+               (SELECT count(*) FROM agents_v1_owners)::text AS owners,
+               (SELECT count(*) FROM agents_v1_audience_members)::text AS members
+      `.execute(db);
+      return { ...r.rows[0]! };
+    };
+    expect(await counts()).toEqual({ agents: '2', owners: '2', members: '1' });
 
     const fired = await h.bus.fire('bootstrap:reset-cleanup', h.ctx(), {});
     expect(fired.rejected).toBe(false);
 
-    count = await sql<{ count: string }>`
-      SELECT count(*)::text AS count FROM agents_v1_agents
-    `.execute(db);
-    expect(count.rows[0]?.count).toBe('0');
+    expect(await counts()).toEqual({ agents: '0', owners: '0', members: '0' });
   });
 
   // TASK-989 — identity rows have no FK to the agent row (a FK would break

@@ -57,11 +57,84 @@ export interface RunnerSize {
   memoryMiB?: ResourcePair;
 }
 
+// --- Sharing (TASK-1246) -------------------------------------------------------
+//
+// Who can use a personal agent besides its owners (its audience), and who its
+// owners are. Phase 1 names people only. Phase 2 adds groups to a `list`
+// (`{ type: 'group'; id }`), which is why a member carries a type.
+
+/**
+ * `just-me`: only its owners (the default; today's personal agent).
+ * `everyone`: every AX account. `list`: its owners and the people listed.
+ */
+export type AudienceKind = 'just-me' | 'everyone' | 'list';
+
+/** Every audience, in no particular order. Anything else is refused. */
+export const AUDIENCE_KINDS: readonly AudienceKind[] = ['just-me', 'everyone', 'list'];
+
+/** One person a `list` audience names, by user id. */
+export interface AudienceMember {
+  type: 'user';
+  id: string;
+}
+
+/** A personal agent's whole audience, as it is written. */
+export type AgentAudience =
+  | { kind: 'just-me' }
+  | { kind: 'everyone' }
+  | { kind: 'list'; members: AudienceMember[] };
+
+/**
+ * What the sharing rows say about one person and one agent: whether they are
+ * one of its owners, and whether a `list` names them. Only facts. Whether they
+ * may use the agent also depends on its audience: a stray `listed` row on an
+ * agent whose audience isn't `list` grants nothing.
+ */
+export interface CallerFacts {
+  owner: boolean;
+  listed: boolean;
+}
+
+/** A person as the sharing settings show them. Null when the name is unknown. */
+export interface PersonView {
+  id: string;
+  displayName: string | null;
+  email: string | null;
+}
+
+/** An agent's sharing settings, as its owners see them. */
+export interface SharingView {
+  audience:
+    | { kind: 'just-me' }
+    | { kind: 'everyone' }
+    | { kind: 'list'; members: Array<{ type: 'user' } & PersonView> };
+  /** Creator first; 1..10. */
+  owners: Array<PersonView & { creator: boolean }>;
+}
+
 export interface Agent {
   id: string;
   ownerId: string;
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
+  /**
+   * TASK-1246: who can use this personal agent besides its owners. Absent on
+   * a team agent. To ask "is this agent shared?", read `shared`, never this or
+   * `visibility`.
+   */
+  audience?: AudienceKind;
+  /**
+   * TASK-1246: does anyone but its owners use this agent? True for a team
+   * agent, and for a personal agent whose audience isn't `just-me`. Derived on
+   * read, never stored. This is the one "is this agent shared?" answer.
+   */
+  shared: boolean;
+  /**
+   * TASK-1246: is the person asked about one of this agent's owners? Set by
+   * `agents:resolve` and `agents:list-for-user`, for the userId they were
+   * asked about, and always false on a team agent. Absent elsewhere.
+   */
+  isOwner?: boolean;
   displayName: string;
   allowedTools: string[];
   mcpConfigIds: string[];

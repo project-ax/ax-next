@@ -773,13 +773,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // model step can re-create the default chat agent without
       // tripping any uniqueness constraints. The reset is a deliberate
       // "redo from scratch" — operator paid the I6 escape hatch. The
-      // identity rows (TASK-989) go in the same statement.
+      // identity rows (TASK-989) and the sharing rows (owners and list
+      // members, TASK-1246) go in the same statement.
       const localDb = db;
       bus.subscribe(
         'bootstrap:reset-cleanup',
         RESET_CLEANUP_KEY,
         async () => {
-          await sql`TRUNCATE agents_v1_identity, agents_v1_agents`.execute(localDb);
+          await sql`
+            TRUNCATE agents_v1_identity, agents_v1_owners, agents_v1_audience_members, agents_v1_agents
+          `.execute(localDb);
           return undefined;
         },
       );
