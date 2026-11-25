@@ -117,6 +117,10 @@ import { followContinuation, type TurnDeps } from './turn.js';
 //   POST /settings/slack/:agentId/bot-request{,/cancel}  — or asks an AX admin
 //        to approve it, without a token, and takes that ask back (TASK-1169,
 //        bot-requests.ts); CSRF-checked
+//   POST /settings/slack/:agentId/dm-agent  — a personal agent's owner makes
+//        it the one that answers their DMs to the shared app (TASK-1238,
+//        dm-agents.ts): their own personal agent only, no body read;
+//        CSRF-checked
 //   GET  /slack/bots/oauth/callback  — where Slack sends a bot's approver after
 //        Allow (bot-callback.ts): signed in, its OAuth state bound to the
 //        approver (the proof a GET carries), under the one app lock
@@ -596,7 +600,8 @@ export function createChannelSlackPlugin(config: ChannelSlackConfig): Plugin {
           // both under the one app lock, and the ask routes the same `botRequests`
           // as Admin › Slack. The section itself reads only the stores: no Slack
           // client and no vault (invariant 5). A personal agent's section reads
-          // its owner's DM choice as the router does (TASK-1238).
+          // its owner's DM choice as the router does, and its DM agent route
+          // writes it, for its owner alone (TASK-1238).
           ...createAgentSlackRoutes(
             { bus, installs: store, channels: channelStore, dmAgents, logger },
             bots,

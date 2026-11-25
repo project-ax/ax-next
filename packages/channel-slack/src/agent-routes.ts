@@ -11,7 +11,7 @@ import { parseIconPng, type ParsedIcon } from './icon.js';
 import { INSTALL_ID_RE } from './ingress.js';
 import { ADMIN_BODY_MAX_BYTES, ADMIN_CONNECT_BODY_MAX_BYTES, AGENT_ID_MAX } from './limits.js';
 import { logCode } from './log-code.js';
-import { personalAgentFor } from './router.js';
+import { isOwnPersonalAgent, personalAgentFor } from './router.js';
 import { REFRESH_TOKEN_PREFIX, bodyObject, configToken } from './slack-apps.js';
 import type { InstallStore } from './store.js';
 import { checkUser } from './user-auth.js';
@@ -27,7 +27,9 @@ import { checkUser } from './user-auth.js';
  * can't install Slack apps, asking an AX admin to approve it instead
  * (TASK-1169, bot-requests.ts), and taking that ask back. The shared app
  * connects no channel here (TASK-1186; design §4b.1): a team agent is reached
- * in a channel only through its own bot.
+ * in a channel only through its own bot. A personal agent's section says
+ * which of its owner's personal agents answers their DMs to the shared app,
+ * and its owner can make it this one (TASK-1238, dm-agents.ts).
  *
  *   GET  /settings/slack/:agentId             → AgentSlackStatus          (anyone who can see the agent)
  *   POST /settings/slack/:agentId/bot         { botName, refreshToken?, iconPng? } → { installUrl, iconSet }
@@ -49,13 +51,19 @@ import { checkUser } from './user-auth.js';
  *                                             no-bot when `installId` is another bot's, TASK-1173)
  *   POST /settings/slack/:agentId/bot-request         { botName } → {}, while it has no bot and no request
  *   POST /settings/slack/:agentId/bot-request/cancel  → {}, while it has an open request
+ *   POST /settings/slack/:agentId/dm-agent    → {}, a personal agent's owner alone: it becomes the one
+ *                                             that answers their DMs (TASK-1238); 403 for a team agent
  *
  * Every route answers, in this order: 401 signed out; the SAME 404 for an
  * agent the person can't see, one that doesn't exist, and an id no agent
  * could have (never tell someone the agent exists); then rights (channels.ts:
  * a team admin of the agent's team manages, workspace-admin status never
  * counts; anything but a team agent is `personal-agent`), all before a body
- * is read or the domain is asked anything. The routes hold no Slack client
+ * is read or the domain is asked anything. The DM agent route turns the
+ * rights around: only a personal agent may be chosen, and only by its owner,
+ * so a team agent the person can see is 403 `forbidden`, and the DM router's
+ * own question (router.ts `isOwnPersonalAgent`) is asked before the write,
+ * anything it refuses being the same 404. The routes hold no Slack client
  * and no vault: the domains do. The POSTs keep http-server's CSRF check and
  * cap their bodies; an unknown body key is a 400, so nothing in a body can
  * name another agent. The bot's request body can carry its picture, and a
@@ -63,10 +71,10 @@ import { checkUser } from './user-auth.js';
  * The request's `refreshToken` is optional (the one stored for the person is
  * used without it), but one that is there must look like a configuration
  * refresh token, so an access token pasted into that box never reaches Slack.
- * Install-url reads no body; Cancel, Disconnect and Claim take only the
- * install id of the bot the page showed (INSTALL_ID_RE, as Admin › Slack's
- * Disconnect does), so a page drawn before the bot was cancelled or
- * disconnected, and asked for again, can't take the new one.
+ * Install-url and the DM agent route read no body; Cancel, Disconnect and
+ * Claim take only the install id of the bot the page showed (INSTALL_ID_RE,
+ * as Admin › Slack's Disconnect does), so a page drawn before the bot was
+ * cancelled or disconnected, and asked for again, can't take the new one.
  * A rename's name must pass checkBotName (400 `invalid-bot-name` {reason}),
  * and a new picture parseIconPng (400 `invalid-icon` {reason}: here the
  * picture is the whole ask, so a bad one is refused, never skipped), both
@@ -151,9 +159,10 @@ export interface AgentRoutesDeps {
   /**
    * Each person's choice of which personal agent answers their DMs
    * (dm-agents.ts), read as the DM router reads it (router.ts
-   * `personalAgentFor`) to say which one does.
+   * `personalAgentFor`) to say which one does, and written by the DM agent
+   * route, for the person asking alone.
    */
-  dmAgents: Pick<DmAgentStore, 'get'>;
+  dmAgents: Pick<DmAgentStore, 'get' | 'set'>;
   logger: Logger;
 }
 
@@ -554,6 +563,27 @@ export function createAgentSlackRoutes(
   }
 
   /**
+   * Make this personal agent the one that answers its owner's DMs to the
+   * shared app (TASK-1238). Only its owner may: the person asking is the one
+   * whose choice is written, and the path is the only agent named (no body
+   * is read). Someone who can't see the agent gets the same 404 as a
+   * missing one; a team agent they can see, whatever their role, is 403,
+   * since a team agent is never anyone's DM agent. The rights read anything
+   * but a team agent as `personal-agent`, so the DM router's own question
+   * (router.ts `isOwnPersonalAgent`) is asked before the write: a choice
+   * the next DM would ignore is never stored, and an agent deleted since
+   * the rights saw it is the same 404.
+   */
+  async function chooseDmAgent(a: Asked): Promise<Reply> {
+    const rights = await checkRights(d.bus, a.ctx, a.agentId, a.userId, 'view');
+    if (rights.ok) return json(403, { error: 'forbidden' });
+    if (rights.reason !== 'personal-agent') return NOT_FOUND;
+    if (!(await isOwnPersonalAgent(d.bus, a.ctx, a.userId, a.agentId))) return NOT_FOUND;
+    await d.dmAgents.set(a.userId, a.agentId);
+    return json(200, {});
+  }
+
+  /**
    * One route: the person, then the agent id's shape, then `run`, then
    * exactly one answer. A throw `run` didn't handle is a 500, logged
    * code-only with the route's stage. A POST's body is capped at
@@ -612,5 +642,7 @@ export function createAgentSlackRoutes(
     // Asking an AX admin instead (TASK-1169): a name and nothing else, so the plain cap.
     route('POST', '/bot-request', 'bot-request', askForBot),
     route('POST', '/bot-request/cancel', 'bot-request-cancel', cancelAsk),
+    // A personal agent's owner makes it their DM agent (TASK-1238): no body is read, so the plain cap.
+    route('POST', '/dm-agent', 'dm-agent', chooseDmAgent),
   ];
 }

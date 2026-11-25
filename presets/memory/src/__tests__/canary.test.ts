@@ -789,7 +789,7 @@ describe('@ax/preset-memory canary', () => {
   // TASK-1093, invariant 3: @ax/channel-slack is reachable in the real
   // assembly, over the real http-server. Nothing is connected, so nothing here
   // reaches Slack.
-  it('channel-slack: admin status over the real route; only the events and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1171, TASK-1172, TASK-1173, TASK-1186)', async () => {
+  it('channel-slack: admin status over the real route; only the events and interactions routes skip CSRF (TASK-1093, TASK-1094, TASK-1095, TASK-1096, TASK-1131, TASK-1132, TASK-1128, TASK-1167, TASK-1169, TASK-1171, TASK-1172, TASK-1173, TASK-1186, TASK-1238)', async () => {
     // No https origin in this assembly, and no branding name: the defaults.
     expect(await apiJson('GET', '/admin/slack', CANARY_ADMIN)).toEqual({
       status: 200,
@@ -940,9 +940,10 @@ describe('@ax/preset-memory canary', () => {
     // (TASK-1172) with them, renaming its live bot and changing its picture
     // (TASK-1171), TASK-1169's ask for an AX admin's approval, and its
     // approver's Replace of their token and a team admin's Claim (TASK-1173).
-    // Each POST keeps http-server's CSRF check; with the header, an agent
-    // nobody can see is the route's own 404 (an unmounted POST would get the
-    // router's 405).
+    // So is a personal agent's owner choosing it to answer their DMs
+    // (TASK-1238). Each POST keeps http-server's CSRF check; with the header,
+    // an agent nobody can see is the route's own 404 (an unmounted POST would
+    // get the router's 405).
     for (const suffix of [
       '/bot',
       '/bot/install-url',
@@ -954,6 +955,7 @@ describe('@ax/preset-memory canary', () => {
       '/bot/claim',
       '/bot-request',
       '/bot-request/cancel',
+      '/dm-agent',
     ]) {
       const botPath = `/settings/slack/no-such-agent${suffix}`;
       const noCsrfBot = await fetch(url(botPath), {
