@@ -228,6 +228,54 @@ describe('ConfirmAction', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  describe('controlled mode returns focus to what opened it', () => {
+    function RowActions({ onConfirm }: { onConfirm: () => Promise<void> | void }) {
+      const [isOpen, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Row actions
+          </button>
+          <ConfirmAction {...base} onConfirm={onConfirm} open={isOpen} onOpenChange={setOpen} />
+        </>
+      );
+    }
+    // While the modal is open Radix hides the rest of the page from the accessibility tree, so include hidden elements.
+    const rowActions = () => screen.getByRole('button', { name: 'Row actions', hidden: true });
+    const openFromRow = () => {
+      rowActions().focus();
+      fireEvent.click(rowActions());
+      expect(screen.getByRole('dialog')).toBeTruthy();
+      expect(document.activeElement).not.toBe(rowActions());
+    };
+
+    it('after Cancel', async () => {
+      render(<RowActions onConfirm={() => {}} />);
+      openFromRow();
+      fireEvent.click(cancelButton());
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(document.activeElement).toBe(rowActions());
+    });
+
+    it('after Escape', async () => {
+      render(<RowActions onConfirm={() => {}} />);
+      openFromRow();
+      fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(document.activeElement).toBe(rowActions());
+    });
+
+    it('after onConfirm resolves', async () => {
+      const d = deferred();
+      render(<RowActions onConfirm={() => d.promise} />);
+      openFromRow();
+      fireEvent.click(confirmButton());
+      await act(async () => d.resolve());
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(document.activeElement).toBe(rowActions());
+    });
+  });
+
   it('labels: cancel is exactly "Cancel", confirm is confirmLabel', () => {
     renderTrigger({ confirmLabel: 'Revoke' });
     open();

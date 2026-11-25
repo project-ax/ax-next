@@ -76,12 +76,29 @@ export function ConfirmActionView({
 }: ConfirmActionViewProps) {
   // Without a description, tell Radix there is none on purpose (it warns otherwise).
   const describedBy = description ? {} : { 'aria-describedby': undefined };
+  // Radix returns focus to its Dialog.Trigger on close. Controlled mode has none, so Radix would drop focus to <body>.
+  // Instead, remember what had focus when the dialog opened (a menu item, a row action) and return there.
+  const restoreTo = useRef<HTMLElement | null>(null);
+  const focusHandlers = trigger
+    ? {}
+    : {
+        onOpenAutoFocus: () => {
+          // Still the pre-open element: FocusScope fires this before moving focus into the dialog.
+          restoreTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        },
+        onCloseAutoFocus: (e: Event) => {
+          e.preventDefault();
+          const el = restoreTo.current;
+          restoreTo.current = null;
+          if (el?.isConnected) el.focus();
+        },
+      };
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       {trigger ? <Dialog.Trigger asChild>{trigger}</Dialog.Trigger> : null}
       <Dialog.Portal>
         <Dialog.Overlay className={OVERLAY}>
-          <Dialog.Content className={CONTENT} {...describedBy}>
+          <Dialog.Content className={CONTENT} {...describedBy} {...focusHandlers}>
             <div className="ax-flex ax-flex-col ax-gap-sm">
               <Dialog.Title asChild>
                 <Heading role="heading">{title}</Heading>
