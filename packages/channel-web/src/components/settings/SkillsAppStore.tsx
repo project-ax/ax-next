@@ -235,13 +235,14 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
     }
   }, []);
 
-  const loadAgents = useCallback((isCancelled: () => boolean, keepSelection: boolean) => {
+  const loadAgents = useCallback((isCancelled: () => boolean) => {
     return listChatAgents()
       .then((a) => {
         if (isCancelled()) return;
         setAgents(a);
         setAgentsLoaded(true);
-        if (a[0] && !keepSelection) setAgentId(a[0].agentId);
+        // Keep a selection already made; a retry after a failed first read has none yet.
+        if (a[0]) setAgentId((prev) => prev || a[0]!.agentId);
       })
       .catch((e: unknown) => {
         if (!isCancelled()) {
@@ -259,7 +260,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
       void refreshCatalog(); void refreshOwn();
       return () => { cancelled = true; };
     }
-    void loadAgents(() => cancelled, false);
+    void loadAgents(() => cancelled);
     void refreshCatalog();
     void refreshOwn();
     return () => {
@@ -285,8 +286,10 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
     setRetryingReads(true);
     setInstalled(null);
     setCatalog(null);
+    // With no agent chosen yet (the first agent read failed) the installed read
+    // happens in the [agentId] effect once loadAgents picks one.
     const reads: Array<Promise<unknown>> = [refreshCatalog(), refreshInstalled(agentId)];
-    if (!fixedAgentId) reads.push(loadAgents(() => false, true));
+    if (!fixedAgentId) reads.push(loadAgents(() => false));
     void Promise.all(reads).finally(() => setRetryingReads(false));
   };
 

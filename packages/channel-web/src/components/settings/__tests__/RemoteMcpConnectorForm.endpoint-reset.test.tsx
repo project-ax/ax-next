@@ -83,7 +83,7 @@ async function openAndMove() {
   });
   expect(
     screen
-      .getAllByRole('alert')
+      .getAllByRole('status')
       .find((el) => /^Changing the address resets/.test(el.textContent ?? '')),
   ).toBeVisible();
   await waitFor(() =>

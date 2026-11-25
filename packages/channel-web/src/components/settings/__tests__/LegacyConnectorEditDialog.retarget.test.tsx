@@ -15,17 +15,10 @@ import type { ConnectorSummary, Connector, ConnectorKeyMode } from '@/lib/connec
  * refused PATCH writes nothing.
  */
 
-// The "what Save will cost" warning: a warning Notice (role="alert"), found by its words.
+// The "what Save will cost" warning: a warning Notice (role="status"), found by its words.
 const WARNING_TEXT = /^Changing (where this connector points|this server’s address)/;
 const warning = (): HTMLElement | null =>
-  screen.queryAllByRole('alert').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
-// The save's own failure: the one alert that is not the warning above.
-const findSaveError = () =>
-  waitFor(() => {
-    const el = screen.queryAllByRole('alert').find((e) => !WARNING_TEXT.test(e.textContent ?? ''));
-    if (el === undefined) throw new Error('no save error');
-    return el;
-  });
+  screen.queryAllByRole('status').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
 const findWarning = () =>
   waitFor(() => {
     const el = warning();
@@ -175,7 +168,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     const { hosts } = await openEditor(cliConnector('personal'), onSaved);
     fireEvent.change(hosts, { target: { value: 'login.salesforce.com, test.salesforce.com' } });
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       connectorsLib.CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
     );
     expect(onSaved).not.toHaveBeenCalled();
@@ -223,7 +216,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector());
     await typeClientSecret('typed-secret');
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       connectorsLib.CONNECTOR_SIGN_OUT_FAILED_MESSAGE,
     );
     expect(credentialsLib.setDestinationCredential).not.toHaveBeenCalled();
@@ -242,7 +235,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector(), onSaved);
     await typeClientSecret('typed-secret');
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'We saved the connector, but couldn’t save the client secret. Try saving again. We could not confirm this key. Check it and try again.',
     );
     expect(onSaved).not.toHaveBeenCalled();
@@ -257,7 +250,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector(), onSaved);
     await typeClientSecret('typed-secret');
     await save();
-    const alert = await findSaveError();
+    const alert = await screen.findByRole('alert');
     expect(alert.textContent?.trim()).toBe(
       'We saved the connector, but couldn’t save the client secret. Try saving again.',
     );
@@ -275,7 +268,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
       await openEditor(oauthConnector(), onSaved);
       await typeClientSecret('typed-secret');
       await save();
-      const alert = await findSaveError();
+      const alert = await screen.findByRole('alert');
       expect(alert.textContent?.trim()).toBe(
         'We saved the connector, but couldn’t save the client secret. Try saving again.',
       );
@@ -302,7 +295,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     expect(await findWarning()).toHaveTextContent(SIGNS_OUT);
     await typeClientSecret('typed-secret');
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'We saved the connector, but couldn’t save the client secret. Try saving again.',
     );
     // The server holds the new address now: keeping it points nowhere new and
@@ -336,7 +329,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     expect(await findWarning()).toHaveTextContent(TOOLS_RESET);
     await typeClientSecret('typed-secret');
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'We saved the connector, but couldn’t save the client secret. Try saving again.',
     );
     // The server holds the new address: keeping it resets nothing.
@@ -356,7 +349,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector(), onSaved, onOpenChange);
     await typeClientSecret('typed-secret');
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'We saved the connector, but couldn’t save the client secret. Try saving again.',
     );
     expect(onSaved).not.toHaveBeenCalled();
@@ -380,7 +373,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector(), onSaved);
     await typeClientSecret('typed-secret');
     await save();
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'We saved the connector, but couldn’t save the client secret. Try saving again.',
     );
     expect(connectorsLib.patchConnector).toHaveBeenCalledTimes(1);

@@ -202,9 +202,9 @@ const withoutClientId = () => {
     { kind: 'oauth', slot: 'TOKEN', server: 'linear' },
   ];
 };
-// The address-change warning is a warning Notice (role="alert"): found by its words.
+// The address-change warning is a warning Notice (role="status"): found by its words.
 const addressWarning = (): HTMLElement | null =>
-  screen.queryAllByRole('alert').find((el) => /^Changing (where this connector points|the address)/.test(el.textContent ?? '')) ?? null;
+  screen.queryAllByRole('status').find((el) => /^Changing (where this connector points|the address)/.test(el.textContent ?? '')) ?? null;
 
 describe('remote connector editor', () => {
   it('opens invalid header fields and associates their errors for assistive technology', async () => {
@@ -1287,9 +1287,10 @@ describe('tool permissions (TASK-737)', () => {
     expect(toolPermsPuts).toEqual([]);
   });
 
-  // The warning is about loss (every tool goes back to asking first), so it is
-  // a warning Notice: role="alert", found by its words rather than a test id.
-  it('TASK-790: the address-change warning is a warning Notice', async () => {
+  // TASK-790 — the warning is advice beside a field the person is typing in,
+  // not an urgent interruption: a warning Notice is role="status", so a screen
+  // reader does not cut into every keystroke with an alert.
+  it('TASK-790: the address-change warning is a polite note, never an alert', async () => {
     serve(inventory({ defaults: [] }));
     await openEditor();
     await screen.findByRole('group', { name: 'Permission for Search issues' });
@@ -1298,7 +1299,10 @@ describe('tool permissions (TASK-737)', () => {
     });
     const note = addressWarning();
     expect(note).toHaveTextContent('Changing the address resets this server’s tool permissions.');
-    expect(note).toHaveAttribute('role', 'alert');
+    expect(note).toHaveAttribute('role', 'status');
+    expect(
+      screen.queryAllByRole('alert').filter((el) => /Changing the address/.test(el.textContent ?? '')),
+    ).toEqual([]);
   });
 
   it('TASK-755: putting the original address back removes the warning and restores the section', async () => {

@@ -11,10 +11,11 @@ export interface NoticeProps {
   onDismiss?: () => void;
 }
 
-// Problems interrupt (alert); information and confirmations wait their turn (status).
+// Only a failure interrupts (alert); warnings, information and confirmations wait their turn (status),
+// so a warning beside a field being typed in never cuts into every keystroke.
 const ROLE: Record<NoticeTone, 'alert' | 'status'> = {
   info: 'status',
-  warning: 'alert',
+  warning: 'status',
   danger: 'alert',
   success: 'status',
 };

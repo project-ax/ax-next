@@ -42,17 +42,10 @@ function full(): Connector {
   };
 }
 
-// The "what Save will cost" warning: a warning Notice (role="alert"), found by its words.
+// The "what Save will cost" warning: a warning Notice (role="status"), found by its words.
 const WARNING_TEXT = /^Changing (where this connector points|this server’s address)/;
 const warning = (): HTMLElement | null =>
-  screen.queryAllByRole('alert').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
-// The save's own failure: the one alert that is not the warning above.
-const findSaveError = () =>
-  waitFor(() => {
-    const el = screen.queryAllByRole('alert').find((e) => !WARNING_TEXT.test(e.textContent ?? ''));
-    if (el === undefined) throw new Error('no save error');
-    return el;
-  });
+  screen.queryAllByRole('status').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
 const findWarning = () =>
   waitFor(() => {
     const el = warning();
@@ -132,7 +125,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
     const save = screen.getByRole('button', { name: /^save$/i });
     await waitFor(() => expect(save).toBeEnabled());
     fireEvent.click(save);
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       connectorsLib.TOOL_PERMISSIONS_RESET_FAILED_MESSAGE,
     );
     expect(onSaved).not.toHaveBeenCalled();
@@ -161,7 +154,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
     const save = screen.getByRole('button', { name: /^save$/i });
     await waitFor(() => expect(save).toBeEnabled());
     fireEvent.click(save);
-    expect(await findSaveError()).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'Only the admin who created this connector can change where it connects. To point it somewhere else, delete it and add a new one.',
     );
     expect(connectorsLib.patchConnector).toHaveBeenCalledWith(

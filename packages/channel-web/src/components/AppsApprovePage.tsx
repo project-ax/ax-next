@@ -103,7 +103,9 @@ function initialChoice(prompt: ApprovalPrompt): string | null {
 /** A finished or refused page: one line of what happened, no way forward from here. */
 function Outcome({ title, description }: { title: string; description?: string }) {
   return (
-    <EmptyState title={title} {...(description !== undefined ? { description } : {})} />
+    <section role="status">
+      <EmptyState title={title} {...(description !== undefined ? { description } : {})} />
+    </section>
   );
 }
 

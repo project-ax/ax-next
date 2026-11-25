@@ -677,7 +677,7 @@
       "count": 6
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 7
     }
   },
   "packages/channel-web/src/components/settings/ConnectorOAuthConnect.tsx": {

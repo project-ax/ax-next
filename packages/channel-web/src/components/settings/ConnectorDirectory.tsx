@@ -318,32 +318,36 @@ export function ConnectorDirectory({
     const shown = results !== null && results.query === q ? results : null;
     const searching = q !== '' && !failed && shown === null;
 
-    let resultsArea: ReactNode = null;
+    // ONE status element, mounted from "Searching…" through the answer, holding
+    // only the words (never a button) so a screen reader hears the count or the
+    // no-match arrive in the same live region. Everything else sits outside it.
+    const noMatch = shown !== null && shown.entries.length === 0 && shown.nextCursor === undefined;
+    let statusText = '';
+    if (searching) statusText = 'Searching…';
+    else if (noMatch) statusText = `Nothing matches “${shown.query}”`;
+    else if (shown !== null) statusText = countLine(shown);
+
+    let content: ReactNode = null;
     if (failed) {
-      resultsArea = (
+      content = (
         <Notice tone="danger" action={{ label: 'Try again', onClick: () => runSearch(q) }}>
           We couldn’t search the directory just now.
         </Notice>
       );
     } else if (searching) {
-      resultsArea = <AsyncState status="loading" skeleton="rows" loadingLabel="Searching…" />;
+      content = <AsyncState status="loading" skeleton="rows" loadingLabel="Loading search results" />;
+    } else if (noMatch) {
+      // The status above says what matched nothing; the EmptyState says what to do next.
+      content = (
+        <EmptyState
+          title="No servers to show"
+          description="Try the service’s name rather than what it does. Not every service is listed yet. If you know its address, you can set it up by hand."
+          action={{ label: 'New connector', onClick: onNewConnector }}
+        />
+      );
     } else if (shown !== null) {
-      const noMatch = shown.entries.length === 0 && shown.nextCursor === undefined;
-      // One status region, so a screen reader hears the count or the no-match
-      // arrive in the same place. On no match the EmptyState is the region.
-      resultsArea = noMatch ? (
-        <div role="status">
-          <EmptyState
-            title={`Nothing matches “${shown.query}”`}
-            description="Try the service’s name rather than what it does. Not every service is listed yet. If you know its address, you can set it up by hand."
-            action={{ label: 'New connector', onClick: onNewConnector }}
-          />
-        </div>
-      ) : (
-        <Stack gap="md" align="start">
-          <div role="status">
-            <Text role="meta">{countLine(shown)}</Text>
-          </div>
+      content = (
+        <>
           <div className="flex w-full flex-col">
             {shown.entries.map((entry) => (
               <DirectoryListingRow key={entry.id} entry={entry} added={isAdded(entry)} onSetUp={onSetUp} />
@@ -359,9 +363,18 @@ export function ConnectorDirectory({
                 Show more
               </AxButton>
             ))}
-        </Stack>
+        </>
       );
     }
+    const resultsArea: ReactNode =
+      q !== '' || shown !== null ? (
+        <Stack gap="md" align="start">
+          <div role="status">
+            <Text role="meta">{statusText}</Text>
+          </div>
+          {content}
+        </Stack>
+      ) : null;
 
     body = (
       <div className="flex flex-col gap-6">

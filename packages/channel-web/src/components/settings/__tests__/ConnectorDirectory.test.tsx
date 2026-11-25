@@ -338,7 +338,7 @@ describe('ConnectorDirectory', () => {
       // Partway through the pause, nothing has gone out yet.
       await pass(SEARCH_DEBOUNCE_MS / 2);
       expect(queries()).toEqual(['']);
-      expect(screen.getByRole('status')).toHaveTextContent('Searching…');
+      expect(screen.getByText('Searching…').closest('[role="status"]')).not.toBeNull();
       await screen.findByRole('button', { name: 'Details for Linear' });
       // Any timer the typing failed to cancel has had time to fire too.
       await pass(SEARCH_DEBOUNCE_MS);
@@ -405,7 +405,7 @@ describe('ConnectorDirectory', () => {
       // Back to the text whose request was cancelled: no failure was left behind.
       typeQuery(box, 'linear');
       expect(screen.queryByRole('alert')).toBeNull();
-      expect(screen.getByRole('status')).toHaveTextContent('Searching…');
+      expect(screen.getByText('Searching…').closest('[role="status"]')).not.toBeNull();
     });
 
     it('clearing the box goes back to no list, and cancels the search in flight', async () => {
@@ -434,7 +434,7 @@ describe('ConnectorDirectory', () => {
       // Typing the same text again searches afresh, with no failure left behind.
       typeQuery(box, 'notion');
       expect(screen.queryByRole('alert')).toBeNull();
-      expect(screen.getByRole('status')).toHaveTextContent('Searching…');
+      expect(screen.getByText('Searching…').closest('[role="status"]')).not.toBeNull();
     });
 
     it('whitespace only never searches', async () => {
@@ -450,11 +450,14 @@ describe('ConnectorDirectory', () => {
       const { onNewConnector } = renderDirectory();
       // The box's own spaces are not part of the search.
       typeQuery(await searchBox(), '  zzz ');
-      expect(screen.getByRole('status')).toHaveTextContent('Searching…');
-      const title = await screen.findByText('Nothing matches “zzz”');
-      // The no-match answer is announced from its own live region, and said once.
-      expect(screen.getAllByRole('status')).toHaveLength(1);
-      expect(screen.getByRole('status')).toContainElement(title);
+      // The persistent status element (the skeleton has its own, labelled separately).
+      const status = screen.getByText('Searching…').closest('[role="status"]') as HTMLElement;
+      await waitFor(() => expect(status).toHaveTextContent(/^Nothing matches “zzz”$/));
+      // Same element from searching through the answer, so the answer is announced.
+      expect(screen.getByRole('status')).toBe(status);
+      // The status holds only the words: the description and the button are outside it.
+      expect(screen.getByText('No servers to show')).toBeInTheDocument();
+      expect(within(status).queryByRole('button')).toBeNull();
       expect(screen.getByText(NO_MATCH_DESCRIPTION)).toBeInTheDocument();
       expect(queries()).toEqual(['', 'zzz']);
       expect(screen.queryByText(/servers? match/)).toBeNull();
@@ -477,10 +480,11 @@ describe('ConnectorDirectory', () => {
       // The failure belongs to the text that failed: new text searches afresh.
       typeQuery(box, 'linear docs');
       expect(screen.queryByRole('alert')).toBeNull();
-      expect(screen.getByRole('status')).toHaveTextContent('Searching…');
+      expect(screen.getByText('Searching…').closest('[role="status"]')).not.toBeNull();
       const alert = await screen.findByRole('alert');
       expect(alert).toHaveTextContent(SEARCH_FAILED);
-      expect(screen.queryByRole('status')).toBeNull();
+      // The persistent status stays mounted but says nothing: the alert speaks.
+      expect(screen.getByRole('status').textContent).toBe('');
 
       search.mockImplementation(async (q) =>
         q === '' ? directoryPage() : directoryPage({ entries: [linear, community] }),

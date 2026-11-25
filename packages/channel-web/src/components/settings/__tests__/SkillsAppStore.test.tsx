@@ -230,6 +230,19 @@ describe('SkillsAppStore', () => {
     expect(await screen.findByText(/Awaiting review \(1\)/i)).toBeInTheDocument();
   });
 
+  it('when the first agent list read fails, Try again picks the agent and the shelf fills in', async () => {
+    mockListAgents
+      .mockRejectedValueOnce(new Error('agents 503'))
+      .mockResolvedValue([{ agentId: 'a1', displayName: 'My Agent', visibility: 'personal' }]);
+    render(<SkillsAppStore isAdmin={false} />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('agents 503');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('My helper')).toBeInTheDocument();
+    expect(mockGetConnections).toHaveBeenCalledWith('a1');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
   it('a failed Awaiting review read says so, not "No pending requests", and Try again re-reads', async () => {
     mockListRequests.mockRejectedValueOnce(new Error('requests 503')).mockResolvedValue([]);
     render(<SkillsAppStore isAdmin={true} />);

@@ -268,7 +268,9 @@ describe('StorageTab — Your storage, for everyone', () => {
   it('warns kindly, and truthfully, when they are getting close', async () => {
     mine = makeMine({ usedBytes: Math.round(4.2 * GB), status: 'near-limit' });
     await renderPerson();
-    const alert = within(myCard()).getByRole('alert');
+    // A heads-up, not an interruption: a warning Notice is a polite status.
+    expect(within(myCard()).queryByRole('alert')).toBeNull();
+    const alert = within(myCard()).getByRole('status');
     expect(alert).toHaveTextContent("You're getting close to your limit");
     expect(alert).toHaveTextContent("new uploads and published files won't be saved");
     expect(alert.textContent ?? '').toMatch(/ask your agent to clean up files it no longer needs/i);

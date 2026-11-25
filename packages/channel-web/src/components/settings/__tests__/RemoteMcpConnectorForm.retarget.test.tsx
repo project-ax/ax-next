@@ -240,10 +240,10 @@ async function moveTo(url: string) {
   fireEvent.change(screen.getByLabelText('Server URL'), { target: { value: url } });
   await saveIsLive();
 }
-// The "what Save will cost" warning: a warning Notice (role="alert"), found by its words.
+// The "what Save will cost" warning: a warning Notice (role="status"), found by its words.
 const WARNING_TEXT = /^Changing (where this connector points|the address)/;
 const note = (): HTMLElement | null =>
-  screen.queryAllByRole('alert').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
+  screen.queryAllByRole('status').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
 
 describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs everyone out (TASK-887)', () => {
   it('moving an OAuth connector says it signs everyone out and each agent signs in again', async () => {
@@ -251,8 +251,8 @@ describe('RemoteMcpConnectorForm — pointing a connector somewhere new signs ev
     expect(note()).toBeNull();
     await moveTo('https://elsewhere.example/mcp');
     const alert = note()!;
-    // What Save will cost: a warning Notice, so role="alert".
-    expect(alert).toHaveAttribute('role', 'alert');
+    // What Save will cost: a warning Notice, a polite status (TASK-790: no interruption).
+    expect(alert).toHaveAttribute('role', 'status');
     expect(alert).toHaveTextContent(
       `${SIGNS_OUT} Each agent signs in again from its Connectors tab.`,
     );

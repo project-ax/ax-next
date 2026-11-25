@@ -16,13 +16,21 @@ beforeAll(() => {
   };
 });
 
+// The accessible description: the text of every element aria-describedby points at.
+const describe_ = (el: HTMLElement): string =>
+  (el.getAttribute('aria-describedby') ?? '')
+    .split(' ')
+    .map((id) => document.getElementById(id)?.textContent ?? '')
+    .join(' ');
+
 describe('Notice', () => {
-  it('danger and warning have role alert; info and success have role status', () => {
+  it('only danger has role alert; warning, info and success have role status', () => {
     const { unmount } = render(<Notice tone="danger">Bad</Notice>);
     expect(screen.getByRole('alert').textContent).toBe('Bad');
     unmount();
     render(<Notice tone="warning">Careful</Notice>);
-    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('Careful');
     cleanup();
     render(<Notice tone="info">FYI</Notice>);
     expect(screen.getByRole('status').textContent).toBe('FYI');
@@ -48,6 +56,18 @@ describe('Notice', () => {
     expect(document.activeElement).toBe(button);
     fireEvent.click(button);
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it('the action is described by the notice title and body, so look-alike buttons differ', () => {
+    render(
+      <Notice tone="danger" title="Heads up" action={{ label: 'Try again', onClick: () => {} }}>
+        We couldn’t load the list.
+      </Notice>,
+    );
+    expect(describe_(screen.getByRole('button', { name: 'Try again' }))).toBe('Heads up We couldn’t load the list.');
+    cleanup();
+    render(<Notice tone="danger" action={{ label: 'Try again', onClick: () => {} }}>Body only</Notice>);
+    expect(describe_(screen.getByRole('button', { name: 'Try again' }))).toBe('Body only');
   });
 
   it('onDismiss renders "Dismiss" and calls the handler', () => {
