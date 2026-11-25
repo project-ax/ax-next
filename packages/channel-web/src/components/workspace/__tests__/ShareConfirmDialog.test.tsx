@@ -275,6 +275,22 @@ describe('ShareConfirmDialog', () => {
     expect(shareButton()).toBeDisabled();
   });
 
+  it('switching agents while open drops the old agent’s answer and waits for the new one', async () => {
+    connectorsMock.mockResolvedValueOnce(answer([GMAIL]));
+    const { props: p, rerender } = renderDialog({ agentId: 'a-fern' });
+    await screen.findByText(GMAIL.name);
+    expect(shareButton()).toBeEnabled();
+
+    // Agent B's read never lands: nothing of agent A's may linger or be shareable.
+    connectorsMock.mockReturnValueOnce(new Promise(() => {}));
+    rerender(<ShareConfirmDialog {...p} agentId="a-juniper" agentName="Juniper" />);
+
+    expect(connectorsMock).toHaveBeenLastCalledWith('a-juniper');
+    expect(shareButton()).toBeDisabled();
+    expect(pageText()).not.toContain(GMAIL.name);
+    expect(screen.getByText(SHARING_COPY.confirm.loading)).toBeInTheDocument();
+  });
+
   it('while sharing nothing closes it and every button is off; a failed Share shows its error inside', async () => {
     connectorsMock.mockResolvedValue(answer([GMAIL]));
     const { props: p } = renderDialog({ saving: true, error: SHARING_COPY.errors.generic });
