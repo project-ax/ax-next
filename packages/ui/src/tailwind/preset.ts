@@ -75,6 +75,11 @@ export const axPreset: Config = {
       minWidth: CONTROL,
       // A shrink-to-fit inline box (StatusBadge) caps at its container so its text can truncate.
       maxWidth: { full: '100%' },
+      // ListRow's stretched primary action needs an empty ::after: Tailwind's after: variant reads --tw-content, which
+      // only the base layer sets, and this package emits utilities only. Its focus ring is drawn inside that layer
+      // (negative offset) so a flush Card's overflow-hidden can't clip it.
+      content: { empty: "''" },
+      outlineOffset: { inset: '-2px' },
     },
   },
 };

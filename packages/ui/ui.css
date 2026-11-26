@@ -31,6 +31,9 @@
 .ax-top-lg {
     top: var(--ax-space-lg)
 }
+.ax-z-10 {
+    z-index: 10
+}
 .ax-z-50 {
     z-index: 50
 }
@@ -42,6 +45,12 @@
 }
 .ax-box-border {
     box-sizing: border-box
+}
+.ax-line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2
 }
 .ax-block {
     display: block
@@ -161,8 +170,14 @@
 .ax-animate-spin {
     animation: ax-spin 1s linear infinite
 }
+.ax-cursor-pointer {
+    cursor: pointer
+}
 .ax-select-none {
     user-select: none
+}
+.ax-list-none {
+    list-style-type: none
 }
 .ax-grid-cols-1 {
     grid-template-columns: repeat(1, minmax(0, 1fr))
@@ -241,6 +256,18 @@
 }
 .ax-gap-xs {
     gap: var(--ax-space-xs)
+}
+.ax-divide-y > :not([hidden]) ~ :not([hidden]) {
+    --tw-divide-y-reverse: 0;
+    border-top-width: calc(1px * calc(1 - var(--tw-divide-y-reverse)));
+    border-bottom-width: calc(1px * var(--tw-divide-y-reverse))
+}
+.ax-divide-solid > :not([hidden]) ~ :not([hidden]) {
+    border-style: solid
+}
+.ax-divide-line-soft > :not([hidden]) ~ :not([hidden]) {
+    --tw-divide-opacity: 1;
+    border-color: hsl(var(--ax-line-soft) / var(--tw-divide-opacity, 1))
 }
 .ax-self-stretch {
     align-self: stretch
@@ -353,6 +380,9 @@
 .ax-p-md {
     padding: var(--ax-space-md)
 }
+.ax-p-none {
+    padding: var(--ax-space-none)
+}
 .ax-p-xl {
     padding: var(--ax-space-xl)
 }
@@ -368,6 +398,10 @@
     padding-left: var(--ax-space-sm);
     padding-right: var(--ax-space-sm)
 }
+.ax-py-md {
+    padding-top: var(--ax-space-md);
+    padding-bottom: var(--ax-space-md)
+}
 .ax-py-none {
     padding-top: var(--ax-space-none);
     padding-bottom: var(--ax-space-none)
@@ -380,11 +414,20 @@
     padding-top: var(--ax-space-xs);
     padding-bottom: var(--ax-space-xs)
 }
+.ax-pb-md {
+    padding-bottom: var(--ax-space-md)
+}
+.ax-pb-sm {
+    padding-bottom: var(--ax-space-sm)
+}
 .ax-pl-sm {
     padding-left: var(--ax-space-sm)
 }
 .ax-pr-sm {
     padding-right: var(--ax-space-sm)
+}
+.ax-text-left {
+    text-align: left
 }
 .ax-text-center {
     text-align: center
@@ -503,6 +546,9 @@
     --tw-text-opacity: 1;
     color: hsl(var(--ax-status-warning) / var(--tw-text-opacity, 1))
 }
+.ax-no-underline {
+    text-decoration-line: none
+}
 .ax-opacity-50 {
     opacity: 0.5
 }
@@ -527,6 +573,22 @@
 .ax-duration-fast {
     transition-duration: var(--ax-motion-fast)
 }
+.after\:ax-absolute::after {
+    content: var(--tw-content);
+    position: absolute
+}
+.after\:ax-inset-none::after {
+    content: var(--tw-content);
+    inset: var(--ax-space-none)
+}
+.after\:ax-rounded-md::after {
+    content: var(--tw-content);
+    border-radius: var(--ax-radius-md)
+}
+.after\:ax-content-empty::after {
+    --tw-content: '';
+    content: var(--tw-content)
+}
 .hover\:ax-bg-action-hover:hover {
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-action-hover) / var(--tw-bg-opacity, 1))
@@ -539,7 +601,14 @@
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-status-danger-hover) / var(--tw-bg-opacity, 1))
 }
+.hover\:ax-underline:hover {
+    text-decoration-line: underline
+}
 .focus\:ax-outline-none:focus {
+    outline: 2px solid transparent;
+    outline-offset: 2px
+}
+.focus-visible\:ax-outline-none:focus-visible {
     outline: 2px solid transparent;
     outline-offset: 2px
 }
@@ -553,6 +622,22 @@
     outline-offset: 2px
 }
 .focus-visible\:ax-outline-line-ring:focus-visible {
+    outline-color: hsl(var(--ax-line-ring) / 1)
+}
+.focus-visible\:after\:ax-outline:focus-visible::after {
+    content: var(--tw-content);
+    outline-style: solid
+}
+.focus-visible\:after\:ax-outline-2:focus-visible::after {
+    content: var(--tw-content);
+    outline-width: 2px
+}
+.focus-visible\:after\:ax-outline-offset-inset:focus-visible::after {
+    content: var(--tw-content);
+    outline-offset: -2px
+}
+.focus-visible\:after\:ax-outline-line-ring:focus-visible::after {
+    content: var(--tw-content);
     outline-color: hsl(var(--ax-line-ring) / 1)
 }
 .disabled\:ax-pointer-events-none:disabled {

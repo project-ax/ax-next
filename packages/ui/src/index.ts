@@ -20,3 +20,4 @@ export { Avatar, type AvatarProps } from './components/Avatar.js';
 export { KeyValueList, type KeyValueListProps } from './components/KeyValueList.js';
 export { Card, type CardProps } from './components/Card.js';
 export { InsetBlock, type InsetBlockProps } from './components/InsetBlock.js';
+export { List, ListRow, type ListProps, type ListRowProps, type ListDensity } from './components/List.js';
