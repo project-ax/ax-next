@@ -36,7 +36,6 @@ const ARGS: Record<string, unknown[][]> = {
   sharedBy: [['Vinay'], [null]],
   'errors.forbidden': [['Fern']],
   'errors.notFound': [['Fern']],
-  'errors.creatorRequired': [['Fern']],
   'errors.loadFailed': [['Fern']],
 };
 
@@ -71,6 +70,12 @@ describe('SHARING_COPY', () => {
       expect(text, path).not.toMatch(/Canopy/i);
       expect(text, path).not.toMatch(/undefined|\[object/);
       expect(text.trim(), path).not.toBe('');
+    }
+  });
+
+  it('the two refusals the UI prevents do not blame the page or tell people to reload', () => {
+    for (const text of [SHARING_COPY.errors.duplicatePerson, SHARING_COPY.errors.creatorRequired]) {
+      expect(text).not.toMatch(/reload/i);
     }
   });
 

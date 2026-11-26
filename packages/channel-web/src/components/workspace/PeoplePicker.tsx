@@ -37,6 +37,9 @@ const MAX_QUERY = 64;
 /** The field's cap, in UTF-16 units (all `maxLength` counts): room for
  *  MAX_QUERY code points of any kind. Anything past MAX_QUERY isn't sent. */
 const MAX_INPUT_UNITS = MAX_QUERY * 2;
+/** The most people one search returns. Mirrors `PEOPLE_RESULTS_MAX` in
+ *  `packages/auth-better/src/people-search.ts`; a full page means more may match. */
+export const PEOPLE_RESULTS_CAP = 10;
 
 /**
  * What the server is sent for `text`: whitespace runs to one space, then the
@@ -116,6 +119,9 @@ export function PeoplePicker({
           if (e instanceof SharingRequestError && e.code === 'rate-limited') {
             setSearch({ kind: 'rate-limited' });
           } else if (e instanceof SharingRequestError && e.code === 'invalid-query') {
+            // The text was cleaned to the server's rules first, so a refusal
+            // means the two sides' rules have drifted.
+            logRequestFailure(e, 'people search');
             setSearch({ kind: 'invalid' });
           } else {
             logRequestFailure(e, 'people search');
@@ -148,7 +154,12 @@ export function PeoplePicker({
   else if (search.kind === 'invalid') status = SHARING_COPY.picker.searchInvalid;
   else if (search.kind === 'failed') status = SHARING_COPY.picker.searchFailed;
   else if (search.kind === 'ready' && found.length === 0) status = SHARING_COPY.picker.noMatches;
-  else if (search.kind === 'ready' && people.length === 0) status = SHARING_COPY.picker.allExcluded;
+  else if (search.kind === 'ready' && people.length === 0) {
+    status =
+      found.length >= PEOPLE_RESULTS_CAP
+        ? SHARING_COPY.picker.allExcludedMaybeMore
+        : SHARING_COPY.picker.allExcluded;
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>

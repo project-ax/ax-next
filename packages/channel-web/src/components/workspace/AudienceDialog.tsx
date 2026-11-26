@@ -53,7 +53,7 @@ import {
   type DraftAudience,
 } from '@/lib/agent-sharing';
 import { setAudience, sharingErrorMessage, type PersonMatch } from '@/lib/agent-sharing-api';
-import { logRequestFailure } from '@/lib/http';
+import { HttpError, logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import { PeoplePicker } from './PeoplePicker';
 import { ShareConfirmDialog, type ShareConfirmDialogProps } from './ShareConfirmDialog';
@@ -96,6 +96,8 @@ function OpenAudienceDialog({
 }: AudienceDialogProps) {
   const savedDraft = useMemo(() => draftFrom(saved), [saved]);
   const [draft, setDraft] = useState<DraftAudience>(savedDraft);
+  /** What the audience was when last read: the prop, then each Save's fresh read. */
+  const [baseline, setBaseline] = useState<DraftAudience>(savedDraft);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
@@ -183,23 +185,40 @@ function OpenAudienceDialog({
   const save = async () => {
     setSaving(true);
     setError(null);
-    let current: DraftAudience;
-    let attached: readonly string[];
+    let fresh: AdminAgent;
     try {
-      const fresh = await getAdminAgent(agentId);
-      const audience = fresh.sharing?.audience;
-      if (audience === undefined) throw new Error('no sharing on the agent');
-      current = draftFrom(audience);
-      attached = fresh.connectorAttachments ?? [];
+      fresh = await getAdminAgent(agentId);
     } catch (e) {
       logRequestFailure(e, 'sharing: read the audience as saved');
       if (live.current) {
-        setError(SHARING_COPY.errors.generic);
+        setError(
+          e instanceof HttpError && e.status === 404
+            ? SHARING_COPY.errors.notFound(agentName)
+            : SHARING_COPY.errors.generic,
+        );
         setSaving(false);
       }
       return;
     }
     if (!live.current) return;
+    // The server leaves `sharing` out for someone who isn't an owner (any more).
+    if (fresh.sharing === undefined) {
+      console.warn('[sharing: read the audience as saved] the agent came back without sharing');
+      setError(SHARING_COPY.errors.forbidden(agentName));
+      setSaving(false);
+      return;
+    }
+    const current = draftFrom(fresh.sharing.audience);
+    const attached = fresh.connectorAttachments ?? [];
+    // From here on "unchanged" and "narrowed" are judged against what was just read.
+    setBaseline(current);
+    // Someone already saved exactly this: nothing to write.
+    if (sameAudience(current, draft)) {
+      setSaving(false);
+      onSaved(fresh.sharing);
+      onClose();
+      return;
+    }
     if (isWidening(current, draft)) {
       setSaving(false);
       setAttachedConnectorIds(attached);
@@ -214,8 +233,8 @@ function OpenAudienceDialog({
   };
 
   const atCap = draft.kind === 'list' && draft.members.length >= AUDIENCE_MEMBERS_MAX;
-  const unchanged = sameAudience(savedDraft, draft);
-  const narrowed = isNarrowing(savedDraft, draft);
+  const unchanged = sameAudience(baseline, draft);
+  const narrowed = isNarrowing(baseline, draft);
 
   return (
     <Dialog

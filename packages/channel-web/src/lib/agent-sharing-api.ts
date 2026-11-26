@@ -103,7 +103,7 @@ export function sharingErrorMessage(error: unknown, agentName: string): string {
   if (error.status === 403) return SHARING_COPY.errors.forbidden(agentName);
   if (error.code === 'unknown-person') return SHARING_COPY.errors.unknownPerson;
   if (error.code === 'duplicate-person') return SHARING_COPY.errors.duplicatePerson;
-  if (error.code === 'creator-required') return SHARING_COPY.errors.creatorRequired(agentName);
+  if (error.code === 'creator-required') return SHARING_COPY.errors.creatorRequired;
   if (error.status === 503) return SHARING_COPY.errors.accountsUnavailable;
   if (error.status === 404) return SHARING_COPY.errors.notFound(agentName);
   return SHARING_COPY.errors.generic;

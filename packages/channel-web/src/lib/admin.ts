@@ -27,7 +27,7 @@
  */
 import type { SharingView } from '@ax/agents';
 import type { AdminTeamWire } from '@ax/teams';
-import { HttpError } from './http';
+import { HttpError, httpFetch } from './http';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -205,7 +205,8 @@ export async function listAdminAgents(): Promise<AdminAgent[]> {
 /** Read the agent as it will run, including a temporary model fallback. */
 export async function getAdminAgent(id: string): Promise<AdminAgent> {
   const path = `/admin/agents/${encodeURIComponent(id)}`;
-  const res = await fetch(path, { credentials: 'include' });
+  // httpFetch, so a 401 ends the session like every other post-boot read.
+  const res = await httpFetch(path);
   // An HttpError, so a caller can tell a deleted agent (404) from a failure worth retrying.
   if (!res.ok) throw new HttpError(path, res.status);
   const body = (await res.json()) as { agent: AdminAgent };

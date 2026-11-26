@@ -9,6 +9,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SharingView } from '@ax/agents';
 import { getAdminAgent, listAdminAgents, type AdminAgent } from '@/lib/admin';
+import { HttpError } from '@/lib/http';
 import { AUDIENCE_MEMBERS_MAX } from '@/lib/agent-sharing';
 import { searchPeople, setAudience, SharingRequestError } from '@/lib/agent-sharing-api';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -67,7 +68,10 @@ function agentNow(audience: SharingView['audience']): AdminAgent {
   };
 }
 
-function renderDialog(saved: SharingView['audience']) {
+function renderDialog(
+  saved: SharingView['audience'],
+  handlers: { onSaved?: (s: SharingView) => void; onClose?: () => void } = {},
+) {
   render(
     <AudienceDialog
       open
@@ -75,9 +79,9 @@ function renderDialog(saved: SharingView['audience']) {
       agentName="Juniper"
       saved={saved}
       ownerIds={new Set(['owner'])}
-      onSaved={vi.fn()}
+      onSaved={handlers.onSaved ?? vi.fn()}
       onOpenConnections={vi.fn()}
-      onClose={vi.fn()}
+      onClose={handlers.onClose ?? vi.fn()}
     />,
   );
   return screen.getByRole('dialog', { name: SHARING_COPY.picker.title('Juniper') });
@@ -137,6 +141,63 @@ describe('AudienceDialog — Save reads what is saved now', () => {
     ).toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('AudienceDialog — what a failed read says', () => {
+  async function saveWithRead(read: () => Promise<AdminAgent>) {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getAgentMock.mockImplementation(read);
+    const dialog = renderDialog({ kind: 'everyone' });
+    await pickCarol(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: SHARING_COPY.picker.save }));
+    return dialog;
+  }
+
+  it('a 404 says the agent is gone', async () => {
+    const dialog = await saveWithRead(() => Promise.reject(new HttpError('/admin/agents/a1', 404)));
+    expect(await within(dialog).findByText(SHARING_COPY.errors.notFound('Juniper'))).toBeTruthy();
+    expect(setAudienceMock).not.toHaveBeenCalled();
+  });
+
+  it('an answer without sharing says only its owners can change it', async () => {
+    const { sharing: _sharing, ...noSharing } = agentNow({ kind: 'everyone' });
+    const dialog = await saveWithRead(() => Promise.resolve(noSharing as AdminAgent));
+    expect(await within(dialog).findByText(SHARING_COPY.errors.forbidden('Juniper'))).toBeTruthy();
+    expect(setAudienceMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('AudienceDialog — Save judges against the fresh read', () => {
+  const carolOnly = {
+    kind: 'list',
+    members: [{ type: 'user', id: 'carol', displayName: 'Carol' }],
+  } as SharingView['audience'];
+
+  it('writes nothing when someone already saved exactly this, and closes', async () => {
+    getAgentMock.mockResolvedValue(agentNow(carolOnly));
+    const onSaved = vi.fn();
+    const onClose = vi.fn();
+    const dialog = renderDialog({ kind: 'just-me' }, { onSaved, onClose });
+    await pickCarol(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: SHARING_COPY.picker.save }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(setAudienceMock).not.toHaveBeenCalled();
+    expect(onSaved).toHaveBeenCalledWith(agentNow(carolOnly).sharing);
+  });
+
+  it('says people may remember when the fresh audience shows this takes the agent from someone', async () => {
+    const dave = {
+      kind: 'list',
+      members: [{ type: 'user', id: 'dave', displayName: 'Dave' }],
+    } as SharingView['audience'];
+    getAgentMock.mockResolvedValue(agentNow(dave));
+    const dialog = renderDialog({ kind: 'just-me' });
+    await pickCarol(dialog);
+    expect(screen.queryByText(SHARING_COPY.picker.narrowed('Juniper'))).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: SHARING_COPY.picker.save }));
+    await screen.findByRole('dialog', { name: SHARING_COPY.confirm.title('Juniper', ['Carol']) });
+    expect(screen.getByText(SHARING_COPY.picker.narrowed('Juniper'))).toBeTruthy();
   });
 });
 

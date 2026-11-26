@@ -77,6 +77,8 @@ export const SHARING_COPY = {
     noMatches: "No one by that name. If they've never signed in here, ask them to sign in once.",
     /** Everyone the search found is an owner or already chosen. */
     allExcluded: 'Everyone by that name is already here.',
+    /** The search returned its full page and all of it is excluded, so more people may match. */
+    allExcludedMaybeMore: 'Everyone shown is already here. Type more of their name.',
     /** The server refused the text itself (400 invalid-query). */
     searchInvalid: 'Search with just the letters of their name.',
     searchFailed: "We couldn't search just now. Try again in a moment.",
@@ -160,11 +162,10 @@ export const SHARING_COPY = {
     forbidden: (agent: string): string =>
       `Only ${agent}'s owners can change who can use it. Ask one of them if you need a change.`,
     unknownPerson: "We couldn't find someone you picked. Search for them again, then save.",
-    /** Someone is on the list twice: usually another owner added them meanwhile. */
-    duplicatePerson: 'Someone you picked is already on the list. Reload the page to see the latest, then try again.',
-    /** The creator can't be taken off the owners; the page was out of date. */
-    creatorRequired: (agent: string): string =>
-      `${agent}'s creator always stays an owner. Reload the page to see the latest owners.`,
+    /** The server refuses only a body that names someone twice, which the picker never builds: a bug, not something to act on. */
+    duplicatePerson: 'Something went wrong saving that list. Try again.',
+    /** Likewise a body without the creator, which the owners dialog never builds. */
+    creatorRequired: 'Something went wrong saving that list. Try again.',
     accountsUnavailable: "We can't look people up right now. Try again in a moment.",
     notFound: (agent: string): string => `We can't find ${agent}. It may have been deleted.`,
     generic: "That didn't save. Try again in a moment.",

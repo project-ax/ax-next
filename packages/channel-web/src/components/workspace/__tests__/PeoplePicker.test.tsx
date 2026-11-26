@@ -6,7 +6,12 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import { searchPeople, SharingRequestError, type PersonMatch } from '@/lib/agent-sharing-api';
-import { PEOPLE_SEARCH_DEBOUNCE_MS, PeoplePicker, type PeoplePickerProps } from '../PeoplePicker';
+import {
+  PEOPLE_RESULTS_CAP,
+  PEOPLE_SEARCH_DEBOUNCE_MS,
+  PeoplePicker,
+  type PeoplePickerProps,
+} from '../PeoplePicker';
 
 vi.mock('@/lib/agent-sharing-api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/agent-sharing-api')>()),
@@ -110,6 +115,31 @@ describe('PeoplePicker', () => {
     await pause();
     expect(screen.getByText(SHARING_COPY.picker.allExcluded)).toBeTruthy();
     expect(screen.queryByText(SHARING_COPY.picker.noMatches)).toBeNull();
+  });
+
+  it('a full page of matches that are all excluded says to type more, not that everyone is here', async () => {
+    const page: PersonMatch[] = Array.from({ length: PEOPLE_RESULTS_CAP }, (_, i) => ({
+      id: `u-${i}`,
+      displayName: `Ali ${i}`,
+    }));
+    searchMock.mockResolvedValue(page);
+    renderPicker({ excludeIds: new Set(page.map((p) => p.id)) });
+    openPicker();
+    type('ali');
+    await pause();
+    expect(screen.getByText(SHARING_COPY.picker.allExcludedMaybeMore)).toBeTruthy();
+    expect(screen.queryByText(SHARING_COPY.picker.allExcluded)).toBeNull();
+  });
+
+  it('a 400 invalid-query is logged: the two sides disagree about what a query is', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    searchMock.mockRejectedValue(new SharingRequestError('/admin/people', 400, 'invalid-query'));
+    renderPicker();
+    openPicker();
+    type('ali');
+    await pause();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('counts characters, not UTF-16 units: one emoji is still one character', async () => {
