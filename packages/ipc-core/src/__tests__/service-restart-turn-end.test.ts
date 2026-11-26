@@ -126,6 +126,17 @@ async function setup() {
     if (p.reqId !== undefined) activity.delete(p.reqId);
     return undefined;
   });
+  // A web stream for req-2, like @ax/channel-web's: it closes on the first
+  // turn-end naming it, as its own or as folded, and then stops listening.
+  let req2Closed = false;
+  h.bus.subscribe<{ reqId?: string; foldedReqIds?: unknown }>('chat:turn-end', 'test/web-req-2', async (_c, p) => {
+    if (req2Closed) return undefined;
+    if (p.reqId === 'req-2' || (Array.isArray(p.foldedReqIds) && p.foldedReqIds.includes('req-2'))) {
+      req2Closed = true;
+      events.push('closed:req-2');
+    }
+    return undefined;
+  });
   h.bus.subscribe<{ reqId: string; reason: string }>('chat:turn-error', 'test/callers', async (_c, p) => {
     events.push(`turn-error:${p.reqId}:${p.reason}`);
     activity.clear();
@@ -146,8 +157,10 @@ async function setup() {
       sessionId, agentId: AGENT.id, userId: AGENT.ownerId, conversationId: 'conv-1', reqId: 'ipc-fresh',
       logger: createLogger({ reqId: 'ipc-fresh', writer: () => undefined }),
     });
-  const turnEnd = (sessionId: string, reqId: string, role: 'tool' | 'assistant') =>
-    fireEventTurnEnd(ipcCtx(sessionId), h.bus, { reason: 'user-message-wait', role, reqId });
+  const turnEnd = (sessionId: string, reqId: string, role: 'tool' | 'assistant', foldedReqIds?: string[]) =>
+    fireEventTurnEnd(ipcCtx(sessionId), h.bus, {
+      reason: 'user-message-wait', role, reqId, ...(foldedReqIds !== undefined ? { foldedReqIds } : {}),
+    });
   const invoke = (reqId: string) =>
     h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
@@ -188,6 +201,40 @@ describe('a services restart through the real turn-end emitter (R27)', () => {
       'segment-end:req-1', 'segment-end:req-1', 'turn-end:req-1', 'req-cleared:req-1',
     ]);
     expect(t.activity.has('req-1')).toBe(false);
+  });
+
+  // TASK-1224 — a message the runner folded into the held segment is named
+  // only on that segment's turn-ends, which callers never see. It must still
+  // end for its caller, once, with the turn that answers it.
+  it('a request folded into the held segment is ended by the continuation\'s turn-end, once', async () => {
+    const t = await setup();
+    const p1 = t.invoke('req-1');
+    await waitFor(() => t.queued.length === 1, 'the message');
+    const accepted = await t.h.bus.call<unknown, { ok: boolean }>(
+      'tool:execute:restart_with_services', t.ipcCtx('s-1'), { id: 'c1', name: 'restart_with_services', input: { set: 'e2e' } },
+    );
+    expect(accepted.ok).toBe(true);
+    // A second message arrives while the segment runs: routed into s-1.
+    const p2 = t.invoke('req-2');
+    await waitFor(() => t.queued.length === 2, 'the second message');
+    expect(t.queued[1]).toMatchObject({ sessionId: 's-1', entry: { type: 'user-message', reqId: 'req-2' } });
+
+    // The runner folds it into the segment that called the restart.
+    await t.turnEnd('s-1', 'req-1', 'tool', ['req-2']);
+    await t.turnEnd('s-1', 'req-1', 'assistant', ['req-2']);
+    await waitFor(() => t.queued.some((q) => q.entry.type === 'host-note'), 'the host note');
+    const newSession = t.opens[1]!;
+    expect(t.events).toEqual(['segment-end:req-1', 'segment-end:req-1']);
+
+    // The continuation's closing turn-ends: the first one ends req-2 too.
+    await t.turnEnd(newSession, 'req-1', 'tool');
+    const ended = ['segment-end:req-1', 'segment-end:req-1', 'turn-end:req-1', 'req-cleared:req-1', 'closed:req-2'];
+    expect(t.events).toEqual(ended);
+    await t.turnEnd(newSession, 'req-1', 'assistant');
+    expect(await p1).toEqual({ kind: 'complete', messages: [] });
+    expect(await p2).toEqual({ kind: 'complete', messages: [] });
+    // Closed once, and nothing failed.
+    expect(t.events).toEqual([...ended, 'turn-end:req-1']);
   });
 
   it('a normal turn still fires chat:turn-end and no segment-end', async () => {

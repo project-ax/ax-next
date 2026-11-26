@@ -128,7 +128,7 @@ async function setup(opts: {
   const queued: Array<{ sessionId: string; entry: { type: string; reqId?: string; note?: string } }> = [];
   const terminated: string[] = [];
   const setServiceSetCalls: Array<{ conversationId: string; userId: string; serviceSet: string | null }> = [];
-  const turnEnds: Array<{ reqId?: string; sessionId: string }> = [];
+  const turnEnds: Array<{ reqId?: string; sessionId: string; foldedReqIds?: string[] }> = [];
   const segmentEnds: Array<{ reqId?: string; sessionId: string }> = [];
   const turnErrors: Array<{ reqId: string; reason: string; detail?: string }> = [];
   const activeReqClears: string[] = [];
@@ -271,8 +271,10 @@ async function setup(opts: {
   // The callers: every chat:turn-end and chat:turn-error, by reqId. A turn-end
   // is what closes a web stream, ends a Slack reply, finishes a routine run
   // and clears active_req_id; none may arrive mid-restart.
-  h.bus.subscribe<{ reqId?: string }>('chat:turn-end', 'test/callers', async (c, p) => {
-    turnEnds.push({ reqId: p.reqId, sessionId: c.sessionId });
+  h.bus.subscribe<{ reqId?: string; foldedReqIds?: string[] }>('chat:turn-end', 'test/callers', async (c, p) => {
+    turnEnds.push({
+      reqId: p.reqId, sessionId: c.sessionId, ...(p.foldedReqIds !== undefined ? { foldedReqIds: p.foldedReqIds } : {}),
+    });
     // @ax/conversations: compare-and-clear active_req_id on the turn's end.
     const r = c.conversationId !== undefined ? rows[c.conversationId] : undefined;
     if (r !== undefined && p.reqId !== undefined && r.activeReqId === p.reqId) r.activeReqId = null;
@@ -294,15 +296,26 @@ async function setup(opts: {
       logger: createLogger({ reqId: 'ipc-fresh', writer: (line) => { logs.push(line); } }),
     });
 
-  /** Mirrors @ax/ipc-core `fireEventTurnEnd`: ask the hold, then segment-end or chat:turn-end. */
+  /**
+   * Mirrors @ax/ipc-core `fireEventTurnEnd`: ask the hold, then segment-end or
+   * chat:turn-end. Not held, the ids the answer names join the runner's own
+   * (TASK-1224; ipc-core also bounds them, which this mirror leaves out).
+   */
   async function emitTurnEnd(
     sessionId: string, conversationId: string, reqId: string, role: 'tool' | 'assistant', foldedReqIds?: string[],
   ) {
     const c = ipcCtx(sessionId, conversationId);
     const payload = { reason: 'user-message-wait', role, reqId, ...(foldedReqIds !== undefined ? { foldedReqIds } : {}) };
     const answer = await h.bus.fire<ChatTurnEndHoldPayload>(CHAT_TURN_END_HOLD_HOOK, c, { sessionId, reqId, held: false });
-    if (!answer.rejected && answer.payload.held) await h.bus.fire(CHAT_TURN_SEGMENT_END_HOOK, c, payload);
-    else await h.bus.fire('chat:turn-end', c, payload);
+    if (!answer.rejected && answer.payload.held) {
+      await h.bus.fire(CHAT_TURN_SEGMENT_END_HOOK, c, payload);
+      return;
+    }
+    const own = foldedReqIds ?? [];
+    const added = answer.rejected
+      ? []
+      : [...new Set(answer.payload.foldedReqIds ?? [])].filter((id) => id !== reqId && !own.includes(id));
+    await h.bus.fire('chat:turn-end', c, added.length > 0 ? { ...payload, foldedReqIds: [...own, ...added] } : payload);
   }
   /** A runner segment ends: its two turn-ends, tool then assistant. */
   async function endSegment(sessionId: string, conversationId: string, reqId: string, foldedReqIds?: string[]) {
@@ -690,6 +703,8 @@ describe('restart_with_services (dev services on demand)', () => {
     expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
     expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
     expect(t.turnErrors).toEqual([]);
+    // TASK-1224 — and its callers hear it end: the continuation's turn-end names it.
+    expect(t.turnEnds.find((e) => e.reqId === 'req-1')?.foldedReqIds).toEqual(['req-2']);
   });
 
   it('a live restarted sandbox keeps its slot; it comes back when that sandbox goes', async () => {
@@ -1014,6 +1029,76 @@ describe('restart_with_services (dev services on demand)', () => {
       await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
       expect(await p1).toEqual({ kind: 'complete', messages: [] });
       expect(t.turnErrors).toEqual([]);
+    });
+  });
+
+  // TASK-1224 — a request the runner folded into the held segment was named
+  // only on that segment's turn-ends, which no caller sees, and the
+  // continuation's runner never saw it. The hold's answer names it on the
+  // continuation's turn-end instead, so its caller (web stream, Slack reply,
+  // activity line) ends with the restarting turn.
+  describe('TASK-1224: a request folded into the held segment ends with the continuation', () => {
+    it('a folded request with no waiter is named too', async () => {
+      // A decision continuation folded into the segment has a stream, but no waiter here.
+      const t = await setup();
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['cont-1']);
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: fresh, foldedReqIds: ['cont-1'] }]);
+    });
+
+    // The continuation's closing turn-ends come tool, then assistant, and the
+    // first one already ends the invoke (any turn-end naming it settles its
+    // waiter). That one always names the folded requests; callers end a
+    // request on the first turn-end naming it, whatever its role.
+    it('the first closing turn-end carries the folded ids, only while the invoke runs; a moved request is not named', async () => {
+      const t = await setup();
+      const { p1, p2, out1, out2 } = await restartWithQueued(t);
+      const p3 = t.invoke('placeholder', 'conv-1', 'req-3');
+      await waitFor(() => t.queued.length === 3, 'message 3 queued on s-1');
+      const out3 = track(p3);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['req-3']); // req-3 folded, req-2 moved
+      await waitFor(() => t.queued.length === 5, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+
+      // The moved request ends in the new sandbox while req-1's continuation
+      // still runs there: the answer is keyed on the request too, so it names nothing.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      expect(await p2).toEqual({ kind: 'complete', messages: [] });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'tool');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      // The invoke is over: a later turn-end of the new sandbox names nothing folded.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p3;
+      await flush();
+      expect(t.turnEnds).toEqual([
+        { reqId: 'req-2', sessionId: fresh },
+        { reqId: 'req-1', sessionId: fresh, foldedReqIds: ['req-3'] },
+        { reqId: 'req-1', sessionId: fresh },
+      ]);
+      for (const out of [out1, out2, out3]) expect(out).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    it('a turn-end from another sandbox gets no ids', async () => {
+      const t = await setup();
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['cont-1']);
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      // The old sandbox names the restarting request again: the answer is keyed
+      // on the host-stamped session, so it names nothing.
+      await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+      expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: 's-1' }]);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p1;
     });
   });
 });

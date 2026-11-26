@@ -451,7 +451,10 @@ export function createChatOrchestratorPlugin(
       // restart of exactly that sandbox and request (onTurnEndHold), so a
       // runner can't hold anything. `chat:turn-segment-end` replaces the held
       // turn-ends; the closing one settles the segment and the request goes on
-      // in a new sandbox (continueAfterServiceRestart).
+      // in a new sandbox (continueAfterServiceRestart). On that request's
+      // turn-ends from the new sandbox, the answer is not held but names the
+      // requests folded into the held segment (TASK-1224), and @ax/ipc-core
+      // adds them to the broadcast's `foldedReqIds`.
       bus.subscribe<ChatTurnEndHoldPayload>(
         CHAT_TURN_END_HOLD_HOOK,
         PLUGIN_NAME,

@@ -3317,8 +3317,10 @@ export function createOrchestrator(
   //      names and ports) under the same reqId, with what is left of the turn
   //      limit. Its turn-end is the one `chat:turn-end` callers see. The
   //      detached requests follow (R30): one folded into the held segment
-  //      settles with this request; any other is re-attached to the new
-  //      sandbox and its message queued behind the note.
+  //      settles with this request, and that turn-end names it in
+  //      `foldedReqIds` (the hold's answer, TASK-1224), so its caller ends
+  //      too; any other is re-attached to the new sandbox and its message
+  //      queued behind the note.
   //
   // A restart that doesn't reach step 3 (a Stop, stop_services, a turn that
   // failed, or a segment end that wasn't held) is called off: its slot is
@@ -3367,6 +3369,13 @@ export function createOrchestrator(
   // (it isn't alive yet). It waits for this promise, which always resolves,
   // then reads the row again (routeCandidateAfterOpening).
   const openingSessions = new Map<string, Promise<void>>();
+  // TASK-1224 — the requests the runner folded into a held segment, by the
+  // sandbox the restart continues in. They were named only on the held
+  // segment's turn-ends, which no caller saw, and the continuation's runner
+  // never saw them, so onTurnEndHold names them on the continuation's own
+  // turn-ends (ipc-core appends them to the broadcast's `foldedReqIds`). Set
+  // just before the swap opens the new sandbox; gone when the invoke ends.
+  const continuationFoldsBySession = new Map<string, { reqId: string; foldedReqIds: string[] }>();
 
   function turnTimeLeftMs(reqId: string, turnMs: number): number {
     const now = performance.now();
@@ -3548,13 +3557,23 @@ export function createOrchestrator(
   // lasts while the restart is pending and is consumed by the swap
   // (`serviceRestarts.take`): it covers that one segment's turn-ends (the
   // runner sends two, tool then assistant) and nothing after.
+  // TASK-1224 — not held, but a turn-end of the request's continuation (its
+  // new sandbox, its reqId) while that invoke runs: the answer names the
+  // requests folded into the held segment, so callers end them with it. The
+  // turn-end that ends the invoke always carries them (this is asked before
+  // it is broadcast). One after it, such as the assistant's after the
+  // tool's, finds them gone, which no caller needs: each ends a request on
+  // the first turn-end naming it, whatever its role.
   function onTurnEndHold(
     _ctx: AgentContext,
     payload: ChatTurnEndHoldPayload,
   ): ChatTurnEndHoldPayload | undefined {
     if (payload === null || typeof payload !== 'object' || payload.held === true) return undefined;
     if (typeof payload.sessionId !== 'string' || typeof payload.reqId !== 'string') return undefined;
-    return serviceRestarts.isHeld(payload.sessionId, payload.reqId) ? { ...payload, held: true } : undefined;
+    if (serviceRestarts.isHeld(payload.sessionId, payload.reqId)) return { ...payload, held: true };
+    const folds = continuationFoldsBySession.get(payload.sessionId);
+    if (folds === undefined || folds.reqId !== payload.reqId) return undefined;
+    return { ...payload, foldedReqIds: [...folds.foldedReqIds] };
   }
 
   // `chat:turn-segment-end` (R27): a held segment's turn-end. The CLOSING one
@@ -3733,6 +3752,17 @@ export function createOrchestrator(
         },
       );
     }
+    // TASK-1224 — every request folded into the held segment, a waiting one
+    // or a decision continuation with only a stream, is named on this
+    // request's turn-ends from the new sandbox (onTurnEndHold), so its caller
+    // ends with this turn. Set here, next to the finally that drops it: the
+    // new sandbox opens only below, so no turn-end of it can come earlier.
+    if (pending.foldedReqIds.length > 0) {
+      continuationFoldsBySession.set(restartCtx.sessionId, {
+        reqId: ctx.reqId,
+        foldedReqIds: [...pending.foldedReqIds],
+      });
+    }
     let restarted: AgentOutcome | undefined;
     try {
       await closeSandboxForServiceRestart(ctx, pending.sessionId);
@@ -3747,14 +3777,20 @@ export function createOrchestrator(
         },
       });
     } finally {
+      // TASK-1224 — the invoke is over: a later turn-end of the new sandbox
+      // names nothing folded here.
+      if (continuationFoldsBySession.get(restartCtx.sessionId)?.reqId === ctx.reqId) {
+        continuationFoldsBySession.delete(restartCtx.sessionId);
+      }
       // Every detached wait ends or settles exactly once, even if the line
       // above threw (end/settle are no-ops on a settled wait). A moved wait
       // that was re-attached lives on in the new sandbox like any routed wait.
       const failed = restarted === undefined ? 'chat-run-error' : restarted.kind === 'complete' ? null : restarted.reason;
       // No new sandbox took them: their sandbox is gone, so they end as it did.
       if (!moved) for (const { wait } of movedWaits) wait.end('sandbox-terminated');
-      // Folded into the held segment: the continuing turn answered them, so
-      // they end with it (its own reason, if it failed).
+      // Folded into the held segment: the continuing turn answered them, and
+      // its turn-end named them to their callers (TASK-1224), so their waits
+      // settle with it (or end with its reason, if it failed).
       for (const wait of foldedWaits) {
         if (failed === null) wait.settle();
         else wait.end(failed);

@@ -106,7 +106,9 @@ What happens, all inside the one `agent:invoke`:
    IPC action), so the model sees everything before the restart.
 4. The turn carries on and ends as usual. The caller never saw a second turn:
    the web chat keeps one stream, Slack keeps one reply, a check-in is one
-   fire.
+   fire. A message sent while the first segment ran, which the runner folded
+   into it, ends with the turn too: the final turn-end names it, so its own
+   spinner stops then (TASK-1224).
 
 **Why inside one turn.** Starting a *new* turn would need every caller (web,
 Slack, routines) to learn about it and to show its output. Keeping it one
