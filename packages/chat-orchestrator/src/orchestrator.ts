@@ -856,6 +856,12 @@ interface ConversationsBindSessionInput {
   expectedSessionId?: string | null;
 }
 type ConversationsBindSessionOutput = void;
+/**
+ * What compareAndBind did: wrote the row, left a newer binding on it (a
+ * conflict), or failed for another reason, such as a database error (logged
+ * at warn; the row is as it was).
+ */
+type CompareAndBindOutcome = 'bound' | 'kept-newer' | 'failed';
 
 // session:is-alive — Task 16 (J6). Host-internal liveness probe registered
 // by both session backends. True iff the row exists and `terminated = false`;
@@ -3421,7 +3427,9 @@ export function createOrchestrator(
    * session bound) and, with `orUnbound`, also over a row left unbound (a
    * second compare-and-set). Otherwise a newer binding stays, logged at info.
    * Any other failure is logged at warn under `failLog`, as the unconditional
-   * binds did. Never throws: a bind is best-effort for the turn.
+   * binds did. Never throws: a bind is best-effort for the turn. Says which
+   * of the three happened, so a later bind can tell a row this one left to a
+   * newer request from one it failed to write (the swap's N2 reads R19's).
    */
   async function compareAndBind(
     ctx: AgentContext,
@@ -3433,7 +3441,7 @@ export function createOrchestrator(
       failLog: string;
       failFields?: Record<string, unknown>;
     },
-  ): Promise<void> {
+  ): Promise<CompareAndBindOutcome> {
     const bind = (expectedSessionId: string | null): Promise<ConversationsBindSessionOutput> =>
       bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
         'conversations:bind-session', ctx, { ...input, expectedSessionId },
@@ -3446,12 +3454,14 @@ export function createOrchestrator(
         if (!isConflict(err) || !opts.orUnbound || opts.expected === null) throw err;
         await bind(null);
       }
+      return 'bound';
     } catch (err) {
       if (isConflict(err)) {
         ctx.logger.info('conversation_bind_kept_newer', { site: opts.site, sessionId: input.sessionId });
-      } else {
-        ctx.logger.warn(opts.failLog, { ...opts.failFields, ...errorLogFields(err) });
+        return 'kept-newer';
       }
+      ctx.logger.warn(opts.failLog, { ...opts.failFields, ...errorLogFields(err) });
+      return 'failed';
     }
   }
 
@@ -3605,8 +3615,9 @@ export function createOrchestrator(
   // on it was detached just before (R30), so this ends none of those turns.
   // R19 has rebound the conversation already (to the new session, or left it
   // to a newer request), so the terminate unbinds nothing unless that bind
-  // failed. Not covered (a known gap, carded): a waiter registered there with
-  // no movable wait yet, a routed message still being queued at that instant.
+  // failed (then N2 binds a moved request over the cleared row). Not covered
+  // (a known gap, carded): a waiter registered there with no movable wait
+  // yet, a routed message still being queued at that instant.
   // It can be ended by the close (`sandbox-terminated`) and then get a second
   // turn-error from its own failed queue, or, if its queue landed first, wait
   // on a dead session until its turn timer.
@@ -3703,6 +3714,9 @@ export function createOrchestrator(
       else movedWaits.push({ reqId, wait });
     }
     let moved = false;
+    // What R19 (below) did, for N2. Undefined when R19 didn't run (no
+    // conversation, or no bind-session), and then N2 doesn't either.
+    let rebound: CompareAndBindOutcome | undefined;
     const moveWaits = async (sessionId: string): Promise<void> => {
       moved = true;
       let lastMoved: string | undefined;
@@ -3733,13 +3747,20 @@ export function createOrchestrator(
       // writer (a POST that read the old session) bound the old session after
       // R19, and the old session's terminate cleared it. That newer request is
       // opening its own sandbox and must own the row, so N2 leaves it.
+      // Unless R19 failed (not a conflict: a database error, say). Then the
+      // row kept the old session and that session's terminate cleared it, so
+      // an unbound row is the write R19 never made, and N2 binds as R19 would
+      // have: over the old session, or an unbound row. Left unbound, the moved
+      // request would run off the row, where the idle reaper (it reads only
+      // the row) can reap it mid-turn and Stop and a reconnect can't find it.
       if (lastMoved !== undefined && conversationId !== undefined && bus.hasService('conversations:bind-session')) {
+        const inR19sPlace = rebound === 'failed';
         await compareAndBind(
           restartCtx,
           { conversationId, sessionId, reqId: lastMoved },
           {
-            expected: sessionId,
-            orUnbound: false,
+            expected: inR19sPlace ? pending.sessionId : sessionId,
+            orUnbound: inR19sPlace,
             site: 'restart-moved',
             failLog: 'conversation_bind_failed_restart',
             failFields: { movedReqId: lastMoved },
@@ -3764,9 +3785,10 @@ export function createOrchestrator(
     // TASK-1226 — only over the old session, or over a row left unbound (the
     // old sandbox died and its terminate cleared it). A newer request that
     // bound its own sandbox meanwhile keeps the row; this request still
-    // finishes in the new sandbox.
+    // finishes in the new sandbox. If this bind fails outright, N2 binds in
+    // its place when a request moves (moveWaits).
     if (conversationId !== undefined && bus.hasService('conversations:bind-session')) {
-      await compareAndBind(
+      rebound = await compareAndBind(
         ctx,
         { conversationId, sessionId: restartCtx.sessionId, reqId: ctx.reqId },
         {
