@@ -314,9 +314,9 @@ export function AgentConnectors({
                 <ListRow
                   key={row.id}
                   title={row.name}
-                  meta={statusLine}
-                  // U+2068/U+2069 isolate a provider-supplied account (it may be right-to-left) from the words around it.
-                  {...(account !== null ? { description: `Signed in as \u2068${account}\u2069` } : {})}
+                  description={statusLine}
+                  // <bdi> isolates a provider-supplied account (it may be right-to-left) from the words around it.
+                  {...(account !== null ? { meta: <>Signed in as <bdi>{account}</bdi></> } : {})}
                   leading={<Plug aria-hidden="true" />}
                   {...(onView !== undefined ? { onOpen: () => onView(row.id) } : {})}
                   trailing={

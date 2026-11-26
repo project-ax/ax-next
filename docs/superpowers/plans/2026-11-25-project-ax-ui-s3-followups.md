@@ -51,4 +51,6 @@ Gaps in `ListRow` and friends that S4 found but did not fill. None loses functio
 - **`expandable` is not controllable.** `RoutinesList` and `DecisionRow` need the parent to open or close a row, so they own their own toggles.
 - **No `aria-controls` on the `RoutinesList` runs toggle.** The button says it is expanded but does not point at what it expands.
 - **`HeadingLevelContext` is not public.** Three raw `h1`/`h3` in channel-web wait on it.
+- **`Timeline` has no non-entry item slot.** `TaskUpdates`' fold needs a raw `<li>`.
+- **`BundleFileView`'s selectable file list is another "current item" gap** for `ListRow`, like `SidebarChats`.
 - **Frozen raw `ul`/`li`/`dl`/`time` outside chat.** Widening `no-raw-elements` froze them in admin, settings and workspace files that S5/S6 will migrate, plus chat and markdown (S7). The ratchet only lets those counts fall.

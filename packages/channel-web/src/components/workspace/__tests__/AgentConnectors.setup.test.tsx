@@ -419,8 +419,11 @@ describe('which account the agent uses (slice 4)', () => {
     renderTab();
     const title = await screen.findByRole('button', { name: 'Gmail' });
     const li = title.closest('li')!;
-    // Isolated (U+2068 .. U+2069) so a right-to-left account can't reorder the words around it.
-    expect(within(li).getByText(/Signed in as/).textContent).toBe(`Signed in as \u2068${evil}\u2069`);
+    // Isolated in a <bdi> so a right-to-left account can't reorder the words around it.
+    const bdi = li.querySelector('bdi');
+    expect(bdi).not.toBeNull();
+    expect(bdi!.textContent).toBe(evil);
+    expect(within(li).getByText(/Signed in as/).textContent).toBe(`Signed in as ${evil}`);
     expect(li.querySelector('img')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
   });

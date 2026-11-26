@@ -38,9 +38,11 @@ function sources(): Array<{ file: string; src: string }> {
   return out;
 }
 
-const WAITING_DOT = /rounded-full\s+bg-warning/;
+// `rounded-full` and `bg-warning` in either order inside one quoted class string.
+const WAITING_DOT = /(['"`])(?:(?!\1)[^])*?(?:rounded-full(?:(?!\1)[^])*?bg-warning|bg-warning(?:(?!\1)[^])*?rounded-full)/;
 const OWN_DIVIDER = /divide-y|last:border-b-0/;
-const HAND_FORMATTED_MOMENT = /\.toLocale(Date|Time)?String\(/;
+const HAND_FORMATTED_MOMENT =
+  /\.toLocale(?:Date|Time)?String\(|\[\s*['"`]toLocale(?:Date|Time)?String['"`]\s*\]|\bIntl\s*\.\s*(?:DateTimeFormat|RelativeTimeFormat)\b/;
 
 /** Exact files that may call toLocale*String( — and why. Anything else fails. */
 const LOCALE_KEEPERS: Record<string, string> = {
@@ -49,6 +51,9 @@ const LOCALE_KEEPERS: Record<string, string> = {
   'components/admin/BundleDiffView.tsx': 'a count of hidden diff lines',
   'lib/storage-copy.ts': 'counts in storage sentences',
   'lib/usage-copy.ts': 'dollar and token amounts',
+  'lib/task-row-line.ts': 'Intl.DateTimeFormat in UTC: a calendar-day label for a schedule, not a moment',
+  'lib/task-meta.ts': 'Intl.DateTimeFormat in UTC: a calendar-day label, not a moment',
+  'lib/task-finish-by.ts': 'Intl.DateTimeFormat in UTC: a calendar-day "finish by" date, not a moment',
 };
 
 /** Exact files that may use divide-y / last:border-b-0 — and why. Currently none. */
@@ -84,9 +89,12 @@ describe('rows and status', () => {
   });
 
   it('the patterns bite', () => {
-    for (const bad of ['h-2 w-2 rounded-full bg-warning', 'rounded-full  bg-warning']) expect(WAITING_DOT.test(bad), bad).toBe(true);
+    for (const bad of ['"h-2 w-2 rounded-full bg-warning"', '"rounded-full  bg-warning"', '"bg-warning h-2 rounded-full"', "`size-2 bg-warning/80 rounded-full`"]) {
+      expect(WAITING_DOT.test(bad), bad).toBe(true);
+    }
+    expect(WAITING_DOT.test('"rounded-full bg-muted" + "bg-warning"')).toBe(false);
     for (const bad of ['<ul className="divide-y">', 'className="border-b last:border-b-0"']) expect(OWN_DIVIDER.test(bad), bad).toBe(true);
-    for (const bad of ['d.toLocaleString()', 'd.toLocaleDateString("en")', 'd.toLocaleTimeString(undefined, {})']) {
+    for (const bad of ['d.toLocaleString()', 'd.toLocaleDateString("en")', 'd.toLocaleTimeString(undefined, {})', "d['toLocaleString']()", 'new Intl.DateTimeFormat("en")', 'new Intl.RelativeTimeFormat()']) {
       expect(HAND_FORMATTED_MOMENT.test(bad), bad).toBe(true);
     }
     expect(WAITING_DOT.test('rounded-full bg-muted')).toBe(false);
