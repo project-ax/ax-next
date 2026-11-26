@@ -14,3 +14,5 @@ export { ConfirmAction, type ConfirmActionProps, type ConfirmActionTone, type Co
 export { toast, ToastRegion, type ToastInput, type ToastTone } from './components/Toast.js';
 export { StatusMark, type StatusMarkProps, type StatusTone } from './components/StatusMark.js';
 export { StatusBadge, type StatusBadgeProps } from './components/StatusBadge.js';
+export { Timestamp, type TimestampProps, type TimestampStyle } from './components/Timestamp.js';
+export { formatTimestamp, formatFullTimestamp } from './internal/time.js';
