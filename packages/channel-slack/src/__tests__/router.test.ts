@@ -1823,6 +1823,35 @@ describe('createEventRouter: turns that fail', () => {
   });
 
   /*
+    The cap can fire while the reply waits for a terminated turn's own
+    turn-error (TURN_ERROR_WAIT_MS). That turn has already ended, so there is
+    nothing to stop, and its reason is known: the reply ends as the
+    terminated outcome says, never as a timeout.
+  */
+  it('the cap firing while a terminated turn waits for its turn-error: that reason, and no interrupt', async () => {
+    vi.useFakeTimers();
+    const answered = deferred();
+    const w = world();
+    w.scripts.push({ gate: answered.promise, end: 'none', outcome: { kind: 'terminated', reason: 'dev-service-failed' } });
+    await w.dispatch(INSTALL, dm());
+    await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS - 1000);
+    // The invoke answers terminated a second before the cap, inside the wait.
+    answered.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(1000).toBeLessThan(TURN_ERROR_WAIT_MS);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(w.interrupts).toEqual([]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['dev-service-failed']);
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'terminated', code: 'dev-service-failed' } },
+    ]);
+    expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  /*
     The lane is held until the stop has been answered. Released first, the
     next queued DM in the thread would start while the stop was still on its
     way, and the orchestrator — which stops "the conversation's in-flight

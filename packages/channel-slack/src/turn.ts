@@ -115,7 +115,9 @@ import type { PermissionIn, StreamChunkIn, TurnErrorIn, TurnRegistry } from './t
  *     (complete; counted from the turn's last chunk when one came after the
  *     invoke answered, since an invoke can answer before its turn has
  *     begun: `armGrace`);
- *   - or TURN_HARD_CAP_MS (error).
+ *   - or TURN_HARD_CAP_MS (error), unless it comes while the reply waits
+ *     after a terminated outcome: that turn has ended, so nothing is
+ *     stopped, and the reply ends as the outcome says.
  *
  * A failure with no reason (a thrown invoke) ends with the generic line.
  * The cap is a timeout, so it ends with the sentence the web says for one
@@ -864,6 +866,13 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     cap = d.clock.setTimeout(() => {
       // A turn that already ended is not stopped again.
       if (decided) return;
+      // Nor is one whose invoke answered terminated while the reply waits for
+      // its turn-error: it has ended, and its reason is known, so the reply
+      // ends as that says, not as a timeout.
+      if (terminated !== null) {
+        decide(endTerminated(terminated));
+        return;
+      }
       // A timeout, said as the web says the orchestrator's own (TASK-1250).
       decide({ outcome: 'error', fail: { reason: 'timeout' }, turnError: { reason: CAP_REASON } });
       // Sent now, not after the reply: the turn is still burning until it lands.
