@@ -73,9 +73,21 @@ describe('SHARING_COPY', () => {
     }
   });
 
-  it('the two refusals the UI prevents do not blame the page or tell people to reload', () => {
+  it('the two refusals the UI prevents do not blame an out-of-date page', () => {
+    // Neither can come from a stale page (the picker and the owners dialog
+    // never build those bodies), so neither may claim that cause.
     for (const text of [SHARING_COPY.errors.duplicatePerson, SHARING_COPY.errors.creatorRequired]) {
-      expect(text).not.toMatch(/reload/i);
+      expect(text).not.toMatch(/out of date|latest|already on the list|always stays/i);
+    }
+  });
+
+  it('the two refusals the UI prevents do not promise that saving again works', () => {
+    // Saving the same draft again sends the same body and is refused the same
+    // way, so neither line may say "try again". Reloading rebuilds the page's
+    // state, which is the honest way out of a bug.
+    for (const text of [SHARING_COPY.errors.duplicatePerson, SHARING_COPY.errors.creatorRequired]) {
+      expect(text).not.toMatch(/try again|retry/i);
+      expect(text).toMatch(/reload/i);
     }
   });
 

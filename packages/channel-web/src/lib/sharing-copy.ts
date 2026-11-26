@@ -162,10 +162,16 @@ export const SHARING_COPY = {
     forbidden: (agent: string): string =>
       `Only ${agent}'s owners can change who can use it. Ask one of them if you need a change.`,
     unknownPerson: "We couldn't find someone you picked. Search for them again, then save.",
-    /** The server refuses only a body that names someone twice, which the picker never builds: a bug, not something to act on. */
-    duplicatePerson: 'Something went wrong saving that list. Try again.',
+    /**
+     * The server refuses only a body that names someone twice, which the picker
+     * never builds: a bug, not a stale page. Saving the same draft again is
+     * refused the same way, so this never says "try again"; a reload rebuilds it.
+     */
+    duplicatePerson:
+      'Something went wrong saving that list. Reload the page and pick the people again.',
     /** Likewise a body without the creator, which the owners dialog never builds. */
-    creatorRequired: 'Something went wrong saving that list. Try again.',
+    creatorRequired:
+      'Something went wrong saving that list. Reload the page and pick the people again.',
     accountsUnavailable: "We can't look people up right now. Try again in a moment.",
     notFound: (agent: string): string => `We can't find ${agent}. It may have been deleted.`,
     generic: "That didn't save. Try again in a moment.",

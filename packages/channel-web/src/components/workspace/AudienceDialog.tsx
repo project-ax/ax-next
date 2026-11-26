@@ -194,7 +194,9 @@ function OpenAudienceDialog({
         setError(
           e instanceof HttpError && e.status === 404
             ? SHARING_COPY.errors.notFound(agentName)
-            : SHARING_COPY.errors.generic,
+            : e instanceof HttpError && e.status === 403
+              ? SHARING_COPY.errors.forbidden(agentName)
+              : SHARING_COPY.errors.generic,
         );
         setSaving(false);
       }

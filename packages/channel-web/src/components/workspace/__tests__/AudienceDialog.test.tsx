@@ -160,6 +160,13 @@ describe('AudienceDialog — what a failed read says', () => {
     expect(setAudienceMock).not.toHaveBeenCalled();
   });
 
+  it('a 403 says only its owners can change it (no longer an owner, say)', async () => {
+    const dialog = await saveWithRead(() => Promise.reject(new HttpError('/admin/agents/a1', 403)));
+    expect(await within(dialog).findByText(SHARING_COPY.errors.forbidden('Juniper'))).toBeTruthy();
+    expect(within(dialog).queryByText(SHARING_COPY.errors.generic)).toBeNull();
+    expect(setAudienceMock).not.toHaveBeenCalled();
+  });
+
   it('an answer without sharing says only its owners can change it', async () => {
     const { sharing: _sharing, ...noSharing } = agentNow({ kind: 'everyone' });
     const dialog = await saveWithRead(() => Promise.resolve(noSharing as AdminAgent));
