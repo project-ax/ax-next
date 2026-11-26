@@ -111,6 +111,12 @@ async function setup(opts: {
    * be followed by a second one, so a hook that moves the row acts once.
    */
   onBind?: (input: BindInput, row: Row) => void;
+  /** Hold every proxy:close-session (recorded in `proxyCloses` first) until this resolves. */
+  proxyCloseGate?: Promise<void>;
+  /** Hold every session:terminate until this resolves, before it changes anything. */
+  terminateGate?: Promise<void>;
+  /** session:terminate of this session throws, before it changes anything. */
+  terminateFailsFor?: string;
 } = {}) {
   const rows: Record<string, Row> = {};
   for (const [id, r] of Object.entries(opts.rows ?? {})) {
@@ -136,6 +142,10 @@ async function setup(opts: {
   const registeredTools: string[] = [];
   /** Every conversations:bind-session input, in call order. */
   const binds: BindInput[] = [];
+  /** Every proxy:close-session, by session, in call order. */
+  const proxyCloses: string[] = [];
+  /** The sessions terminated when each `queued` entry was handed over (same index). */
+  const terminatedAtQueue: string[][] = [];
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...AGENT } }),
@@ -159,12 +169,16 @@ async function setup(opts: {
     }),
     'session:queue-work': async (_c, input: unknown) => {
       const q = input as (typeof queued)[number];
+      const terminatedSoFar = [...terminated];
       if (q.entry.type === 'host-note' && opts.noteGate !== undefined) await opts.noteGate;
       queued.push(q);
+      terminatedAtQueue.push(terminatedSoFar);
       return { cursor: queued.length };
     },
     'session:terminate': async (c, input: unknown) => {
       const sessionId = (input as { sessionId: string }).sessionId;
+      if (opts.terminateGate !== undefined) await opts.terminateGate;
+      if (opts.terminateFailsFor === sessionId) throw new Error('terminate failed');
       terminated.push(sessionId);
       live.delete(sessionId);
       // @ax/conversations' session:terminate subscriber: clear rows still bound to it.
@@ -244,7 +258,11 @@ async function setup(opts: {
         }
       : {}),
     'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
-    'proxy:close-session': async () => ({}),
+    'proxy:close-session': async (_c, input: unknown) => {
+      proxyCloses.push((input as { sessionId: string }).sessionId);
+      if (opts.proxyCloseGate !== undefined) await opts.proxyCloseGate;
+      return {};
+    },
     // The tool catalog (@ax/mcp-client's dispatcher): what agents are offered.
     'tool:register': async (_c, input: unknown) => {
       registeredTools.push((input as { name: string }).name);
@@ -257,6 +275,8 @@ async function setup(opts: {
     plugins: [createChatOrchestratorPlugin({
       runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: opts.chatTimeoutMs ?? 60_000,
       keepAlive: opts.keepAlive ?? true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      // A gated close must never hit the bound (the wait would end on its own).
+      ...(opts.proxyCloseGate !== undefined ? { proxyCloseTimeoutMs: 60_000 } : {}),
       ...(opts.onDemandConfig === 'omit'
         ? {}
         : {
@@ -348,6 +368,7 @@ async function setup(opts: {
   return {
     h, rows, row, opens, handles, queued, terminated, setServiceSetCalls, turnEnds, segmentEnds, turnErrors,
     activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes, registeredTools, binds,
+    proxyCloses, terminatedAtQueue,
   };
 }
 
@@ -1099,6 +1120,83 @@ describe('restart_with_services (dev services on demand)', () => {
       expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: 's-1' }]);
       await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
       await p1;
+    });
+  });
+
+  // TASK-1225 — the old session's terminate is what cuts the old runner off:
+  // its token stops authenticating and its inbox serves nothing more. A slow
+  // proxy close (up to proxyCloseTimeoutMs) must not hold that up, and no
+  // message may move to the new sandbox before it.
+  describe('TASK-1225: the swap cuts the old sandbox off without waiting for its proxy', () => {
+    it('the swap revokes the old session while its proxy close is still pending', async () => {
+      let releaseClose!: () => void;
+      const t = await setup({ proxyCloseGate: new Promise<void>((r) => { releaseClose = r; }) });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.proxyCloses.includes('s-1'), 'the old proxy close');
+      await waitFor(() => t.terminated.includes('s-1'), 'old session revoked before its proxy close returns');
+
+      releaseClose();
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.handles.get('s-1')!.state.kills).toBe(1);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    it('a moved message is queued only after the old session is revoked (guard)', async () => {
+      // The terminate is held a while: a swap that moved without waiting for
+      // it would queue to the new sandbox in the meantime.
+      let releaseTerminate!: () => void;
+      const t = await setup({ terminateGate: new Promise<void>((r) => { releaseTerminate = r; }) });
+      const { p1, p2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      for (let i = 0; i < 50; i++) await flush();
+      releaseTerminate();
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+
+      const toFresh = t.queued.flatMap((q, i) =>
+        q.sessionId === fresh ? [{ type: q.entry.type, afterRevoke: t.terminatedAtQueue[i]!.includes('s-1') }] : [],
+      );
+      expect(toFresh).toEqual([
+        { type: 'host-note', afterRevoke: true },
+        { type: 'user-message', afterRevoke: true },
+      ]);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      expect(await Promise.all([p1, p2])).toEqual([
+        { kind: 'complete', messages: [] },
+        { kind: 'complete', messages: [] },
+      ]);
+    });
+
+    it('a failing terminate still closes the old proxy, kills the old sandbox, and the swap completes', async () => {
+      // The close is held so the swap's own close can be told from the one
+      // the old sandbox's exit watcher sends after the kill.
+      let releaseClose!: () => void;
+      const t = await setup({
+        terminateFailsFor: 's-1',
+        proxyCloseGate: new Promise<void>((r) => { releaseClose = r; }),
+      });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.proxyCloses.includes('s-1'), 'the old proxy close');
+      expect(t.handles.get('s-1')!.state.kills).toBe(0); // the swap's own close, before the kill
+
+      releaseClose();
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      expect(t.handles.get('s-1')!.state.kills).toBe(1);
+      expect(t.logs.some((l) => l.includes('service_restart_terminate_failed'))).toBe(true);
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnErrors).toEqual([]);
     });
   });
 });

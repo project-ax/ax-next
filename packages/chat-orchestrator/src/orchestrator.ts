@@ -1552,7 +1552,8 @@ export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
  *
  * What the bound does NOT do: cancel the close. The call keeps running and
  * still revokes the session when it lands (a late failure is still logged).
- * `session:terminate` follows regardless, and the exit watcher's close on
+ * `session:terminate` follows regardless (a services restart runs it
+ * alongside the close instead, TASK-1225), and the exit watcher's close on
  * `handle.exited` is a second attempt — close is idempotent.
  */
 export const PROXY_CLOSE_TIMEOUT_MS = 10_000;
@@ -3599,13 +3600,24 @@ export function createOrchestrator(
 
   // Step 3 of the restart: close the old sandbox. The restarting request's
   // waiter is settled and unregistered by now, and every other movable wait
-  // on it was detached just before (R30); the conversation already names the
-  // new session. So this ends none of those turns and unbinds nothing. Not
-  // covered (a known gap, carded): a waiter registered there with no movable
-  // wait yet, a routed message still being queued at that instant. It can be
-  // ended by the close (`sandbox-terminated`) and then get a second turn-error
-  // from its own failed queue, or, if its queue landed first, wait on a dead
-  // session until its turn timer. Mirrors the routing retire.
+  // on it was detached just before (R30), so this ends none of those turns.
+  // R19 has rebound the conversation already (to the new session, or left it
+  // to a newer request), so the terminate unbinds nothing unless that bind
+  // failed. Not covered (a known gap, carded): a waiter registered there with
+  // no movable wait yet, a routed message still being queued at that instant.
+  // It can be ended by the close (`sandbox-terminated`) and then get a second
+  // turn-error from its own failed queue, or, if its queue landed first, wait
+  // on a dead session until its turn timer.
+  //
+  // TASK-1225 — unlike the routing retire, the proxy close and the terminate
+  // start together. The terminate is what cuts the old runner off (its token
+  // stops authenticating, its inbox hands out nothing more), so a slow close
+  // (bounded at `proxyCloseTimeoutMs`, TASK-878) must not hold it up, and a
+  // hung terminate still can't hold up the close (TASK-871's reason for
+  // closing first). Both are awaited before the kill and before the caller
+  // moves any message to the new sandbox, so a move always comes after the
+  // revocation. Neither rejects: a failed terminate is logged, and the close,
+  // the kill and the swap go on.
   async function closeSandboxForServiceRestart(ctx: AgentContext, oldSessionId: string): Promise<void> {
     clearReapTimers(oldSessionId);
     const entry = warmSessions.get(oldSessionId);
@@ -3617,15 +3629,18 @@ export function createOrchestrator(
     forgetSessionConnectors(oldSessionId);
     forgetSessionServices(oldSessionId);
     const oldCtx: AgentContext = { ...ctx, sessionId: oldSessionId };
-    if (bus.hasService('proxy:close-session')) {
-      await closeProxySession(oldCtx, oldSessionId, 'retire');
-    }
-    try {
-      await bus.call('session:terminate', oldCtx, { sessionId: oldSessionId });
-      spawnModeBySession.delete(oldSessionId);
-    } catch (err) {
-      ctx.logger.warn('service_restart_terminate_failed', { sessionId: oldSessionId, ...errorLogFields(err) });
-    }
+    const revoke = async (): Promise<void> => {
+      try {
+        await bus.call('session:terminate', oldCtx, { sessionId: oldSessionId });
+        spawnModeBySession.delete(oldSessionId);
+      } catch (err) {
+        ctx.logger.warn('service_restart_terminate_failed', { sessionId: oldSessionId, ...errorLogFields(err) });
+      }
+    };
+    await Promise.all([
+      bus.hasService('proxy:close-session') ? closeProxySession(oldCtx, oldSessionId, 'retire') : undefined,
+      revoke(),
+    ]);
     // A sandbox this host opened is killed too, so nothing of it lingers
     // until its runner notices its token is gone.
     if (entry !== undefined) void entry.handle.kill().catch(() => undefined);
@@ -3664,8 +3679,16 @@ export function createOrchestrator(
     // this one ran) are detached BEFORE it closes, so closing it ends none of
     // them. One the runner folded into the held segment was answered by it
     // and settles with this request; any other is moved to the new sandbox,
-    // its message queued behind the note. A waiter with no movable wait yet
-    // (its message still being queued) is left as is.
+    // its message queued behind the note. Not folded doesn't mean unclaimed:
+    // the runner keeps an inbox read open, so it has usually claimed such a
+    // message already and would run it next. It is moved anyway, so the
+    // person gets an answer from the sandbox that stays (TASK-1225). The old
+    // runner is cut off one rebind after its segment ended (the terminate in
+    // closeSandboxForServiceRestart, which the move waits for): from then on
+    // its token is refused and its inbox hands it nothing. What it posts for a
+    // message it read ahead can reach the host only before that (an accepted
+    // residual: the TASK-1224 decisions shard, TASK-1225 rows). A waiter with
+    // no movable wait yet (its message still being queued) is left as is.
     const folded = new Set(pending.foldedReqIds);
     const foldedWaits: MovableWait[] = [];
     const movedWaits: Array<{ reqId: string; wait: MovableWait }> = [];
