@@ -16,6 +16,7 @@ import type {
   BindSessionInput,
   CreateInput,
   CreateOutput,
+  DeleteInput,
   GetInput,
   GetOutput,
   UnbindSessionInput,
@@ -465,5 +466,197 @@ describe('@ax/conversations active_session_id lifecycle (J6)', () => {
         { conversationId: created.conversationId, sessionId: '', reqId: 'r1' },
       ),
     ).rejects.toBeInstanceOf(PluginError);
+  });
+
+  // TASK-1226 — a late bind (a services restart's rebinds, a cold spawn's
+  // bind after a long open) must not take the row back from a newer request
+  // that bound its own session in the meantime. `expectedSessionId` makes the
+  // bind a strict compare-and-set on the bound session.
+  describe('bind-session with expectedSessionId (TASK-1226)', () => {
+    async function boundConversation(h: TestHarness): Promise<string> {
+      const created = await h.bus.call<CreateInput, CreateOutput>(
+        'conversations:create',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', agentId: 'agt_a' },
+      );
+      await h.bus.call<BindSessionInput, void>(
+        'conversations:bind-session',
+        h.ctx({ userId: 'userA' }),
+        {
+          conversationId: created.conversationId,
+          sessionId: 'sess-current',
+          reqId: 'r1',
+        },
+      );
+      return created.conversationId;
+    }
+
+    async function active(
+      h: TestHarness,
+      conversationId: string,
+    ): Promise<{ sessionId: string | null; reqId: string | null }> {
+      const got = await h.bus.call<GetInput, GetOutput>(
+        'conversations:get',
+        h.ctx({ userId: 'userA' }),
+        { conversationId, userId: 'userA' },
+      );
+      return {
+        sessionId: got.conversation.activeSessionId,
+        reqId: got.conversation.activeReqId,
+      };
+    }
+
+    it('bind-session with a stale expectedSessionId throws conflict and leaves the row alone', async () => {
+      const h = await makeHarness();
+      const conversationId = await boundConversation(h);
+
+      // A different session, and "no session bound": both are stale now.
+      for (const expectedSessionId of ['s0', null]) {
+        const err = await h.bus
+          .call<BindSessionInput, void>(
+            'conversations:bind-session',
+            h.ctx({ userId: 'userA' }),
+            { conversationId, sessionId: 's2', reqId: 'r2', expectedSessionId },
+          )
+          .then(
+            () => undefined,
+            (e: unknown) => e,
+          );
+        expect(err).toMatchObject({
+          code: 'conflict',
+          plugin: '@ax/conversations',
+          hookName: 'conversations:bind-session',
+        });
+        // Whose session holds the row is not the caller's to learn here.
+        expect(String((err as Error).message)).not.toContain('sess-current');
+      }
+
+      expect(await active(h, conversationId)).toEqual({
+        sessionId: 'sess-current',
+        reqId: 'r1',
+      });
+    });
+
+    it('bind-session with expectedSessionId binds when the row still names it', async () => {
+      const h = await makeHarness();
+      const conversationId = await boundConversation(h);
+
+      await h.bus.call<BindSessionInput, void>(
+        'conversations:bind-session',
+        h.ctx({ userId: 'userA' }),
+        {
+          conversationId,
+          sessionId: 's2',
+          reqId: 'r2',
+          expectedSessionId: 'sess-current',
+        },
+      );
+
+      expect(await active(h, conversationId)).toEqual({
+        sessionId: 's2',
+        reqId: 'r2',
+      });
+    });
+
+    it('bind-session with expectedSessionId: null binds an unbound row', async () => {
+      const h = await makeHarness();
+      const created = await h.bus.call<CreateInput, CreateOutput>(
+        'conversations:create',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', agentId: 'agt_a' },
+      );
+
+      await h.bus.call<BindSessionInput, void>(
+        'conversations:bind-session',
+        h.ctx({ userId: 'userA' }),
+        {
+          conversationId: created.conversationId,
+          sessionId: 's2',
+          reqId: 'r2',
+          expectedSessionId: null,
+        },
+      );
+
+      expect(await active(h, created.conversationId)).toEqual({
+        sessionId: 's2',
+        reqId: 'r2',
+      });
+    });
+
+    it('bind-session with expectedSessionId on a foreign row is not-found, not conflict', async () => {
+      const h = await makeHarness();
+      const conversationId = await boundConversation(h);
+
+      // Both a matching and a non-matching expectation: userB learns nothing
+      // about userA's row either way.
+      for (const expectedSessionId of ['sess-current', 's0', null]) {
+        await expect(
+          h.bus.call<BindSessionInput, void>(
+            'conversations:bind-session',
+            h.ctx({ userId: 'userB' }),
+            { conversationId, sessionId: 's2', reqId: 'r2', expectedSessionId },
+          ),
+        ).rejects.toMatchObject({
+          code: 'not-found',
+          plugin: '@ax/conversations',
+        });
+      }
+
+      expect(await active(h, conversationId)).toEqual({
+        sessionId: 'sess-current',
+        reqId: 'r1',
+      });
+    });
+
+    it('bind-session with expectedSessionId on a deleted row is not-found, not conflict', async () => {
+      const h = await makeHarness();
+      const conversationId = await boundConversation(h);
+      await h.bus.call<DeleteInput, void>(
+        'conversations:delete',
+        h.ctx({ userId: 'userA' }),
+        { conversationId, userId: 'userA' },
+      );
+
+      for (const expectedSessionId of ['sess-current', 's0', null]) {
+        await expect(
+          h.bus.call<BindSessionInput, void>(
+            'conversations:bind-session',
+            h.ctx({ userId: 'userA' }),
+            { conversationId, sessionId: 's2', reqId: 'r2', expectedSessionId },
+          ),
+        ).rejects.toMatchObject({
+          code: 'not-found',
+          plugin: '@ax/conversations',
+        });
+      }
+    });
+
+    it('bind-session rejects an empty or oversized expectedSessionId', async () => {
+      const h = await makeHarness();
+      const conversationId = await boundConversation(h);
+
+      for (const expectedSessionId of ['', 'x'.repeat(257), 7]) {
+        await expect(
+          h.bus.call<BindSessionInput, void>(
+            'conversations:bind-session',
+            h.ctx({ userId: 'userA' }),
+            {
+              conversationId,
+              sessionId: 's2',
+              reqId: 'r2',
+              expectedSessionId: expectedSessionId as string,
+            },
+          ),
+        ).rejects.toMatchObject({
+          code: 'invalid-payload',
+          plugin: '@ax/conversations',
+        });
+      }
+
+      expect(await active(h, conversationId)).toEqual({
+        sessionId: 'sess-current',
+        reqId: 'r1',
+      });
+    });
   });
 });

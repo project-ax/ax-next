@@ -269,6 +269,9 @@ export type StoreRunnerSessionResult =
   | 'conflict'
   | 'not-found';
 
+/** Result of `setActiveSession`; see its doc on `ConversationStore`. */
+export type SetActiveSessionResult = 'bound' | 'conflict' | 'not-found';
+
 /**
  * Phase A (routines foundation, 2026-05-14). Input for the store-level
  * find-or-create operation. `fallback` holds the fields used when
@@ -310,9 +313,14 @@ export interface ConversationStore {
   softDelete(conversationId: string): Promise<boolean>;
   /**
    * Set `active_session_id` + `active_req_id` atomically on the row
-   * matching `(conversationId, userId)`. Returns true if a non-tombstoned
-   * row was updated, false otherwise (including foreign-user rows). The
-   * plugin-level handler turns false into PluginError('not-found') (J6).
+   * matching `(conversationId, userId)`. Returns:
+   *   - bound:     a non-tombstoned row was updated.
+   *   - conflict:  `expectedSessionId` was given and the row's
+   *                `active_session_id` is not exactly that value (`null` =
+   *                no session bound); nothing was written (TASK-1226).
+   *   - not-found: no non-tombstoned row for `(conversationId, userId)`,
+   *                including foreign-user rows (never `conflict`).
+   * The plugin-level handler turns the last two into PluginErrors (J6).
    */
   setActiveSession(args: {
     conversationId: string;
@@ -325,7 +333,11 @@ export interface ConversationStore {
      * leaves the column untouched (callers that genuinely don't know).
      */
     runnerType?: string | null;
-  }): Promise<boolean>;
+    /**
+     * Compare-and-set guard on `active_session_id`. Omitted = unconditional.
+     */
+    expectedSessionId?: string | null;
+  }): Promise<SetActiveSessionResult>;
   /**
    * Clear `active_session_id` + `active_req_id` on the row matching
    * `(conversationId, userId)`. Returns true if a non-tombstoned row was
@@ -816,12 +828,13 @@ export function createConversationStore(
       sessionId,
       reqId,
       runnerType,
+      expectedSessionId,
     }) {
       // Filter by user_id alongside conversation_id so a foreign caller
       // can never bind a row they don't own. Non-existence + foreign-user
       // both look identical from the caller's perspective: numUpdatedRows
       // === 0 → 'not-found' at the plugin layer.
-      const result = await db
+      let q = db
         .updateTable('conversations_v1_conversations')
         .set({
           active_session_id: sessionId,
@@ -836,9 +849,29 @@ export function createConversationStore(
         })
         .where('conversation_id', '=', conversationId)
         .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null);
+      // TASK-1226: compare-and-set on the bound session, in the same UPDATE,
+      // so a newer binding that landed first is never overwritten.
+      if (expectedSessionId === null) {
+        q = q.where('active_session_id', 'is', null);
+      } else if (expectedSessionId !== undefined) {
+        q = q.where('active_session_id', '=', expectedSessionId);
+      }
+      const result = await q.executeTakeFirst();
+      if (Number(result.numUpdatedRows ?? 0n) > 0) return 'bound';
+      if (expectedSessionId === undefined) return 'not-found';
+      // Zero rows under the condition: either there is no row this caller
+      // can see, or it names another session. Re-read with the same scoping
+      // to tell them apart (the storeRunnerSession pattern), so a foreign or
+      // tombstoned row still reads as not-found, never conflict.
+      const existing = await db
+        .selectFrom('conversations_v1_conversations')
+        .select(['conversation_id'])
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
-      return Number(result.numUpdatedRows ?? 0n) > 0;
+      return existing === undefined ? 'not-found' : 'conflict';
     },
 
     async clearActiveSession({ conversationId, userId }) {
