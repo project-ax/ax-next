@@ -67,6 +67,7 @@ describe('StatusBadge', () => {
     const text = screen.getByText(long);
     // The badge itself caps at its container (nowrap text would otherwise force it wider than 390px).
     expect(text.parentElement?.className).toContain('ax-max-w-full');
+    expect(text.parentElement?.className).toContain('ax-box-border');
     expect(text.className).toContain('ax-truncate');
     expect(text.getAttribute('title')).toBe(long);
   });

@@ -40,6 +40,9 @@
 .ax-mt-xs {
     margin-top: var(--ax-space-xs)
 }
+.ax-box-border {
+    box-sizing: border-box
+}
 .ax-block {
     display: block
 }

@@ -20,7 +20,7 @@ export function StatusBadge({ tone, dot, size = 'md', children }: StatusBadgePro
   return (
     <span
       className={cx(
-        'ax-inline-flex ax-max-w-full ax-min-w-none ax-items-center ax-gap-xs ax-rounded-full ax-text-caption ax-font-sans',
+        'ax-box-border ax-inline-flex ax-max-w-full ax-min-w-none ax-items-center ax-gap-xs ax-rounded-full ax-text-caption ax-font-sans',
         BADGE_TONE[tone],
         SIZE[size],
       )}
