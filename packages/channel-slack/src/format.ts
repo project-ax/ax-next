@@ -190,9 +190,19 @@ export function cleanPromptSubject(raw: string): string {
  * `<url|label>` shows literally there, yet `<!channel>` broadcast there in
  * TASK-1134's walk: which of its own tokens Slack reads is Slack's to
  * change.) So every `<` and every `](` gets a zero-width space after it too,
- * and no Slack token, autolink, HTML tag, or Markdown link or image can form.
- * A bare URL stays clickable: it shows its own target, as it does in model
- * text.
+ * and no Slack token, inline link, image, autolink or tag can form in the
+ * line itself. A bare URL stays clickable: it shows its own target, as it
+ * does in model text.
+ *
+ * One residual: a Markdown reference link. A bracketed name in the line
+ * (`[Gmail]`) has no `](` to mark, so a `[Gmail]: https://…` definition
+ * elsewhere in the same message could still make it a link. Nothing in this
+ * line can make that definition (it is one line, and it starts with a mark,
+ * below); it would have to come from the model's text in the same reply.
+ * Today no exit that carries a detail shares its message with model text:
+ * the reasons that carry one (a dev service that failed to start, connectors
+ * to sign in again) end a turn before the model has said anything. A new
+ * detail-carrying exit later in a turn would reopen this.
  *
  * The order matters. The cut comes first, at the web's cap (the shared
  * MAX_DETAIL_CHARS; never half an emoji), so Slack shows no more of the line

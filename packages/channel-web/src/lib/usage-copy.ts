@@ -3,7 +3,7 @@
  *
  * Numbers in, sentences out. `lib/usage-admin.ts` is the wire; the components
  * are layout; this is the wording, so a status, an amount or a failure reads
- * the same wherever it turns up — the same split `lib/turn-error-labels.ts`
+ * the same wherever it turns up — the same split `@ax/core/turn-error-text`
  * makes for the person on the other end of a limit.
  *
  * The reader is an admin who may not be technical, and the subject is money and

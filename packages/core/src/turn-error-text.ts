@@ -214,12 +214,13 @@ export function turnErrorLabel(reason: string): string | undefined {
     or `'valueOf'` — is NOT undefined: it is an inherited function, the `??`
     never fires, and the template in `turnErrorText` stringifies it into the reader's alert
     as `function Object() { [native code] }`.
-    No producer emits such a reason today (the codes are host vocabulary), so
-    this is a latent defect rather than a live one. It is fixed HERE because
-    HERE is now the only place the rule is written: every reader of an error
-    frame goes through here (`turnErrorText` calls this), so one guard covers all
-    of them. That was not
-    true when the guard was first written — `lib/transport.ts` still had its
+    The reason is not always host vocabulary: when a runner reports its own
+    failure, the orchestrator passes the runner's own text along as the
+    reason on a member's turn, so a reason here can be any string, and
+    nothing stops it being `toString`. It is fixed HERE because HERE is now
+    the only place the rule is written: every reader of an error frame goes
+    through here (`turnErrorText` calls this), so one guard covers all of
+    them. That was not true when the guard was first written — `lib/transport.ts` still had its
     own hand-copy, and therefore its own copy of this hole, until a reviewer
     caught the gap between the claim and the code. `typeof` answers it
     completely: a non-string is not a label, whatever it is and wherever it
