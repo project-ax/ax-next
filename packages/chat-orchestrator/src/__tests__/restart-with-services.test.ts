@@ -47,6 +47,15 @@ interface Row {
   serviceSet: string | null;
 }
 
+/** A `conversations:bind-session` input, as the fake records it. */
+interface BindInput {
+  conversationId: string;
+  sessionId: string;
+  reqId: string;
+  runnerType?: string;
+  expectedSessionId?: string | null;
+}
+
 function makeHandle() {
   let resolveExit!: () => void;
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
@@ -96,6 +105,12 @@ async function setup(opts: {
   /** Replaces the whole onDemandServices config (undefined key: omitted). */
   onDemandConfig?: { enabled?: boolean; maxPerAgent?: number } | 'omit';
   keepAlive?: boolean;
+  /**
+   * Runs at the start of every conversations:bind-session, before it writes:
+   * lets a test move the row just before a bind lands. A conflicting bind can
+   * be followed by a second one, so a hook that moves the row acts once.
+   */
+  onBind?: (input: BindInput, row: Row) => void;
 } = {}) {
   const rows: Record<string, Row> = {};
   for (const [id, r] of Object.entries(opts.rows ?? {})) {
@@ -119,6 +134,8 @@ async function setup(opts: {
   const activeReqClears: string[] = [];
   const logs: string[] = [];
   const registeredTools: string[] = [];
+  /** Every conversations:bind-session input, in call order. */
+  const binds: BindInput[] = [];
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...AGENT } }),
@@ -169,8 +186,16 @@ async function setup(opts: {
       return { conversation: { conversationId: i.conversationId, userId: i.userId, agentId: AGENT.id, ...r } };
     },
     'conversations:bind-session': async (_c, input: unknown) => {
-      const i = input as { conversationId: string; sessionId: string; reqId: string };
+      const i = input as BindInput;
+      binds.push({ ...i });
       const r = row(i.conversationId);
+      opts.onBind?.(i, r);
+      // @ax/conversations' compare-and-set (TASK-1226): a bind naming the
+      // session it expects (null: none bound) writes only if the row still
+      // says exactly that.
+      if (i.expectedSessionId !== undefined && r.activeSessionId !== i.expectedSessionId) {
+        throw new PluginError({ code: 'conflict', plugin: 'test', message: 'moved on' });
+      }
       r.activeSessionId = i.sessionId;
       r.activeReqId = i.reqId;
       return undefined;
@@ -309,7 +334,7 @@ async function setup(opts: {
   const notes = () => queued.filter((q) => q.entry.type === 'host-note');
   return {
     h, rows, row, opens, handles, queued, terminated, setServiceSetCalls, turnEnds, segmentEnds, turnErrors,
-    activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes, registeredTools,
+    activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes, registeredTools, binds,
   };
 }
 
@@ -879,6 +904,117 @@ describe('restart_with_services (dev services on demand)', () => {
     // Let req-1 end too (its own path watches the handle).
     await t.handles.get(fresh)!.handle.kill();
     await p1;
+  });
+
+  // TASK-1226 — the swap binds the row twice, late: R19 (the restarting
+  // request, onto the new sandbox) and N2 (the last moved request). A newer
+  // request can bind its own sandbox before either lands; taking the row back
+  // from it would orphan that sandbox.
+  describe('TASK-1226: the swap never takes the row from a newer request', () => {
+    const isRestartRebind = (i: BindInput): boolean => i.reqId === 'req-1' && i.sessionId !== 's-1';
+    const keptNewer = (t: Awaited<ReturnType<typeof setup>>, site: string): boolean =>
+      t.logs.some((l) => l.includes('conversation_bind_kept_newer') && l.includes(site));
+
+    it('the swap\'s rebind keeps a newer binding that landed first', async () => {
+      let acted = false;
+      const t = await setup({
+        onBind: (i, r) => {
+          if (acted || !isRestartRebind(i)) return;
+          acted = true;
+          r.activeSessionId = 's-newer';
+          r.activeReqId = 'req-9';
+        },
+      });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-newer', activeReqId: 'req-9' });
+      expect(keptNewer(t, 'restart-rebind')).toBe(true);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    // An unbound row at N2 means a stale writer bound the OLD session after
+    // R19 and the old session's terminate cleared it: that newer request is
+    // opening its own sandbox and must get the row, so N2 is strict.
+    for (const [label, newer] of [
+      ['a newer session', { activeSessionId: 's-newer', activeReqId: 'req-9' }],
+      ['a row a newer request is about to take', { activeSessionId: null, activeReqId: null }],
+    ] as const) {
+      it(`the moved-request bind keeps a newer binding that landed during the open (${label})`, async () => {
+        let release!: () => void;
+        const t = await setup({ openGate: { on: 2, until: new Promise<void>((r) => { release = r; }) } });
+        const { p1, p2, out1, out2 } = await restartWithQueued(t);
+        await t.endSegment('s-1', 'conv-1', 'req-1');
+        await waitFor(() => t.opens.length === 2, 'the restart opening');
+        const fresh = t.opens[1]!.sessionId;
+        Object.assign(t.row('conv-1'), newer);
+        release();
+        await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+        await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+        await flush();
+
+        expect(t.row('conv-1')).toMatchObject(newer);
+        expect(keptNewer(t, 'restart-moved')).toBe(true);
+        // Both requests still finish on the new sandbox.
+        await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+        await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+        await Promise.all([p1, p2]);
+        await flush();
+        expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+        expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+        expect(t.turnErrors).toEqual([]);
+      });
+    }
+
+    it('the swap\'s binds name the session they expect', async () => {
+      const t = await setup();
+      const { p1, p2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+
+      // R19 over the old session; N2 over the new one, which R19 just bound.
+      expect(t.binds.filter((b) => b.sessionId === fresh)).toEqual([
+        expect.objectContaining({ conversationId: 'conv-1', reqId: 'req-1', expectedSessionId: 's-1' }),
+        expect.objectContaining({ conversationId: 'conv-1', reqId: 'req-2', expectedSessionId: fresh }),
+      ]);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await Promise.all([p1, p2]);
+    });
+
+    it('the swap\'s rebind takes an unbound row', async () => {
+      // The old sandbox's row was cleared (its pod died) just before R19 lands.
+      let acted = false;
+      const t = await setup({
+        onBind: (i, r) => {
+          if (acted || !isRestartRebind(i)) return;
+          acted = true;
+          r.activeSessionId = null;
+          r.activeReqId = null;
+        },
+      });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      const fresh = t.opens[1]!.sessionId;
+
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-1' });
+      expect(keptNewer(t, 'restart-rebind')).toBe(false);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnErrors).toEqual([]);
+    });
   });
 });
 

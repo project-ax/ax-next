@@ -848,6 +848,12 @@ interface ConversationsBindSessionInput {
    * does not know must leave the stored value alone rather than clear it.
    */
   runnerType?: string;
+  /**
+   * TASK-1226 — compare-and-set: bind only while the row still names this
+   * session (`null`: no session bound), else `PluginError({ code: 'conflict' })`
+   * and nothing written. Omitted: unconditional. See compareAndBind.
+   */
+  expectedSessionId?: string | null;
 }
 type ConversationsBindSessionOutput = void;
 
@@ -3400,6 +3406,46 @@ export function createOrchestrator(
   }
 
   /**
+   * TASK-1226 — a late bind that must never take the row back from a newer
+   * request: it writes only while the row still names `expected` (null: no
+   * session bound) and, with `orUnbound`, also over a row left unbound (a
+   * second compare-and-set). Otherwise a newer binding stays, logged at info.
+   * Any other failure is logged at warn under `failLog`, as the unconditional
+   * binds did. Never throws: a bind is best-effort for the turn.
+   */
+  async function compareAndBind(
+    ctx: AgentContext,
+    input: { conversationId: string; sessionId: string; reqId: string; runnerType?: string },
+    opts: {
+      expected: string | null;
+      orUnbound: boolean;
+      site: 'restart-rebind' | 'restart-moved' | 'fresh';
+      failLog: string;
+      failFields?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    const bind = (expectedSessionId: string | null): Promise<ConversationsBindSessionOutput> =>
+      bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
+        'conversations:bind-session', ctx, { ...input, expectedSessionId },
+      );
+    const isConflict = (err: unknown): boolean => err instanceof PluginError && err.code === 'conflict';
+    try {
+      try {
+        await bind(opts.expected);
+      } catch (err) {
+        if (!isConflict(err) || !opts.orUnbound || opts.expected === null) throw err;
+        await bind(null);
+      }
+    } catch (err) {
+      if (isConflict(err)) {
+        ctx.logger.info('conversation_bind_kept_newer', { site: opts.site, sessionId: input.sessionId });
+      } else {
+        ctx.logger.warn(opts.failLog, { ...opts.failFields, ...errorLogFields(err) });
+      }
+    }
+  }
+
+  /**
    * The agent:invoke a tool call in this sandbox belongs to: the oldest
    * unsettled waiter on it (the runner serves its inbox in order; the same
    * FIFO rule as resolveWaiterFor). A decision continuation has none.
@@ -3638,15 +3684,23 @@ export function createOrchestrator(
       // reconnect all lose it. Only now, after the note and the moved
       // messages are queued: binding a moved request earlier would send a
       // Stop during the swap past the note.
+      // TASK-1226 — and only over the new session, which R19 bound. Anything
+      // else on the row is newer, an unbound row included: it means a stale
+      // writer (a POST that read the old session) bound the old session after
+      // R19, and the old session's terminate cleared it. That newer request is
+      // opening its own sandbox and must own the row, so N2 leaves it.
       if (lastMoved !== undefined && conversationId !== undefined && bus.hasService('conversations:bind-session')) {
-        try {
-          await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
-            'conversations:bind-session', restartCtx,
-            { conversationId, sessionId, reqId: lastMoved },
-          );
-        } catch (err) {
-          ctx.logger.warn('conversation_bind_failed_restart', { movedReqId: lastMoved, ...errorLogFields(err) });
-        }
+        await compareAndBind(
+          restartCtx,
+          { conversationId, sessionId, reqId: lastMoved },
+          {
+            expected: sessionId,
+            orUnbound: false,
+            site: 'restart-moved',
+            failLog: 'conversation_bind_failed_restart',
+            failFields: { movedReqId: lastMoved },
+          },
+        );
       }
     };
     // C1 — opening from here (before the rebind below names it on the row)
@@ -3663,15 +3717,21 @@ export function createOrchestrator(
     pendingMessageReqIds.add(ctx.reqId);
     // R19 — rebind FIRST: closing the old sandbox makes @ax/conversations
     // clear a row still bound to it, which would end the caller's stream.
+    // TASK-1226 — only over the old session, or over a row left unbound (the
+    // old sandbox died and its terminate cleared it). A newer request that
+    // bound its own sandbox meanwhile keeps the row; this request still
+    // finishes in the new sandbox.
     if (conversationId !== undefined && bus.hasService('conversations:bind-session')) {
-      try {
-        await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
-          'conversations:bind-session', ctx,
-          { conversationId, sessionId: restartCtx.sessionId, reqId: ctx.reqId },
-        );
-      } catch (err) {
-        ctx.logger.warn('conversation_bind_failed_restart', { ...errorLogFields(err) });
-      }
+      await compareAndBind(
+        ctx,
+        { conversationId, sessionId: restartCtx.sessionId, reqId: ctx.reqId },
+        {
+          expected: pending.sessionId,
+          orUnbound: true,
+          site: 'restart-rebind',
+          failLog: 'conversation_bind_failed_restart',
+        },
+      );
     }
     let restarted: AgentOutcome | undefined;
     try {
