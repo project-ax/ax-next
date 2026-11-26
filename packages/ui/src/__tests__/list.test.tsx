@@ -101,7 +101,64 @@ describe('ListRow', () => {
     );
     expect(screen.queryByRole('button')).toBeNull();
     expect(screen.queryByRole('link')).toBeNull();
-    expect(container.querySelector('[title="GitHub"]')?.textContent).toBe('GitHub');
+    const title = screen.getByText('GitHub');
+    expect(title.textContent).toBe('GitHub');
+    // Plain text wraps (nothing to expand it): no one-line truncation, no title attribute standing in for the rest.
+    expect(classes(title)).toEqual(expect.arrayContaining(['ax-break-words', 'ax-min-w-none']));
+    expect(classes(title)).not.toContain('ax-truncate');
+    expect(container.querySelector('[title="GitHub"]')).toBeNull();
+  });
+
+  it('actionable titles keep one line and the full text in title', () => {
+    render(
+      <List label="L">
+        <ListRow title="GitHub" onOpen={() => {}} />
+      </List>,
+    );
+    const title = screen.getByRole('button', { name: 'GitHub' });
+    expect(classes(title)).toContain('ax-truncate');
+    expect(title.getAttribute('title')).toBe('GitHub');
+  });
+
+  it.each([
+    ['button', { onOpen: () => {} }, 'button'],
+    ['link', { href: '/x' }, 'link'],
+    ['expand toggle', { expandable: { content: 'c' } }, 'button'],
+  ] as const)('the %s title is described by the row meta and description', (_n, action, role) => {
+    render(
+      <List label="L">
+        <ListRow title="Weekly digest" meta="Quill · 3 min ago" description="Two tickets open" {...action} />
+        <ListRow title="Weekly digest" description="Only a description" {...action} />
+        <ListRow title="Plain" {...action} />
+      </List>,
+    );
+    const [both, only, none] = screen.getAllByRole(role);
+    const described = (el: HTMLElement | undefined) =>
+      (el?.getAttribute('aria-describedby') ?? '')
+        .split(' ')
+        .filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent)
+        .join(' ');
+    expect(both!.textContent).toBe('Weekly digest');
+    expect(described(both)).toBe('Quill · 3 min ago Two tickets open');
+    expect(described(only)).toBe('Only a description');
+    // Absent parts are not referenced.
+    expect(none!.getAttribute('aria-describedby')).toBeNull();
+    expect(only!.getAttribute('aria-describedby')?.split(' ')).toHaveLength(1);
+  });
+
+  it('titleRef reaches the button, the link and the expand toggle', () => {
+    const refs = [{ current: null as HTMLElement | null }, { current: null as HTMLElement | null }, { current: null as HTMLElement | null }];
+    render(
+      <List label="L">
+        <ListRow title="A" onOpen={() => {}} titleRef={refs[0]!} />
+        <ListRow title="B" href="/b" titleRef={refs[1]!} />
+        <ListRow title="C" expandable={{ content: 'c' }} titleRef={refs[2]!} />
+      </List>,
+    );
+    expect(refs[0]!.current).toBe(screen.getByRole('button', { name: 'A' }));
+    expect(refs[1]!.current).toBe(screen.getByRole('link', { name: 'B' }));
+    expect(refs[2]!.current).toBe(screen.getByRole('button', { name: 'C' }));
   });
 
   // jsdom has no hit-testing, so this clicks the title; the click on the row body (off the title) is proven in
@@ -319,8 +376,10 @@ describe('ListRow', () => {
     expect(button.getAttribute('title')).toBe(LONG);
     expect(classes(button)).toContain('ax-truncate');
     const [, plainLi] = screen.getAllByRole('listitem');
-    const plain = plainLi?.querySelector(`[title="${LONG}"]`);
-    expect(classes(plain ?? null)).toContain('ax-truncate');
+    // A plain-text title wraps instead (C): the whole 80 characters stay visible.
+    const plain = within(plainLi!).getByText(LONG);
+    expect(classes(plain)).toEqual(expect.arrayContaining(['ax-break-words', 'ax-min-w-none']));
+    expect(classes(plain)).not.toContain('ax-truncate');
     // The text column can shrink below its content width (flex items default to min-width:auto).
     const column = button.parentElement;
     expect(classes(column)).toEqual(expect.arrayContaining(['ax-min-w-none', 'ax-flex-1']));

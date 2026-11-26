@@ -1,6 +1,6 @@
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import { createContext, useContext, useState, type MouseEvent, type ReactNode } from 'react';
+import { createContext, useContext, useId, useState, type MouseEvent, type ReactNode, type Ref } from 'react';
 import { cx } from '../internal/cx.js';
 import { IconButton } from './IconButton.js';
 
@@ -45,6 +45,9 @@ interface ListRowCommon {
   // with an action, a panel. It has no toggle (use `expandable` for that). The list's divider stays between li's, never
   // between a row and its own `below`.
   below?: ReactNode;
+  // Forwarded to the title control (the button, the link or the expand toggle), so a caller can focus it. Absent on a
+  // plain-text title (no control to focus).
+  titleRef?: Ref<HTMLElement>;
 }
 
 // The content renders below the row, inside the same li.
@@ -76,6 +79,10 @@ type ListRowAction =
  * - `meta`, `description` and `leading` sit under that layer on actionable rows: give them no interactive content
  *   (a link there can't be clicked, and a `Timestamp`'s hover title is covered). Controls go in `trailing`.
  * - `onOpen` receives the click event (`currentTarget` is the title button), e.g. to return focus to it later.
+ * - The title control is described by the row's `meta` and `description` (aria-describedby), so rows whose titles
+ *   match are told apart by what is under them. A plain-text title (no action, no `expandable`) wraps; a control's
+ *   title stays on one line (full text in `title`).
+ * - `titleRef` reaches the title control.
  * - `below` renders under the row box in the same li, outside the click layer: interactive content is fine there.
  * - Under `exactOptionalPropertyTypes`, pass a conditional action by spreading it, not as `onOpen={maybe}`:
  *   `<ListRow title={t} {...(canOpen ? { onOpen: () => open(id) } : {})} />`.
@@ -121,8 +128,12 @@ const INDICATOR_BOX: Record<ListDensity, string> = {
 const INDICATOR = 'ax-h-lg ax-w-lg ax-text-fg-muted';
 
 // Tab order is DOM order: the title control, then trailing controls, then (openable rows only) the expand button.
-export function ListRow({ title, meta, description, leading, trailing, below, expandable, onOpen, href, onNavigate }: ListRowProps) {
+export function ListRow({ title, meta, description, leading, trailing, below, titleRef, expandable, onOpen, href, onNavigate }: ListRowProps) {
   const density = useContext(DensityContext);
+  const partId = useId();
+  const metaId = `${partId}-meta`;
+  const descriptionId = `${partId}-description`;
+  const describedBy = [meta ? metaId : null, description ? descriptionId : null].filter((id) => id !== null).join(' ') || undefined;
   const [open, setOpen] = useState(expandable?.defaultOpen ?? false);
   const Chevron = open ? ChevronUp : ChevronDown;
 
@@ -130,26 +141,45 @@ export function ListRow({ title, meta, description, leading, trailing, below, ex
   let titleNode: ReactNode;
   if (onOpen) {
     titleNode = (
-      <button type="button" title={title} className={titleClass} onClick={(event) => onOpen(event)}>
+      <button
+        ref={titleRef as Ref<HTMLButtonElement> | undefined}
+        type="button"
+        title={title}
+        aria-describedby={describedBy}
+        className={titleClass}
+        onClick={(event) => onOpen(event)}
+      >
         {title}
       </button>
     );
   } else if (href !== undefined) {
     titleNode = (
-      <a href={href} title={title} className={titleClass} onClick={onNavigate}>
+      <a
+        ref={titleRef as Ref<HTMLAnchorElement> | undefined}
+        href={href}
+        title={title}
+        aria-describedby={describedBy}
+        className={titleClass}
+        onClick={onNavigate}
+      >
         {title}
       </a>
     );
   } else if (expandable) {
     // Expand-only row: the whole row is one toggle (one Tab stop), named by the title, like a disclosure.
     titleNode = (
-      <Collapsible.Trigger title={title} className={titleClass}>
+      <Collapsible.Trigger
+        ref={titleRef as Ref<HTMLButtonElement> | undefined}
+        title={title}
+        aria-describedby={describedBy}
+        className={titleClass}
+      >
         {title}
       </Collapsible.Trigger>
     );
   } else {
     titleNode = (
-      <span title={title} className={cx('ax-block ax-truncate ax-text-fg', TITLE_TEXT[density])}>
+      <span className={cx('ax-block ax-min-w-none ax-break-words ax-text-fg', TITLE_TEXT[density])}>
         {title}
       </span>
     );
@@ -178,12 +208,12 @@ export function ListRow({ title, meta, description, leading, trailing, below, ex
       <div className="ax-flex ax-min-w-none ax-flex-1 ax-flex-col">
         {titleNode}
         {meta ? (
-          <div data-part="meta" className="ax-truncate ax-text-meta ax-text-fg-muted">
+          <div id={metaId} data-part="meta" className="ax-truncate ax-text-meta ax-text-fg-muted">
             {meta}
           </div>
         ) : null}
         {description ? (
-          <p data-part="description" className="ax-m-none ax-line-clamp-2 ax-break-words ax-text-meta ax-text-fg-muted">
+          <p id={descriptionId} data-part="description" className="ax-m-none ax-line-clamp-2 ax-break-words ax-text-meta ax-text-fg-muted">
             {description}
           </p>
         ) : null}
