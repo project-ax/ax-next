@@ -14,13 +14,18 @@
  * so is Slack's (its requests are pinned in `admin-slack.test.tsx`).
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
 import { fetchSlackStatus } from '../lib/slack-admin';
 import { toast } from '@project-ax/ui';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
+
+/** The visible toast stack (a hidden announcer repeats each toast's words for screen readers). */
+const toasts = () => within(screen.getByRole('region', { name: 'Notifications' }));
+const findToast = async (text: string | RegExp) =>
+  within(await screen.findByRole('region', { name: 'Notifications' })).findByText(text);
 
 vi.mock('../lib/bootstrap-status', () => ({
   fetchBootstrapStatus: vi.fn(async () => 'completed'),
@@ -131,7 +136,7 @@ describe('back from Slack (TASK-1093)', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
     expect(await screen.findByText('Connected to Canopy Works')).toBeInTheDocument();
-    expect(await screen.findByText('Slack is connected.')).toBeInTheDocument();
+    expect(await findToast('Slack is connected.')).toBeInTheDocument();
     expect(cleanedTo()).toBe('/');
   });
 
@@ -143,8 +148,8 @@ describe('back from Slack (TASK-1093)', () => {
     arriveAt(`?slack=${outcome}`);
     render(<App />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
-    expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(await findToast(message)).toBeInTheDocument();
+    expect(toasts().getAllByText(message)).toHaveLength(1);
   });
 
   it('someone who is not an admin gets no toast and no Settings, and the address is still cleaned', async () => {

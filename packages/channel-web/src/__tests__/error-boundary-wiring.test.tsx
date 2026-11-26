@@ -8,9 +8,13 @@
  * this goes red — the unit test alone would stay green.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { App } from '../App';
 import { toast } from '@project-ax/ui';
+
+/** The visible toast stack (a hidden announcer repeats each toast's words for screen readers). */
+const findToast = async (text: string | RegExp) =>
+  within(await screen.findByRole('region', { name: 'Notifications' })).findByText(text);
 
 vi.mock('../components/workspace/WorkspaceShell', () => ({
   WorkspaceShell: () => {
@@ -60,6 +64,6 @@ describe('error-boundary wiring', () => {
     act(() => {
       toast.show({ title: 'toast after the crash', tone: 'danger' });
     });
-    expect(await screen.findByText('toast after the crash')).toBeTruthy();
+    expect(await findToast('toast after the crash')).toBeTruthy();
   });
 });
