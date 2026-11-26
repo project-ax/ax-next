@@ -1794,7 +1794,8 @@ describe('createEventRouter: turns that fail', () => {
     expect(w.interrupts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['chat-run-timeout']);
+    // The cap is the timeout the web says in its words (TASK-1250), not the generic line.
 
     // The cap ends the turn too, not just its reply: the orchestrator is asked to
     // stop the conversation's turn, as the owner whose turn it is.
@@ -1840,7 +1841,7 @@ describe('createEventRouter: turns that fail', () => {
 
     // The stop is on its way, and the owner already has their reply.
     expect(w.interrupts).toHaveLength(1);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['chat-run-timeout']);
     expect(w.invokes).toHaveLength(1);
 
     answered.release();
@@ -1881,7 +1882,7 @@ describe('createEventRouter: turns that fail', () => {
     await w.dispatch(INSTALL, dm());
     await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['chat-run-timeout']);
     expect(w.lines).toHaveLength(1 + extra.length);
     expect(w.lines).toEqual(
       expect.arrayContaining([

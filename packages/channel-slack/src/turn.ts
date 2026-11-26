@@ -117,9 +117,10 @@ import type { PermissionIn, StreamChunkIn, TurnErrorIn, TurnRegistry } from './t
  *     begun: `armGrace`);
  *   - or TURN_HARD_CAP_MS (error).
  *
- * A failure with no reason (a thrown invoke, the cap) ends with the generic
- * line. Failures are logged as `slack_turn_failed` with a reason and a host
- * code, never text.
+ * A failure with no reason (a thrown invoke) ends with the generic line.
+ * The cap is a timeout, so it ends with the sentence the web says for one
+ * (`chat-run-timeout`). Failures are logged as `slack_turn_failed` with a
+ * reason and a host code, never text.
  *
  * The cap ends the TURN too, not only its reply: the turn is asked to stop
  * (`agent:interrupt`, best-effort), so a turn nobody will see the end of
@@ -327,6 +328,8 @@ const HOST_CODE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
 const BUSY = 'conversation:busy';
 /** chat-orchestrator's Stop (TASK-688): optional, so a preset without it still boots. */
 const INTERRUPT = 'agent:interrupt';
+/** The reason the cap's failure line words: a timeout, the shared table's `chat-run-timeout`. */
+const CAP_REASON = 'chat-run-timeout';
 
 type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'timeout';
 
@@ -356,9 +359,9 @@ interface Decision {
   fail?: { reason: FailReason; code?: string };
   /**
    * The reason, and any detail, the failure line words (turn-error-line.ts):
-   * the turn's own turn-error's, or a terminated outcome's code when none
-   * came. Absent for a failure with no reason (a thrown invoke, the cap):
-   * the generic line.
+   * the turn's own turn-error's, a terminated outcome's code when none
+   * came, or `chat-run-timeout` for the cap. Absent for a failure with no
+   * reason (a thrown invoke): the generic line.
    */
   turnError?: TurnErrorIn;
   /** A woken turn that never began: given up without a word. */
@@ -861,7 +864,8 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     cap = d.clock.setTimeout(() => {
       // A turn that already ended is not stopped again.
       if (decided) return;
-      decide({ outcome: 'error', fail: { reason: 'timeout' } });
+      // A timeout, said as the web says the orchestrator's own (TASK-1250).
+      decide({ outcome: 'error', fail: { reason: 'timeout' }, turnError: { reason: CAP_REASON } });
       // Sent now, not after the reply: the turn is still burning until it lands.
       interrupting = interruptTurn();
     }, TURN_HARD_CAP_MS);

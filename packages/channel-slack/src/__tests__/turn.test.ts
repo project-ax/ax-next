@@ -2061,13 +2061,13 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await h.chunk({ kind: 'thinking', text: 'Checking.' });
     await vi.advanceTimersByTimeAsync(15 * 60_000 + 1000);
     expect(h.interrupts).toEqual([]);
-    expect(h.reply()).not.toBe(COPY.turnFailed);
+    expect(h.reply()).not.toBe(TIMED_OUT);
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     await done;
-    expect(h.reply()).toBe(COPY.turnFailed);
+    expect(h.reply()).toBe(TIMED_OUT);
   });
 
-  it("the hard cap runs from the turn's first chunk: the failure line, and the prompt's conversation is asked to stop, as its person", async () => {
+  it("the hard cap runs from the turn's first chunk: the timeout's sentence, and the prompt's conversation is asked to stop, as its person", async () => {
     vi.useFakeTimers();
     const h = follower();
     const done = h.follow(inTenSeconds());
@@ -2082,7 +2082,7 @@ describe("followContinuation: after Allow, the agent's next turn is followed int
     await vi.advanceTimersByTimeAsync(1);
     await done;
 
-    expect(h.reply()).toBe(COPY.turnFailed);
+    expect(h.reply()).toBe(TIMED_OUT);
     expect(h.interrupts.map((i) => i.input)).toEqual([{ conversationId: 'conv_support_thread', userId: 'usr_alice' }]);
     expect(h.interrupts[0]!.ctx).toMatchObject({
       reqId: CONTINUATION,
