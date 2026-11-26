@@ -185,7 +185,10 @@ test('components-timeline--long-text stays inside its 390px box', async ({ page 
   expect(await container.evaluate((n) => n.scrollWidth <= n.clientWidth)).toBe(true);
   const link = (await page.getByRole('link', { name: 'See what it did, 5 min ago' }).boundingBox())!;
   expect(link.width).toBeGreaterThanOrEqual(24);
-  // Clamped to two lines: the first entry's text box is no taller than two lines of body text plus a little.
-  const text = (await page.locator('#storybook-root li').first().locator('[data-part="text"]').boundingBox())!;
-  expect(text.height).toBeLessThan(80);
+  // Clamped to two lines: the first entry's text box is no taller than two computed lines.
+  const textEl = page.locator('#storybook-root li').first().locator('[data-part="text"]');
+  const text = (await textEl.boundingBox())!;
+  const lineHeight = await textEl.evaluate((n) => parseFloat(getComputedStyle(n).lineHeight));
+  expect(lineHeight).toBeGreaterThan(0);
+  expect(text.height).toBeLessThanOrEqual(2 * lineHeight + 2);
 });

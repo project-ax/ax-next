@@ -251,11 +251,11 @@ describe('TaskPage (TASK-910)', () => {
     await renderReady();
     const runs = screen.getByRole('region', { name: 'Run history' });
     // The failed run says why in plain words, beside its mark's hidden word.
-    expect(within(runs).getByText('Failed:')).toHaveClass('sr-only');
+    expect(within(runs).getByRole('img', { name: 'Failed' })).toBeInTheDocument();
     expect(within(runs).getByText('The app refused the run.')).toBeVisible();
     // The host's live state, one line, in the card's own live region.
     expect(within(runs).getByRole('status')).toHaveTextContent('2 app updates waiting');
-    expect(within(runs).getByRole('link', { name: /^See what it did/ })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
+    expect(within(runs).getByRole('link', { name: `See what it did, ${REPORTED_WORDS}` })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
     // A Repeat job's pill, its Run now, and the shared thread behind Memory between runs.
     expect(screen.getByText('Scheduled')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled();

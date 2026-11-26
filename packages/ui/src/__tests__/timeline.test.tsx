@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { MouseEvent } from 'react';
 import { renderToString } from 'react-dom/server';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { StatusBadge, StatusMark, Timeline, TimelineEntry } from '../index.js';
 
 afterEach(cleanup);
+
+// The link's Radix tooltip measures with ResizeObserver, which jsdom lacks.
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+});
 
 const classes = (el: Element | null): string[] => (el?.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
 // A fixed "now" and explicit instants: the relative text ("5 min ago") never depends on the machine's zone.
@@ -75,6 +84,20 @@ describe('Timeline', () => {
     expect(document.activeElement).toBe(link);
     fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledTimes(1);
+  });
+
+  it('focusing the link shows its label in a tooltip (not just on mouse hover)', async () => {
+    render(
+      <Timeline label="Updates">
+        <TimelineEntry mark={<StatusMark tone="success" />} time={FIVE_MIN} now={NOW} action={{ label: 'See what it did, 5 min ago', href: '/t/1' }}>
+          Done
+        </TimelineEntry>
+      </Timeline>,
+    );
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    act(() => screen.getByRole('link').focus());
+    expect((await screen.findByRole('tooltip')).textContent).toBe('See what it did, 5 min ago');
+    expect(screen.getByRole('link').getAttribute('title')).toBeNull();
   });
 
   it('without an action there is no link and no tab stop, but a hidden box keeps the times aligned', () => {

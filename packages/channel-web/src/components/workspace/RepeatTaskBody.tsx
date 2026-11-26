@@ -28,6 +28,7 @@ import { runFailureText } from '@/lib/task-updates';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
+import { seeWhatItDidLabel } from './task-bits';
 
 /** How many runs show before "N earlier". */
 const SHOWN = 4;
@@ -166,22 +167,22 @@ function RunRow({
       : null;
   return (
     <TimelineEntry
-      mark={<StatusMark tone={STATE_TONE[RUN_MARK[update.status]]} />}
+      // Named by the run's word, unless the text is the word already (said once).
+      mark={<StatusMark tone={STATE_TONE[RUN_MARK[update.status]]} {...(said !== word ? { label: word } : {})} />}
       time={update.firedAt}
       now={now}
       // A failure's reason is read whole, never clamped; any other run's line is.
-      {...(update.status === 'error' ? { full: true } : {})}
+      full={update.status === 'error'}
       {...(link
         ? {
             action: {
-              label: stamp !== null ? `See what it did, ${stamp}` : 'See what it did',
+              label: seeWhatItDidLabel(stamp),
               href: link.href,
               onNavigate: link.onClick,
             },
           }
         : {})}
     >
-      {said !== word && <span className="sr-only">{`${word}: `}</span>}
       {said}
     </TimelineEntry>
   );

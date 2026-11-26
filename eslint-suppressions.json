@@ -1241,10 +1241,10 @@
       "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 5
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 4
     }
   },
   "packages/channel-web/src/components/workspace/SidebarChats.tsx": {

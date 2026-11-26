@@ -1,5 +1,7 @@
+import * as Tooltip from '@radix-ui/react-tooltip';
 import { ArrowUpRight } from 'lucide-react';
 import type { MouseEvent, ReactNode } from 'react';
+import { TOOLTIP_CLASS } from './IconButton.js';
 import { Timestamp } from './Timestamp.js';
 
 export interface TimelineProps {
@@ -28,7 +30,8 @@ export interface TimelineEntryAction {
 }
 
 export interface TimelineEntryProps {
-  // A StatusMark, or a StatusBadge ("You", "Someone else"). Decorative marks go with sr-only words in `children`.
+  // A StatusMark, or a StatusBadge ("You", "Someone else"). Give a StatusMark a `label` so screen readers get its word;
+  // leave the label off only when the entry's own text already says it.
   mark: ReactNode;
   // What happened: plain text, clamped to two lines unless `full`. Anything the person must read whole goes in `detail`.
   children: ReactNode;
@@ -77,9 +80,21 @@ export function TimelineEntry({ mark, children, detail, full = false, time, now,
         <Timestamp value={time} {...(now ? { now } : {})} />
       </span>
       {action ? (
-        <a href={action.href} aria-label={action.label} title={action.label} className={LINK} onClick={action.onNavigate}>
-          <ArrowUpRight aria-hidden="true" focusable="false" className="ax-h-lg ax-w-lg" />
-        </a>
+        // The tooltip opens on keyboard focus as well as hover, like IconButton's.
+        <Tooltip.Provider delayDuration={300}>
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <a href={action.href} aria-label={action.label} className={LINK} onClick={action.onNavigate}>
+                <ArrowUpRight aria-hidden="true" focusable="false" className="ax-h-lg ax-w-lg" />
+              </a>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content className={TOOLTIP_CLASS} sideOffset={4}>
+                {action.label}
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+        </Tooltip.Provider>
       ) : (
         <span aria-hidden="true" className={ACTION_BOX} />
       )}

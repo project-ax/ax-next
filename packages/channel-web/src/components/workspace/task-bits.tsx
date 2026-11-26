@@ -159,6 +159,11 @@ export function IconAction({
   );
 }
 
+/** The name of an entry's "See what it did" link: carries the entry's moment so a list of them says which is which. */
+export function seeWhatItDidLabel(stamp: string | null): string {
+  return stamp !== null ? `See what it did, ${stamp}` : 'See what it did';
+}
+
 /**
  * A link drawn as an icon-only button (ArrowUpRight "See what it did"): a real
  * `<a>`, so it opens in a new tab too. Its name is `label` in hidden text,

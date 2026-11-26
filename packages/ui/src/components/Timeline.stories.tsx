@@ -67,7 +67,7 @@ export const FailureWithDetail: Story = {
         detail={'It couldn’t sign in to the bank.\nThe saved password was rejected.'}
         action={{ label: 'See what it did, 5 min ago', href: '#fail' }}
       >
-        <span className="ax-sr-only">Failed: </span>The morning run didn’t finish.
+        The morning run didn’t finish.
       </TimelineEntry>
     </Timeline>
   ),

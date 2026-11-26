@@ -8,7 +8,7 @@
  * 13 and 14). Its apostrophe is U+2019, not the ASCII one.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { formatFullTimestamp, formatTimestamp } from '@project-ax/ui';
 import type { TaskReply, TaskUpdate } from '@/lib/workspace-types';
@@ -215,6 +215,26 @@ describe('TaskUpdates (TASK-910)', () => {
       routineId: 't1',
       conversationId: 'c1',
     });
+  });
+
+  it('the head list and the “N earlier” list have different names', () => {
+    renderThread([onTrack(1)]);
+    expect(screen.getByRole('list', { name: 'Updates' })).toBeInTheDocument();
+    cleanup();
+    render(
+      <TaskUpdates
+        updates={[onTrack(1), { ...onTrack(2), report: { status: 'off-track', update: 'Report 2', reading: null } }]}
+        replies={[]}
+        now={NOW}
+        agentId="a1"
+        routineId="t1"
+        onNavigate={vi.fn()}
+        shown={1}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '1 earlier' }));
+    expect(screen.getByRole('list', { name: 'Updates' })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Earlier updates' })).toBeInTheDocument();
   });
 
   it('a check-in that recorded no conversation has no link', () => {

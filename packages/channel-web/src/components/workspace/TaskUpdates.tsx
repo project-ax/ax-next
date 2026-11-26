@@ -72,6 +72,7 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TaskDetailReport, TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
+import { seeWhatItDidLabel } from './task-bits';
 
 /** Where an entry's "See what it did" goes: the task it is listed under. */
 interface EntryLinks {
@@ -129,7 +130,7 @@ export function TaskUpdates({
         <p className="text-[13px] text-muted-foreground">No check-ins yet.</p>
       ) : (
         <>
-          {head.length > 0 && <Entries items={head} now={now} links={links} />}
+          {head.length > 0 && <Entries label="Updates" items={head} now={now} links={links} />}
           {rest.length > 0 && (
             <>
               <Button
@@ -147,7 +148,7 @@ export function TaskUpdates({
                   : `${restCount} earlier`}
               </Button>
               <div id={restId} hidden={!open}>
-                {open && <Entries items={rest} now={now} links={links} />}
+                {open && <Entries label="Earlier updates" items={rest} now={now} links={links} />}
               </div>
             </>
           )}
@@ -157,9 +158,19 @@ export function TaskUpdates({
   );
 }
 
-function Entries({ items, now, links }: { items: TimelineItem[]; now: Date; links: EntryLinks }) {
+function Entries({
+  label,
+  items,
+  now,
+  links,
+}: {
+  label: string;
+  items: TimelineItem[];
+  now: Date;
+  links: EntryLinks;
+}) {
   return (
-    <Timeline label="Updates">
+    <Timeline label={label}>
       {items.map((item, i) => {
         if (item.kind === 'update') {
           return (
@@ -260,7 +271,7 @@ function UpdateEntry({
       {...(link
         ? {
             action: {
-              label: stamp !== null ? `See what it did, ${stamp}` : 'See what it did',
+              label: seeWhatItDidLabel(stamp),
               href: link.href,
               onNavigate: link.onClick,
             },
