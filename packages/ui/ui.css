@@ -88,6 +88,9 @@
 .ax-h-control-sm {
     height: 36px
 }
+.ax-h-full {
+    height: 100%
+}
 .ax-h-lg {
     height: var(--ax-space-lg)
 }
@@ -99,6 +102,9 @@
 }
 .ax-h-xl {
     height: var(--ax-space-xl)
+}
+.ax-h-xs {
+    height: var(--ax-space-xs)
 }
 .ax-min-h-touch {
     min-height: 44px
@@ -145,6 +151,9 @@
 .ax-min-w-touch {
     min-width: 44px
 }
+.ax-max-w-file-chip {
+    max-width: min(100%, 280px)
+}
 .ax-max-w-full {
     max-width: 100%
 }
@@ -181,6 +190,9 @@
 }
 .ax-list-none {
     list-style-type: none
+}
+.ax-appearance-none {
+    appearance: none
 }
 .ax-grid-cols-1 {
     grid-template-columns: repeat(1, minmax(0, 1fr))
@@ -327,6 +339,10 @@
     --tw-border-opacity: 1;
     border-color: hsl(var(--ax-line-soft) / var(--tw-border-opacity, 1))
 }
+.ax-border-status-danger {
+    --tw-border-opacity: 1;
+    border-color: hsl(var(--ax-status-danger) / var(--tw-border-opacity, 1))
+}
 .ax-border-transparent {
     border-color: transparent
 }
@@ -379,6 +395,9 @@
 }
 .ax-bg-transparent {
     background-color: transparent
+}
+.ax-object-cover {
+    object-fit: cover
 }
 .ax-p-lg {
     padding: var(--ax-space-lg)
@@ -443,6 +462,9 @@
 }
 .ax-text-right {
     text-align: right
+}
+.ax-align-middle {
+    vertical-align: middle
 }
 .ax-font-mono {
     font-family: var(--ax-font-mono)
@@ -590,6 +612,10 @@
     content: var(--tw-content);
     inset: var(--ax-space-none)
 }
+.after\:ax-rounded-lg::after {
+    content: var(--tw-content);
+    border-radius: var(--ax-radius-lg)
+}
 .after\:ax-rounded-md::after {
     content: var(--tw-content);
     border-radius: var(--ax-radius-md)
@@ -655,6 +681,24 @@
 }
 .disabled\:ax-pointer-events-none:disabled {
     pointer-events: none
+}
+.progress-track\:ax-bg-muted::-webkit-progress-bar {
+    --tw-bg-opacity: 1;
+    background-color: hsl(var(--ax-bg-muted) / var(--tw-bg-opacity, 1))
+}
+.progress-fill\:ax-rounded-full::-webkit-progress-value {
+    border-radius: var(--ax-radius-full)
+}
+.progress-fill\:ax-bg-accent::-webkit-progress-value {
+    --tw-bg-opacity: 1;
+    background-color: hsl(var(--ax-accent) / var(--tw-bg-opacity, 1))
+}
+.progress-fill\:ax-rounded-full::-moz-progress-bar {
+    border-radius: var(--ax-radius-full)
+}
+.progress-fill\:ax-bg-accent::-moz-progress-bar {
+    --tw-bg-opacity: 1;
+    background-color: hsl(var(--ax-accent) / var(--tw-bg-opacity, 1))
 }
 @media (prefers-reduced-motion: reduce) {
     .motion-reduce\:ax-animate-none {

@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import { Plus } from 'lucide-react';
-import { AsyncState, Avatar, Card, InsetBlock, KeyValueList, List, ListRow, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text, Timestamp } from '../index.js';
+import { AsyncState, Avatar, Card, FileTile, InsetBlock, KeyValueList, List, ListRow, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text, Timestamp } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -157,6 +157,21 @@ describe('props', () => {
       { title: 'x', href: '/x', onNavigate: (e) => e.preventDefault() },
       { title: 'x', href: '/x', trailing: 'y', expandable: { content: 'y', label: 'Show details for x', defaultOpen: true } },
     ];
+    // @ts-expect-error variant is one of card | row | chip
+    const ft1: P<typeof FileTile> = { name: 'a.csv', variant: 'tile' };
+    // @ts-expect-error className is not a prop
+    const ft2: P<typeof FileTile> = { name: 'a.csv', variant: 'chip', className: 'x' };
+    // @ts-expect-error status is an enum, never a color
+    const ft3: P<typeof FileTile> = { name: 'a.csv', variant: 'chip', status: 'red' };
+    // @ts-expect-error the name is a string (accessible name and title attribute)
+    const ft4: P<typeof FileTile> = { name: 1, variant: 'card' };
+    // @ts-expect-error style is not a prop
+    const ft5: P<typeof FileTile> = { name: 'a.csv', variant: 'row', style: {} };
+    const ftOk: P<typeof FileTile>[] = [
+      { name: 'a.csv', variant: 'card' },
+      { name: 'a.csv', variant: 'chip', size: 1, kind: 'text/csv', detail: 'x', status: 'working', progress: 5, onOpen: () => {}, actionLabel: 'Download', trailing: 'y', previewUrl: '/a' },
+    ];
+    void [ft1, ft2, ft3, ft4, ft5, ftOk];
     void [l1, l2, l3, lr1, lr2, lr3, lr4, lr5, lr6, lr7, lr8, lr9, lr10, lrOk];
     void [ts1, ts2, ts3, av1, av2, av3, kv1, kv2, cd1, cd2, ib4, ib5, sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];

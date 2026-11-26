@@ -36,6 +36,16 @@ const AVATAR = { 'avatar-xs': '16px', 'avatar-sm': '20px', 'avatar-md': '26px', 
 const keyed = <T extends Record<string, unknown>>(group: T, f: (k: string) => string): Record<string, string> =>
   Object.fromEntries(Object.keys(group).map((k) => [k, f(k)]));
 
+// Tailwind's plugin handler type, reached through Config (its types/config subpath isn't an export).
+type PluginHandler = Extract<NonNullable<Config['plugins']>[number], { handler: unknown }>['handler'];
+
+const progressVariants: { handler: PluginHandler } = {
+  handler: ({ addVariant }) => {
+    addVariant('progress-track', '&::-webkit-progress-bar');
+    addVariant('progress-fill', ['&::-webkit-progress-value', '&::-moz-progress-bar']);
+  },
+};
+
 export const axPreset: Config = {
   content: [],
   prefix: 'ax-',
@@ -73,8 +83,9 @@ export const axPreset: Config = {
       width: { ...CONTROL, ...AVATAR, '9/10': '90%' },
       minHeight: CONTROL,
       minWidth: CONTROL,
-      // A shrink-to-fit inline box (StatusBadge) caps at its container so its text can truncate.
-      maxWidth: { full: '100%' },
+      // A shrink-to-fit inline box (StatusBadge) caps at its container so its text can truncate. A file chip is inline
+      // too: it hugs a short name and caps at 280px, or at its container when that is narrower.
+      maxWidth: { full: '100%', 'file-chip': 'min(100%, 280px)' },
       // ListRow's stretched primary action needs an empty ::after: Tailwind's after: variant reads --tw-content, which
       // only the base layer sets, and this package emits utilities only. Its focus ring is drawn inside that layer
       // (negative offset) so a flush Card's overflow-hidden can't clip it.
@@ -82,6 +93,13 @@ export const axPreset: Config = {
       outlineOffset: { inset: '-2px' },
     },
   },
+  plugins: [
+    // A native <progress> (FileTile) draws its track and fill through vendor pseudo-elements. Each selector is its own
+    // rule: a browser drops a whole selector list that names a pseudo-element it doesn't know.
+    // A plain { handler } object, not `tailwindcss/plugin`: the preset is a published export and must not import
+    // tailwindcss at runtime.
+    progressVariants,
+  ],
 };
 
 export default axPreset;

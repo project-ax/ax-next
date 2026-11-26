@@ -192,3 +192,63 @@ test('components-timeline--long-text stays inside its 390px box', async ({ page 
   expect(lineHeight).toBeGreaterThan(0);
   expect(text.height).toBeLessThanOrEqual(2 * lineHeight + 2);
 });
+
+// FileTile at 390px (Review Focus 2): every tile ends inside the box, nothing scrolls sideways, and each 80-character
+// filename keeps its extension: the stem is the part that truncates, the ".csv" node is whole and inside its tile.
+const LONG_FILE = 'quarterly-report-final-really-final-for-the-leadership-offsite-all-appendix1.csv';
+for (const story of ['card-long-name', 'row-long-name', 'chip-long-name']) {
+  test(`components-filetile--${story} stays inside its 390px box and keeps the extension`, async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 600 });
+    await page.goto(`/iframe.html?id=components-filetile--${story}&viewMode=story`);
+    const container = page.locator('#storybook-root > div').first();
+    await page.locator('#storybook-root [title]').first().waitFor();
+    const box = (await container.boundingBox())!;
+    expect(box.width).toBe(390);
+    const right = box.x + box.width + 0.5;
+    const tiles = page.locator('#storybook-root .ax-isolate');
+    expect(await tiles.count()).toBeGreaterThanOrEqual(2);
+    for (const el of [...(await tiles.all()), ...(await page.locator('#storybook-root [title], #storybook-root button').all())]) {
+      const b = (await el.boundingBox())!;
+      expect(b.x + b.width, await el.evaluate((n) => n.outerHTML.slice(0, 80))).toBeLessThanOrEqual(right);
+    }
+    expect(await container.evaluate((n) => n.scrollWidth <= n.clientWidth)).toBe(true);
+    if (story === 'chip-long-name') {
+      for (const tile of await tiles.all()) expect((await tile.boundingBox())!.width).toBeLessThanOrEqual(280.5);
+    }
+    const names = await page.locator(`#storybook-root [title="${LONG_FILE}"]`).all();
+    expect(names.length).toBeGreaterThanOrEqual(1);
+    for (const name of names) {
+      const stem = name.locator(':scope > span').nth(0);
+      const ext = name.locator(':scope > span').nth(1);
+      expect(await ext.textContent()).toBe('.csv');
+      expect(await stem.evaluate((n) => n.scrollWidth > n.clientWidth)).toBe(true);
+      expect(await ext.evaluate((n) => n.scrollWidth <= n.clientWidth)).toBe(true);
+      const eb = (await ext.boundingBox())!;
+      const tb = (await name.locator('xpath=ancestor::*[contains(concat(" ", @class, " "), " ax-isolate ")][1]').boundingBox())!;
+      expect(eb.width).toBeGreaterThan(10);
+      expect(eb.x).toBeGreaterThanOrEqual(tb.x);
+      expect(eb.x + eb.width).toBeLessThanOrEqual(tb.x + tb.width + 0.5);
+    }
+  });
+}
+
+// The chip hugs a short name, and the whole chip (not only its text) opens it.
+test('components-filetile--chip: a short chip hugs its name and opens from anywhere on it', async ({ page }) => {
+  await page.goto('/iframe.html?id=components-filetile--chip&viewMode=story');
+  const button = page.getByRole('button', { name: 'Download budget.csv' });
+  await button.waitFor();
+  const tile = button.locator('xpath=ancestor::*[contains(concat(" ", @class, " "), " ax-isolate ")][1]');
+  const tb = (await tile.boundingBox())!;
+  expect(tb.width).toBeLessThan(280);
+  expect(tb.height).toBeGreaterThanOrEqual(44);
+  // The icon square is under the click layer: hitting it hits the button.
+  const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.getAttribute('aria-label'), [tb.x + 12, tb.y + tb.height / 2]);
+  expect(hit).toBe('Download budget.csv');
+  // The name sits above the layer, so a hover there reaches its title (the full name), and it is still inside the button.
+  const nb = (await page.getByTitle('budget.csv').boundingBox())!;
+  const onName = await page.evaluate(([x, y]) => {
+    const el = document.elementFromPoint(x!, y!);
+    return [el?.closest('[title]')?.getAttribute('title'), el?.closest('button')?.getAttribute('aria-label')];
+  }, [nb.x + 4, nb.y + nb.height / 2]);
+  expect(onName).toEqual(['budget.csv', 'Download budget.csv']);
+});
