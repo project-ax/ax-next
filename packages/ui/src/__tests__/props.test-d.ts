@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import { Plus } from 'lucide-react';
-import { AsyncState, Button, ConfirmAction, Divider, EmptyState, Notice, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
+import { AsyncState, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -69,6 +69,16 @@ describe('props', () => {
     // @ts-expect-error error is not a tone (use danger)
     const n2: P<typeof Notice> = { tone: 'error' };
     // @ts-expect-error className is not a prop
+    const sm1: P<typeof StatusMark> = { tone: 'info', className: 'x' };
+    // @ts-expect-error not a tone
+    const sm2: P<typeof StatusMark> = { tone: 'error' };
+    // @ts-expect-error className is not a prop
+    const sb1: P<typeof StatusBadge> = { tone: 'info', children: 'x', className: 'x' };
+    // @ts-expect-error not a tone
+    const sb2: P<typeof StatusBadge> = { tone: 'ok', children: 'x' };
+    // @ts-expect-error size is sm or md
+    const sb3: P<typeof StatusBadge> = { tone: 'info', children: 'x', size: 'lg' };
+    // @ts-expect-error className is not a prop
     const e1: P<typeof EmptyState> = { title: 'x', className: 'x' };
     // @ts-expect-error className is not a prop
     const a1: P<typeof AsyncState> = { status: 'ready', skeleton: 'rows', loadingLabel: 'x', className: 'x' };
@@ -91,7 +101,7 @@ describe('props', () => {
     const c7: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'primary' } };
     const ok1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'quiet', size: 'sm', icon: Plus, iconOnly: true } };
     const ok2: P<typeof ConfirmAction> = { ...confirm, tone: 'neutral', open: false, onOpenChange: () => {} };
-    void [b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
+    void [sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });
 });

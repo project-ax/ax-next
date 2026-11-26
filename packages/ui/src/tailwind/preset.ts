@@ -63,6 +63,8 @@ export const axPreset: Config = {
       width: { ...CONTROL, '9/10': '90%' },
       minHeight: CONTROL,
       minWidth: CONTROL,
+      // A shrink-to-fit inline box (StatusBadge) caps at its container so its text can truncate.
+      maxWidth: { full: '100%' },
     },
   },
 };

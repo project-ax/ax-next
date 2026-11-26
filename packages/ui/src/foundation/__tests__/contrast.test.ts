@@ -35,5 +35,7 @@ describe.each(themes)('contrast (%s)', (t) => {
     check(`${tone}.fg on ${tone}.base`, s.fg, s.base, 4.5);
     check(`${tone}.base on ${tone}.soft`, s.base, s.soft, 4.5);
     check(`${tone}.base on bg.surface`, s.base, bg[t].surface, 4.5);
+    // StatusBadge: the mark sits on the plain raised fill (neutral, success), where non-text contrast needs 3:1.
+    check(`${tone}.base on bg.surface-raised`, s.base, bg[t]['surface-raised'], 3.0);
   });
 });

@@ -43,6 +43,9 @@
 .ax-block {
     display: block
 }
+.ax-inline-block {
+    display: inline-block
+}
 .ax-flex {
     display: flex
 }
@@ -102,6 +105,9 @@
 }
 .ax-min-w-touch {
     min-width: 44px
+}
+.ax-max-w-full {
+    max-width: 100%
 }
 .ax-max-w-narrow {
     max-width: var(--ax-width-narrow)
@@ -223,6 +229,9 @@
 .ax-break-words {
     overflow-wrap: break-word
 }
+.ax-rounded-full {
+    border-radius: var(--ax-radius-full)
+}
 .ax-rounded-lg {
     border-radius: var(--ax-radius-lg)
 }
@@ -314,6 +323,14 @@
     padding-left: var(--ax-space-md);
     padding-right: var(--ax-space-md)
 }
+.ax-px-sm {
+    padding-left: var(--ax-space-sm);
+    padding-right: var(--ax-space-sm)
+}
+.ax-py-none {
+    padding-top: var(--ax-space-none);
+    padding-bottom: var(--ax-space-none)
+}
 .ax-py-xs {
     padding-top: var(--ax-space-xs);
     padding-bottom: var(--ax-space-xs)
@@ -401,6 +418,10 @@
 .ax-text-status-info {
     --tw-text-opacity: 1;
     color: hsl(var(--ax-status-info) / var(--tw-text-opacity, 1))
+}
+.ax-text-status-neutral {
+    --tw-text-opacity: 1;
+    color: hsl(var(--ax-status-neutral) / var(--tw-text-opacity, 1))
 }
 .ax-text-status-success {
     --tw-text-opacity: 1;
