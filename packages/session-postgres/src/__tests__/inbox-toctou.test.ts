@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import {
   stopPostgresContainer,
   startTestContainer,
@@ -192,8 +192,7 @@ describe('inbox: a woken claim on a terminated session gets no entry (TASK-1225)
     const claimP = inbox.claim('wake-term-1', 0, 5000);
     // Parked: the fast path's check and the re-check after LISTEN both read
     // a live session (each check reads the flag when it is called).
-    for (let i = 0; i < 200 && checks < 2; i++) await new Promise((r) => setTimeout(r, 10));
-    expect(checks).toBe(2);
+    await vi.waitFor(() => expect(checks).toBe(2), { timeout: 2000, interval: 10 });
 
     terminated = true;
     // INSERT + pg_notify: the NOTIFY wakes the parked claim, which finds the row.

@@ -128,6 +128,9 @@ export function createInbox(): Inbox {
         const wake = (): void => {
           if (settled) return;
           // Woken by terminate: no entry, whatever is queued (TASK-1225).
+          // Defensive: today terminate wakes and drops every waiter before
+          // anything can be queued, and the plugin refuses a queue after
+          // terminate, so no wake sees a terminated state with an entry.
           if (state.terminated) {
             finish({ type: 'timeout', cursor });
             return;

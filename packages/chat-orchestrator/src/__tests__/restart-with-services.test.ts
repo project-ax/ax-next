@@ -1176,7 +1176,7 @@ describe('restart_with_services (dev services on demand)', () => {
       ]);
     });
 
-    it('a failing terminate still closes the old proxy, kills the old sandbox, and the swap completes', async () => {
+    it('(guard) a failing terminate still closes the old proxy, kills the old sandbox, and the swap completes', async () => {
       // The close is held so the swap's own close can be told from the one
       // the old sandbox's exit watcher sends after the kill.
       let releaseClose!: () => void;
