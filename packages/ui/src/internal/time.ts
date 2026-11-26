@@ -93,7 +93,9 @@ export function formatTimestamp(value: Date | string | number, opts: FormatTimes
   }
 
   const ahead = -delta;
-  if (ahead < HOUR) return `in ${Math.max(1, Math.ceil(ahead / MINUTE))} min`;
+  // A server stamp a little ahead of this clock is skew, not a plan.
+  if (ahead <= MINUTE) return 'just now';
+  if (ahead < HOUR) return `in ${Math.max(1, Math.floor(ahead / MINUTE))} min`;
   if (dayDiff === 0) return `Today ${time()}`;
   if (dayDiff === 1) return `Tomorrow ${time()}`;
   if (dayDiff < 7) return weekdayTime(date, locale, timeZone);

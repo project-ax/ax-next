@@ -23,7 +23,12 @@ describe('formatTimestamp relative, past', () => {
 
 describe('formatTimestamp relative, future', () => {
   it('under an hour', () => expect(rel(new Date(now.getTime() + 5 * MIN))).toBe('in 5 min'));
-  it('under a minute reads as 1 min', () => expect(rel(new Date(now.getTime() + 10_000))).toBe('in 1 min'));
+  it('clock skew: +5s and +59s read just now', () => {
+    expect(rel(new Date(now.getTime() + 5_000))).toBe('just now');
+    expect(rel(new Date(now.getTime() + 59_000))).toBe('just now');
+    expect(rel(new Date(now.getTime() + 60_000))).toBe('just now');
+  });
+  it('+61s reads in 1 min', () => expect(rel(new Date(now.getTime() + 61_000))).toBe('in 1 min'));
   it('same day', () => expect(rel('2026-10-24T00:00:00Z')).toBe('Today 5:00 PM'));
   it('tomorrow', () => expect(rel('2026-10-24T16:00:00Z')).toBe('Tomorrow 9:00 AM'));
   it('under 7 days', () => expect(rel('2026-10-26T17:02:00Z')).toBe('Mon 10:02 AM'));

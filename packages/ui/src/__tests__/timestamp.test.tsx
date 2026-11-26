@@ -6,14 +6,14 @@ import { Timestamp } from '../index.js';
 
 afterEach(cleanup);
 
-const now = new Date('2026-10-23T19:00:00Z');
-const value = '2026-10-23T18:55:00Z';
+const now = new Date('2026-10-23T12:00:00Z');
+const value = '2026-10-23T11:55:00Z';
 
 describe('Timestamp', () => {
   it('renders a <time> with an ISO dateTime and a full-date title', () => {
     const { container } = render(<Timestamp value={value} now={now} />);
     const el = container.querySelector('time');
-    expect(el?.getAttribute('datetime')).toBe('2026-10-23T18:55:00.000Z');
+    expect(el?.getAttribute('datetime')).toBe('2026-10-23T11:55:00.000Z');
     expect(el?.getAttribute('title')).toMatch(/^\w{3}, \w{3} \d{1,2}, 2026, /);
     expect(el?.textContent).toContain('5 min ago');
   });
