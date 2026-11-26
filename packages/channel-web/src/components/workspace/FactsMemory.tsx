@@ -419,7 +419,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
               <Card>
                 <Stack gap="lg">
                 <Inline justify="between" align="start">
-                  <Text role="body-strong"><RowBadges row={row} /></Text>
+                  <RowBadges row={row} />
                   {isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}
                 </Inline>
                 <Stack gap="xs">

@@ -76,6 +76,18 @@ async function memoryAction(label: string): Promise<HTMLElement> {
 afterEach(() => thawClock());
 
 describe('MemorySurface', () => {
+  it.each([false, true])('renders valid DOM: React reports no nesting error (compact=%s)', async (compact) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'a' }), fact({ id: 'b', kind: 'opinion' })], degraded: [] });
+    render(<CompactSurfaceContext.Provider value={compact}>
+      <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
+    </CompactSurfaceContext.Provider>);
+    await screen.findByText('Preference');
+    const calls = error.mock.calls.map((c) => String(c[0]));
+    error.mockRestore();
+    expect(calls).toEqual([]);
+  });
+
   it.each([false, true])('uses Preference and Fact chips with saved-by fallbacks (compact=%s)', async (compact) => {
     recallMock.mockResolvedValue({ statements: [
       fact({ id: 'opinion', kind: 'opinion', savedBy: 'person' }),

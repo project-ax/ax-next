@@ -483,8 +483,7 @@ function ServicesSection({
           </p>
         ) : (
           services.map((svc, i) => (
-            <div key={i}>
-<InsetBlock>
+            <InsetBlock key={i}>
 <Stack gap="sm">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">
@@ -575,7 +574,6 @@ function ServicesSection({
               </div>
             </Stack>
 </InsetBlock>
-</div>
           ))
         )}
 
@@ -1207,8 +1205,7 @@ export function LegacyConnectorEditDialog({
                     : existingServerNames;
 
                   return (
-                    <div key={i}>
-<InsetBlock>
+                    <InsetBlock key={i}>
 <Stack gap="sm">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-muted-foreground">
@@ -1404,7 +1401,6 @@ export function LegacyConnectorEditDialog({
                       )}
                     </Stack>
 </InsetBlock>
-</div>
                   );
                 })
               )}

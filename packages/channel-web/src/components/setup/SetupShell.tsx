@@ -34,7 +34,7 @@ interface Props {
 export function SetupShell({ title, description, step, children }: Props) {
   return (
     <div className="flex items-center justify-center min-h-screen p-6 bg-canvas">
-      <div className="w-full max-w-md">
+      
         <Card>
           <Stack gap="lg">
             <Stack gap="sm" align="center">
@@ -61,7 +61,7 @@ export function SetupShell({ title, description, step, children }: Props) {
             {children}
           </Stack>
         </Card>
-      </div>
+      
     </div>
   );
 }

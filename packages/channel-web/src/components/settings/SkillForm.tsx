@@ -493,8 +493,7 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
             {files.map((f, idx) => {
               const hint = fileHints[idx];
               return (
-                <div key={idx}>
-<InsetBlock>
+                <InsetBlock key={idx}>
 <Stack gap="sm">
                   <div className="flex items-center gap-2">
                     <Input
@@ -527,7 +526,6 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
                   />
                 </Stack>
 </InsetBlock>
-</div>
               );
             })}
           </div>

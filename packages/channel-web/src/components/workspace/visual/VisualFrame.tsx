@@ -223,7 +223,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
   };
 
   return (
-    <div ref={cardRef} className="w-full max-w-xl">
+    <div ref={cardRef}>
     <Card>
       <Stack gap="sm">
       <Inline justify="between">

@@ -44,7 +44,7 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
 
   return (
     <div className="flex items-center justify-center min-h-screen p-6 bg-canvas">
-      <div className="w-full max-w-sm">
+      
       <Card>
       <Stack gap="md" align="center">
         <BrandMark size="xl" />
@@ -83,7 +83,7 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
         )}
       </Stack>
       </Card>
-      </div>
+      
     </div>
   );
 }

@@ -58,18 +58,18 @@
   },
   "packages/channel-web/src/components/ErrorBoundary.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/LoginPage.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/Markdown.tsx": {
@@ -435,10 +435,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 12
+      "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 15
+      "count": 14
     }
   },
   "packages/channel-web/src/components/credentials/ConnectorAccessNotice.tsx": {
@@ -651,7 +651,7 @@
       "count": 65
     },
     "ax-ui/no-raw-elements": {
-      "count": 63
+      "count": 61
     }
   },
   "packages/channel-web/src/components/settings/RememberedSitesPanel.tsx": {
@@ -716,7 +716,7 @@
       "count": 35
     },
     "ax-ui/no-raw-elements": {
-      "count": 33
+      "count": 32
     }
   },
   "packages/channel-web/src/components/settings/SkillInstallConsentDialog.tsx": {
@@ -748,10 +748,10 @@
   },
   "packages/channel-web/src/components/setup/SetupShell.tsx": {
     "ax-ui/no-classname": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/channel-web/src/components/setup/StepAdmin.tsx": {
@@ -1506,7 +1506,7 @@
   },
   "packages/channel-web/src/components/workspace/visual/VisualFrame.tsx": {
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
       "count": 3

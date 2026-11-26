@@ -247,12 +247,12 @@ export function UsageTab() {
       <Card>
         <Stack gap="lg">
         <Inline justify="between" align="start">
-          <div className="flex flex-col gap-1.5">
+          <Stack gap="xs">
             <Heading>Last 24 hours</Heading>
             {report !== null && report.users.length > 0 && (
               <Text role="meta">{summaryLine(report.totals)}</Text>
             )}
-          </div>
+          </Stack>
           <Button
             variant="ghost"
             size="sm"

@@ -91,7 +91,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         role="alert"
         className="flex flex-1 items-center justify-center bg-background p-6"
       >
-        <div className="w-full max-w-md">
+        
         <Card>
           <Stack gap="md">
             <Text role="body-strong">This part hit a snag</Text>
@@ -107,7 +107,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             </Inline>
           </Stack>
         </Card>
-        </div>
+        
       </div>
     );
   }
