@@ -21,9 +21,9 @@
  * Card titles carry `role="heading"` (level 2) to keep the h1 -> h2 outline
  * (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
-import { Button as AxButton, Card, formatTimestamp, Heading, Notice, Stack, Text } from '@project-ax/ui';
+import { Button as AxButton, Card, formatTimestamp, Heading, List, ListRow, Notice, Stack, Text } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -144,21 +144,13 @@ export function SlackBotRequests() {
           {changed && (
             <Notice tone="info">{COPY['changed']}</Notice>
           )}
-          <ul className="flex flex-col gap-4">
+          <List label={COPY['title'] ?? 'Slack bot requests'}>
             {requests.map((request) => (
-              <li key={request.requestId} className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex min-w-0 flex-col gap-1">
-                  <p className="text-sm font-medium">
-                    {`${request.botName} for ${request.agentName}${request.teamName !== null ? ` · ${request.teamName}` : ''}`}
-                  </p>
-                  <p className="text-[12.5px] text-muted-foreground">
-                    {`Asked by ${request.requestedBy} ${formatTimestamp(request.requestedAt) ?? request.requestedAt}.`}
-                  </p>
-                  {declineFailed === request.requestId && (
-                    <Notice tone="danger">{COPY['declineFailed']}</Notice>
-                  )}
-                </div>
-                <div className="flex gap-2">
+              <Fragment key={request.requestId}>
+              <ListRow
+                title={`${request.botName} for ${request.agentName}${request.teamName !== null ? ` · ${request.teamName}` : ''}`}
+                meta={`Asked by ${request.requestedBy} ${formatTimestamp(request.requestedAt) ?? request.requestedAt}.`}
+                trailing={<>
                   {/* Every row's buttons read the same, so each names its bot for a screen reader. */}
                   <Button
                     size="sm"
@@ -178,10 +170,13 @@ export function SlackBotRequests() {
                   >
                     Decline
                   </AxButton>
-                </div>
-              </li>
+                </>}
+              />
+              {/* The failure belongs to this request: an li of its own, so the list stays valid and the alert intact. */}
+              {declineFailed === request.requestId && <li><Notice tone="danger">{COPY['declineFailed']}</Notice></li>}
+              </Fragment>
             ))}
-          </ul>
+          </List>
           {truncated && <p className="text-[12.5px] text-muted-foreground">{COPY['more']}</p>}
         </Stack>
       </Stack>

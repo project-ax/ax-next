@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { CredentialSlotRow } from '../CredentialSlotRow';
 
 describe('CredentialSlotRow', () => {
@@ -163,5 +163,26 @@ describe('CredentialSlotRow', () => {
     const sheet = await screen.findByRole('dialog');
 
     expect(sheet.textContent).toContain('Used by the Linear tracker skill.');
+  });
+});
+
+describe('CredentialSlotRow as a list row', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a key row with no display name is a one-row list: label, status in the row, Add key beside it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
+    );
+    render(
+      <CredentialSlotRow
+        destination={{ kind: 'provider', provider: 'openrouter' }}
+        slot={{ label: 'OPENROUTER_API_KEY', kind: 'api-key' }}
+        scope={{ scope: 'global', ownerId: null }}
+      />,
+    );
+    const list = await screen.findByRole('list');
+    const row = within(list).getByRole('listitem');
+    await waitFor(() => expect(row).toHaveTextContent('Not set'));
+    expect(within(row).getByRole('button', { name: 'Add key' })).toBeEnabled();
   });
 });

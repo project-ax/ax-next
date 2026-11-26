@@ -22,7 +22,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
-import { AsyncState, Card, Notice, Stack, Text } from '@project-ax/ui';
+import { AsyncState, Card, List, ListRow, Notice, Stack, Text } from '@project-ax/ui';
 import { useAgentStore } from '@/lib/agent-store';
 import { routineApi } from '@/lib/routines';
 
@@ -120,16 +120,33 @@ function AgentToggleRow({
   // agent; skip the row entirely rather than show a dead control.
   if (state.enabled === null) return null;
 
-  return (
-    <div className={`flex flex-col gap-1.5 py-3 ${focused ? '' : 'border-b border-rule-soft last:border-b-0'}`}>
+  const errors = <>
+    {state.readError !== null && (
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel={`Loading ${agentName}’s setting`}
+        error={{
+          message: `Couldn't load this setting: ${state.readError}`,
+          onRetry: () => setAttempt((n) => n + 1),
+        }}
+      />
+    )}
+    {state.error !== null && <Notice tone="danger">{`Couldn't save: ${state.error}`}</Notice>}
+  </>;
+  const hasErrors = state.readError !== null || state.error !== null;
+
+  // The agent's own settings page: one setting with its explanation, not a list row.
+  if (focused) return (
+    <div className="flex flex-col gap-1.5 py-3">
       <div className="flex items-center gap-3">
         <label
           htmlFor={switchId}
           className="flex-1 min-w-0 text-[14px] font-medium tracking-[-0.01em] text-foreground truncate cursor-pointer"
         >
-          {focused ? 'Skill self-improvement' : agentName}
+          Skill self-improvement
         </label>
-        {focused && <span className="text-xs text-muted-foreground">{state.enabled === undefined ? 'Loading…' : state.enabled ? 'On' : 'Off'}</span>}
+        <span className="text-xs text-muted-foreground">{state.enabled === undefined ? 'Loading…' : state.enabled ? 'On' : 'Off'}</span>
         <Switch
           id={switchId}
           aria-label={`Skill self-improvement for ${agentName}`}
@@ -138,24 +155,28 @@ function AgentToggleRow({
           onCheckedChange={(v) => void onToggle(v)}
         />
       </div>
-      {focused && <>
-        <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{agentName} reviews what it has learned and writes skills from procedures it keeps repeating.</p>
-        {state.enabled !== undefined && <p className="text-xs text-muted-foreground">{state.enabled ? 'Turn this off to stop new self-improvement runs.' : `Off. ${agentName}’s existing skills stay installed.`}</p>}
-      </>}
-      {state.readError !== null && (
-        <AsyncState
-          status="error"
-          skeleton="lines"
-          loadingLabel={`Loading ${agentName}’s setting`}
-          error={{
-            message: `Couldn't load this setting: ${state.readError}`,
-            onRetry: () => setAttempt((n) => n + 1),
-          }}
-        />
-      )}
-      {state.error !== null && <Notice tone="danger">{`Couldn't save: ${state.error}`}</Notice>}
+      <p className="mt-4 text-sm leading-relaxed text-muted-foreground">{agentName} reviews what it has learned and writes skills from procedures it keeps repeating.</p>
+      {state.enabled !== undefined && <p className="text-xs text-muted-foreground">{state.enabled ? 'Turn this off to stop new self-improvement runs.' : `Off. ${agentName}’s existing skills stay installed.`}</p>}
+      {errors}
     </div>
   );
+
+  return <>
+    <ListRow
+      title={agentName}
+      trailing={
+        <Switch
+          id={switchId}
+          aria-label={`Skill self-improvement for ${agentName}`}
+          checked={state.enabled === true}
+          disabled={state.enabled === undefined || state.saving}
+          onCheckedChange={(v) => void onToggle(v)}
+        />
+      }
+    />
+    {/* A load or save problem is a row of its own: an li, so the list stays valid, with the alert intact. */}
+    {hasErrors && <li>{errors}</li>}
+  </>;
 }
 
 export function AgentSelfImprovementSection({
@@ -207,11 +228,11 @@ export function AgentSelfImprovementSection({
             description: 'Create one to manage its self-improvement.',
           }}
         >
-          <div className="flex flex-col">
+          <List label="Skill self-improvement">
             {agents.map((a) => (
               <AgentToggleRow key={a.id} agentId={a.id} agentName={a.name} onChanged={onChanged} />
             ))}
-          </div>
+          </List>
         </AsyncState>
       </Stack>
     </Stack>
@@ -270,19 +291,13 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
         {rows === null && readError === null && (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading default routines…" />
         )}
-        {rows?.map((row) => (
-          <div
+        {rows && rows.length > 0 && <List label="Default routines">{rows.map((row) => (
+          <ListRow
             key={row.defaultRoutineId}
-            className="flex items-center justify-between gap-3 py-3"
-          >
-            <label
-              htmlFor={`default-${row.defaultRoutineId}`}
-              className="text-sm"
-            >
-              {row.name}
-            </label>
-            <Switch
+            title={row.name}
+            trailing={<Switch
               id={`default-${row.defaultRoutineId}`}
+              aria-label={row.name}
               checked={row.enabled}
               disabled={busy !== null}
               onCheckedChange={(enabled) => {
@@ -317,9 +332,9 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
                     setBusy(null);
                   });
               }}
-            />
-          </div>
-        ))}
+            />}
+          />
+        ))}</List>}
       </Stack>
     </Stack>
     </Card>

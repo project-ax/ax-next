@@ -51,9 +51,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Card, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
+import { Card, ConfirmAction, EmptyState, List, Notice, Stack } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
-import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
+import { SettingsActions, SheetRow } from '../settings/SettingsLayout';
 
 type FormState = {
   displayName: string;
@@ -498,9 +498,9 @@ if (base.model !== editing.model) patch.model = base.model;
         {agents.length === 0 ? (
           listError ? null : <EmptyState title="No agents yet." description="Make one." />
         ) : (
-          <div className="flex flex-col">
+          <List label="Agents">
             {agents.map((a) => (
-              <SettingsDetailRow key={a.id} label={a.displayName} detail={agentCaption(a, teams, models)}>
+              <SheetRow key={a.id} title={a.displayName} meta={agentCaption(a, teams, models)}>
                 <div className="flex items-center justify-end gap-2">
                   <Button
                     variant="outline"
@@ -528,9 +528,9 @@ if (base.model !== editing.model) patch.model = base.model;
                     }}
                   />
                 </div>
-              </SettingsDetailRow>
+              </SheetRow>
             ))}
-          </div>
+          </List>
         )}
       </div>
     );

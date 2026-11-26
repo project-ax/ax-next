@@ -12,7 +12,7 @@ import { listSkills, listUserSkills } from '@/lib/skills';
 import { humanizeId } from '@/lib/humanize';
 import { patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary } from '@ax/skills';
-import { Notice } from '@project-ax/ui';
+import { List, ListRow, Notice } from '@project-ax/ui';
 
 interface Attachment {
   skillId: string;
@@ -149,29 +149,15 @@ export function SkillAttachmentsSection({
         </p>
       )}
 
-      <ul className="space-y-3 list-none m-0 p-0">
+      {attachments.length > 0 && <List label="Attached skills">
         {attachments.map((a) => {
           const skill = skillById.get(a.skillId);
           return (
-            <li key={a.skillId} className="rounded-md border border-border p-3">
-              <div className="flex items-center justify-between mb-2">
-                {/* (D9) The row led with the raw id in mono and demoted the
-                    description to a footnote — backwards, since the
-                    description is the part that says what the skill DOES. The
-                    id stays visible as secondary text: it is what an admin
-                    quotes in a bug report. */}
-                <div>
-                  <div className="text-sm">{humanizeId(a.skillId)}</div>
-                  {skill ? (
-                    <div className="text-xs text-muted-foreground">
-                      {skill.description}
-                    </div>
-                  ) : (
-                    <div className="text-xs font-mono text-muted-foreground">
-                      {a.skillId}
-                    </div>
-                  )}
-                </div>
+            <ListRow
+              key={a.skillId}
+              title={humanizeId(a.skillId)}
+              description={skill ? skill.description : a.skillId}
+              trailing={
                 <Button
                   variant="ghost"
                   size="sm"
@@ -180,14 +166,11 @@ export function SkillAttachmentsSection({
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
-              </div>
-              {/* TASK-100 — a skill declares no credential slots; its reach is
-                  its connectors, configured under Admin › Connectors. No
-                  per-skill credential rows here. */}
-            </li>
+              }
+            />
           );
         })}
-      </ul>
+      </List>}
 
       {addingSkillId === null ? (
         availableToAttach.length > 0 && (

@@ -47,7 +47,7 @@ import type { AuthUser } from '../lib/auth';
 import { PROD_TOOL_CATALOG } from '../lib/__tests__/agent-tool-catalog.fixture';
 
 function openAgentDetails(index = 0) {
-  const row = screen.getAllByRole('button', { name: /^Details for / })[index]!;
+  const row = within(screen.getByRole('list', { name: 'Agents' })).getAllByRole('button')[index]!;
   fireEvent.click(row);
 }
 

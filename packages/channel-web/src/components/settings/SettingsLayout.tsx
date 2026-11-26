@@ -1,10 +1,9 @@
-import { createContext, useContext, useState, useRef, type Ref, type ReactNode } from 'react';
+import { createContext, useContext, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronDown, ChevronRight, Info } from 'lucide-react';
+import { Info } from 'lucide-react';
+import { ListRow } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Separator } from '@/components/ui/separator';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
@@ -43,60 +42,33 @@ export function SettingsHelp({ title, children }: { title: string; children: Rea
   );
 }
 
-export function SettingsRow({ label, detail, value, onClick, disabled, children, ariaLabel, rowRef }: {
-  label: ReactNode;
-  detail?: ReactNode;
-  value?: ReactNode;
-  onClick?: (() => void) | undefined;
-  disabled?: boolean | undefined;
-  children?: ReactNode;
-  ariaLabel?: string;
-  rowRef?: Ref<HTMLButtonElement>;
-}) {
-  const content = <>
-    <span className="flex min-w-0 flex-1 flex-col gap-0.5 text-left">
-      <span className="break-words text-sm font-medium">{label}</span>
-      {detail && <span className="break-words text-xs font-normal text-muted-foreground">{detail}</span>}
-    </span>
-    {value && <span className="shrink-0 text-sm font-normal text-muted-foreground">{value}</span>}
-    {onClick && <span className="flex size-10 shrink-0 items-center justify-center"><ChevronRight aria-hidden="true" /></span>}
-    {children}
-  </>;
-  return <>
-    {onClick ? <Button type="button" variant="settings-row" className="h-auto w-full max-md:min-h-[72px]" ref={rowRef} aria-label={ariaLabel} onClick={onClick} disabled={disabled}>{content}</Button>
-      : <div className="flex min-h-[72px] items-center gap-4 px-2 py-3">{content}</div>}
-    <Separator />
-  </>;
-}
-
-export function SettingsDisclosure({ title, value, children, defaultOpen = false }: {
-  title: string; value?: ReactNode; children: ReactNode; defaultOpen?: boolean;
-}) {
-  return <Collapsible defaultOpen={defaultOpen}>
-    <CollapsibleTrigger asChild>
-      <Button type="button" variant="settings-row" className="group h-auto min-h-14 w-full max-md:min-h-14">
-        <span className="flex-1 text-left">{title}</span>
-        {value && <span className="text-muted-foreground">{value}</span>}
-        <ChevronDown aria-hidden="true" className="transition-transform group-data-[state=open]:rotate-180" />
-      </Button>
-    </CollapsibleTrigger>
-    <CollapsibleContent className="pb-6 pt-3">{children}</CollapsibleContent>
-    <Separator />
-  </Collapsible>;
-}
-
-export function SettingsDetailRow({ label, detail, value, description, children }: {
-  label: string; detail?: ReactNode; value?: ReactNode; description?: ReactNode; children: ReactNode | ((close: () => void) => ReactNode);
+/**
+ * A `ListRow` whose click opens a Sheet with the row's details and actions. It renders the row (an `li`, so put it
+ * inside a `List`) and the portaled Sheet. `meta` is one muted line, `description` up to two clamped lines,
+ * `trailing` static badges or controls that must not open the sheet.
+ */
+export function SheetRow({ title, meta, description, trailing, sheetDescription, children }: {
+  title: string;
+  meta?: ReactNode;
+  description?: string;
+  trailing?: ReactNode;
+  sheetDescription?: ReactNode;
+  children: ReactNode | ((close: () => void) => ReactNode);
 }) {
   const [open, setOpen] = useState(false);
-  const rowRef = useRef<HTMLButtonElement>(null);
   return <>
-    <SettingsRow rowRef={rowRef} label={label} detail={detail} value={value} ariaLabel={`Details for ${label}`} onClick={() => setOpen(true)} />
+    <ListRow
+      title={title}
+      {...(meta ? { meta } : {})}
+      {...(description ? { description } : {})}
+      {...(trailing ? { trailing } : {})}
+      onOpen={() => setOpen(true)}
+    />
     <Sheet open={open} onOpenChange={setOpen}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-[424px]" onCloseAutoFocus={(event) => { event.preventDefault(); rowRef.current?.focus(); }}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-[424px]">
         <SheetHeader>
-          <SheetTitle>{label}</SheetTitle>
-          <SheetDescription asChild><div>{description || detail || 'Manage this setting.'}</div></SheetDescription>
+          <SheetTitle>{title}</SheetTitle>
+          <SheetDescription asChild><div>{sheetDescription || description || meta || 'Manage this setting.'}</div></SheetDescription>
         </SheetHeader>
         <div className="mt-6 flex flex-col gap-4">{typeof children === 'function' ? children(() => setOpen(false)) : children}</div>
       </SheetContent>

@@ -53,7 +53,7 @@ describe('AuthProvidersTab', () => {
     render(<AuthProvidersTab />);
     await waitFor(() => expect(screen.getByText('Google')).toBeTruthy());
     expect(fetchMock.mock.calls[0]![0]).toBe('/admin/auth/providers');
-    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Google' }));
     expect(screen.getByText(/123\.apps\.googleusercontent\.com/)).toBeTruthy();
   });
 
@@ -303,7 +303,7 @@ describe('AuthProvidersTab', () => {
     expect(fetchMock.mock.calls).toHaveLength(1);
     // Google's own switch is untouched, and the leftover can still go.
     expect((screen.getByRole('switch', { name: /Disable Google/i }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByRole('button', { name: 'Details for oidc' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'oidc' })).toBeTruthy();
   });
 
   it('delete is gated by a styled dialog; Cancel cancels the request', async () => {
@@ -311,7 +311,7 @@ describe('AuthProvidersTab', () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
 
     render(<AuthProvidersTab />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Details for Google' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Google' }));
     fireEvent.click(screen.getByRole('button', { name: /Remove Google/i }));
 
     // A styled dialog appears (no OS confirm).
@@ -334,7 +334,7 @@ describe('AuthProvidersTab', () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
 
     render(<AuthProvidersTab />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Details for Google' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Google' }));
     fireEvent.click(screen.getByRole('button', { name: /Remove Google/i }));
 
     // Confirm in the dialog — its action button is "Remove".

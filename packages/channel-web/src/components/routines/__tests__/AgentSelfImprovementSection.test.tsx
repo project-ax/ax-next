@@ -11,7 +11,7 @@
  *   - An agent whose catalog has no skill-reflection default renders no row.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { AgentDefaultControls, AgentSelfImprovementSection } from '../AgentSelfImprovementSection';
 import { agentStoreActions } from '@/lib/agent-store';
 
@@ -208,5 +208,36 @@ describe('AgentDefaultControls', () => {
     fireEvent.click(await screen.findByRole('switch', { name: 'Heartbeat' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('We couldn’t change this default routine.');
     expect(screen.getByRole('switch', { name: 'Heartbeat' })).toBeInTheDocument();
+  });
+});
+
+describe('AgentSelfImprovementSection list', () => {
+  it('is one named list with a row per agent, each with its own switch (the agent can be named from the row)', async () => {
+    listAgentDefaults.mockResolvedValue([
+      { defaultRoutineId: 'skill-reflection', name: 'skill-reflection', enabled: true },
+    ]);
+    seedAgents([{ id: 'a1', name: 'Research Bot' }, { id: 'a2', name: 'Writer Bot' }]);
+    render(<AgentSelfImprovementSection />);
+    const list = await screen.findByRole('list', { name: 'Skill self-improvement' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Research Bot');
+    expect(within(rows[1]!).getByRole('switch', { name: 'Skill self-improvement for Writer Bot' })).toBeInTheDocument();
+  });
+
+  it('a failed save puts its alert in a row of its own, right under the agent, and rolls the switch back', async () => {
+    listAgentDefaults.mockResolvedValue([
+      { defaultRoutineId: 'skill-reflection', name: 'skill-reflection', enabled: true },
+    ]);
+    setAgentDefaultEnabled.mockRejectedValue(new Error('nope'));
+    seedAgents([{ id: 'a1', name: 'Research Bot' }]);
+    render(<AgentSelfImprovementSection />);
+    const sw = await screen.findByRole('switch', { name: 'Skill self-improvement for Research Bot' });
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
+    fireEvent.click(sw);
+    const row = sw.closest('li') as HTMLElement;
+    await waitFor(() => expect(row.nextElementSibling).not.toBeNull());
+    expect(within(row.nextElementSibling as HTMLElement).getByRole('alert')).toHaveTextContent("Couldn't save: nope");
+    await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
   });
 });

@@ -7,12 +7,11 @@
  * better-auth handler hot-reloads — no kernel restart needed (I10).
  */
 import { useEffect, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
 import { SettingsActions } from '../settings/SettingsLayout';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, List, ListRow, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthProviders,
@@ -165,7 +164,7 @@ export function AuthProvidersTab() {
         />
       )}
 
-      <ul className="flex flex-col list-none m-0 p-0">
+      {providers.length > 0 && <List label="Sign-in methods">
         {providers.map((p, i) => {
           const wired = isWiredKind(p.kind);
           // A leftover kind shows as off whatever its stored flag says:
@@ -173,42 +172,27 @@ export function AuthProvidersTab() {
           const on = wired && p.enabled;
           const hintId = `auth-provider-unsupported-${i}`;
           return (
-            <li
+            <ListRow
               key={p.kind}
-              className="flex min-h-[72px] items-center gap-4 border-b border-border px-2 py-3"
-            >
-              <div className="flex flex-col min-w-0 flex-1 gap-0.5">
-                <span className="text-[13px] font-medium">{labelFor(p.kind)}</span>
-                {!wired && (
-                  <span id={hintId} className="text-xs text-muted-foreground">
-                    No longer supported, so it does nothing. You can remove it.
-                  </span>
-                )}
-              </div>
-              {/* (D5) Was a hand-rolled switch — two divs and a translate. The
+              title={labelFor(p.kind)}
+              {...(wired ? {} : { meta: <span id={hintId}>No longer supported, so it does nothing. You can remove it.</span> })}
+              onOpen={() => setSelected(p)}
+              trailing={
+              /* (D5) Was a hand-rolled switch — two divs and a translate. The
                   primitive is installed and brings its own keyboard handling.
                   A leftover kind's switch is off and disabled: the server
-                  skips it at sign-in and refuses to toggle it. */}
+                  skips it at sign-in and refuses to toggle it. */
               <Switch
                 checked={on}
                 disabled={!wired}
                 aria-describedby={wired ? undefined : hintId}
                 aria-label={`${on ? 'Disable' : 'Enable'} ${labelFor(p.kind)}`}
                 onCheckedChange={() => void handleToggle(p)}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label={`Details for ${labelFor(p.kind)}`}
-                onClick={() => setSelected(p)}
-              >
-                <ChevronRight aria-hidden="true" />
-              </Button>
-            </li>
+              />}
+            />
           );
         })}
-      </ul>
+      </List>}
 
       {adding ? (
         <AddProviderForm

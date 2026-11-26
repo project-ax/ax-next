@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { AuthoredSkillsSection } from '../AuthoredSkillsSection';
 
 vi.mock('@/lib/admin', () => ({
@@ -361,5 +361,18 @@ describe('AuthoredSkillsSection', () => {
     // (id renders in both the row and the dialog description → at least one).
     expect(screen.queryByText('No authored skills.')).not.toBeInTheDocument();
     expect(screen.getAllByText('weather-api').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('AuthoredSkillsSection list', () => {
+  it('lists each draft as a row of one named list, with its version, Promote and Delete in the row', async () => {
+    mockList.mockResolvedValue([SKILL_CLEAN]);
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+    const list = await screen.findByRole('list', { name: 'Authored skills' });
+    const row = within(list).getByRole('listitem');
+    expect(row).toHaveTextContent('weather-api');
+    expect(row).toHaveTextContent('v2');
+    expect(within(row).getByRole('button', { name: 'Promote' })).toBeEnabled();
+    expect(within(row).getByRole('button', { name: /Delete weather-api/ })).toBeInTheDocument();
   });
 });

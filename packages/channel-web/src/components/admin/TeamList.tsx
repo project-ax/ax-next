@@ -16,8 +16,7 @@
  */
 import { useEffect, useState } from 'react';
 import { listTeams, type Team } from '../../lib/admin';
-import { AsyncState, formatTimestamp } from '@project-ax/ui';
-import { SettingsRow } from '../settings/SettingsLayout';
+import { AsyncState, formatTimestamp, List, ListRow } from '@project-ax/ui';
 
 /**
  * When the team was created, in the reader's own locale — the one fact on the
@@ -76,9 +75,9 @@ export function TeamList() {
             'Teams will let you share agents and connectors with a group of people at once, instead of one person at a time.',
         }}
       >
-        <div className="flex flex-col">
-          {teams?.map((t) => <SettingsRow key={t.id} label={t.displayName} detail={teamCaption(t)} />)}
-        </div>
+        <List label="Teams">
+          {teams?.map((t) => <ListRow key={t.id} title={t.displayName} meta={teamCaption(t)} />)}
+        </List>
       </AsyncState>
     </div>
   );

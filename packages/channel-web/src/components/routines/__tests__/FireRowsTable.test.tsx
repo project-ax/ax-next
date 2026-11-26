@@ -22,7 +22,7 @@
  *         of `firedAt` would produce for the fires below.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { FireRowsTable } from '../FireRowsTable';
 import type { Fire } from '@/lib/routines';
 
@@ -125,7 +125,7 @@ describe('FireRowsTable warning', () => {
         fires={[{ ...firstFire, status: 'error', error: 'boom', warning: WARNING }]}
       />,
     );
-    expect(screen.getByText('boom').className).toContain('text-destructive');
+    expect(screen.getByText('boom').closest('.ax-text-status-danger')).not.toBeNull();
     expect(screen.getByTestId('routine-warning').className).not.toContain('destructive');
   });
 
@@ -135,5 +135,18 @@ describe('FireRowsTable warning', () => {
     expect(screen.getByText(hostile)).toBeTruthy();
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('b')).toBeNull();
+  });
+});
+
+describe('FireRowsTable list', () => {
+  it('is a compact named list, one row per run, with its prompt shown under the row', () => {
+    render(<FireRowsTable fires={[firstFire, { ...firstFire, firedAt: '2026-05-17T02:00:00.000Z', renderedPrompt: 'later prompt' }]} />);
+    const list = screen.getByRole('list', { name: 'Recent runs' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('first fire prompt');
+    expect(rows[1]).toHaveTextContent('later prompt');
+    expect(within(rows[0]!).getByRole('button', { name: 'Run by tick' })).toBeInTheDocument();
+    expect(rows[0]!.querySelector('time')).not.toBeNull();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SkillAttachmentsSection } from '../SkillAttachmentsSection';
 import type { SkillSummary } from '@ax/skills';
 
@@ -291,5 +291,22 @@ describe('SkillAttachmentsSection', () => {
 
     // slack-notify has no credentials, so no Set credential button
     expect(screen.queryByRole('button', { name: /add key/i })).toBeNull();
+  });
+});
+
+describe('SkillAttachmentsSection list', () => {
+  it('lists attached skills as rows of one named list, each with its own Detach', async () => {
+    render(
+      <SkillAttachmentsSection
+        isAdmin
+        agentId={AGENT_ID}
+        initialAttachments={[{ skillId: 'github-api', credentialBindings: {} }]}
+        onSaved={vi.fn()}
+      />,
+    );
+    const list = await screen.findByRole('list', { name: 'Attached skills' });
+    const row = within(list).getByRole('listitem');
+    expect(row).toHaveTextContent('GitHub API');
+    expect(within(row).getByRole('button', { name: 'Detach github-api' })).toBeInTheDocument();
   });
 });

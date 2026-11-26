@@ -1,4 +1,4 @@
-import { SettingsDetailRow, SettingsDisclosure } from '../settings/SettingsLayout';
+import { SheetRow } from '../settings/SettingsLayout';
 import { UsagePricesCard } from './UsagePricesCard';
 import { UsageOverrideEditor } from './UsageOverrideEditor';
 /**
@@ -19,7 +19,7 @@ import { UsageOverrideEditor } from './UsageOverrideEditor';
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Card, EmptyState, Heading, Inline, Notice, Stack, StatusBadge, type StatusTone, Text, toast } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, Heading, Inline, List, ListRow, Notice, Stack, StatusBadge, type StatusTone, Text, toast } from '@project-ax/ui';
 import {
   fetchUsage,
   resumeUser,
@@ -281,11 +281,11 @@ export function UsageTab() {
             />
           ) : (
             <>
-              <div role="list" aria-label="Estimated usage per person, last 24 hours" className="flex flex-col">
-                {report.users.map((u) => <div key={u.userId} role="listitem"><UsageRow user={u} limits={u.limits ?? report.limits}
+              <List label="Estimated usage per person, last 24 hours">
+                {report.users.map((u) => <UsageRow key={u.userId} user={u} limits={u.limits ?? report.limits}
                   busy={busyUserId === u.userId} onPause={() => openPause(u)} onResume={() => resume(u)}
-                  onEditLimits={() => setOverrideUserId(u.userId)} /></div>)}
-              </div>
+                  onEditLimits={() => setOverrideUserId(u.userId)} />)}
+              </List>
               {report.users.filter((u) => u.userId === overrideUserId).map((u) => (
                 <UsageOverrideEditor key={u.userId} user={u}
                   onCancel={() => setOverrideUserId(null)}
@@ -309,7 +309,7 @@ export function UsageTab() {
         }}
       />
 
-      {report && <SettingsDisclosure title="Advanced">
+      {report && <List label="More settings"><ListRow title="Advanced" expandable={{ content: (
         <UsagePricesCard
           prices={report.prices ?? []}
           onSaved={(prices) => {
@@ -317,7 +317,7 @@ export function UsageTab() {
             changeReport((r) => ({ ...r, prices }));
           }}
         />
-      </SettingsDisclosure>}
+      ) }} /></List>}
       <p className="text-sm text-muted-foreground">
         Pausing a person stops new model calls and tries to stop running tasks. A tool action they
         already approved can still finish on the host.
@@ -351,8 +351,9 @@ function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: Usage
   const note = user.suspended?.note ?? null;
 
   return (
-    <SettingsDetailRow label={label} detail={<span className="flex flex-col gap-0.5"><span>{formatCount(user.turnsLast24h)} messages</span>{subline && <span>{subline}</span>}</span>}
-      value={<span className="flex flex-wrap items-center justify-end gap-2 tabular-nums">{formatUsd(user.spendUsd)}{user.status !== 'ok' && <StatusBadge tone={STATUS_TONE.get(user.status) ?? 'neutral'} dot>{statusLabel(user.status)}</StatusBadge>}</span>}>
+    <SheetRow title={label}
+      meta={<><span>{formatUsd(user.spendUsd)}</span> · <span>{formatCount(user.turnsLast24h)} messages</span>{subline && <> · <span>{subline}</span></>}</>}
+      {...(user.status !== 'ok' ? { trailing: <StatusBadge tone={STATUS_TONE.get(user.status) ?? 'neutral'} dot>{statusLabel(user.status)}</StatusBadge> } : {})}>
       {(close) => <>
       <p className="text-sm text-muted-foreground">{`${formatCount(user.turnsLastHour)} messages in the last hour`}</p>
       {share !== null && <p className="text-sm text-muted-foreground">{share}</p>}
@@ -388,6 +389,6 @@ function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: Usage
           )}
         </div>
       </>}
-    </SettingsDetailRow>
+    </SheetRow>
   );
 }

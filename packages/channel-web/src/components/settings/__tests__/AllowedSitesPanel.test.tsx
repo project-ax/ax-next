@@ -9,6 +9,17 @@ const AGENTS = [
   { agentId: 'a2', displayName: 'Code', visibility: 'personal' as const },
 ];
 
+// A row is a list item whose title is the host (plain text: the row has no primary action).
+const LIST = 'Allowed sites';
+const hostItem = (el: HTMLElement) => el.closest('li')!;
+const findRow = async (host: string) => hostItem(await within(await screen.findByRole('list', { name: LIST })).findByText(host));
+const getRow = (host: string) => hostItem(within(screen.getByRole('list', { name: LIST })).getByText(host));
+const queryRow = (host: string) => {
+  const list = screen.queryByRole('list', { name: LIST });
+  const el = list === null ? null : within(list).queryByText(host);
+  return el === null ? null : hostItem(el);
+};
+
 describe('AllowedSitesPanel', () => {
   beforeEach(() => {
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue(AGENTS);
@@ -24,10 +35,10 @@ describe('AllowedSitesPanel', () => {
 
   it('lists each host once; "All agents" when it covers every agent, else per-agent badges', async () => {
     render(<AllowedSitesPanel />);
-    const allRow = await screen.findByTestId('allowed-site-all.example.com');
+    const allRow = await findRow('all.example.com');
     expect(within(allRow).getByText('All agents')).toBeInTheDocument();
 
-    const oneRow = screen.getByTestId('allowed-site-one.example.com');
+    const oneRow = getRow('one.example.com');
     // The a1-only host shows the agent name, NOT "All agents".
     expect(within(oneRow).getByText('Research')).toBeInTheDocument();
     expect(within(oneRow).queryByText('All agents')).toBeNull();
@@ -58,7 +69,7 @@ describe('AllowedSitesPanel', () => {
 
   it('edits a host to add another agent (reconciles against the current set)', async () => {
     render(<AllowedSitesPanel />);
-    const oneRow = await screen.findByTestId('allowed-site-one.example.com');
+    const oneRow = await findRow('one.example.com');
     fireEvent.click(within(oneRow).getByRole('button', { name: 'Edit' }));
 
     // Edit dialog for one.example.com: a1 checked, a2 not. Check a2 → save.
@@ -77,7 +88,7 @@ describe('AllowedSitesPanel', () => {
 
   it('removes a host by revoking it for all its agents', async () => {
     render(<AllowedSitesPanel />);
-    const allRow = await screen.findByTestId('allowed-site-all.example.com');
+    const allRow = await findRow('all.example.com');
     fireEvent.click(within(allRow).getByRole('button', { name: 'Remove' }));
 
     // Asks first: nothing is revoked until the dialog's "Remove site" is clicked.
@@ -97,7 +108,7 @@ describe('AllowedSitesPanel', () => {
 
   it('Cancel on the remove dialog revokes nothing', async () => {
     render(<AllowedSitesPanel />);
-    const allRow = await screen.findByTestId('allowed-site-all.example.com');
+    const allRow = await findRow('all.example.com');
     fireEvent.click(within(allRow).getByRole('button', { name: 'Remove' }));
     const dialog = await screen.findByRole('dialog', { name: 'Remove all.example.com?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
@@ -129,11 +140,11 @@ describe('AllowedSitesPanel', () => {
         { host: 'teamonly.example.com', agentId: 't1', grantedAt: 't' },
       ]);
       render(<AllowedSitesPanel />);
-      const allRow = await screen.findByTestId('allowed-site-all.example.com');
+      const allRow = await findRow('all.example.com');
       // Still "All agents": every PERSONAL agent has it; the team agent is not counted.
       expect(within(allRow).getByText('All agents')).toBeInTheDocument();
       expect(screen.queryByText('Team Bot')).toBeNull();
-      expect(screen.queryByTestId('allowed-site-teamonly.example.com')).toBeNull();
+      expect(queryRow('teamonly.example.com')).toBeNull();
       expect(
         screen.getByText(/A team agent’s sites are in that agent’s settings, under Connectors\./),
       ).toBeInTheDocument();
@@ -146,7 +157,7 @@ describe('AllowedSitesPanel', () => {
         { host: 'all.example.com', agentId: 't1', grantedAt: 't' },
       ]);
       render(<AllowedSitesPanel />);
-      const row = await screen.findByTestId('allowed-site-all.example.com');
+      const row = await findRow('all.example.com');
       fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Remove site' }));
       await waitFor(() =>
@@ -183,7 +194,7 @@ describe('AllowedSitesPanel', () => {
       await screen.findByText('Your agents are all team agents');
       expect(screen.getByText('Their sites are in each agent’s settings, under Connectors.')).toBeInTheDocument();
       expect(screen.queryByText('No allowed sites yet')).toBeNull();
-      expect(screen.queryByTestId('allowed-site-teamonly.example.com')).toBeNull();
+      expect(queryRow('teamonly.example.com')).toBeNull();
       expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
     });
 
@@ -191,7 +202,7 @@ describe('AllowedSitesPanel', () => {
       vi.spyOn(agentsLib, 'listChatAgents').mockRejectedValue(new Error('nope'));
       render(<AllowedSitesPanel />);
       expect(await screen.findByRole('alert')).toBeInTheDocument();
-      expect(screen.queryByTestId('allowed-site-all.example.com')).toBeNull();
+      expect(queryRow('all.example.com')).toBeNull();
       expect(screen.queryByText('No allowed sites yet')).toBeNull();
       expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
     });
@@ -210,7 +221,7 @@ describe('AllowedSitesPanel', () => {
       // A failed read is not an empty list.
       expect(screen.queryByText('No allowed sites yet')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-      expect(await screen.findByTestId('allowed-site-back.example.com')).toBeInTheDocument();
+      expect(await findRow('back.example.com')).toBeInTheDocument();
       expect(agents).toHaveBeenCalledTimes(2);
       expect(sites).toHaveBeenCalledTimes(2);
       expect(screen.queryByRole('alert')).toBeNull();

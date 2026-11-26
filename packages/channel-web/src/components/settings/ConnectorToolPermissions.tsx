@@ -26,7 +26,7 @@ import {
 } from '@/lib/connector-tool-permissions';
 import type { ToolPermissionsState } from '@/lib/use-tool-permissions';
 import { cn } from '@/lib/utils';
-import { AsyncState, InsetBlock, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, InsetBlock, List, ListRow, Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { FieldDescription, FieldSet, FieldLegend } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -116,44 +116,38 @@ function ToolRow({
 }) {
   const title = displayTitle(tool);
   return (
-    <li className="flex min-h-10 items-center gap-2">
-      {/* Title and badge wrap together, so on a narrow screen the badge drops
-          under the title instead of pushing the choices off the edge. */}
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
-        <span className="min-w-0 max-w-full truncate text-sm" title={title}>
-          {title}
-        </span>
-        {suggested && (
-          <StatusBadge tone="neutral">Suggested</StatusBadge>
+    <ListRow
+      title={title}
+      {...(suggested ? { meta: <StatusBadge tone="neutral">Suggested</StatusBadge> } : {})}
+      trailing={<>
+        {tool.description.trim() && (
+          <TheirDescription
+            connectorName={connectorName}
+            title={title}
+            description={tool.description}
+          />
         )}
-      </div>
-      {tool.description.trim() && (
-        <TheirDescription
-          connectorName={connectorName}
-          title={title}
-          description={tool.description}
-        />
-      )}
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        className="shrink-0"
-        aria-label={`Permission for ${title}`}
-        value={verdict ?? ''}
-        onValueChange={(value) => {
-          // A single toggle group lets you click the selected item off; a tool
-          // always has exactly one choice, so ignore the empty value.
-          if (value) onChange(value as ToolVerdict);
-        }}
-      >
-        {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon, on }) => (
-          <ToggleGroupItem key={value} value={value} aria-label={label} className={cn(on)}>
-            <Icon />
-          </ToggleGroupItem>
-        ))}
-      </ToggleGroup>
-    </li>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          aria-label={`Permission for ${title}`}
+          value={verdict ?? ''}
+          onValueChange={(value) => {
+            // A single toggle group lets you click the selected item off; a tool
+            // always has exactly one choice, so ignore the empty value.
+            if (value) onChange(value as ToolVerdict);
+          }}
+        >
+          {TOOL_VERDICT_OPTIONS.map(({ value, label, Icon, on }) => (
+            <ToggleGroupItem key={value} value={value} aria-label={label} className={cn(on)}>
+              <Icon />
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </>}
+    />
   );
 }
 
@@ -177,7 +171,7 @@ function ToolGroup({
         <h4 className="text-sm font-medium">{label}</h4>
         {caption && <span className="text-xs text-muted-foreground">{caption}</span>}
       </div>
-      <ul className="flex flex-col gap-1">
+      <List label={`${label} tool permissions`} density="compact">
         {tools.map((tool) => (
           <ToolRow
             key={tool.toolKey}
@@ -188,7 +182,7 @@ function ToolGroup({
             onChange={(v) => state.setVerdict(tool.toolKey, v)}
           />
         ))}
-      </ul>
+      </List>
     </section>
   );
 }

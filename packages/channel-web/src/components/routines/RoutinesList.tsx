@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { ACTIVE_HOURS_REPAIR_MESSAGE } from '@ax/routines-contract';
 import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,9 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, List, ListRow, Notice } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
-import { Separator } from '@/components/ui/separator';
 import {
   routineApi,
   RoutineApiError,
@@ -273,151 +272,143 @@ export function RoutinesList({
           description={origin === 'default' ? 'Enabled workspace defaults appear here.' : `Create a routine to schedule work for ${agentName ?? 'an agent'}.`}
         />
       ) : (
-        <>
+        <List label="Routines">
         {list?.map((row) => (
-          <div key={rowKey(row)} className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3 py-3">
-              <Button
-                variant="ghost"
-                aria-label={`Recent runs for ${row.name}`}
-                aria-expanded={expanded === rowKey(row)}
-                disabled={fireProtected}
-                onClick={() => {
-                  if (!fireProtectedRef.current)
-                    setExpanded((v) =>
-                      v === rowKey(row) ? null : rowKey(row),
-                    );
-                }}
-              >
-                <ChevronRight data-icon="inline-start" />
-              </Button>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{row.name}</p>
+          <Fragment key={rowKey(row)}>
+            <ListRow
+              title={row.name}
+              meta={<>
                 <TriggerChip schedule={row.schedule} webhook={row.webhook} />
+                {!agentId && <>{' · '}{nameFor(row.agentId)}</>}
                 {row.delivery !== null && row.delivery !== undefined && row.delivery.waiting > 0 && (
-                  <p role="status" className="text-sm text-muted-foreground">{row.delivery.waiting} app {row.delivery.waiting === 1 ? 'update' : 'updates'} waiting.</p>
+                  <>{' · '}<span role="status">{row.delivery.waiting} app {row.delivery.waiting === 1 ? 'update' : 'updates'} waiting.</span></>
                 )}
-                {row.lastWarning === ACTIVE_HOURS_REPAIR_MESSAGE && <p className="text-sm text-muted-foreground">{row.lastWarning}</p>}
-                {!agentId && (
-                  <p className="text-xs text-muted-foreground">
-                    {nameFor(row.agentId)}
-                  </p>
-                )}
-              </div>
-              {row.origin === 'authored' && <Field orientation="horizontal" className="w-auto">
-                <FieldLabel htmlFor={`routine-${row.routineId}`}>
-                  {row.enabled ? 'On' : 'Off'}
-                </FieldLabel>
-                <Switch
-                  id={`routine-${row.routineId}`}
-                  aria-label={`Enabled for ${row.name}`}
-                  checked={row.enabled}
-                  disabled={
-                    busy !== null || uncertain || fireProtected || !(row.enabled ? row.permissions.stop : row.permissions.edit)
-                  }
-                  onCheckedChange={() => void mutate(row, 'enabled')}
-                />
-              </Field>}
-              {row.permissions.edit && (
+              </>}
+              {...(row.lastWarning === ACTIVE_HOURS_REPAIR_MESSAGE ? { description: row.lastWarning } : {})}
+              trailing={<>
                 <Button
                   variant="ghost"
-                  aria-label={`Edit ${row.name}`}
-                  disabled={busy !== null || uncertain || fireProtected}
-                  onClick={() => setEditing(row)}
+                  aria-label={`Recent runs for ${row.name}`}
+                  aria-expanded={expanded === rowKey(row)}
+                  disabled={fireProtected}
+                  onClick={() => {
+                    if (!fireProtectedRef.current)
+                      setExpanded((v) =>
+                        v === rowKey(row) ? null : rowKey(row),
+                      );
+                  }}
                 >
-                  <Pencil data-icon="inline-start" />
+                  <ChevronRight data-icon="inline-start" />
                 </Button>
-              )}
-            </div>
-            {expanded === rowKey(row) && (
-              <div className="flex flex-col gap-3 pb-4">
-                {row.description && (
-                  <p className="text-sm text-muted-foreground">
-                    {row.description}
-                  </p>
+                {row.origin === 'authored' && <Field orientation="horizontal" className="w-auto">
+                  <FieldLabel htmlFor={`routine-${row.routineId}`}>
+                    {row.enabled ? 'On' : 'Off'}
+                  </FieldLabel>
+                  <Switch
+                    id={`routine-${row.routineId}`}
+                    aria-label={`Enabled for ${row.name}`}
+                    checked={row.enabled}
+                    disabled={
+                      busy !== null || uncertain || fireProtected || !(row.enabled ? row.permissions.stop : row.permissions.edit)
+                    }
+                    onCheckedChange={() => void mutate(row, 'enabled')}
+                  />
+                </Field>}
+                {row.permissions.edit && (
+                  <Button
+                    variant="ghost"
+                    aria-label={`Edit ${row.name}`}
+                    disabled={busy !== null || uncertain || fireProtected}
+                    onClick={() => setEditing(row)}
+                  >
+                    <Pencil data-icon="inline-start" />
+                  </Button>
                 )}
-                <div className="flex flex-wrap gap-2">
-                  {row.permissions.fire && (
-                    <FireNowControl
-                      routine={row}
-                      onFired={onFired}
-                      onPendingChange={protectFire}
-                    />
+              </>}
+            />
+            {/* The recent-runs panel is a row of its own (an li), so the list stays valid and List draws its divider. */}
+            {expanded === rowKey(row) && (
+              <li>
+                <div className="flex flex-col gap-3 pb-4">
+                  {row.description && (
+                    <p className="text-sm text-muted-foreground">
+                      {row.description}
+                    </p>
                   )}
-                  {row.permissions.stop && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy !== null || uncertain || fireProtected}
-                      onClick={() => setDeleting(row)}
-                    >
-                      Delete routine
-                    </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {row.permissions.fire && (
+                      <FireNowControl
+                        routine={row}
+                        onFired={onFired}
+                        onPendingChange={protectFire}
+                      />
+                    )}
+                    {row.permissions.stop && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={busy !== null || uncertain || fireProtected}
+                        onClick={() => setDeleting(row)}
+                      >
+                        Delete routine
+                      </Button>
+                    )}
+                  </div>
+                  {row.lastError && (
+                    <Notice tone="danger">{row.lastError}</Notice>
+                  )}
+                  {row.webhook !== null &&
+                    row.permissions.manageSecret && (
+                      <>
+                        <CredentialSlotRow
+                          destination={{
+                            kind: 'routine-hmac',
+                            agentId: row.agentId,
+                            routineId: row.routineId,
+                          }}
+                          slot={{ label: 'Signing secret', kind: 'api-key' }}
+                          scope={{ scope: 'agent', ownerId: row.agentId }}
+                        />
+                        <SigningSecretHelp />
+                      </>
+                    )}
+                  {firesError ? (
+                    <Notice tone="danger" action={{ label: 'Try again', onClick: () => setFiresTick((n) => n + 1) }}>
+                      Recent runs are unavailable.
+                    </Notice>
+                  ) : fires === null ? (
+                    <AsyncState status="loading" skeleton="lines" loadingLabel="Loading recent runs" />
+                  ) : fires.length ? (
+                    <FireRowsTable fires={fires} />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No runs yet.</p>
                   )}
                 </div>
-                {row.lastError && (
-                  <Notice tone="danger">{row.lastError}</Notice>
-                )}
-                {row.webhook !== null &&
-                  row.permissions.manageSecret && (
-                    <>
-                      <CredentialSlotRow
-                        destination={{
-                          kind: 'routine-hmac',
-                          agentId: row.agentId,
-                          routineId: row.routineId,
-                        }}
-                        slot={{ label: 'Signing secret', kind: 'api-key' }}
-                        scope={{ scope: 'agent', ownerId: row.agentId }}
-                      />
-                      <SigningSecretHelp />
-                    </>
-                  )}
-                {firesError ? (
-                  <Notice tone="danger" action={{ label: 'Try again', onClick: () => setFiresTick((n) => n + 1) }}>
-                    Recent runs are unavailable.
-                  </Notice>
-                ) : fires === null ? (
-                  <AsyncState status="loading" skeleton="lines" loadingLabel="Loading recent runs" />
-                ) : fires.length ? (
-                  <FireRowsTable fires={fires} />
-                ) : (
-                  <p className="text-sm text-muted-foreground">No runs yet.</p>
-                )}
-              </div>
+  
+              </li>
             )}
-            <Separator />
-          </div>
+          </Fragment>
         ))}
         {unreadable.map((row) => (
-          <div key={rowKey(row)} className="min-w-0">
-            <div className="flex flex-wrap items-center gap-3 py-3">
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{unreadableName(row)}</p>
-                <p className="text-sm text-muted-foreground">
-                  {UNREADABLE_LINE}
-                  {row.canDelete && ' Delete it and set it up again.'}
-                </p>
-                {!agentId && (
-                  <p className="text-xs text-muted-foreground">{nameFor(row.agentId)}</p>
-                )}
-              </div>
-              {row.canDelete && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Delete routine ${unreadableName(row)}`}
-                  disabled={busy !== null || uncertain || fireProtected}
-                  onClick={() => setDeleting({ ...row, name: unreadableName(row) })}
-                >
-                  Delete routine
-                </Button>
-              )}
-            </div>
-            <Separator />
-          </div>
+          <ListRow
+            key={rowKey(row)}
+            title={unreadableName(row)}
+            {...(!agentId ? { meta: nameFor(row.agentId) } : {})}
+            description={`${UNREADABLE_LINE}${row.canDelete ? ' Delete it and set it up again.' : ''}`}
+            {...(row.canDelete ? { trailing: (
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={`Delete routine ${unreadableName(row)}`}
+                disabled={busy !== null || uncertain || fireProtected}
+                onClick={() => setDeleting({ ...row, name: unreadableName(row) })}
+              >
+                Delete routine
+              </Button>
+            ) } : {})}
+          />
         ))}
-        </>
+        </List>
       )}
       {(editing || creating) && (
         <Dialog

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { SettingsDetailRow, SettingsHelp } from '../SettingsLayout';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { List } from '@project-ax/ui';
+import { SettingsHelp, SheetRow } from '../SettingsLayout';
 import { Button } from '@/components/ui/button';
 
 describe('Settings interactions', () => {
@@ -17,9 +18,9 @@ describe('Settings interactions', () => {
 
   it('keeps secondary actions in details and restores focus when dismissed', async () => {
     const remove = vi.fn();
-    render(<SettingsDetailRow label="Research brief" detail="Scout" value="Enabled"><Button onClick={remove}>Remove skill</Button></SettingsDetailRow>);
+    render(<List label="Skills"><SheetRow title="Research brief" meta="Scout · Enabled"><Button onClick={remove}>Remove skill</Button></SheetRow></List>);
     expect(screen.queryByRole('button', { name: 'Remove skill' })).toBeNull();
-    const row = screen.getByRole('button', { name: 'Details for Research brief' });
+    const row = within(screen.getByRole('list', { name: 'Skills' })).getByRole('button', { name: 'Research brief' });
     row.focus();
     fireEvent.click(row);
     expect(screen.getByRole('dialog', { name: 'Research brief' })).toBeVisible();

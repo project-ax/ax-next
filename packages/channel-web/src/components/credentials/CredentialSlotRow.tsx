@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { SettingsRow } from '../settings/SettingsLayout';
 import { Button } from '@/components/ui/button';
-import { Notice, StatusBadge } from '@project-ax/ui';
+import { List, ListRow, Notice, StatusBadge } from '@project-ax/ui';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import type { Destination } from '@ax/credentials';
 import { CredentialSlotForm } from './CredentialSlotForm';
@@ -71,18 +70,7 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
   const canManage = destination.kind !== 'routine-hmac' || (status === 'ready' && routineInfo?.manageSecret === true);
   const statusLabel = status === 'loading' ? 'Checking…' : status === 'error' ? 'Unavailable' : isSet ? 'Saved' : 'Not set';
 
-  return <>
-    {displayName ? <SettingsRow label={displayName} value={status === 'ready' && isSet ? 'Key saved' : statusLabel} onClick={() => { if (canManage) setOpen(true); }} /> : <div className="flex items-center justify-between gap-3 py-2">
-      <div className="flex items-center gap-2">
-        <span className="text-sm">{humanLabel}</span>
-        <StatusBadge tone={status === 'ready' && isSet ? 'success' : 'neutral'} dot>{statusLabel}</StatusBadge>
-      </div>
-      <Button size="sm" variant="outline" className="shrink-0" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>
-    </div>}
-    {status === 'error' && <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>
-      {destination.kind === 'routine-hmac' ? 'Could not check the signing secret.' : 'Could not check this key.'}
-    </Notice>}
-    <Sheet open={open} onOpenChange={setOpen}>
+  const sheet = <Sheet open={open} onOpenChange={setOpen}>
       <SheetContent {...(destinationAddsInfo ? {} : { 'aria-describedby': undefined })}>
         <SheetHeader>
           <SheetTitle>{isSet ? `Replace your ${humanLabel}` : `Add your ${humanLabel}`}</SheetTitle>
@@ -94,7 +82,33 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
             onSaved={() => { setOpen(false); onSaved?.(); void refresh(); }} />
         </div>
       </SheetContent>
-    </Sheet>
+    </Sheet>;
+  const problem = status === 'error' && <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>
+    {destination.kind === 'routine-hmac' ? 'Could not check the signing secret.' : 'Could not check this key.'}
+  </Notice>;
+
+  // With a displayName the caller owns the surrounding `List` (several providers share one), so this is a bare row,
+  // and a failed check is a row of its own (an li) so the list stays valid.
+  if (displayName) return <>
+    <ListRow
+      title={displayName}
+      meta={status === 'ready' && isSet ? 'Key saved' : statusLabel}
+      {...(canManage ? { onOpen: () => setOpen(true) } : {})}
+    />
+    {problem && <li>{problem}</li>}
+    {sheet}
+  </>;
+
+  return <>
+    <List label={humanLabel}>
+      <ListRow
+        title={humanLabel}
+        meta={<StatusBadge tone={status === 'ready' && isSet ? 'success' : 'neutral'} dot>{statusLabel}</StatusBadge>}
+        trailing={<Button size="sm" variant="outline" className="shrink-0" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>}
+      />
+    </List>
+    {problem}
+    {sheet}
   </>;
 }
 

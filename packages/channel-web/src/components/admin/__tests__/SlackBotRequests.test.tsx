@@ -353,7 +353,9 @@ describe('Decline', () => {
     render(<SlackBotRequests />);
     const row = (await screen.findByText('Quill Bot for Quill · Support')).closest('li') as HTMLElement;
     fireEvent.click(within(row).getByRole('button', { name: 'Decline Quill Bot' }));
-    expect(await within(row).findByRole('alert')).toHaveTextContent(
+    // The failure is the row's own: it sits in the list item right after the request it is about.
+    await waitFor(() => expect(row.nextElementSibling).not.toBeNull());
+    expect(within(row.nextElementSibling as HTMLElement).getByRole('alert')).toHaveTextContent(
       "We couldn't decline that just now. Try again in a minute.",
     );
     expect(within(row).getByRole('button', { name: 'Decline Quill Bot' })).toBeEnabled();

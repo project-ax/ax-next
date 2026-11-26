@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SkillsAppStore } from '../SkillsAppStore';
+import { humanizeId } from '@/lib/humanize';
 import type { ConnectionSkill, CatalogSkillListing } from '@/lib/connections';
 import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 
@@ -102,12 +103,40 @@ beforeEach(() => {
   mockSetDefault.mockResolvedValue(undefined);
 });
 
+// A skill row is a list item; its title button is its only control. Rows are named by the skill id they were
+// tests keyed on: installed and catalog rows by the humanised id, an authored draft by its description.
+let authoredTitle = 'An agent-authored draft.';
+function rowTitle(key: string): string {
+  const [kind, ...rest] = key.split('-');
+  return kind === 'authored' ? authoredTitle : humanizeId(rest.join('-'));
+}
+const LIST_NAME: Record<string, string> = {
+  installed: 'Installed skills',
+  catalog: 'Available in your workspace',
+  authored: 'Authored by your agents',
+};
+// Scoped to the shelf the key names: "Web search" is both an installed row and (were it not installed) a catalog one.
+const shelf = (key: string, query: 'find' | 'get' | 'query'): HTMLElement | null | Promise<HTMLElement> => {
+  const name = LIST_NAME[key.split('-')[0]!]!;
+  return query === 'find' ? screen.findByRole('list', { name, hidden: true })
+    : query === 'get' ? screen.getByRole('list', { name, hidden: true })
+    : screen.queryByRole('list', { name, hidden: true });
+};
+const findRow = async (key: string): Promise<HTMLElement> =>
+  (await within(await (shelf(key, 'find') as Promise<HTMLElement>)).findByRole('button', { name: rowTitle(key), hidden: true })).closest('li')!;
+const getRow = (key: string): HTMLElement =>
+  within(shelf(key, 'get') as HTMLElement).getByRole('button', { name: rowTitle(key), hidden: true }).closest('li')!;
+const queryRow = (key: string): HTMLElement | null => {
+  const list = shelf(key, 'query') as HTMLElement | null;
+  return list === null ? null : within(list).queryByRole('button', { name: rowTitle(key), hidden: true })?.closest('li') ?? null;
+};
+
 async function openSkillDetails(testId: string) {
   const active = screen.queryByRole('dialog');
   if (active) fireEvent.click(within(active).getByRole('button', { name: 'Close' }));
   fireEvent.mouseDown(screen.getByRole('tab', { name: testId.startsWith('catalog-') ? 'Browse' : 'Installed' }));
-  const row = await screen.findByTestId(testId);
-  fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+  const row = await findRow(testId);
+  fireEvent.click(within(row).getByRole('button'));
 }
 
 describe('SkillsAppStore', () => {
@@ -158,11 +187,11 @@ describe('SkillsAppStore', () => {
   it('renders INSTALLED with a count and NOT INSTALLED with a count', async () => {
     render(<SkillsAppStore isAdmin={false} />);
     // Wait for both shelves to settle (the catalog row is the last to render).
-    expect(await screen.findByTestId('catalog-pdf-tools')).toBeInTheDocument();
+    expect(await findRow('catalog-pdf-tools')).toBeInTheDocument();
     // Two installed skills: web-search (default) + my-helper (user).
     expect(screen.getByText(/^Installed \(2\)/)).toBeInTheDocument();
     // web-search is installed (default) → INSTALLED shows it.
-    expect(screen.getByTestId('installed-web-search')).toBeInTheDocument();
+    expect(getRow('installed-web-search')).toBeInTheDocument();
     // pdf-tools is NOT installed → it shows on the catalog shelf.
     expect(screen.getByText('Work with PDFs.')).toBeInTheDocument();
     // The not-installed heading reflects the post-exclusion count (1: pdf-tools).
@@ -173,18 +202,18 @@ describe('SkillsAppStore', () => {
     render(<SkillsAppStore isAdmin={false} />);
     // Wait for the installed exclusion to land (the default row renders) before
     // counting Install buttons.
-    await screen.findByTestId('catalog-pdf-tools');
+    await findRow('catalog-pdf-tools');
     // Only one "Install" button — for pdf-tools — since web-search is installed.
     await openSkillDetails('catalog-pdf-tools');
     const installButtons = screen.getAllByRole('button', { name: /^Install$/i });
     expect(installButtons).toHaveLength(1);
     // web-search is NOT on the catalog shelf (it's installed).
-    expect(screen.queryByTestId('catalog-web-search')).toBeNull();
+    expect(queryRow('catalog-web-search')).toBeNull();
   });
 
   it('a default-installed row shows the 🏢 default marker and no Remove', async () => {
     render(<SkillsAppStore isAdmin={false} />);
-    const row = await screen.findByTestId('installed-web-search');
+    const row = await findRow('installed-web-search');
     // The default skill is marked "default" and is not removable.
     expect(row.textContent).toMatch(/default/i);
     expect(screen.queryByRole('button', { name: /Remove web-search/i })).toBeNull();
@@ -192,7 +221,7 @@ describe('SkillsAppStore', () => {
 
   it('opens the consent dialog when Install is clicked', async () => {
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('catalog-pdf-tools');
+    await findRow('catalog-pdf-tools');
     await openSkillDetails('catalog-pdf-tools');
     fireEvent.click(screen.getByRole('button', { name: /^Install$/i }));
     // The consent dialog titles itself "Install <skillId>".
@@ -201,7 +230,7 @@ describe('SkillsAppStore', () => {
 
   it('a non-admin does NOT see admin curation affordances', async () => {
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('catalog-pdf-tools');
+    await findRow('catalog-pdf-tools');
     expect(screen.queryByRole('button', { name: /Add to workspace/i })).toBeNull();
     expect(screen.queryByText(/Awaiting review/i)).toBeNull();
   });
@@ -223,7 +252,7 @@ describe('SkillsAppStore', () => {
       },
     ]);
     render(<SkillsAppStore isAdmin={true} />);
-    await screen.findByTestId('catalog-pdf-tools');
+    await findRow('catalog-pdf-tools');
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Browse' }));
     expect(screen.getByRole('button', { name: /Add to workspace/i })).toBeInTheDocument();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Review' }));
@@ -246,7 +275,7 @@ describe('SkillsAppStore', () => {
   it('a failed Awaiting review read says so, not "No pending requests", and Try again re-reads', async () => {
     mockListRequests.mockRejectedValueOnce(new Error('requests 503')).mockResolvedValue([]);
     render(<SkillsAppStore isAdmin={true} />);
-    await screen.findByTestId('catalog-pdf-tools');
+    await findRow('catalog-pdf-tools');
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Review' }));
     fireEvent.click(await screen.findByRole('button', { name: /Awaiting review/i }));
     const alert = await screen.findByRole('alert');
@@ -280,37 +309,34 @@ describe('SkillsAppStore', () => {
    * blockified by its flex container, so the two rows in flex parents were
    * always fine. The two in block parents were not.
    */
-  it('truncating descriptions are block-level, or truncate silently does nothing', async () => {
-    mockListAuthored.mockResolvedValue([
-      {
-        skillId: 'drafted',
-        agentId: 'a1',
-        description:
-          'Fetch current weather and multi-day forecasts for any location. ' +
-          'Use when the user asks about weather, temperature, rain, wind, or ' +
-          'the forecast for a city or place.',
-        status: 'active',
-      },
-    ]);
+  it('a long description is clamped and breaks words, in the shared row, or it runs out of the row', async () => {
+    const long =
+      'Fetch current weather and multi-day forecasts for any location. ' +
+      'Use when the user asks about weather, temperature, rain, wind, or ' +
+      'the forecast for a city or place.';
+    mockListAuthored.mockResolvedValue([{ skillId: 'drafted', agentId: 'a1', description: long, status: 'active' }]);
+    authoredTitle = long;
     render(<SkillsAppStore isAdmin={false} />);
 
-    const row = await screen.findByTestId('authored-drafted');
-    const desc = row.querySelector('.break-words');
-    expect(desc).not.toBeNull();
-    // `truncate` without `block` is inert on a span in a block parent.
-    expect(desc!.className).toContain('break-words');
+    // An authored draft is titled by its description; the row clamps the title instead (it truncates, full text in `title`).
+    const row = await findRow('authored-drafted');
+    const title = within(row).getByRole('button', { hidden: true });
+    expect(title).toHaveAttribute('title', long);
+    expect(title.className).toContain('ax-truncate');
 
-    // The catalog shelf's description has the same block parent and the same bug.
-    const catalogRow = await screen.findByTestId('catalog-pdf-tools');
-    const catalogDesc = catalogRow.querySelector('.break-words');
+    // The catalog shelf's description has the same shared-row treatment.
+    const catalogRow = await findRow('catalog-pdf-tools');
+    const catalogDesc = catalogRow.querySelector('[data-part="description"]');
     expect(catalogDesc).not.toBeNull();
-    expect(catalogDesc!.className).toContain('break-words');
+    expect(catalogDesc!.className).toContain('ax-break-words');
+    expect(catalogDesc!.className).toContain('ax-line-clamp-2');
+    authoredTitle = 'An agent-authored draft.';
   });
 
   it('an authored draft shows an Edit (adopt-&-edit) button', async () => {
     mockListAuthored.mockResolvedValue(AUTHORED);
     render(<SkillsAppStore isAdmin={false} />);
-    const row = await screen.findByTestId('authored-drafted');
+    const row = await findRow('authored-drafted');
     expect(row).toBeInTheDocument();
     expect(screen.getByText('Authored by your agents')).toBeInTheDocument();
     await openSkillDetails('authored-drafted');
@@ -321,7 +347,7 @@ describe('SkillsAppStore', () => {
     mockListAuthored.mockResolvedValue(AUTHORED);
     mockAdoptAuthored.mockResolvedValue({ skillId: 'drafted', created: true, adopted: true });
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('authored-drafted');
+    await findRow('authored-drafted');
 
     await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
@@ -340,7 +366,7 @@ describe('SkillsAppStore', () => {
       new Error('user-skills API 409: not-adoptable'),
     );
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('authored-drafted');
+    await findRow('authored-drafted');
 
     await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
@@ -422,7 +448,7 @@ describe('SkillsAppStore', () => {
     mockListUserSkills.mockResolvedValue([]);
 
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('installed-agent-skill');
+    await findRow('installed-agent-skill');
     expect(screen.queryByRole('button', { name: /Remove agent-skill/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /Unset .* default/i })).toBeNull();
     await openSkillDetails('installed-agent-skill');
@@ -438,7 +464,7 @@ describe('SkillsAppStore', () => {
 
     render(<SkillsAppStore isAdmin={false} />);
     // The catalog is still browsable, but every Install button is disabled.
-    await screen.findByTestId('catalog-web-search');
+    await findRow('catalog-web-search');
     await openSkillDetails('catalog-pdf-tools');
     const installButtons = screen.getAllByRole('button', { name: /^Install$/i });
     expect(installButtons.length).toBeGreaterThan(0);
@@ -455,7 +481,7 @@ describe('SkillsAppStore', () => {
   it('an authored draft shows a Delete button', async () => {
     mockListAuthored.mockResolvedValue(AUTHORED);
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('authored-drafted');
+    await findRow('authored-drafted');
     await openSkillDetails('authored-drafted');
     expect(screen.getByRole('button', { name: /Delete drafted/i })).toBeInTheDocument();
   });
@@ -465,7 +491,7 @@ describe('SkillsAppStore', () => {
     mockDeleteAuthored.mockResolvedValue(undefined);
     mockListAuthored.mockResolvedValue([]); // post-delete refreshOwn sees it gone
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('authored-drafted');
+    await findRow('authored-drafted');
 
     // Click Delete → a confirmation dialog appears (no call yet).
     await openSkillDetails('authored-drafted');
@@ -481,7 +507,7 @@ describe('SkillsAppStore', () => {
 
     // The row drops off (refreshOwn re-read returns []).
     await waitFor(() =>
-      expect(screen.queryByTestId('authored-drafted')).toBeNull(),
+      expect(queryRow('authored-drafted')).toBeNull(),
     );
   });
 
@@ -491,14 +517,14 @@ describe('SkillsAppStore', () => {
       new Error('user-skills API 404: agent not accessible'),
     );
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('authored-drafted');
+    await findRow('authored-drafted');
 
     await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Delete drafted/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^Delete$/ }));
 
     expect(await screen.findByText(/agent not accessible/i)).toBeInTheDocument();
-    expect(screen.getByTestId('authored-drafted')).toBeInTheDocument();
+    expect(getRow('authored-drafted')).toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------
@@ -528,7 +554,7 @@ describe('SkillsAppStore', () => {
 
     // The skill appears in the Installed section (not a catalog skill, so
     // catalog-pdf-tools is the sentinel for full render).
-    expect(await screen.findByTestId('installed-my-new-skill')).toBeInTheDocument();
+    expect(await findRow('installed-my-new-skill')).toBeInTheDocument();
     // It shows the "your own" badge.
     expect(screen.getByText('My brand-new skill.')).toBeInTheDocument();
     // Edit and Delete buttons are present.
@@ -558,7 +584,7 @@ describe('SkillsAppStore', () => {
     });
 
     render(<SkillsAppStore isAdmin={false} />);
-    await screen.findByTestId('installed-my-new-skill');
+    await findRow('installed-my-new-skill');
 
     expect(screen.getByText(/^Installed \(2\)/)).toBeInTheDocument();
   });
@@ -595,7 +621,7 @@ describe('SkillsAppStore', () => {
     // Adopt the draft (click Edit on authored shelf). On initial load the skill
     // is only in the authored section — NOT in ownNotInstalled — so the Edit
     // button is unambiguous.
-    await screen.findByTestId('authored-drafted');
+    await findRow('authored-drafted');
     await openSkillDetails('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
     await waitFor(() => expect(mockAdoptAuthored).toHaveBeenCalledWith('a1', 'drafted'));
@@ -605,9 +631,9 @@ describe('SkillsAppStore', () => {
     // onSaved prop — but since we mock the editor, onEditorSaved is not triggered
     // automatically. Instead, verify that the adopted skill is visible in Installed
     // (the own-not-installed path) which is what the bug fix ensures.
-    expect(await screen.findByTestId('installed-drafted')).toBeInTheDocument();
+    expect(await findRow('installed-drafted')).toBeInTheDocument();
     // The authored shelf no longer shows the draft (it was adopted).
-    expect(screen.queryByTestId('authored-drafted')).toBeNull();
+    expect(queryRow('authored-drafted')).toBeNull();
   });
 });
 
@@ -643,7 +669,8 @@ describe('SkillsAppStore', () => {
     expect(await screen.findByText('My helper')).toBeTruthy();
     fireEvent.change(screen.getByRole('textbox', { name: 'Search the workspace catalog' }), { target: { value: 'pdf' } });
     expect(screen.queryByText('My helper')).toBeNull();
-    expect(screen.getByTestId('catalog-pdf-tools')).toBeTruthy();
+    // In the agent's own page the row has no sheet: its title is plain text, not a button.
+    expect(within(screen.getByRole('list', { name: 'Available in your workspace' })).getByText('PDF tools')).toBeTruthy();
   });
 
   it('a failed read says so (not "no skills"), and Try again re-reads and shows the shelf', async () => {

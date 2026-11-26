@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
-import { EmptyState } from '@project-ax/ui';
-import { SettingsDetailRow } from '../settings/SettingsLayout';
+import { EmptyState, List, StatusBadge } from '@project-ax/ui';
+import { SheetRow } from '../settings/SettingsLayout';
 import type { CatalogProvider } from '@/lib/models-admin';
 import { selectedInfo, type Draft } from '@/lib/models-picker';
 import { DEFAULT_HELP, NEEDS_KEY, NONE_SELECTED_BODY, NONE_SELECTED_TITLE, NO_LONGER_LISTED } from '@/lib/models-copy';
@@ -24,7 +24,7 @@ export function SelectedModelsPane({ draft, providers, onSetDefault, onRemove }:
     const index = focusAfterRemove.current;
     if (index === null) return;
     focusAfterRemove.current = null;
-    const rows = listRef.current?.querySelectorAll<HTMLButtonElement>('button[aria-label^="Details for "]');
+    const rows = listRef.current?.querySelectorAll<HTMLButtonElement>('li button');
     const target = rows !== undefined && rows.length > 0 ? rows[Math.min(index, rows.length - 1)] : listRef.current;
     target?.focus();
   }, [draft.allowed]);
@@ -40,13 +40,13 @@ export function SelectedModelsPane({ draft, providers, onSetDefault, onRemove }:
       <div ref={listRef} tabIndex={-1} className="outline-none">
         {draft.allowed.length === 0 ? (
           <EmptyState title={NONE_SELECTED_TITLE} description={NONE_SELECTED_BODY} />
-        ) : draft.allowed.map((ref) => {
+        ) : <List label="Available to users">{draft.allowed.map((ref) => {
           const info = selectedInfo(ref, providers);
           const isDefault = ref === draft.default;
           const detail = [info.providerName, info.noLongerListed && NO_LONGER_LISTED, info.needsKey && NEEDS_KEY]
             .filter(Boolean).join(' · ');
           return (
-            <SettingsDetailRow key={ref} label={info.label} detail={detail} value={isDefault ? 'Default' : 'Enabled'}>
+            <SheetRow key={ref} title={info.label} meta={detail} trailing={<StatusBadge tone={isDefault ? 'info' : 'neutral'}>{isDefault ? 'Default' : 'Enabled'}</StatusBadge>}>
               <p className="break-all text-sm text-muted-foreground">{ref}</p>
               <p className="text-sm text-muted-foreground">{DEFAULT_HELP}</p>
               <Button type="button" variant="outline" disabled={isDefault}
@@ -56,9 +56,9 @@ export function SelectedModelsPane({ draft, providers, onSetDefault, onRemove }:
               <Button type="button" variant="destructive" aria-label={`Remove ${info.label}`} onClick={() => remove(ref)}>
                 Remove model
               </Button>
-            </SettingsDetailRow>
+            </SheetRow>
           );
-        })}
+        })}</List>}
       </div>
     </section>
   );

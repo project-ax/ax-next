@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AsyncState, Card, ConfirmAction, EmptyState, StatusBadge } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, List, ListRow } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Button } from '@/components/ui/button';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
@@ -155,43 +155,33 @@ export function AllowedSitesPanel() {
             }
           />
         )}
-        {hosts.map((host) => {
-          const ids = byHost.get(host) ?? [];
-          return (
-            <div
-              key={host}
-              data-testid={`allowed-site-${host}`}
-              className="flex items-center gap-3 px-2 py-3 min-h-[72px] flex-wrap"
-            >
-              <span className="flex-1 min-w-0 break-all text-sm text-foreground">{host}</span>
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                {isAllAgents(ids) ? (
-                  <StatusBadge tone="neutral">All agents</StatusBadge>
-                ) : (
-                  ids
-                    .slice()
-                    .sort()
-                    .map((id) => (
-                      <StatusBadge key={id} tone="neutral">
-                        {agentName(id)}
-                      </StatusBadge>
-                    ))
-                )}
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setEditingHost(host)}>
-                Edit
-              </Button>
-              <ConfirmAction
-                trigger={{ label: 'Remove', intent: 'quiet', size: 'sm' }}
-                title={`Remove ${host}?`}
-                description={`Your agents can no longer reach ${host} until you allow it again.`}
-                confirmLabel="Remove site"
-                errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
-                onConfirm={() => removeHost(host)}
-              />
-            </div>
-          );
-        })}
+        {hosts.length > 0 && (
+          <List label="Allowed sites">
+            {hosts.map((host) => {
+              const ids = byHost.get(host) ?? [];
+              return (
+                <ListRow
+                  key={host}
+                  title={host}
+                  description={isAllAgents(ids) ? 'All agents' : ids.slice().sort().map(agentName).join(', ')}
+                  trailing={<>
+                    <Button variant="outline" size="sm" onClick={() => setEditingHost(host)}>
+                      Edit
+                    </Button>
+                    <ConfirmAction
+                      trigger={{ label: 'Remove', intent: 'quiet', size: 'sm' }}
+                      title={`Remove ${host}?`}
+                      description={`Your agents can no longer reach ${host} until you allow it again.`}
+                      confirmLabel="Remove site"
+                      errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
+                      onConfirm={() => removeHost(host)}
+                    />
+                  </>}
+                />
+              );
+            })}
+          </List>
+        )}
       </Card>
 
       {adding && (

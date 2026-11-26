@@ -49,6 +49,9 @@ function fullOf(summary: ConnectorSummary): Connector {
   };
 }
 
+/** The connector's list item, found by its title button (the row has no test id of its own). */
+const tileOf = (name: string): HTMLElement => screen.getByRole('button', { name }).closest('li')!;
+
 describe('ConnectorsTab', () => {
   beforeEach(() => {
     vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
@@ -83,7 +86,7 @@ describe('ConnectorsTab', () => {
 
   it('no row says agents can’t use it — every connector is shared', async () => {
     render(<ConnectorsTab />);
-    await screen.findByTestId('connector-tile-my-notion');
+    await screen.findByRole('button', { name: 'My Notion' });
     expect(screen.queryByText(/can't be used by agents/i)).toBeNull();
     expect(screen.queryByText(/can’t be used by agents/i)).toBeNull();
     expect(screen.queryByRole('note')).toBeNull();
@@ -438,12 +441,12 @@ describe('ConnectorsTab', () => {
     // Slice 2a: a per-person key is added per agent, so the caption says so.
     // The stored keyMode is still 'personal' — only the words changed.
     expect(
-      within(screen.getByTestId('connector-tile-my-notion')).getByText(
+      within(tileOf('My Notion')).getByText(
         'Each agent adds its own key',
       ),
     ).toBeInTheDocument();
     expect(
-      within(screen.getByTestId('connector-tile-company-salesforce')).getByText(
+      within(tileOf('Salesforce')).getByText(
         'One shared key for everyone',
       ),
     ).toBeInTheDocument();
@@ -494,8 +497,8 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const row = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('My Notion');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
@@ -507,8 +510,8 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const row = screen.getByTestId('connector-tile-company-salesforce');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('Salesforce');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     expect(within(tile).queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
     expect(within(tile).queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
@@ -519,8 +522,8 @@ describe('ConnectorsTab', () => {
   it('a connector the server sent without canEdit is editable (any admin may edit a shared one)', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const row = screen.getByTestId('connector-tile-company-salesforce');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('Salesforce');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
@@ -537,8 +540,8 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     expect(screen.getByRole('button', { name: /new connector/i })).toBeInTheDocument();
-    const row = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('My Notion');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
     expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
@@ -556,8 +559,8 @@ describe('ConnectorsTab', () => {
   it('admin per-row Edit opens the edit form prefilled', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const row = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('My Notion');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     fireEvent.click(within(tile).getByRole('button', { name: /^edit$/i }));
     const nameInput = await screen.findByLabelText(/service name/i);
@@ -568,8 +571,8 @@ describe('ConnectorsTab', () => {
     const del = vi.spyOn(connectorsLib, 'deleteConnector').mockResolvedValue();
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const row = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('My Notion');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
     expect(await screen.findByText(/delete connector\?/i)).toBeInTheDocument();
@@ -590,8 +593,8 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     const listCalls = vi.mocked(connectorsLib.listConnectors).mock.calls.length;
-    const row = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('My Notion');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
     await screen.findByText(/delete connector\?/i);
@@ -610,8 +613,8 @@ describe('ConnectorsTab', () => {
   it('renders one list with no Connected / Available shelves', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    expect(screen.getByTestId('connector-tile-my-notion')).toBeInTheDocument();
-    expect(screen.getByTestId('connector-tile-company-salesforce')).toBeInTheDocument();
+    expect(tileOf('My Notion')).toBeInTheDocument();
+    expect(tileOf('Salesforce')).toBeInTheDocument();
     expect(screen.queryByText(/^Connected \(/)).toBeNull();
     expect(screen.queryByText(/^Available \(/)).toBeNull();
   });
@@ -619,7 +622,7 @@ describe('ConnectorsTab', () => {
   it('tells people where they sign in', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    fireEvent.click(within(screen.getByTestId('connector-tile-my-notion')).getByRole('button', { name: /^Details for / }));
+    fireEvent.click(within(tileOf('My Notion')).getByRole('button'));
     expect(
       screen.getByText(/People sign in from each agent’s Connectors tab\./),
     ).toBeInTheDocument();
@@ -628,19 +631,19 @@ describe('ConnectorsTab', () => {
   it('an admin tile has no Test / Connect / Update key, no status words, no Catalog badge', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    for (const id of ['my-notion', 'company-salesforce']) {
-      const tile = screen.getByTestId(`connector-tile-${id}`);
-      expect(within(tile).queryByRole('button', { name: /^test$/i })).toBeNull();
-      expect(within(tile).queryByRole('button', { name: /^connect$/i })).toBeNull();
-      expect(within(tile).queryByRole('button', { name: /update key/i })).toBeNull();
-      expect(tile.textContent).not.toMatch(/\bReady\b/);
-      expect(tile.textContent).not.toMatch(/Needs a key/);
-      expect(tile.textContent).not.toMatch(/Can't reach it|Checking…/);
-      expect(tile.textContent).not.toMatch(/Catalog/);
+    for (const name of ['My Notion', 'Salesforce']) {
+      const row = tileOf(name);
+      expect(within(row).queryByRole('button', { name: /^test$/i })).toBeNull();
+      expect(within(row).queryByRole('button', { name: /^connect$/i })).toBeNull();
+      expect(within(row).queryByRole('button', { name: /update key/i })).toBeNull();
+      expect(row.textContent).not.toMatch(/\bReady\b/);
+      expect(row.textContent).not.toMatch(/Needs a key/);
+      expect(row.textContent).not.toMatch(/Can't reach it|Checking…/);
+      expect(row.textContent).not.toMatch(/Catalog/);
     }
     // A tile's caption still says what it needs.
     expect(
-      within(screen.getByTestId('connector-tile-company-salesforce')).getByText(
+      within(tileOf('Salesforce')).getByText(
         'One shared key for everyone',
       ),
     ).toBeInTheDocument();
@@ -659,8 +662,8 @@ describe('ConnectorsTab', () => {
   it('an editable tile shows exactly Edit and Delete', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
-    const row = screen.getByTestId('connector-tile-my-notion');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('My Notion');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     expect(
       within(tile)
@@ -675,8 +678,8 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab />);
     await screen.findByText('Salesforce');
-    const row = screen.getByTestId('connector-tile-company-salesforce');
-    fireEvent.click(within(row).getByRole('button', { name: /^Details for / }));
+    const row = tileOf('Salesforce');
+    fireEvent.click(within(row).getByRole('button'));
     const tile = screen.getByRole('dialog');
     expect(within(tile).queryByRole('button', { name: /^edit$/i })).toBeNull();
     expect(within(tile).queryByRole('button', { name: /^delete$/i })).toBeNull();
@@ -741,7 +744,7 @@ describe('ConnectorsTab', () => {
       fireEvent.click(await screen.findByRole('button', FIND));
       const box = await screen.findByLabelText('Search the directory');
       fireEvent.change(box, { target: { value: 'linear' } });
-      fireEvent.click(await screen.findByRole('button', { name: 'Details for Linear' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Linear' }));
       fireEvent.click(await screen.findByRole('button', { name: 'Set it up' }));
       return screen.findByRole('dialog', { name: 'Add connector' });
     }
@@ -775,16 +778,16 @@ describe('ConnectorsTab', () => {
 
     it('opens the directory in place of the list, and Back returns', async () => {
       render(<ConnectorsTab />);
-      await screen.findByTestId('connector-tile-my-notion');
+      await screen.findByRole('button', { name: 'My Notion' });
       fireEvent.click(await screen.findByRole('button', FIND));
       expect(await screen.findByRole('heading', { name: 'Find a connector' })).toBeInTheDocument();
-      expect(screen.queryByTestId('connector-tile-my-notion')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'My Notion' })).toBeNull();
       // The synced directory has no shortcut to a blank editor.
       expect(screen.queryByRole('button', { name: 'New connector' })).toBeNull();
       expect(screen.queryByRole('button', FIND)).toBeNull();
 
       fireEvent.click(screen.getByRole('button', { name: 'Back to connectors' }));
-      expect(await screen.findByTestId('connector-tile-my-notion')).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'My Notion' })).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Find a connector' })).toBeNull();
     });
 
@@ -821,8 +824,8 @@ describe('ConnectorsTab', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add connector' })).toBeNull());
       expect(screen.getByLabelText('Search the directory')).toHaveValue('linear');
-      expect(screen.getByRole('button', { name: 'Details for Linear' })).toBeInTheDocument();
-      expect(screen.queryByTestId('connector-tile-my-notion')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Linear' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'My Notion' })).toBeNull();
     });
 
     it('saving from the directory returns to the connectors list', async () => {

@@ -1,7 +1,6 @@
 /**
- * FireRowsTable — last N fires for a routine. No shadcn Table primitive
- * is installed; the credentials pattern uses a flex column of border-b
- * rows, and that's what we use here. Keeps the install footprint flat.
+ * FireRowsTable — last N fires for a routine, as a compact `List` (the list
+ * owns the dividers).
  *
  * Each row shows: timestamp · status chip · rendered prompt (mono,
  * truncated at 120 chars with show-more) · warning (if the run went without a
@@ -31,7 +30,7 @@
  * wasn't.
  */
 import { useState } from 'react';
-import { StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
+import { List, ListRow, Stack, StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
 import type { Fire, FireStatus } from '../../lib/routines';
 import { RunWarning } from './RunWarning';
 
@@ -61,30 +60,30 @@ function PromptCell({ prompt }: { prompt: string }) {
 
 export function FireRowsTable({ fires }: { fires: Fire[] }) {
   return (
-    <div className="flex flex-col border border-rule-soft rounded-md overflow-hidden">
-      {fires.map((f, i) => (
-        <div
-          key={`${f.firedAt}#${i}`}
-          className="px-3 py-2 border-b border-rule-soft last:border-b-0 flex flex-col gap-1"
-        >
-          <div className="flex items-center gap-3">
-            <span className="text-[11.5px] text-muted-foreground tabular-nums min-w-[6.5rem] shrink-0">
-              <Timestamp value={f.firedAt} />
-            </span>
-            <StatusBadge tone={FIRE_TONE[f.status]} dot>{f.status}</StatusBadge>
-            <span className="text-[11px] text-muted-foreground font-mono uppercase tracking-[0.04em]">
-              {f.triggerSource}
-            </span>
-          </div>
-          {f.renderedPrompt !== null && (
-            <PromptCell prompt={f.renderedPrompt} />
-          )}
-          {f.warning !== null && <RunWarning text={f.warning} />}
-          {f.error !== null && (
-            <span className="text-[11.5px] text-destructive break-words">{f.error}</span>
-          )}
-        </div>
-      ))}
-    </div>
+    <List label="Recent runs" density="compact">
+      {fires.map((f, i) => {
+        const hasDetail = f.renderedPrompt !== null || f.warning !== null || f.error !== null;
+        return (
+          <ListRow
+            key={`${f.firedAt}#${i}`}
+            title={`Run by ${f.triggerSource}`}
+            meta={<>
+              <StatusBadge tone={FIRE_TONE[f.status]} dot>{f.status}</StatusBadge>
+              {' '}<Timestamp value={f.firedAt} />
+            </>}
+            {...(hasDetail ? { expandable: {
+              defaultOpen: true,
+              content: (
+                <Stack gap="xs">
+                  {f.renderedPrompt !== null && <PromptCell prompt={f.renderedPrompt} />}
+                  {f.warning !== null && <RunWarning text={f.warning} />}
+                  {f.error !== null && <StatusBadge tone="danger">{f.error}</StatusBadge>}
+                </Stack>
+              ),
+            } } : {})}
+          />
+        );
+      })}
+    </List>
   );
 }

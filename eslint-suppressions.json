@@ -183,10 +183,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 23
+      "count": 22
     },
     "ax-ui/no-raw-elements": {
-      "count": 18
+      "count": 17
     }
   },
   "packages/channel-web/src/components/admin/AgentToolPicker.tsx": {
@@ -199,21 +199,21 @@
   },
   "packages/channel-web/src/components/admin/AuthProvidersTab.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 8
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 4
     }
   },
   "packages/channel-web/src/components/admin/AuthoredSkillsSection.tsx": {
     "ax-ui/no-classname": {
-      "count": 20
+      "count": 12
     },
     "ax-ui/no-raw-elements": {
-      "count": 19
+      "count": 13
     }
   },
   "packages/channel-web/src/components/admin/BrandingTab.tsx": {
@@ -351,21 +351,21 @@
   },
   "packages/channel-web/src/components/admin/SkillAttachmentsSection.tsx": {
     "ax-ui/no-classname": {
-      "count": 11
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 5
     }
   },
   "packages/channel-web/src/components/admin/SlackBotRequests.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 10
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 2
     }
   },
   "packages/channel-web/src/components/admin/SlackBotsCard.tsx": {
@@ -397,10 +397,10 @@
   },
   "packages/channel-web/src/components/admin/TeamList.tsx": {
     "ax-ui/no-classname": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-raw-elements": {
-      "count": 3
+      "count": 2
     }
   },
   "packages/channel-web/src/components/admin/UsageOverrideEditor.tsx": {
@@ -424,10 +424,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 11
+      "count": 8
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
+      "count": 11
     }
   },
   "packages/channel-web/src/components/credentials/ConnectorAccessNotice.tsx": {
@@ -448,10 +448,10 @@
   },
   "packages/channel-web/src/components/credentials/CredentialSlotRow.tsx": {
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 1
     },
     "ax-ui/no-raw-elements": {
-      "count": 4
+      "count": 1
     }
   },
   "packages/channel-web/src/components/onboard/FirstRunAutoCreate.tsx": {
@@ -478,10 +478,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 13
+      "count": 10
     },
     "ax-ui/no-raw-elements": {
-      "count": 11
+      "count": 9
     }
   },
   "packages/channel-web/src/components/routines/FireNowControl.tsx": {
@@ -494,13 +494,13 @@
   },
   "packages/channel-web/src/components/routines/FireRowsTable.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 6
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 9
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 2
     }
   },
   "packages/channel-web/src/components/routines/RoutineConsentSection.tsx": {
@@ -524,10 +524,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 21
+      "count": 8
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 9
     }
   },
   "packages/channel-web/src/components/routines/RoutinesTab.tsx": {
@@ -574,30 +574,27 @@
     }
   },
   "packages/channel-web/src/components/settings/AllowedSitesPanel.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 1
-    },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 4
     }
   },
   "packages/channel-web/src/components/settings/AwaitingReviewSection.tsx": {
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 2
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 1
     }
   },
   "packages/channel-web/src/components/settings/ConnectorDirectory.tsx": {
     "ax-ui/no-classname": {
-      "count": 6
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 6
     }
   },
   "packages/channel-web/src/components/settings/ConnectorOAuthConnect.tsx": {
@@ -610,26 +607,26 @@
   },
   "packages/channel-web/src/components/settings/ConnectorToolPermissions.tsx": {
     "ax-ui/no-classname": {
-      "count": 15
+      "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 9
+      "count": 7
     }
   },
   "packages/channel-web/src/components/settings/ConnectorsTab.tsx": {
     "ax-ui/no-classname": {
-      "count": 11
+      "count": 10
     },
     "ax-ui/no-raw-elements": {
-      "count": 11
+      "count": 10
     }
   },
   "packages/channel-web/src/components/settings/DirectoryListingRow.tsx": {
     "ax-ui/no-classname": {
-      "count": 12
+      "count": 10
     },
     "ax-ui/no-raw-elements": {
-      "count": 12
+      "count": 10
     }
   },
   "packages/channel-web/src/components/settings/LegacyConnectorEditDialog.tsx": {
@@ -644,14 +641,11 @@
     }
   },
   "packages/channel-web/src/components/settings/RememberedSitesPanel.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 1
-    },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 4
     }
   },
   "packages/channel-web/src/components/settings/RemoteMcpConnectorForm.tsx": {
@@ -672,13 +666,13 @@
   },
   "packages/channel-web/src/components/settings/SettingsLayout.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 5
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 13
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
+      "count": 6
     }
   },
   "packages/channel-web/src/components/settings/SiteAgentsDialog.tsx": {
@@ -721,10 +715,10 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 42
+      "count": 17
     },
     "ax-ui/no-raw-elements": {
-      "count": 41
+      "count": 15
     }
   },
   "packages/channel-web/src/components/settings/SkillsTab.tsx": {

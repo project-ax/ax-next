@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ProvidersPanel } from '../ProvidersPanel';
 
 describe('ProvidersPanel', () => {
@@ -26,5 +26,21 @@ describe('ProvidersPanel', () => {
     render(<ProvidersPanel />);
     fireEvent.click(await screen.findByRole('button', { name: /OpenRouter/ }));
     expect(await screen.findByRole('heading', { name: 'Add your OpenRouter API key' })).toBeInTheDocument();
+  });
+});
+
+describe('ProvidersPanel list', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('is one named list: a row per provider, with its key status as the row meta', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
+    );
+    render(<ProvidersPanel />);
+    const list = await screen.findByRole('list', { name: 'Model providers' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByRole('button', { name: 'Anthropic' })).toBeInTheDocument();
+    await waitFor(() => expect(rows[0]).toHaveTextContent('Not set'));
   });
 });
