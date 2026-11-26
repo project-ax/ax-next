@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileTile, Notice, Stack } from '@project-ax/ui';
-import { clampAttachmentName } from '@/lib/attachment-name';
+import { clampFileName } from '@/lib/attachment-name';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveBlob, saveFromUrl } from '@/lib/file-download';
 import { httpFetch, HttpError, logRequestFailure } from '@/lib/http';
 import { FALLBACK_SAVED_FILENAME, filenameFromContentDisposition } from '@/lib/workspace-api';
@@ -40,10 +40,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
   /** Changes when the thread is re-read or a turn fails, so an agent-file chip checks its file again. */
   recheckKey?: number;
 }) {
-  const extension = /\.[a-z0-9]{1,12}$/i.exec(file.displayName)?.[0] ?? '';
-  const stem = clampAttachmentName(extension.length > 0
-    ? file.displayName.slice(0, -extension.length) : file.displayName);
-  const name = stem + extension;
+  const name = clampFileName(file.displayName);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);

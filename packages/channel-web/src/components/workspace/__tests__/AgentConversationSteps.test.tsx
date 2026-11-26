@@ -172,6 +172,37 @@ describe('the step panel', () => {
     expect(at('Q3 report')).toBeLessThan(at('Your report is ready.'));
   });
 
+  it('the finished title\'s mark shows the same file picture as the card it points at', () => {
+    const lucide = (svg: Element | null | undefined) =>
+      (svg?.getAttribute('class') ?? '').split(/\s+/).find((c) => c.startsWith('lucide-'));
+    for (const [kind, extension, picture] of [
+      ['spreadsheet', 'XLSX', 'lucide-sheet'],
+      ['web', 'HTML', 'lucide-globe'],
+      ['code', 'PY', 'lucide-code-xml'],
+      // A format with no picture of its own (the server calls it a plain file, with no extension).
+      ['file', '', 'lucide-file'],
+    ] as const) {
+      const { container, unmount } = renderThread([
+        steps({ id: 't1', text: '', steps: [{ text: 'Making a report', status: 'done' }] }),
+        {
+          kind: 'agent',
+          id: 't2',
+          text: 'Here it is.',
+          at: '2026-09-17T16:12:01.000Z',
+          artifacts: [{ artifactId: 'art1', version: 1, title: 'Q3 pipeline', kind, extension }],
+        } as ThreadMessage,
+      ]);
+      // The title's icons: [the published mark, the chevron]; the mark is the one before the chevron.
+      const icons = [...panelOf(container).querySelector('button')!.querySelectorAll('svg')];
+      expect(lucide(icons.at(-1))).toMatch(/chevron/);
+      const mark = lucide(icons.at(-2));
+      const card = lucide(container.querySelector('[data-part="icon"] svg'));
+      expect(card, extension).toBe(picture);
+      expect(mark, extension).toBe(card);
+      unmount();
+    }
+  });
+
   it('draws what the agent said between steps as a message, not inside the panel', () => {
     const { container } = renderThread([
       steps({ id: 't1', text: 'Let me look at the repo.', steps: [{ text: 'Ran a command', status: 'done' }] }),

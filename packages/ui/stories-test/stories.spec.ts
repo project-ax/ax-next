@@ -252,3 +252,33 @@ test('components-filetile--chip: a short chip hugs its name and opens from anywh
   }, [nb.x + 4, nb.y + nb.height / 2]);
   expect(onName).toEqual(['budget.csv', 'Download budget.csv']);
 });
+
+// An image attachment stays viewable inline: at 390px each preview card ends inside the box and its 320px cap, the
+// picture sits whole inside its 200px preview box, and nothing scrolls sideways.
+test('components-filetile--image-preview-phone keeps each preview inside its card', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto('/iframe.html?id=components-filetile--image-preview-phone&viewMode=story');
+  const container = page.locator('#storybook-root > div').first();
+  await page.getByRole('button', { name: 'Download panorama.png' }).waitFor();
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('#storybook-root img')).every((i) => (i as HTMLImageElement).complete));
+  const box = (await container.boundingBox())!;
+  expect(box.width).toBe(390);
+  const tiles = await page.locator('#storybook-root .ax-isolate').all();
+  expect(tiles).toHaveLength(2);
+  for (const tile of tiles) {
+    const tb = (await tile.boundingBox())!;
+    expect(tb.x + tb.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+    expect(tb.width).toBeLessThanOrEqual(320.5);
+    const pb = (await tile.locator('[data-part="preview"]').boundingBox())!;
+    expect(pb.height).toBeGreaterThan(199.5);
+    expect(pb.height).toBeLessThanOrEqual(200.5);
+    const ib = (await tile.locator('[data-part="preview"] img').boundingBox())!;
+    expect(ib.width).toBeGreaterThan(20);
+    expect(ib.height).toBeGreaterThan(20);
+    expect(ib.x).toBeGreaterThanOrEqual(pb.x - 0.5);
+    expect(ib.y).toBeGreaterThanOrEqual(pb.y - 0.5);
+    expect(ib.x + ib.width).toBeLessThanOrEqual(pb.x + pb.width + 0.5);
+    expect(ib.y + ib.height).toBeLessThanOrEqual(pb.y + pb.height + 0.5);
+  }
+  expect(await container.evaluate((n) => n.scrollWidth <= n.clientWidth)).toBe(true);
+});

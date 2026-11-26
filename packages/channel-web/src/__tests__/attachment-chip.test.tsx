@@ -5,6 +5,7 @@ import { AttachmentChip } from '../components/AttachmentChip';
 import {
   ATTACHMENT_NAME_MAX_CHARS,
   clampAttachmentName,
+  clampFileName,
 } from '../lib/attachment-name';
 
 describe('AttachmentChip', () => {
@@ -67,6 +68,17 @@ describe('AttachmentChip', () => {
     expect(screen.getByRole('button', { name: 'Download Q4 Report.pdf' })).toHaveAccessibleDescription('2 KB');
   });
 
+  it('an image is viewable inline: a preview of the file itself, which is also the download control', () => {
+    const { container } = render(
+      <AttachmentChip attachmentId="att-1" displayName="cat.png" mediaType="image/png" conversationId="c1" sizeBytes={2048} />,
+    );
+    const img = container.querySelector('[data-part="preview"] img');
+    expect(img?.getAttribute('src')).toBe('/api/files?conversationId=c1&id=att-1');
+    expect(img?.getAttribute('loading')).toBe('lazy');
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Download cat.png' })).toHaveAccessibleDescription('2 KB');
+  });
+
   it('a pending chip shows the name and offers nothing to press', () => {
     render(<AttachmentChip variant="pending" displayName="Q4 Report.pdf" mediaType="application/pdf" />);
     expect(screen.getByTitle('Q4 Report.pdf')).toBeVisible();
@@ -82,8 +94,10 @@ describe('AttachmentChip', () => {
   */
   describe('clamps displayName at the sink', () => {
     const LONG = `${'z'.repeat(400)}.png`;
+    // The stem clamped to the cap (119 characters and an ellipsis), the extension kept.
+    const CLAMPED = `${'z'.repeat(ATTACHMENT_NAME_MAX_CHARS - 1)}….png`;
 
-    it('bounds the image variant aria-label, and leaves the thumbnail alt empty', () => {
+    it('bounds the image variant aria-label, keeps the extension, and leaves the preview alt empty', () => {
       const { container } = render(
         <AttachmentChip
           attachmentId="att-1"
@@ -92,15 +106,13 @@ describe('AttachmentChip', () => {
           conversationId="c1"
         />,
       );
-      // The thumbnail is decorative (the button's name already says what it
+      // The preview is decorative (the button's name already says what it
       // is), so its alt is empty and cannot carry the long name at all.
       expect(container.querySelector('img')?.getAttribute('alt')).toBe('');
       const label = container.querySelector('button')?.getAttribute('aria-label') ?? '';
-      const name = label.slice('Download '.length);
-      expect(name.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
-      expect(name.length).toBeLessThan(LONG.length);
-      expect(name.endsWith('…')).toBe(true);
-      expect(label).toBe(`Download ${clampAttachmentName(LONG)}`);
+      expect(label).toBe(`Download ${CLAMPED}`);
+      expect(label).toBe(`Download ${clampFileName(LONG)}`);
+      expect(screen.getByTitle(CLAMPED).textContent).toBe(CLAMPED);
     });
 
     it('bounds the download-button aria-label on the non-image variant', () => {
@@ -114,18 +126,14 @@ describe('AttachmentChip', () => {
       );
       const label =
         screen.getByRole('button').getAttribute('aria-label') ?? '';
-      expect(label.length).toBeLessThanOrEqual(
-        'Download '.length + ATTACHMENT_NAME_MAX_CHARS,
-      );
-      expect(label.startsWith('Download qqq')).toBe(true);
+      expect(label).toBe(`Download ${'q'.repeat(ATTACHMENT_NAME_MAX_CHARS - 1)}….pdf`);
     });
 
     it('bounds the pending variant, which has no id and no label', () => {
       const { container } = render(
         <AttachmentChip variant="pending" displayName={LONG} mediaType="image/png" />,
       );
-      const text = container.textContent ?? '';
-      expect(text.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
+      expect(container.textContent).toBe(CLAMPED);
       expect(container.innerHTML).not.toContain(LONG);
     });
 
@@ -178,5 +186,30 @@ describe('clampAttachmentName', () => {
     const body = clamped.slice(0, -1);
     expect([...body].every((c) => c === '\u{1F4C4}')).toBe(true);
     expect(body.length % 2).toBe(0);
+  });
+});
+
+/*
+  The filename clamp the three chips share: the stem is bounded, the extension
+  is put back, so a long name still says what kind of file it is.
+*/
+describe('clampFileName', () => {
+  it('clamps the stem and keeps the extension', () => {
+    const long = `${'a'.repeat(400)}TAIL.csv`;
+    expect(clampFileName(long)).toBe(`${'a'.repeat(ATTACHMENT_NAME_MAX_CHARS - 1)}….csv`);
+    expect(clampFileName(long)).not.toContain('TAIL');
+  });
+
+  it('returns a short name untouched, including a stem at exactly the cap', () => {
+    expect(clampFileName('report.final.csv')).toBe('report.final.csv');
+    const exact = `${'a'.repeat(ATTACHMENT_NAME_MAX_CHARS)}.csv`;
+    expect(clampFileName(exact)).toBe(exact);
+  });
+
+  it('clamps a name with no extension, or a dotfile, whole', () => {
+    const plain = 'b'.repeat(400);
+    expect(clampFileName(plain)).toBe(clampAttachmentName(plain));
+    const dot = `.${'c'.repeat(400)}`;
+    expect(clampFileName(dot)).toBe(clampAttachmentName(dot));
   });
 });

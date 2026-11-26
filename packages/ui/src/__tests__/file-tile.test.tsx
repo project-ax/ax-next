@@ -183,6 +183,13 @@ describe('FileTile', () => {
     expect(bar.value).toBe(40);
     rerender(<FileTile variant="chip" name="notes.txt" status="working" progress={140.4} />);
     expect((screen.getByRole('progressbar') as HTMLProgressElement).value).toBe(100);
+    rerender(<FileTile variant="chip" name="notes.txt" status="working" progress={-3} />);
+    expect((screen.getByRole('progressbar') as HTMLProgressElement).value).toBe(0);
+    // A fraction of a zero total is NaN: an empty bar, never a missing value the browser shows as indeterminate.
+    rerender(<FileTile variant="chip" name="notes.txt" status="working" progress={Number.NaN} />);
+    expect(screen.getByRole('progressbar').getAttribute('value')).toBe('0');
+    rerender(<FileTile variant="chip" name="notes.txt" status="working" progress={Number.POSITIVE_INFINITY} />);
+    expect(screen.getByRole('progressbar').getAttribute('value')).toBe('100');
     rerender(<FileTile variant="chip" name="notes.txt" status="ready" progress={100} detail="Ready to send" />);
     expect(screen.queryByRole('progressbar')).toBeNull();
   });
@@ -206,6 +213,32 @@ describe('FileTile', () => {
     expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Open notes.txt', 'Remove notes.txt']);
     // Trailing sits above the stretched click layer.
     expect(classes(remove.closest('[data-part="trailing"]'))).toEqual(expect.arrayContaining(['ax-relative', 'ax-z-10']));
+  });
+
+  it('previewUrl on a card: the image itself, whole, as a bounded preview above the name', () => {
+    const { container } = render(<FileTile variant="card" name="cat.png" size={2048} previewUrl="/api/files?id=1" actionLabel="Download" onOpen={() => {}} />);
+    expect(container.querySelector('[data-part="icon"]')).toBeNull();
+    const box = container.querySelector('[data-part="preview"]')!;
+    expect(classes(box)).toEqual(expect.arrayContaining(['ax-h-file-preview', 'ax-w-full', 'ax-overflow-hidden']));
+    const img = box.querySelector('img')!;
+    expect(img.getAttribute('src')).toBe('/api/files?id=1');
+    expect(img.getAttribute('alt')).toBe('');
+    expect(img.getAttribute('loading')).toBe('lazy');
+    expect(img.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(classes(img)).toEqual(expect.arrayContaining(['ax-object-contain', 'ax-max-h-full', 'ax-max-w-full']));
+    // The tile caps its width, and is still one control named by the file, described by its size.
+    expect(classes(container.firstElementChild)).toEqual(expect.arrayContaining(['ax-max-w-file-preview', 'ax-flex-col']));
+    const button = screen.getByRole('button', { name: 'Download cat.png' });
+    expect(button.querySelector('img, div, p')).toBeNull();
+    expect(screen.getByText('2 KB')).toBeTruthy();
+    for (const c of ['ax-h-file-preview', 'ax-max-w-file-preview', 'ax-object-contain', 'ax-max-h-full']) expect(css).toContain(`.${c}`);
+  });
+
+  it('previewUrl on a busy card: the spinner takes the preview box', () => {
+    const { container } = render(<FileTile variant="card" name="cat.png" previewUrl="/a.png" status="working" onOpen={() => {}} />);
+    const box = container.querySelector('[data-part="preview"]')!;
+    expect(box.querySelector('img')).toBeNull();
+    expect(box.querySelector('.ax-animate-spin')).not.toBeNull();
   });
 
   it('previewUrl: a lazy, decorative thumbnail in the icon slot', () => {

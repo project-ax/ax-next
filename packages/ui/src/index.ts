@@ -23,4 +23,4 @@ export { InsetBlock, type InsetBlockProps } from './components/InsetBlock.js';
 export { List, ListRow, type ListProps, type ListRowProps, type ListDensity } from './components/List.js';
 export { Timeline, TimelineEntry, type TimelineProps, type TimelineEntryProps, type TimelineEntryAction } from './components/Timeline.js';
 export { FileTile, type FileTileProps, type FileTileVariant, type FileTileStatus } from './components/FileTile.js';
-export { formatFileSize } from './internal/file.js';
+export { fileIcon, formatFileSize } from './internal/file.js';

@@ -16,6 +16,8 @@ import type { ThreadArtifact } from '@/lib/workspace-types';
  * `onOpen` is absent on surfaces with no viewer (the check-in page): a click
  * then downloads instead, so the deliverable is never hidden. While the
  * download link is minted the card is busy: it keeps focus and ignores clicks.
+ * The icon comes from the artifact's extension, as on the artifact list's rows
+ * and the reply's published mark, so all three show the same picture.
  */
 export function ArtifactCard({ artifact, onOpen }: {
   artifact: ThreadArtifact;
@@ -44,7 +46,7 @@ export function ArtifactCard({ artifact, onOpen }: {
       detail={artifactTypeLine(artifact)}
       actionLabel={onOpen !== undefined ? 'Open' : 'Download'}
       onOpen={() => (onOpen !== undefined ? onOpen(artifact.artifactId) : void download())}
-      {...(downloading ? { status: 'working' as const } : {})}
+      status={downloading ? 'working' : 'ready'}
     />
   );
 }

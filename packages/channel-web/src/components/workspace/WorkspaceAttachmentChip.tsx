@@ -1,7 +1,7 @@
-import type { FC } from 'react';
+import { useRef, type FC } from 'react';
 import { RotateCcw, X } from 'lucide-react';
 import { FileTile, IconButton } from '@project-ax/ui';
-import { clampAttachmentName } from '@/lib/attachment-name';
+import { clampFileName } from '@/lib/attachment-name';
 import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
 
 /**
@@ -19,6 +19,8 @@ import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
  * not hover. The chip's second line is a polite live region, so the change
  * to "Ready to send" or to the reason is announced. Remove (and Try again)
  * sit in the chip's trailing slot, beside the file, never on top of it.
+ * Remove is named by the file in every state, so two failed chips never
+ * offer two buttons both called just "Remove".
  */
 
 interface WorkspaceAttachmentChipProps {
@@ -35,10 +37,18 @@ export const WorkspaceAttachmentChip: FC<WorkspaceAttachmentChipProps> = ({
   onRetry,
 }) => {
   // Untrusted text, rendered as a React child so it is escaped.
-  const name = clampAttachmentName(attachment.name);
+  const name = clampFileName(attachment.name);
   const isUploading = attachment.status === 'uploading';
   const isFailed = attachment.status === 'failed';
   const detail = isFailed ? attachment.message : attachment.status === 'uploaded' ? 'Ready to send' : null;
+  const removeRef = useRef<HTMLButtonElement>(null);
+
+  // Try again goes away once the upload restarts, and focus would fall to
+  // <body> with it. Hand it first to Remove, the control that stays.
+  function retry() {
+    removeRef.current?.focus();
+    onRetry();
+  }
 
   return (
     <FileTile
@@ -49,14 +59,12 @@ export const WorkspaceAttachmentChip: FC<WorkspaceAttachmentChipProps> = ({
       {...(detail !== null ? { detail } : {})}
       {...(isUploading ? { progress: Math.round(attachment.progress * 100) } : {})}
       trailing={
-        isFailed ? (
-          <>
-            <IconButton label="Try again" icon={RotateCcw} size="sm" onClick={onRetry} />
-            <IconButton label="Remove" icon={X} size="sm" onClick={onRemove} />
-          </>
-        ) : (
-          <IconButton label={`Remove ${name}`} icon={X} size="sm" onClick={onRemove} />
-        )
+        // One shape in every state, so Remove is the same element (and keeps
+        // focus) whether or not Try again is beside it.
+        <>
+          {isFailed ? <IconButton label="Try again" icon={RotateCcw} size="sm" onClick={retry} /> : null}
+          <IconButton ref={removeRef} label={`Remove ${name}`} icon={X} size="sm" onClick={onRemove} />
+        </>
       }
     />
   );

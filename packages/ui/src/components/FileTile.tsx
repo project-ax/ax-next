@@ -32,7 +32,9 @@ export interface FileTileProps {
   actionLabel?: string;
   // Controls of the tile's own (remove, retry). They sit above the tile's click layer: clicking one never opens it.
   trailing?: ReactNode;
-  // An image thumbnail in the icon slot. Decorative (the name already names it), loaded lazily, never a link.
+  // An image of the file. On a card it is shown as a preview (up to 200px tall, whole image, no cropping) above the
+  // name, so the image can be seen without downloading it; on a chip or row it is a thumbnail in the icon slot. Either
+  // way it is decorative (the name already names it), loaded lazily, sent no referrer, and only ever an img src.
   previewUrl?: string;
 }
 
@@ -41,6 +43,10 @@ const BOX: Record<FileTileVariant, string> = {
   row: 'ax-flex ax-min-h-touch ax-gap-md ax-rounded-md ax-px-sm ax-py-sm',
   chip: 'ax-inline-flex ax-max-w-file-chip ax-min-h-touch ax-gap-sm ax-rounded-md ax-border ax-border-solid ax-bg-surface-raised ax-px-sm ax-py-xs ax-align-middle',
 };
+
+// A card with a preview stacks the image over the name, and caps its width so a picture doesn't fill a wide column.
+const PREVIEW_BOX =
+  'ax-flex ax-flex-col ax-w-full ax-max-w-file-preview ax-gap-sm ax-rounded-lg ax-border ax-border-solid ax-bg-surface-raised ax-p-sm';
 
 const BORDER: Record<'idle' | 'failed', string> = {
   idle: 'ax-border-line-border',
@@ -90,9 +96,22 @@ const LAYER_RADIUS: Record<FileTileVariant, string> = {
   chip: 'after:ax-rounded-md',
 };
 
+const IMAGE_FIT: Record<'cover' | 'contain', string> = {
+  // A thumbnail fills its square.
+  cover: 'ax-block ax-h-full ax-w-full ax-object-cover',
+  // A preview shows the whole picture, as large as fits the box.
+  contain: 'ax-block ax-max-h-full ax-max-w-full ax-object-contain',
+};
+
 const PROGRESS =
   'ax-mt-xs ax-block ax-h-xs ax-w-full ax-appearance-none ax-overflow-hidden ax-rounded-full ax-border-0 ax-bg-muted ' +
   'progress-track:ax-bg-muted progress-fill:ax-rounded-full progress-fill:ax-bg-accent';
+
+// 0–100, whole numbers. NaN (a fraction of a zero total) reads as 0: `value="NaN"` would leave the bar indeterminate.
+function percent(progress: number): number {
+  if (Number.isNaN(progress)) return 0;
+  return Math.round(Math.min(100, Math.max(0, progress)));
+}
 
 // Busy tiles stay focusable (a `disabled` attribute would drop focus to <body>), so the click is swallowed here.
 function suppress(e: MouseEvent<HTMLButtonElement>) {
@@ -100,9 +119,10 @@ function suppress(e: MouseEvent<HTMLButtonElement>) {
 }
 
 /**
- * A file or artifact: icon (or thumbnail), name, and a "size · detail" line. With `onOpen` the whole tile is one
- * button; `trailing` controls sit beside it and stay independently clickable. The name's stem truncates and its
- * extension always shows (`report-q3-final-really-fi….csv`), with the full name in the title attribute.
+ * A file or artifact: icon (a thumbnail, or on a card a whole-image preview), name, and a "size · detail" line. With
+ * `onOpen` the whole tile is one button; `trailing` controls sit beside it and stay independently clickable. The
+ * name's stem truncates and its extension always shows (`report-q3-final-really-fi….csv`), with the full name in the
+ * title attribute.
  *
  * Tab order is DOM order: the tile's button, then its trailing controls.
  */
@@ -124,21 +144,24 @@ export function FileTile({
   const tone = status === 'failed' ? 'failed' : 'idle';
   const working = status === 'working';
   const meta = [size === undefined ? null : formatFileSize(size), detail].filter(Boolean).join(' · ');
+  const preview = variant === 'card' && previewUrl !== undefined;
+
+  const image = (fit: 'cover' | 'contain') => (
+    <img
+      src={previewUrl}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      className={IMAGE_FIT[fit]}
+    />
+  );
 
   let glyph: ReactNode;
   if (working) {
     glyph = <Spinner className="ax-h-lg ax-w-lg" />;
   } else if (previewUrl !== undefined) {
-    glyph = (
-      <img
-        src={previewUrl}
-        alt=""
-        loading="lazy"
-        decoding="async"
-        referrerPolicy="no-referrer"
-        className="ax-block ax-h-full ax-w-full ax-object-cover"
-      />
-    );
+    glyph = image(preview ? 'contain' : 'cover');
   } else {
     const Icon = fileIcon(kind ?? extension);
     glyph = <Icon aria-hidden="true" focusable="false" className="ax-h-lg ax-w-lg" />;
@@ -182,15 +205,44 @@ export function FileTile({
       </span>
     ) : null;
 
-  const box = (
-    <div
-      className={cx(
-        'ax-relative ax-isolate ax-box-border ax-items-center ax-font-sans',
-        BOX[variant],
-        variant !== 'row' && BORDER[tone],
-        onOpen && !working && 'hover:ax-bg-muted',
-      )}
-    >
+  const text = (
+    <div data-part="text" className="ax-flex ax-min-w-none ax-flex-1 ax-flex-col">
+      {primary}
+      {metaNode}
+      {working && progress !== undefined ? (
+        <progress max={100} value={percent(progress)} aria-label={name} className={PROGRESS} />
+      ) : null}
+    </div>
+  );
+  const trailingNode = trailing ? (
+    <div data-part="trailing" className="ax-relative ax-z-10 ax-flex ax-shrink-0 ax-items-center ax-gap-xs">
+      {trailing}
+    </div>
+  ) : null;
+  const frame = cx(
+    'ax-relative ax-isolate ax-box-border ax-font-sans',
+    variant !== 'row' && BORDER[tone],
+    onOpen && !working && 'hover:ax-bg-muted',
+  );
+
+  const box = preview ? (
+    <div className={cx(frame, PREVIEW_BOX)}>
+      <span
+        data-part="preview"
+        className={cx(
+          'ax-flex ax-h-file-preview ax-w-full ax-items-center ax-justify-center ax-overflow-hidden ax-rounded-md ax-bg-muted',
+          ICON_TONE[tone],
+        )}
+      >
+        {glyph}
+      </span>
+      <div className="ax-flex ax-min-w-none ax-items-center ax-gap-sm">
+        {text}
+        {trailingNode}
+      </div>
+    </div>
+  ) : (
+    <div className={cx(frame, 'ax-items-center', BOX[variant])}>
       <span
         data-part="icon"
         className={cx(
@@ -201,18 +253,8 @@ export function FileTile({
       >
         {glyph}
       </span>
-      <div data-part="text" className="ax-flex ax-min-w-none ax-flex-1 ax-flex-col">
-        {primary}
-        {metaNode}
-        {working && progress !== undefined ? (
-          <progress max={100} value={Math.round(Math.min(100, Math.max(0, progress)))} aria-label={name} className={PROGRESS} />
-        ) : null}
-      </div>
-      {trailing ? (
-        <div data-part="trailing" className="ax-relative ax-z-10 ax-flex ax-shrink-0 ax-items-center ax-gap-xs">
-          {trailing}
-        </div>
-      ) : null}
+      {text}
+      {trailingNode}
     </div>
   );
 

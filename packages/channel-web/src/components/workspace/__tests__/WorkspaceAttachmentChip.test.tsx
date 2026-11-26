@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { WorkspaceAttachmentChip } from '../WorkspaceAttachmentChip';
 import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
-import { clampAttachmentName } from '@/lib/attachment-name';
+import { clampFileName } from '@/lib/attachment-name';
 
 function attachment(
   over: Partial<WorkspaceAttachment> = {},
@@ -114,7 +114,9 @@ describe('WorkspaceAttachmentChip — the three states', () => {
     expect(Array.from(container.querySelectorAll('[title]')).map((n) => n.getAttribute('title'))).toEqual(['notes.txt']);
 
     const retry = screen.getByRole('button', { name: 'Try again' });
-    const remove = screen.getByRole('button', { name: 'Remove' });
+    // Named by the file in every state: two failed chips never offer two
+    // buttons both called just "Remove".
+    const remove = screen.getByRole('button', { name: 'Remove notes.txt' });
     fireEvent.click(retry);
     expect(onRetry).toHaveBeenCalledTimes(1);
     expect(onRemove).not.toHaveBeenCalled();
@@ -124,6 +126,28 @@ describe('WorkspaceAttachmentChip — the three states', () => {
     // Destructive sentence and border, via the semantic danger token — not a raw colour.
     expect(screen.getByText(FAILURE).className).toContain('ax-text-status-danger');
     expect(screen.getByTitle('notes.txt').closest('.ax-isolate')?.className).toContain('ax-border-status-danger');
+  });
+
+  it('Try again keeps focus in the chip: it lands on Remove, the same element through the restart', () => {
+    const onRetry = vi.fn();
+    const props = { onRemove: vi.fn(), onRetry };
+    const { rerender } = render(
+      <WorkspaceAttachmentChip attachment={attachment({ status: 'failed', message: FAILURE })} {...props} />,
+    );
+    const remove = screen.getByRole('button', { name: 'Remove notes.txt' });
+    const retry = screen.getByRole('button', { name: 'Try again' });
+    retry.focus();
+    fireEvent.click(retry);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveFocus();
+    // The upload restarts: Try again goes, Remove stays the same element and keeps focus.
+    rerender(<WorkspaceAttachmentChip attachment={attachment({ status: 'uploading', progress: 0.1 })} {...props} />);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove notes.txt' })).toBe(remove);
+    expect(remove).toHaveFocus();
+    // And back to failed: still the same Remove.
+    rerender(<WorkspaceAttachmentChip attachment={attachment({ status: 'failed', message: FAILURE })} {...props} />);
+    expect(screen.getByRole('button', { name: 'Remove notes.txt' })).toBe(remove);
   });
 
   it('the three states are distinguishable from each other', () => {
@@ -147,9 +171,12 @@ describe('WorkspaceAttachmentChip — the filename is untrusted', () => {
   it('clamps a pathological name before it reaches the DOM', () => {
     const name = `${'a'.repeat(400)}TAIL.txt`;
     const { container } = chip({ name });
-    const rendered = screen.getByTitle(clampAttachmentName(name));
-    const text = rendered.textContent ?? '';
-    expect(text).toHaveLength(120);
+    // The stem is clamped to the cap (119 characters and an ellipsis) and the
+    // extension is kept, so the chip still says what kind of file it is.
+    const clamped = `${'a'.repeat(119)}….txt`;
+    expect(clampFileName(name)).toBe(clamped);
+    const rendered = screen.getByTitle(clamped);
+    expect(rendered.textContent).toBe(clamped);
     // The far end of a 400-character name must not be in the document at all
     // — `truncate` only hides it visually, it stays in the accessibility tree
     // and in the layout budget.
@@ -178,7 +205,7 @@ describe('WorkspaceAttachmentChip — the filename is untrusted', () => {
     const buttons = screen.getAllByRole('button');
     expect(buttons).toHaveLength(1);
     const label = buttons[0]!.getAttribute('aria-label') ?? '';
-    expect(label.startsWith('Remove ')).toBe(true);
+    expect(label).toBe(`Remove ${'b'.repeat(119)}….txt`);
     expect(label).not.toContain('TAIL');
   });
 });

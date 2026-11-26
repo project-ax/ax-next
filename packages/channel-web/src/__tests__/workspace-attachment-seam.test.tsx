@@ -495,10 +495,10 @@ describe('a message the person attached a file to', () => {
     const img = container.querySelector('img');
     expect(img).not.toBeNull();
     expect(img?.getAttribute('alt')).toBe('');
-    const label = screen.getByRole('button', { name: /^Download zzz/ }).getAttribute('aria-label') ?? '';
-    const name = label.slice('Download '.length);
-    expect(name.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
-    expect(name.startsWith('zzz')).toBe(true);
+    // The stem is clamped to the cap and the extension kept.
+    expect(screen.getByRole('button', { name: /^Download zzz/ }).getAttribute('aria-label')).toBe(
+      `Download ${'z'.repeat(ATTACHMENT_NAME_MAX_CHARS - 1)}….png`,
+    );
     unmount();
   });
 

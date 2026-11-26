@@ -28,6 +28,21 @@ describe('ArtifactCard', () => {
     expect(screen.getByRole('button')).toHaveAccessibleDescription('Document · PDF');
   });
 
+  it('says its line through one status element that stays put while it downloads', async () => {
+    artifactToken.mockReset();
+    let answer!: (v: { url: string; expiresAt: string }) => void;
+    artifactToken.mockReturnValue(new Promise((r) => { answer = r; }));
+    render(<ArtifactCard artifact={artifact} />);
+    const live = screen.getByRole('status');
+    expect(live).toHaveTextContent('Document · PDF');
+    fireEvent.click(screen.getByRole('button', { name: 'Download Q3 report' }));
+    expect(screen.getByRole('button')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('status')).toBe(live);
+    answer({ url: 'http://c/d/tok3', expiresAt: 'x' });
+    await waitFor(() => expect(screen.getByRole('button')).not.toHaveAttribute('aria-busy'));
+    expect(screen.getByRole('status')).toBe(live);
+  });
+
   it('with no viewer a click downloads, handing the minted url to the browser', async () => {
     artifactToken.mockResolvedValue({ url: 'http://c/d/tok', expiresAt: 'x' });
     render(<ArtifactCard artifact={artifact} />);

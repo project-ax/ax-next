@@ -27,20 +27,13 @@ import {
 import {
   AlertTriangle,
   ChevronRight,
-  Code2,
-  File as FileIcon,
-  FileText,
-  Globe,
   Hand,
-  Image as ImageIcon,
   Layers,
   Plus,
-  Sheet as SheetIcon,
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import type { ArtifactKind } from '@ax/ipc-protocol/content-blocks';
-import { Avatar, AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
+import { Avatar, AsyncState, EmptyState, fileIcon, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -1846,22 +1839,11 @@ function StillWorking({ text }: { text: string }) {
 }
 
 /**
- * An artifact kind's picture, for the finished title's mark. The same six
- * pictures `FileTile` draws on the cards themselves, so the mark matches the
- * card it points at.
+ * The finished title's file icon: the last card the reply published, picked
+ * by `fileIcon` from its extension, exactly as `FileTile` picks that card's.
  */
-const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
-  document: FileText,
-  web: Globe,
-  spreadsheet: SheetIcon,
-  image: ImageIcon,
-  code: Code2,
-  file: FileIcon,
-};
-
-/** The finished title's file icon: the kind of the last card the reply published. */
 function PublishedMark({ artifacts }: { artifacts: readonly ThreadArtifact[] }) {
-  const Icon = KIND_ICONS[artifacts[artifacts.length - 1]!.kind];
+  const Icon = fileIcon(artifacts[artifacts.length - 1]!.extension);
   return <Icon size={13} aria-hidden="true" className="shrink-0" />;
 }
 

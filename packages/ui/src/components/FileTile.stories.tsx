@@ -152,6 +152,23 @@ export const WithProgress: Story = {
   ),
 };
 
+// Pictures far wider and far taller than the box: the preview shows each whole, inside 200px by the card's width.
+const svg = (w: number, h: number) =>
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="${w}" height="${h}" fill="#7c83db"/><circle cx="${w / 3}" cy="${h / 3}" r="${Math.min(w, h) / 6}" fill="#fff"/></svg>`,
+  );
+
+export const ImagePreviewPhone: Story = {
+  decorators: [phoneWidth],
+  render: () => (
+    <Stack gap="sm">
+      <FileTile variant="card" name="panorama.png" kind="image/png" size={2_400_000} actionLabel="Download" previewUrl={svg(1600, 400)} onOpen={() => {}} />
+      <FileTile variant="card" name={`${LONG.slice(0, -4)}.png`} kind="image/png" actionLabel="Download" previewUrl={svg(300, 1200)} onOpen={() => {}} />
+    </Stack>
+  ),
+};
+
 export const ImagePreview: Story = {
   render: () => (
     <Inline gap="sm" wrap>

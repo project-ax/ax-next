@@ -531,7 +531,7 @@ describe('attaching a file', () => {
 
     pickFile();
     await screen.findByText(ATTACHMENT_FAILED_UNSUPPORTED);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove notes.pdf' }));
 
     openMenu(screen.getByRole('button', { name: /Auto/ }));
     fireEvent.click(await screen.findByRole('menuitem', { name: /Scheduler/ }));

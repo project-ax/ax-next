@@ -77,15 +77,17 @@ export const axPreset: Config = {
       spin: { to: { transform: 'rotate(360deg)' } },
       pulse: { '50%': { opacity: '0.5' } },
     },
-    // Added on top of the token scales: control heights (Button, IconButton), the 44px touch target below md, and the skeleton block height / 90% line width.
+    // Added on top of the token scales: control heights (Button, IconButton), the 44px touch target below md, the
+    // skeleton block height / 90% line width, and FileTile's 200px image preview.
     extend: {
-      height: { ...CONTROL, ...AVATAR, 'skeleton-block': '160px' },
+      height: { ...CONTROL, ...AVATAR, 'skeleton-block': '160px', 'file-preview': '200px' },
       width: { ...CONTROL, ...AVATAR, '9/10': '90%' },
       minHeight: CONTROL,
       minWidth: CONTROL,
       // A shrink-to-fit inline box (StatusBadge) caps at its container so its text can truncate. A file chip is inline
       // too: it hugs a short name and caps at 280px, or at its container when that is narrower.
-      maxWidth: { full: '100%', 'file-chip': 'min(100%, 280px)' },
+      // A card with an image preview (FileTile) caps a little wider, at 320px.
+      maxWidth: { full: '100%', 'file-chip': 'min(100%, 280px)', 'file-preview': 'min(100%, 320px)' },
       // ListRow's stretched primary action needs an empty ::after: Tailwind's after: variant reads --tw-content, which
       // only the base layer sets, and this package emits utilities only. Its focus ring is drawn inside that layer
       // (negative offset) so a flush Card's overflow-hidden can't clip it.

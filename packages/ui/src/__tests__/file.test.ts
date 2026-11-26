@@ -1,7 +1,7 @@
 import { Code2, File, FileText, Globe, Image, Sheet } from 'lucide-react';
 import { describe, expect, it } from 'vitest';
-import { formatFileSize } from '../index.js';
-import { fileIcon, splitFileName } from '../internal/file.js';
+import { fileIcon, formatFileSize } from '../index.js';
+import { splitFileName } from '../internal/file.js';
 
 const KB = 1024;
 const MB = 1024 * KB;
@@ -104,6 +104,22 @@ describe('fileIcon', () => {
     expect(fileIcon('HTML')).toBe(Globe);
     expect(fileIcon('py')).toBe(Code2);
     expect(fileIcon('MD')).toBe(FileText);
+  });
+
+  // An artifact's extension and its media type name the same picture, so a card (extension) and a list row (media
+  // type) agree. A format with no picture of its own, like a slide deck, is a plain file either way.
+  it('an extension and its media type agree', () => {
+    const pairs: Array<[string, string]> = [
+      ['XLSX', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+      ['DOCX', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+      ['HTML', 'text/html'],
+      ['MD', 'text/markdown'],
+      ['YAML', 'application/yaml'],
+      ['SVG', 'image/svg+xml'],
+      ['PPTX', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ];
+    for (const [ext, type] of pairs) expect(fileIcon(ext), ext).toBe(fileIcon(type));
+    expect(fileIcon('pptx')).toBe(File);
   });
 
   it('anything unknown, or nothing, is a plain file', () => {

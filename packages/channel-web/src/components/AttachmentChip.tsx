@@ -1,6 +1,6 @@
 import type { FC } from 'react';
 import { FileTile } from '@project-ax/ui';
-import { clampAttachmentName } from '@/lib/attachment-name';
+import { clampFileName } from '@/lib/attachment-name';
 
 /**
  * AttachmentChip — renders an attachment in the transcript.
@@ -10,8 +10,9 @@ import { clampAttachmentName } from '@/lib/attachment-name';
  *   - `downloadable` (default): given the file's `attachmentId` plus the
  *     `conversationId` it belongs to, builds a
  *     `GET /api/files?conversationId=…&id=…` URL and renders a `FileTile`
- *     chip that is itself the Download button (an `image/*` file shows as its
- *     own thumbnail). The id is opaque — the chip only hands it back to
+ *     chip that is itself the Download button. An `image/*` file is a
+ *     `FileTile` card instead, with the image itself as an inline preview,
+ *     so it can be seen without downloading it. The id is opaque — the chip only hands it back to
  *     the server, which checks the file belongs to that conversation and to
  *     the person asking.
  *
@@ -21,7 +22,7 @@ import { clampAttachmentName } from '@/lib/attachment-name';
  *     chip the file's id, and it becomes the downloadable variant.
  *
  * `displayName` is CLAMPED here, in the component, rather than at each call
- * site. A filename comes off a person's own disk and has no length limit, and
+ * site (the stem is clamped; `clampFileName` keeps the extension). A filename comes off a person's own disk and has no length limit, and
  * this component spends it on a title attribute and an `aria-label` — a screen
  * reader announcing four hundred characters is its own kind of broken, and the
  * CSS `truncate` on the visible row does nothing about it, because CSS does not
@@ -55,7 +56,7 @@ function downloadUrl(conversationId: string, attachmentId: string): string {
 }
 
 export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
-  const displayName = clampAttachmentName(props.displayName);
+  const displayName = clampFileName(props.displayName);
 
   if (props.variant === 'pending') {
     return <FileTile variant="chip" name={displayName} kind={props.mediaType} />;
@@ -71,15 +72,11 @@ export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
     window.open(href, '_blank', 'noopener,noreferrer');
   };
 
-  return (
-    <FileTile
-      variant="chip"
-      name={displayName}
-      kind={mediaType}
-      actionLabel="Download"
-      onOpen={onDownload}
-      {...(typeof sizeBytes === 'number' && sizeBytes > 0 ? { size: sizeBytes } : {})}
-      {...(mediaType.startsWith('image/') ? { previewUrl: href } : {})}
-    />
-  );
+  const size = typeof sizeBytes === 'number' && sizeBytes > 0 ? { size: sizeBytes } : {};
+  if (mediaType.startsWith('image/')) {
+    return (
+      <FileTile variant="card" name={displayName} kind={mediaType} actionLabel="Download" onOpen={onDownload} previewUrl={href} {...size} />
+    );
+  }
+  return <FileTile variant="chip" name={displayName} kind={mediaType} actionLabel="Download" onOpen={onDownload} {...size} />;
 };

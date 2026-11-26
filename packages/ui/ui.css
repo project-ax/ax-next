@@ -88,6 +88,9 @@
 .ax-h-control-sm {
     height: 36px
 }
+.ax-h-file-preview {
+    height: 200px
+}
 .ax-h-full {
     height: 100%
 }
@@ -105,6 +108,9 @@
 }
 .ax-h-xs {
     height: var(--ax-space-xs)
+}
+.ax-max-h-full {
+    max-height: 100%
 }
 .ax-min-h-touch {
     min-height: 44px
@@ -153,6 +159,9 @@
 }
 .ax-max-w-file-chip {
     max-width: min(100%, 280px)
+}
+.ax-max-w-file-preview {
+    max-width: min(100%, 320px)
 }
 .ax-max-w-full {
     max-width: 100%
@@ -396,6 +405,9 @@
 .ax-bg-transparent {
     background-color: transparent
 }
+.ax-object-contain {
+    object-fit: contain
+}
 .ax-object-cover {
     object-fit: cover
 }
@@ -407,6 +419,9 @@
 }
 .ax-p-none {
     padding: var(--ax-space-none)
+}
+.ax-p-sm {
+    padding: var(--ax-space-sm)
 }
 .ax-p-xl {
     padding: var(--ax-space-xl)

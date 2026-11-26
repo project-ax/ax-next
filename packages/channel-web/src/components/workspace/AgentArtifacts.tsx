@@ -31,13 +31,16 @@ function downloadNote(e: unknown): string {
   return FAILED_NOTE;
 }
 
-/** One artifact: the row opens it. The row renders its own `li`. */
+/**
+ * One artifact: the row opens it. The row renders its own `li`. Its icon comes
+ * from the extension, as on the chat's artifact card and published mark.
+ */
 function ArtifactRow({ artifact, onOpen }: { artifact: ArtifactSummary; onOpen: () => void }) {
   return (
     <FileTile
       variant="row"
       name={artifact.title}
-      kind={artifact.mediaType}
+      kind={artifact.extension}
       detail={artifactTypeLine(artifact)}
       onOpen={onOpen}
     />
