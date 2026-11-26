@@ -47,6 +47,15 @@ interface Row {
   serviceSet: string | null;
 }
 
+/** A `conversations:bind-session` input, as the fake records it. */
+interface BindInput {
+  conversationId: string;
+  sessionId: string;
+  reqId: string;
+  runnerType?: string;
+  expectedSessionId?: string | null;
+}
+
 function makeHandle() {
   let resolveExit!: () => void;
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
@@ -96,6 +105,19 @@ async function setup(opts: {
   /** Replaces the whole onDemandServices config (undefined key: omitted). */
   onDemandConfig?: { enabled?: boolean; maxPerAgent?: number } | 'omit';
   keepAlive?: boolean;
+  /**
+   * Runs at the start of every conversations:bind-session, before it writes:
+   * lets a test move the row just before a bind lands, or fail the bind (a
+   * throw is the bind's error). A conflicting bind can be followed by a
+   * second one, so a hook that moves the row acts once.
+   */
+  onBind?: (input: BindInput, row: Row) => void;
+  /** Hold every proxy:close-session (recorded in `proxyCloses` first) until this resolves. */
+  proxyCloseGate?: Promise<void>;
+  /** Hold every session:terminate until this resolves, before it changes anything. */
+  terminateGate?: Promise<void>;
+  /** session:terminate of this session throws, before it changes anything. */
+  terminateFailsFor?: string;
 } = {}) {
   const rows: Record<string, Row> = {};
   for (const [id, r] of Object.entries(opts.rows ?? {})) {
@@ -113,12 +135,18 @@ async function setup(opts: {
   const queued: Array<{ sessionId: string; entry: { type: string; reqId?: string; note?: string } }> = [];
   const terminated: string[] = [];
   const setServiceSetCalls: Array<{ conversationId: string; userId: string; serviceSet: string | null }> = [];
-  const turnEnds: Array<{ reqId?: string; sessionId: string }> = [];
+  const turnEnds: Array<{ reqId?: string; sessionId: string; foldedReqIds?: string[] }> = [];
   const segmentEnds: Array<{ reqId?: string; sessionId: string }> = [];
   const turnErrors: Array<{ reqId: string; reason: string; detail?: string }> = [];
   const activeReqClears: string[] = [];
   const logs: string[] = [];
   const registeredTools: string[] = [];
+  /** Every conversations:bind-session input, in call order. */
+  const binds: BindInput[] = [];
+  /** Every proxy:close-session, by session, in call order. */
+  const proxyCloses: string[] = [];
+  /** The sessions terminated when each `queued` entry was handed over (same index). */
+  const terminatedAtQueue: string[][] = [];
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...AGENT } }),
@@ -142,12 +170,16 @@ async function setup(opts: {
     }),
     'session:queue-work': async (_c, input: unknown) => {
       const q = input as (typeof queued)[number];
+      const terminatedSoFar = [...terminated];
       if (q.entry.type === 'host-note' && opts.noteGate !== undefined) await opts.noteGate;
       queued.push(q);
+      terminatedAtQueue.push(terminatedSoFar);
       return { cursor: queued.length };
     },
     'session:terminate': async (c, input: unknown) => {
       const sessionId = (input as { sessionId: string }).sessionId;
+      if (opts.terminateGate !== undefined) await opts.terminateGate;
+      if (opts.terminateFailsFor === sessionId) throw new Error('terminate failed');
       terminated.push(sessionId);
       live.delete(sessionId);
       // @ax/conversations' session:terminate subscriber: clear rows still bound to it.
@@ -169,8 +201,16 @@ async function setup(opts: {
       return { conversation: { conversationId: i.conversationId, userId: i.userId, agentId: AGENT.id, ...r } };
     },
     'conversations:bind-session': async (_c, input: unknown) => {
-      const i = input as { conversationId: string; sessionId: string; reqId: string };
+      const i = input as BindInput;
+      binds.push({ ...i });
       const r = row(i.conversationId);
+      opts.onBind?.(i, r);
+      // @ax/conversations' compare-and-set (TASK-1226): a bind naming the
+      // session it expects (null: none bound) writes only if the row still
+      // says exactly that.
+      if (i.expectedSessionId !== undefined && r.activeSessionId !== i.expectedSessionId) {
+        throw new PluginError({ code: 'conflict', plugin: 'test', message: 'moved on' });
+      }
       r.activeSessionId = i.sessionId;
       r.activeReqId = i.reqId;
       return undefined;
@@ -219,7 +259,11 @@ async function setup(opts: {
         }
       : {}),
     'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {}, proxyAuthToken: 'a'.repeat(32) }),
-    'proxy:close-session': async () => ({}),
+    'proxy:close-session': async (_c, input: unknown) => {
+      proxyCloses.push((input as { sessionId: string }).sessionId);
+      if (opts.proxyCloseGate !== undefined) await opts.proxyCloseGate;
+      return {};
+    },
     // The tool catalog (@ax/mcp-client's dispatcher): what agents are offered.
     'tool:register': async (_c, input: unknown) => {
       registeredTools.push((input as { name: string }).name);
@@ -232,6 +276,8 @@ async function setup(opts: {
     plugins: [createChatOrchestratorPlugin({
       runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: opts.chatTimeoutMs ?? 60_000,
       keepAlive: opts.keepAlive ?? true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      // A gated close must never hit the bound (the wait would end on its own).
+      ...(opts.proxyCloseGate !== undefined ? { proxyCloseTimeoutMs: 60_000 } : {}),
       ...(opts.onDemandConfig === 'omit'
         ? {}
         : {
@@ -246,15 +292,19 @@ async function setup(opts: {
   // The callers: every chat:turn-end and chat:turn-error, by reqId. A turn-end
   // is what closes a web stream, ends a Slack reply, finishes a routine run
   // and clears active_req_id; none may arrive mid-restart.
-  h.bus.subscribe<{ reqId?: string }>('chat:turn-end', 'test/callers', async (c, p) => {
-    turnEnds.push({ reqId: p.reqId, sessionId: c.sessionId });
+  h.bus.subscribe<{ reqId?: string; foldedReqIds?: string[] }>('chat:turn-end', 'test/callers', async (c, p) => {
+    turnEnds.push({
+      ...(p.reqId !== undefined ? { reqId: p.reqId } : {}),
+      sessionId: c.sessionId,
+      ...(p.foldedReqIds !== undefined ? { foldedReqIds: p.foldedReqIds } : {}),
+    });
     // @ax/conversations: compare-and-clear active_req_id on the turn's end.
     const r = c.conversationId !== undefined ? rows[c.conversationId] : undefined;
     if (r !== undefined && p.reqId !== undefined && r.activeReqId === p.reqId) r.activeReqId = null;
     return undefined;
   });
   h.bus.subscribe<{ reqId?: string }>(CHAT_TURN_SEGMENT_END_HOOK, 'test/segments', async (c, p) => {
-    segmentEnds.push({ reqId: p.reqId, sessionId: c.sessionId });
+    segmentEnds.push({ ...(p.reqId !== undefined ? { reqId: p.reqId } : {}), sessionId: c.sessionId });
     return undefined;
   });
   h.bus.subscribe<{ reqId: string; reason: string; detail?: string }>('chat:turn-error', 'test/callers', async (_c, p) => {
@@ -269,15 +319,26 @@ async function setup(opts: {
       logger: createLogger({ reqId: 'ipc-fresh', writer: (line) => { logs.push(line); } }),
     });
 
-  /** Mirrors @ax/ipc-core `fireEventTurnEnd`: ask the hold, then segment-end or chat:turn-end. */
+  /**
+   * Mirrors @ax/ipc-core `fireEventTurnEnd`: ask the hold, then segment-end or
+   * chat:turn-end. Not held, the ids the answer names join the runner's own
+   * (TASK-1224; ipc-core also bounds them, which this mirror leaves out).
+   */
   async function emitTurnEnd(
     sessionId: string, conversationId: string, reqId: string, role: 'tool' | 'assistant', foldedReqIds?: string[],
   ) {
     const c = ipcCtx(sessionId, conversationId);
     const payload = { reason: 'user-message-wait', role, reqId, ...(foldedReqIds !== undefined ? { foldedReqIds } : {}) };
     const answer = await h.bus.fire<ChatTurnEndHoldPayload>(CHAT_TURN_END_HOLD_HOOK, c, { sessionId, reqId, held: false });
-    if (!answer.rejected && answer.payload.held) await h.bus.fire(CHAT_TURN_SEGMENT_END_HOOK, c, payload);
-    else await h.bus.fire('chat:turn-end', c, payload);
+    if (!answer.rejected && answer.payload.held) {
+      await h.bus.fire(CHAT_TURN_SEGMENT_END_HOOK, c, payload);
+      return;
+    }
+    const own = foldedReqIds ?? [];
+    const added = answer.rejected
+      ? []
+      : [...new Set(answer.payload.foldedReqIds ?? [])].filter((id) => id !== reqId && !own.includes(id));
+    await h.bus.fire('chat:turn-end', c, added.length > 0 ? { ...payload, foldedReqIds: [...own, ...added] } : payload);
   }
   /** A runner segment ends: its two turn-ends, tool then assistant. */
   async function endSegment(sessionId: string, conversationId: string, reqId: string, foldedReqIds?: string[]) {
@@ -309,7 +370,8 @@ async function setup(opts: {
   const notes = () => queued.filter((q) => q.entry.type === 'host-note');
   return {
     h, rows, row, opens, handles, queued, terminated, setServiceSetCalls, turnEnds, segmentEnds, turnErrors,
-    activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes, registeredTools,
+    activeReqClears, logs, emitTurnEnd, endSegment, tool, invoke, notes, registeredTools, binds,
+    proxyCloses, terminatedAtQueue,
   };
 }
 
@@ -665,6 +727,8 @@ describe('restart_with_services (dev services on demand)', () => {
     expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
     expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
     expect(t.turnErrors).toEqual([]);
+    // TASK-1224 — and its callers hear it end: the continuation's turn-end names it.
+    expect(t.turnEnds.find((e) => e.reqId === 'req-1')?.foldedReqIds).toEqual(['req-2']);
   });
 
   it('a live restarted sandbox keeps its slot; it comes back when that sandbox goes', async () => {
@@ -879,6 +943,464 @@ describe('restart_with_services (dev services on demand)', () => {
     // Let req-1 end too (its own path watches the handle).
     await t.handles.get(fresh)!.handle.kill();
     await p1;
+  });
+
+  // TASK-1226 — the swap binds the row twice, late: R19 (the restarting
+  // request, onto the new sandbox) and N2 (the last moved request). A newer
+  // request can bind its own sandbox before either lands; taking the row back
+  // from it would orphan that sandbox.
+  describe('TASK-1226: the swap never takes the row from a newer request', () => {
+    const isRestartRebind = (i: BindInput): boolean => i.reqId === 'req-1' && i.sessionId !== 's-1';
+    const keptNewer = (t: Awaited<ReturnType<typeof setup>>, site: string): boolean =>
+      t.logs.some((l) => l.includes('conversation_bind_kept_newer') && l.includes(site));
+
+    it('the swap\'s rebind keeps a newer binding that landed first', async () => {
+      let acted = false;
+      const t = await setup({
+        onBind: (i, r) => {
+          if (acted || !isRestartRebind(i)) return;
+          acted = true;
+          r.activeSessionId = 's-newer';
+          r.activeReqId = 'req-9';
+        },
+      });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-newer', activeReqId: 'req-9' });
+      expect(keptNewer(t, 'restart-rebind')).toBe(true);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    // An unbound row at N2 means a stale writer bound the OLD session after
+    // R19 and the old session's terminate cleared it: that newer request is
+    // opening its own sandbox and must get the row, so N2 is strict.
+    for (const [label, newer] of [
+      ['a newer session', { activeSessionId: 's-newer', activeReqId: 'req-9' }],
+      ['a row a newer request is about to take', { activeSessionId: null, activeReqId: null }],
+    ] as const) {
+      it(`the moved-request bind keeps a newer binding that landed during the open (${label})`, async () => {
+        let release!: () => void;
+        const t = await setup({ openGate: { on: 2, until: new Promise<void>((r) => { release = r; }) } });
+        const { p1, p2, out1, out2 } = await restartWithQueued(t);
+        await t.endSegment('s-1', 'conv-1', 'req-1');
+        await waitFor(() => t.opens.length === 2, 'the restart opening');
+        const fresh = t.opens[1]!.sessionId;
+        Object.assign(t.row('conv-1'), newer);
+        release();
+        await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+        await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+        await flush();
+
+        expect(t.row('conv-1')).toMatchObject(newer);
+        expect(keptNewer(t, 'restart-moved')).toBe(true);
+        // Both requests still finish on the new sandbox.
+        await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+        await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+        await Promise.all([p1, p2]);
+        await flush();
+        expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+        expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+        expect(t.turnErrors).toEqual([]);
+      });
+    }
+
+    it('the swap\'s binds name the session they expect', async () => {
+      const t = await setup();
+      const { p1, p2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+
+      // R19 over the old session; N2 over the new one, which R19 just bound.
+      expect(t.binds.filter((b) => b.sessionId === fresh)).toEqual([
+        expect.objectContaining({ conversationId: 'conv-1', reqId: 'req-1', expectedSessionId: 's-1' }),
+        expect.objectContaining({ conversationId: 'conv-1', reqId: 'req-2', expectedSessionId: fresh }),
+      ]);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await Promise.all([p1, p2]);
+    });
+
+    it('the swap\'s rebind takes an unbound row (guard: the unbound-row try)', async () => {
+      // The old sandbox's row was cleared (its pod died) just before R19 lands.
+      let acted = false;
+      const t = await setup({
+        onBind: (i, r) => {
+          if (acted || !isRestartRebind(i)) return;
+          acted = true;
+          r.activeSessionId = null;
+          r.activeReqId = null;
+        },
+      });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      const fresh = t.opens[1]!.sessionId;
+
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-1' });
+      expect(keptNewer(t, 'restart-rebind')).toBe(false);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    /**
+     * The rebind (R19) fails for a reason other than a newer binding, once: a
+     * DB blip. `landed`: its write lands all the same, and only the call fails
+     * (the bus timed it out and the UPDATE committed later, or the connection
+     * reset after the commit).
+     */
+    const failRebindOnce = (opts: { landed?: boolean } = {}) => {
+      let acted = false;
+      return (i: BindInput, r: Row): void => {
+        if (acted || !isRestartRebind(i)) return;
+        acted = true;
+        if (opts.landed === true) Object.assign(r, { activeSessionId: i.sessionId, activeReqId: i.reqId });
+        throw new Error('connection reset');
+      };
+    };
+    /** R19's own failure line: at warn, and not N2's (which names the moved request). */
+    const rebindFailureWarned = (t: Awaited<ReturnType<typeof setup>>): boolean =>
+      t.logs.some((l) => {
+        const e = JSON.parse(l) as { level?: string; msg?: string; movedReqId?: string };
+        return e.level === 'warn' && e.msg === 'conversation_bind_failed_restart' && e.movedReqId === undefined;
+      });
+
+    // A failed R19 that never wrote leaves the row on the old session, and the
+    // old session's terminate then clears it. N2 binds the way R19 would have
+    // (over the old session, or an unbound row), not strictly over the new
+    // session R19 never wrote: left unbound, the moved request runs off the
+    // row, so the idle reaper (it reads only the row) can reap it mid-turn,
+    // and Stop and a stream reconnect can't find it.
+    it('the moved-request bind after a failed rebind binds as the rebind would have', async () => {
+      const t = await setup({ onBind: failRebindOnce() });
+      const { p1, p2, out1, out2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+      await flush();
+
+      expect(rebindFailureWarned(t)).toBe(true);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      expect(keptNewer(t, 'restart-moved')).toBe(false);
+
+      // The restarting request ends; the moved one still owns the row, so Stop reaches it.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p1;
+      const stop = await t.h.bus.call<unknown, { interrupted: boolean }>(
+        'agent:interrupt', makeAgentContext({ sessionId: 'x', agentId: AGENT.id, userId: AGENT.ownerId }),
+        { conversationId: 'conv-1', userId: AGENT.ownerId },
+      );
+      expect(stop.interrupted).toBe(true);
+      expect(t.queued.at(-1)).toEqual({ sessionId: fresh, entry: { type: 'interrupt' } });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await p2;
+      await flush();
+      expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    // A failed R19 may still have written: the bus can time the call out
+    // while its UPDATE commits later, and a connection can reset after the
+    // commit. Then the row names the new session with the restarting request,
+    // R19's own write, not a newer binding, and N2 must take it. Left on
+    // req-1, the row loses its request at req-1's turn end while the moved
+    // req-2 still runs there, so Stop misses req-2 and the idle reaper can
+    // reap it mid-turn.
+    it('the moved-request bind after a failed rebind whose write landed still binds the moved request', async () => {
+      const t = await setup({ onBind: failRebindOnce({ landed: true }) });
+      const { p1, p2, out1, out2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+      await flush();
+
+      expect(rebindFailureWarned(t)).toBe(true);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      expect(keptNewer(t, 'restart-moved')).toBe(false);
+
+      // req-1's turn end clears req-1 only: the moved req-2 keeps the row, so Stop reaches it.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p1;
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      const stop = await t.h.bus.call<unknown, { interrupted: boolean }>(
+        'agent:interrupt', makeAgentContext({ sessionId: 'x', agentId: AGENT.id, userId: AGENT.ownerId }),
+        { conversationId: 'conv-1', userId: AGENT.ownerId },
+      );
+      expect(stop.interrupted).toBe(true);
+      expect(t.queued.at(-1)).toEqual({ sessionId: fresh, entry: { type: 'interrupt' } });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await p2;
+      await flush();
+      expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    // The order matters: R19's write that commits WHILE N2 runs (its first
+    // compare-and-set conflicted on a just-cleared row, its unbound-row try
+    // timed out with the UPDATE in flight) is still taken, because N2 tries
+    // the new session last. Tried first, it would see the unbound row, and the
+    // old-session and unbound tries would then conflict with the late write.
+    it('(order) a failed rebind whose write commits during the moved-request bind is still taken', async () => {
+      let r19Calls = 0;
+      let lateWrite: Partial<Row> | undefined;
+      const t = await setup({
+        onBind: (i, r) => {
+          if (isRestartRebind(i)) {
+            r19Calls += 1;
+            if (r19Calls === 1) {
+              Object.assign(r, { activeSessionId: null, activeReqId: null });
+              return;
+            }
+            if (r19Calls === 2) {
+              lateWrite = { activeSessionId: i.sessionId, activeReqId: i.reqId };
+              throw new Error('timed out with the write still in flight');
+            }
+            return;
+          }
+          if (i.reqId === 'req-2' && i.sessionId !== 's-1' && i.expectedSessionId === null && lateWrite !== undefined) {
+            Object.assign(r, lateWrite);
+            lateWrite = undefined;
+          }
+        },
+      });
+      const { p1, p2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+      await flush();
+
+      expect(rebindFailureWarned(t)).toBe(true);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      expect(keptNewer(t, 'restart-moved')).toBe(false);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await Promise.all([p1, p2]);
+    });
+
+    it('(guard) after a failed rebind, the moved-request bind still keeps a newer binding', async () => {
+      let release!: () => void;
+      const t = await setup({
+        onBind: failRebindOnce(),
+        openGate: { on: 2, until: new Promise<void>((r) => { release = r; }) },
+      });
+      const { p1, p2, out1, out2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.opens.length === 2, 'the restart opening');
+      const fresh = t.opens[1]!.sessionId;
+      // A newer request bound its own sandbox while the restart's opened.
+      Object.assign(t.row('conv-1'), { activeSessionId: 's-newer', activeReqId: 'req-9' });
+      release();
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+      await flush();
+
+      expect(rebindFailureWarned(t)).toBe(true);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-newer', activeReqId: 'req-9' });
+      expect(keptNewer(t, 'restart-moved')).toBe(true);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await Promise.all([p1, p2]);
+      await flush();
+      expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(t.turnErrors).toEqual([]);
+    });
+  });
+
+  // TASK-1224 — a request the runner folded into the held segment was named
+  // only on that segment's turn-ends, which no caller sees, and the
+  // continuation's runner never saw it. The hold's answer names it on the
+  // continuation's turn-end instead, so its caller (web stream, Slack reply,
+  // activity line) ends with the restarting turn.
+  describe('TASK-1224: a request folded into the held segment ends with the continuation', () => {
+    it('a folded request with no waiter is named too', async () => {
+      // A decision continuation folded into the segment has a stream, but no waiter here.
+      const t = await setup();
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['cont-1']);
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: fresh, foldedReqIds: ['cont-1'] }]);
+    });
+
+    // The continuation's closing turn-ends come tool, then assistant, and the
+    // first one already ends the invoke (any turn-end naming it settles its
+    // waiter), so it always names the folded requests. The second names them
+    // too if it arrives before the invoke's cleanup runs, and nothing orders
+    // the two; either is harmless, since callers end a request on the first
+    // turn-end naming it, whatever its role, and ending it again is a no-op.
+    // So this pins only: the first closing turn-end names them, and once the
+    // invoke is over (awaited, plus a tick for its cleanup) a turn-end names
+    // nothing, so the entry doesn't outlive the request.
+    it('the first closing turn-end carries the folded ids, and none outlive the invoke; a moved request is not named', async () => {
+      const t = await setup();
+      const { p1, p2, out1, out2 } = await restartWithQueued(t);
+      const p3 = t.invoke('placeholder', 'conv-1', 'req-3');
+      await waitFor(() => t.queued.length === 3, 'message 3 queued on s-1');
+      const out3 = track(p3);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['req-3']); // req-3 folded, req-2 moved
+      await waitFor(() => t.queued.length === 5, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+
+      // The moved request ends in the new sandbox while req-1's continuation
+      // still runs there: the answer is keyed on the request too, so it names nothing.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      expect(await p2).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnEnds).toEqual([{ reqId: 'req-2', sessionId: fresh }]);
+
+      // The continuation's closing pair: the first names the folded request.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'tool');
+      expect(t.turnEnds.at(-1)).toEqual({ reqId: 'req-1', sessionId: fresh, foldedReqIds: ['req-3'] });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant'); // may name it again: not pinned
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      await p3;
+      await flush();
+
+      // The invoke and its cleanup are over: a turn-end that arrives now names nothing folded.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(t.turnEnds.at(-1)).toEqual({ reqId: 'req-1', sessionId: fresh });
+      // req-3's callers heard it end at least once; req-2 was never named as folded.
+      expect(t.turnEnds.filter((e) => e.foldedReqIds?.includes('req-3')).length).toBeGreaterThanOrEqual(1);
+      expect(t.turnEnds.some((e) => e.foldedReqIds?.includes('req-2'))).toBe(false);
+      for (const out of [out1, out2, out3]) expect(out).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    it('(guard) a turn-end from another sandbox gets no ids', async () => {
+      const t = await setup();
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['cont-1']);
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      // The old sandbox names the restarting request again: the answer is keyed
+      // on the host-stamped session, so it names nothing.
+      await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+      expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: 's-1' }]);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p1;
+    });
+
+    // The bus hands each hold subscriber the answer before it. Another owner
+    // that answered first keeps its ids: the orchestrator appends to the list
+    // rather than replacing it, so both owners' requests end with the turn.
+    it('(guard) the answer adds to the ids an earlier owner named', async () => {
+      const t = await setup();
+      t.h.bus.subscribe<ChatTurnEndHoldPayload>(
+        CHAT_TURN_END_HOLD_HOOK,
+        'test/earlier-owner',
+        async (_c, p) => (p.reqId === 'req-1' ? { ...p, foldedReqIds: [...(p.foldedReqIds ?? []), 'other-1'] } : undefined),
+        { priority: -1 },
+      );
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['cont-1']);
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: fresh, foldedReqIds: ['other-1', 'cont-1'] }]);
+    });
+  });
+
+  // TASK-1225 — the old session's terminate is what cuts the old runner off:
+  // its token stops authenticating and its inbox serves nothing more. A slow
+  // proxy close (up to proxyCloseTimeoutMs) must not hold that up, and no
+  // message may move to the new sandbox before it.
+  describe('TASK-1225: the swap cuts the old sandbox off without waiting for its proxy', () => {
+    it('the swap revokes the old session while its proxy close is still pending', async () => {
+      let releaseClose!: () => void;
+      const t = await setup({ proxyCloseGate: new Promise<void>((r) => { releaseClose = r; }) });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.proxyCloses.includes('s-1'), 'the old proxy close');
+      await waitFor(() => t.terminated.includes('s-1'), 'old session revoked before its proxy close returns');
+
+      releaseClose();
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.handles.get('s-1')!.state.kills).toBe(1);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    it('a moved message is queued only after the old session is revoked (guard)', async () => {
+      // The terminate is held a while: a swap that moved without waiting for
+      // it would queue to the new sandbox in the meantime.
+      let releaseTerminate!: () => void;
+      const t = await setup({ terminateGate: new Promise<void>((r) => { releaseTerminate = r; }) });
+      const { p1, p2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      for (let i = 0; i < 50; i++) await flush();
+      releaseTerminate();
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+
+      const toFresh = t.queued.flatMap((q, i) =>
+        q.sessionId === fresh ? [{ type: q.entry.type, afterRevoke: t.terminatedAtQueue[i]!.includes('s-1') }] : [],
+      );
+      expect(toFresh).toEqual([
+        { type: 'host-note', afterRevoke: true },
+        { type: 'user-message', afterRevoke: true },
+      ]);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      expect(await Promise.all([p1, p2])).toEqual([
+        { kind: 'complete', messages: [] },
+        { kind: 'complete', messages: [] },
+      ]);
+    });
+
+    it('(guard) a failing terminate still closes the old proxy, kills the old sandbox, and the swap completes', async () => {
+      // The close is held so the swap's own close can be told from the one
+      // the old sandbox's exit watcher sends after the kill.
+      let releaseClose!: () => void;
+      const t = await setup({
+        terminateFailsFor: 's-1',
+        proxyCloseGate: new Promise<void>((r) => { releaseClose = r; }),
+      });
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.proxyCloses.includes('s-1'), 'the old proxy close');
+      expect(t.handles.get('s-1')!.state.kills).toBe(0); // the swap's own close, before the kill
+
+      releaseClose();
+      await waitFor(() => t.notes().length === 1, 'the host note');
+      expect(t.handles.get('s-1')!.state.kills).toBe(1);
+      expect(t.logs.some((l) => l.includes('service_restart_terminate_failed'))).toBe(true);
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnErrors).toEqual([]);
+    });
   });
 });
 
@@ -1265,5 +1787,74 @@ describe('restart_with_services: a failed services open is told to the agent (TA
     const next = await spawnTurn(t, 'req-4');
     expect(next.open.augment).toContain('dev service "mongo" failed');
     await endTurn(t, next.open.sessionId, 'req-4', next.p);
+  });
+});
+
+// ---- TASK-1226: a cold spawn's late bind (step 7) never takes the row back ----
+describe('TASK-1226: a cold spawn keeps a newer binding', () => {
+  const userMessageQueued = (t: Awaited<ReturnType<typeof setup>>, reqId: string): boolean =>
+    t.queued.some((q) => q.entry.type === 'user-message' && q.entry.reqId === reqId);
+  const keptNewer = (t: Awaited<ReturnType<typeof setup>>): boolean =>
+    t.logs.some((l) => l.includes('conversation_bind_kept_newer') && l.includes('fresh'));
+
+  it('a cold spawn keeps a newer binding that landed during its open', async () => {
+    let release!: () => void;
+    const t = await setup({ openGate: { on: 1, until: new Promise<void>((r) => { release = r; }) } });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.opens.length === 1, 'the open');
+    // A newer request opened its own sandbox and bound it while this one opened.
+    Object.assign(t.row('conv-1'), { activeSessionId: 's-newer', activeReqId: 'req-9' });
+    release();
+    await waitFor(() => userMessageQueued(t, 'req-1'), 'the message');
+
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-newer', activeReqId: 'req-9' });
+    expect(keptNewer(t)).toBe(true);
+    // Routing saw an unbound row, so step 7 makes exactly one try, on unbound.
+    expect(
+      t.binds.filter((b) => b.reqId === 'req-1' && b.expectedSessionId !== undefined).map((b) => b.expectedSessionId),
+    ).toEqual([null]);
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    expect(await p1).toEqual({ kind: 'complete', messages: [] });
+    expect(t.turnErrors).toEqual([]);
+  });
+
+  it('a cold spawn whose stale row is cleared during its open still binds (guard: the unbound-row try)', async () => {
+    let release!: () => void;
+    const t = await setup({
+      rows: { 'conv-1': { activeSessionId: 's-stale', activeReqId: 'req-0' } }, // not alive
+      openGate: { on: 1, until: new Promise<void>((r) => { release = r; }) },
+    });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.opens.length === 1, 'the open');
+    // The stale session's terminate (the idle reaper's clear) lands mid-open.
+    Object.assign(t.row('conv-1'), { activeSessionId: null, activeReqId: null });
+    release();
+    await waitFor(() => userMessageQueued(t, 'req-1'), 'the message');
+
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-1', activeReqId: 'req-1' });
+    expect(keptNewer(t)).toBe(false);
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    expect(await p1).toEqual({ kind: 'complete', messages: [] });
+  });
+
+  it('a spawn that retired the warm sandbox binds over its own retire bind', async () => {
+    const t = await setup({ rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => userMessageQueued(t, 'req-1'), 'turn 1');
+    expect((await t.tool(STOP_SERVICES, 's-1', 'conv-1', {})).ok).toBe(true);
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    await p1;
+
+    // The set changed, so routing retires s-1: it binds s-2 first, then opens it.
+    const p2 = t.invoke('s-2', 'conv-1', 'req-2');
+    await waitFor(() => userMessageQueued(t, 'req-2'), 'turn 2');
+    expect(t.terminated).toEqual(['s-1']);
+    expect(t.binds.filter((b) => b.reqId === 'req-2' && b.expectedSessionId !== undefined)).toEqual([
+      expect.objectContaining({ sessionId: 's-2', expectedSessionId: 's-2' }),
+    ]);
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-2', activeReqId: 'req-2' });
+    expect(keptNewer(t)).toBe(false);
+    await t.emitTurnEnd('s-2', 'conv-1', 'req-2', 'assistant');
+    expect(await p2).toEqual({ kind: 'complete', messages: [] });
   });
 });

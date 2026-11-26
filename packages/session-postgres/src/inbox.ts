@@ -28,11 +28,13 @@ const PLUGIN_NAME = '@ax/session-postgres';
 //    in, we'd cross-deliver wakeups (a spurious wake) but never deliver
 //    the WRONG entry (the SQL fetch keys on the real session_id).
 //
-//  - Terminate: we set the session's terminated flag (in store), then
-//    notify the inbox channel with a sentinel `{__terminate: true}` so
-//    blocked claims wake. The `claim` re-fetches from SQL and either
-//    finds a real entry (a queue raced ahead) or sees no entry + checks
-//    the terminated flag and resolves as `timeout`.
+//  - Terminate: the plugin sets the session's terminated flag (in store),
+//    then `terminate` notifies the inbox channel so blocked claims wake.
+//    Every claim, on the fast path or woken, fetches its entry and THEN
+//    reads the flag: a terminated session gets `timeout`, never an entry,
+//    even one already queued (TASK-1225). The rows stay. A services restart
+//    moves a waiting message to the new session after terminating the old
+//    one, and the old runner must not be handed the copy left here.
 // ---------------------------------------------------------------------------
 
 // `reqId` on `user-message` is the host-minted request id (J9). Producers
@@ -217,13 +219,11 @@ export function createInbox(opts: InboxOptions): Inbox {
       return;
     }
     if (shuttingDown) return;
-    if (row !== null) {
-      finishWaiter(w, deliver(row, w.cursor));
-      return;
-    }
-    // No entry — check if the session was terminated. If so, resolve as
-    // timeout with echo cursor (matches session-inmemory semantics on a
-    // terminate during a blocked claim).
+    // Then check whether the session was terminated, entry or not. If so,
+    // resolve as timeout with echo cursor (matches session-inmemory on a
+    // terminate during a blocked claim): a terminated session is never handed
+    // an entry, even one that landed (TASK-1225). Fetch first, then this
+    // check, then the outcome with no await in between, as in `claim`.
     //
     // Shutdown-race guard: the kysely instance underlying isTerminated may
     // be destroyed between when this awaits and when it resumes. We do
@@ -248,6 +248,11 @@ export function createInbox(opts: InboxOptions): Inbox {
     if (shuttingDown) return;
     if (terminated) {
       finishWaiter(w, { type: 'timeout', cursor: w.cursor });
+      return;
+    }
+    if (row !== null) {
+      finishWaiter(w, deliver(row, w.cursor));
+      return;
     }
     // Otherwise: spurious wake. Stay parked until the timer or another
     // notification fires.
@@ -389,14 +394,20 @@ export function createInbox(opts: InboxOptions): Inbox {
     },
 
     async claim(sessionId, cursor, timeoutMs) {
-      // Fast path: row already there.
+      // Fast path: fetch the row, THEN check whether the session was
+      // terminated, then answer with no await in between (TASK-1225). A
+      // terminated session gets `timeout`, even with its row already there. In
+      // this order a delivery rests on a check that still read the session
+      // live, so it was decided before the terminate committed, and a services
+      // restart moves the old session's waiting message only after that commit.
+      // Checked first, the fetch could run after the move and hand the old
+      // runner the copy left here.
       const present = await fetchEntry(db, sessionId, cursor);
-      if (present !== null) {
-        return deliver(present, cursor);
-      }
-      // Already terminated? Fast-path timeout.
       if (await isTerminated(sessionId)) {
         return { type: 'timeout', cursor };
+      }
+      if (present !== null) {
+        return deliver(present, cursor);
       }
 
       // Slow path: install a LISTEN + waiter.

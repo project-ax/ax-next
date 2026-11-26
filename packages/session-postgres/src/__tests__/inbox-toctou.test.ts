@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import {
   stopPostgresContainer,
   startTestContainer,
@@ -148,6 +148,105 @@ describe('inbox ensureListen TOCTOU', () => {
       reqId: 'r-b',
       cursor: 2,
     });
+
+    await inbox.shutdown();
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1225 — the wake path's terminated check. A row can reach a parked
+// claim's cursor, or its NOTIFY can arrive, after the session was terminated:
+// a queue-work that passed its own terminated check just before the terminate
+// committed. A services restart terminates the old session and then moves its
+// waiting message to the new one, so a row the old runner is handed after
+// that is a message answered twice. The woken claim answers `timeout`.
+// ---------------------------------------------------------------------------
+describe('inbox: a woken claim on a terminated session gets no entry (TASK-1225)', () => {
+  it('a row that lands after terminate is not delivered to the claim parked on its cursor', async () => {
+    const pool = new pg.Pool({ connectionString, max: 5 });
+    const db = new Kysely<SessionDatabase>({ dialect: new PostgresDialect({ pool }) });
+    opened.push({ destroy: () => db.destroy().catch(() => {}) as unknown as Promise<void> });
+    await runSessionMigration(db);
+
+    const listen = new ListenConnection({
+      connectionString,
+      connectTimeoutMs: 5_000,
+      keepAliveInitialDelayMs: 10_000,
+      logger,
+    });
+    opened.push({ destroy: () => listen.shutdown() });
+    await listen.ensureConnected();
+
+    // The store's flag, read at each check.
+    let terminated = false;
+    let checks = 0;
+    const inbox = createInbox({
+      db,
+      listen,
+      isTerminated: async () => {
+        checks += 1;
+        return terminated;
+      },
+    });
+
+    const claimP = inbox.claim('wake-term-1', 0, 5000);
+    // Parked: the fast path's check and the re-check after LISTEN both read
+    // a live session (each check reads the flag when it is called).
+    await vi.waitFor(() => expect(checks).toBe(2), { timeout: 2000, interval: 10 });
+
+    terminated = true;
+    // INSERT + pg_notify: the NOTIFY wakes the parked claim, which finds the row.
+    await inbox.queue('wake-term-1', {
+      type: 'user-message',
+      payload: { role: 'user', content: 'moved elsewhere' },
+      reqId: 'r-moved',
+    });
+
+    expect(await claimP).toEqual({ type: 'timeout', cursor: 0 });
+
+    await inbox.shutdown();
+  }, 15000);
+
+  // The fast path reads the flag AFTER its fetch. Read first, a check that saw
+  // the session live could be followed by the row and the terminate both
+  // landing, and the fetch would then hand out the row of a session that is
+  // already gone.
+  it('the fast path reads the flag after its fetch: a row landing with the terminate is not handed out', async () => {
+    const pool = new pg.Pool({ connectionString, max: 5 });
+    const db = new Kysely<SessionDatabase>({ dialect: new PostgresDialect({ pool }) });
+    opened.push({ destroy: () => db.destroy().catch(() => {}) as unknown as Promise<void> });
+    await runSessionMigration(db);
+
+    const listen = new ListenConnection({
+      connectionString,
+      connectTimeoutMs: 5_000,
+      keepAliveInitialDelayMs: 10_000,
+      logger,
+    });
+    opened.push({ destroy: () => listen.shutdown() });
+    await listen.ensureConnected();
+
+    let terminated = false;
+    let checks = 0;
+    const inbox: ReturnType<typeof createInbox> = createInbox({
+      db,
+      listen,
+      isTerminated: async () => {
+        checks += 1;
+        if (checks > 1) return terminated;
+        // The first check reads the session live. Right after it, a queue-work
+        // that passed its own check lands its row, and the terminate commits.
+        await inbox.queue('order-1', {
+          type: 'user-message',
+          payload: { role: 'user', content: 'moved elsewhere' },
+          reqId: 'r-moved',
+        });
+        terminated = true;
+        return false;
+      },
+    });
+
+    expect(await inbox.claim('order-1', 0, 5000)).toEqual({ type: 'timeout', cursor: 0 });
 
     await inbox.shutdown();
   }, 15000);

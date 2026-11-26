@@ -1964,20 +1964,42 @@ async function bindSession(
     input.runnerType === undefined
       ? undefined
       : validateRunnerType(input.runnerType);
-  const updated = await store.setActiveSession({
+  // TASK-1226. `undefined` = unconditional bind; `null` = "only if no
+  // session is bound"; a string = "only if the row still names it".
+  const expectedSessionId =
+    input.expectedSessionId === undefined || input.expectedSessionId === null
+      ? input.expectedSessionId
+      : requireBoundedString(
+          input.expectedSessionId,
+          'expectedSessionId',
+          hookName,
+        );
+  const result = await store.setActiveSession({
     conversationId,
     userId,
     sessionId,
     reqId,
     ...(runnerType !== undefined ? { runnerType } : {}),
+    ...(expectedSessionId !== undefined ? { expectedSessionId } : {}),
   });
-  if (!updated) {
-    throw new PluginError({
-      code: 'not-found',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `conversation '${conversationId}' not found`,
-    });
+  switch (result) {
+    case 'bound':
+      return;
+    case 'conflict':
+      // Deliberately doesn't say which session holds the row.
+      throw new PluginError({
+        code: 'conflict',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `conversation '${conversationId}' is no longer bound to the expected session`,
+      });
+    case 'not-found':
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `conversation '${conversationId}' not found`,
+      });
   }
 }
 

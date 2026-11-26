@@ -285,7 +285,9 @@ export interface PendingServiceRestart {
   /**
    * Other requests the runner folded into that segment (its closing
    * turn-end's `foldedReqIds`): the continuing turn answers them, so they
-   * settle with this request, never as a moved message (R30).
+   * settle with this request, never as a moved message (R30). The held
+   * segment's turn-ends reach no caller, so the continuation's turn-end names
+   * them instead, and their callers end with it (TASK-1224).
    */
   foldedReqIds: string[];
 }

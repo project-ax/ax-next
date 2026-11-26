@@ -213,7 +213,13 @@ One `agent:invoke` call does roughly:
    env, never back to the host (I9).
 5. **`conversations:bind-session`** (when conversation-scoped) — writes
    `active_session_id` + `active_req_id` so the SSE stream router can find the
-   in-flight turn.
+   in-flight turn. The late binds (this fresh-path bind, which can land minutes
+   after routing read the row, and a services restart's two rebinds) pass
+   `expectedSessionId`, a compare-and-set on the bound session, so they never
+   take the row back from a newer request that bound its own sandbox first
+   (TASK-1226). The fresh-path bind does this only when routing managed to read
+   the row; if that read failed it binds unconditionally, as before. The routed
+   and retire binds stay unconditional.
 6. **`session:queue-work`** — enqueue the user message (stamped with `reqId` so
    the runner can tag stream chunks back to the right request).
 7. **Await `chat:end`.** The runner POSTs `/event.chat-end` over IPC; the IPC

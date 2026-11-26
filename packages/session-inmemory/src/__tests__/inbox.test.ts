@@ -123,4 +123,15 @@ describe('@ax/session-inmemory inbox', () => {
     expect(elapsed).toBeLessThan(50);
     expect(result).toEqual({ type: 'timeout', cursor: 1 });
   });
+
+  // TASK-1225 — a services restart moves a waiting message to the new
+  // sandbox after terminating the old one, but the old inbox keeps its copy.
+  // A claim from the old runner must not be handed that copy.
+  it('a claim on a terminated session never delivers an entry that is present', async () => {
+    const inbox = createInbox();
+    inbox.queue('s-1', userMsg('moved elsewhere'));
+    inbox.terminate('s-1');
+    const result = await inbox.claim('s-1', 0, 1000);
+    expect(result).toEqual({ type: 'timeout', cursor: 0 });
+  });
 });

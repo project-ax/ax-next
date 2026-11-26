@@ -7,7 +7,10 @@ import type { ClaimResult, InboxEntry } from './types.js';
 //   - `entries`: ordered list of queued inbox entries (index === 0-based cursor)
 //   - `waiters`: set of wake callbacks registered by currently-blocked `claim`s
 //   - `terminated`: flag — set by `terminate()`; wakes all waiters and causes
-//     subsequent claims on this session to resolve as `timeout`.
+//     every later claim on this session to resolve as `timeout`, even one
+//     whose entry is already queued (TASK-1225: a services restart moves a
+//     waiting message to the new sandbox after terminating the old one, and
+//     the old copy stays here; the old runner must not be handed it).
 //
 // Per-session state is lazy-initialized on first `queue` or `claim`. The store
 // is the authoritative existence check — the plugin layer calls `store.get()`
@@ -18,8 +21,8 @@ import type { ClaimResult, InboxEntry } from './types.js';
 //   - Every `claim` promise resolves exactly once.
 //   - On wake: the timer is cleared AND the waiter is removed from the set.
 //   - On timeout: the waiter is removed from the set.
-//   - On terminate: all waiters fire; each waiter's re-check either delivers
-//     a just-queued entry or falls through to the `timeout` path.
+//   - On terminate: all waiters fire and resolve as `timeout`. A terminated
+//     session is never handed an entry.
 // ---------------------------------------------------------------------------
 
 interface PerSession {
@@ -102,14 +105,14 @@ export function createInbox(): Inbox {
 
     claim(sessionId, cursor, timeoutMs) {
       const state = getOrCreate(sessionId);
+      // Terminated: no entry, even one already queued, and no wait (TASK-1225).
+      if (state.terminated) {
+        return Promise.resolve({ type: 'timeout', cursor });
+      }
       // Fast path: entry already present.
       const present = state.entries[cursor];
       if (present !== undefined) {
         return Promise.resolve(deliver(present, cursor));
-      }
-      // If the session is already terminated, don't bother waiting.
-      if (state.terminated) {
-        return Promise.resolve({ type: 'timeout', cursor });
       }
 
       return new Promise<ClaimResult>((resolve) => {
@@ -124,13 +127,21 @@ export function createInbox(): Inbox {
 
         const wake = (): void => {
           if (settled) return;
+          // Woken by terminate: no entry, whatever is queued (TASK-1225).
+          // Defensive: today terminate wakes and drops every waiter before
+          // anything can be queued, and the plugin refuses a queue after
+          // terminate, so no wake sees a terminated state with an entry.
+          if (state.terminated) {
+            finish({ type: 'timeout', cursor });
+            return;
+          }
           const entry = state.entries[cursor];
           if (entry !== undefined) {
             finish(deliver(entry, cursor));
             return;
           }
-          // Woken without an entry — session must have been terminated
-          // (or a spurious wake). Resolve as timeout with echo cursor.
+          // Woken without an entry: a queue at another cursor (or a spurious
+          // wake). Resolve as timeout with echo cursor; the runner polls again.
           finish({ type: 'timeout', cursor });
         };
 

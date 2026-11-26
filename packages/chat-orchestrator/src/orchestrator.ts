@@ -848,8 +848,22 @@ interface ConversationsBindSessionInput {
    * does not know must leave the stored value alone rather than clear it.
    */
   runnerType?: string;
+  /**
+   * TASK-1226 — compare-and-set: bind only while the row still names this
+   * session (`null`: no session bound), else `PluginError({ code: 'conflict' })`
+   * and nothing written. Omitted: unconditional. See compareAndBind.
+   */
+  expectedSessionId?: string | null;
 }
 type ConversationsBindSessionOutput = void;
+/**
+ * What compareAndBind did: wrote the row, left a newer binding on it (every
+ * compare-and-set conflicted, so nothing was written), or failed for another
+ * reason, such as a database error (logged at warn). A failed call may still
+ * have written the row: the bus can time the call out while its UPDATE
+ * commits later, and a connection can reset after the commit.
+ */
+type CompareAndBindOutcome = 'bound' | 'kept-newer' | 'failed';
 
 // session:is-alive — Task 16 (J6). Host-internal liveness probe registered
 // by both session backends. True iff the row exists and `terminated = false`;
@@ -1546,7 +1560,8 @@ export const CONNECTORS_SKIPPED_SUBSCRIBER_TIMEOUT_MS = 2_000;
  *
  * What the bound does NOT do: cancel the close. The call keeps running and
  * still revokes the session when it lands (a late failure is still logged).
- * `session:terminate` follows regardless, and the exit watcher's close on
+ * `session:terminate` follows regardless (a services restart runs it
+ * alongside the close instead, TASK-1225), and the exit watcher's close on
  * `handle.exited` is a second attempt — close is idempotent.
  */
 export const PROXY_CLOSE_TIMEOUT_MS = 10_000;
@@ -3311,8 +3326,10 @@ export function createOrchestrator(
   //      names and ports) under the same reqId, with what is left of the turn
   //      limit. Its turn-end is the one `chat:turn-end` callers see. The
   //      detached requests follow (R30): one folded into the held segment
-  //      settles with this request; any other is re-attached to the new
-  //      sandbox and its message queued behind the note.
+  //      settles with this request, and that turn-end names it in
+  //      `foldedReqIds` (the hold's answer, TASK-1224), so its caller ends
+  //      too; any other is re-attached to the new sandbox and its message
+  //      queued behind the note.
   //
   // A restart that doesn't reach step 3 (a Stop, stop_services, a turn that
   // failed, or a segment end that wasn't held) is called off: its slot is
@@ -3361,6 +3378,13 @@ export function createOrchestrator(
   // (it isn't alive yet). It waits for this promise, which always resolves,
   // then reads the row again (routeCandidateAfterOpening).
   const openingSessions = new Map<string, Promise<void>>();
+  // TASK-1224 — the requests the runner folded into a held segment, by the
+  // sandbox the restart continues in. They were named only on the held
+  // segment's turn-ends, which no caller saw, and the continuation's runner
+  // never saw them, so onTurnEndHold names them on the continuation's own
+  // turn-ends (ipc-core appends them to the broadcast's `foldedReqIds`). Set
+  // just before the swap opens the new sandbox; gone when the invoke ends.
+  const continuationFoldsBySession = new Map<string, { reqId: string; foldedReqIds: string[] }>();
 
   function turnTimeLeftMs(reqId: string, turnMs: number): number {
     const now = performance.now();
@@ -3397,6 +3421,44 @@ export function createOrchestrator(
       ctx.logger.warn('conversation_service_set_write_failed', { reason, ...errorLogFields(err) });
       return false;
     }
+  }
+
+  /**
+   * TASK-1226 — a late bind that must never take the row back from a newer
+   * request: one compare-and-set per value in `expected` (null: no session
+   * bound), in order and each once, until one writes. Anything else on the
+   * row is a newer binding, which stays, logged at info. Any other failure
+   * ends the tries and is logged at warn under `failLog`, as the
+   * unconditional binds did. Never throws: a bind is best-effort for the
+   * turn. Says which of the three happened, so a later bind can tell a row
+   * this one left to a newer request from a call that failed (the swap's N2
+   * reads R19's).
+   */
+  async function compareAndBind(
+    ctx: AgentContext,
+    input: { conversationId: string; sessionId: string; reqId: string; runnerType?: string },
+    opts: {
+      /** What the row may name for this bind to write over, in the order tried. */
+      expected: readonly [string | null, ...Array<string | null>];
+      site: 'restart-rebind' | 'restart-moved' | 'fresh';
+      failLog: string;
+      failFields?: Record<string, unknown>;
+    },
+  ): Promise<CompareAndBindOutcome> {
+    for (const expectedSessionId of new Set(opts.expected)) {
+      try {
+        await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
+          'conversations:bind-session', ctx, { ...input, expectedSessionId },
+        );
+        return 'bound';
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'conflict') continue;
+        ctx.logger.warn(opts.failLog, { ...opts.failFields, ...errorLogFields(err) });
+        return 'failed';
+      }
+    }
+    ctx.logger.info('conversation_bind_kept_newer', { site: opts.site, sessionId: input.sessionId });
+    return 'kept-newer';
   }
 
   /**
@@ -3502,13 +3564,28 @@ export function createOrchestrator(
   // lasts while the restart is pending and is consumed by the swap
   // (`serviceRestarts.take`): it covers that one segment's turn-ends (the
   // runner sends two, tool then assistant) and nothing after.
+  // TASK-1224 — not held, but a turn-end of the request's continuation (its
+  // new sandbox, its reqId) while that invoke runs: the answer names the
+  // requests folded into the held segment, so callers end them with it. The
+  // turn-end that ends the invoke always carries them (this is asked before
+  // it is broadcast). One after it, such as the assistant's after the
+  // tool's, may find them gone; in production the assistant turn-end may
+  // also arrive before the invoke's finally runs and carry them too. Either
+  // is harmless: each caller ends a request on the first turn-end naming it,
+  // whatever its role, and ending one twice is idempotent. The ids are added
+  // to any an earlier hold owner already named (the bus passes its answer
+  // on), never in place of them, so more than one owner composes.
   function onTurnEndHold(
     _ctx: AgentContext,
     payload: ChatTurnEndHoldPayload,
   ): ChatTurnEndHoldPayload | undefined {
     if (payload === null || typeof payload !== 'object' || payload.held === true) return undefined;
     if (typeof payload.sessionId !== 'string' || typeof payload.reqId !== 'string') return undefined;
-    return serviceRestarts.isHeld(payload.sessionId, payload.reqId) ? { ...payload, held: true } : undefined;
+    if (serviceRestarts.isHeld(payload.sessionId, payload.reqId)) return { ...payload, held: true };
+    const folds = continuationFoldsBySession.get(payload.sessionId);
+    if (folds === undefined || folds.reqId !== payload.reqId) return undefined;
+    const earlier = Array.isArray(payload.foldedReqIds) ? payload.foldedReqIds : [];
+    return { ...payload, foldedReqIds: [...earlier, ...folds.foldedReqIds] };
   }
 
   // `chat:turn-segment-end` (R27): a held segment's turn-end. The CLOSING one
@@ -3534,13 +3611,25 @@ export function createOrchestrator(
 
   // Step 3 of the restart: close the old sandbox. The restarting request's
   // waiter is settled and unregistered by now, and every other movable wait
-  // on it was detached just before (R30); the conversation already names the
-  // new session. So this ends none of those turns and unbinds nothing. Not
-  // covered (a known gap, carded): a waiter registered there with no movable
-  // wait yet, a routed message still being queued at that instant. It can be
-  // ended by the close (`sandbox-terminated`) and then get a second turn-error
-  // from its own failed queue, or, if its queue landed first, wait on a dead
-  // session until its turn timer. Mirrors the routing retire.
+  // on it was detached just before (R30), so this ends none of those turns.
+  // R19 has rebound the conversation already (to the new session, or left it
+  // to a newer request), so the terminate unbinds nothing unless that bind
+  // failed before writing (then N2 binds a moved request over the cleared
+  // row). Not covered (a known gap, carded): a waiter registered there with
+  // no movable wait yet, a routed message still being queued at that instant.
+  // It can be ended by the close (`sandbox-terminated`) and then get a second
+  // turn-error from its own failed queue, or, if its queue landed first, wait
+  // on a dead session until its turn timer.
+  //
+  // TASK-1225 — unlike the routing retire, the proxy close and the terminate
+  // start together. The terminate is what cuts the old runner off (its token
+  // stops authenticating, its inbox hands out nothing more), so a slow close
+  // (bounded at `proxyCloseTimeoutMs`, TASK-878) must not hold it up, and a
+  // hung terminate still can't hold up the close (TASK-871's reason for
+  // closing first). Both are awaited before the kill and before the caller
+  // moves any message to the new sandbox, so a move always comes after the
+  // revocation. Neither rejects: a failed terminate is logged, and the close,
+  // the kill and the swap go on.
   async function closeSandboxForServiceRestart(ctx: AgentContext, oldSessionId: string): Promise<void> {
     clearReapTimers(oldSessionId);
     const entry = warmSessions.get(oldSessionId);
@@ -3552,15 +3641,18 @@ export function createOrchestrator(
     forgetSessionConnectors(oldSessionId);
     forgetSessionServices(oldSessionId);
     const oldCtx: AgentContext = { ...ctx, sessionId: oldSessionId };
-    if (bus.hasService('proxy:close-session')) {
-      await closeProxySession(oldCtx, oldSessionId, 'retire');
-    }
-    try {
-      await bus.call('session:terminate', oldCtx, { sessionId: oldSessionId });
-      spawnModeBySession.delete(oldSessionId);
-    } catch (err) {
-      ctx.logger.warn('service_restart_terminate_failed', { sessionId: oldSessionId, ...errorLogFields(err) });
-    }
+    const revoke = async (): Promise<void> => {
+      try {
+        await bus.call('session:terminate', oldCtx, { sessionId: oldSessionId });
+        spawnModeBySession.delete(oldSessionId);
+      } catch (err) {
+        ctx.logger.warn('service_restart_terminate_failed', { sessionId: oldSessionId, ...errorLogFields(err) });
+      }
+    };
+    await Promise.all([
+      bus.hasService('proxy:close-session') ? closeProxySession(oldCtx, oldSessionId, 'retire') : undefined,
+      revoke(),
+    ]);
     // A sandbox this host opened is killed too, so nothing of it lingers
     // until its runner notices its token is gone.
     if (entry !== undefined) void entry.handle.kill().catch(() => undefined);
@@ -3599,8 +3691,16 @@ export function createOrchestrator(
     // this one ran) are detached BEFORE it closes, so closing it ends none of
     // them. One the runner folded into the held segment was answered by it
     // and settles with this request; any other is moved to the new sandbox,
-    // its message queued behind the note. A waiter with no movable wait yet
-    // (its message still being queued) is left as is.
+    // its message queued behind the note. Not folded doesn't mean unclaimed:
+    // the runner keeps an inbox read open, so it has usually claimed such a
+    // message already and would run it next. It is moved anyway, so the
+    // person gets an answer from the sandbox that stays (TASK-1225). The old
+    // runner is cut off one rebind after its segment ended (the terminate in
+    // closeSandboxForServiceRestart, which the move waits for): from then on
+    // its token is refused and its inbox hands it nothing. What it posts for a
+    // message it read ahead can reach the host only before that (an accepted
+    // residual: the TASK-1224 decisions shard, TASK-1225 rows). A waiter with
+    // no movable wait yet (its message still being queued) is left as is.
     const folded = new Set(pending.foldedReqIds);
     const foldedWaits: MovableWait[] = [];
     const movedWaits: Array<{ reqId: string; wait: MovableWait }> = [];
@@ -3613,6 +3713,9 @@ export function createOrchestrator(
       else movedWaits.push({ reqId, wait });
     }
     let moved = false;
+    // What R19 (below) did, for N2. Undefined when R19 didn't run (no
+    // conversation, or no bind-session), and then N2 doesn't either.
+    let rebound: CompareAndBindOutcome | undefined;
     const moveWaits = async (sessionId: string): Promise<void> => {
       moved = true;
       let lastMoved: string | undefined;
@@ -3638,15 +3741,36 @@ export function createOrchestrator(
       // reconnect all lose it. Only now, after the note and the moved
       // messages are queued: binding a moved request earlier would send a
       // Stop during the swap past the note.
+      // TASK-1226 — and only over the new session, which R19 bound. Anything
+      // else on the row is newer, an unbound row included: it means a stale
+      // writer (a POST that read the old session) bound the old session after
+      // R19, and the old session's terminate cleared it. That newer request is
+      // opening its own sandbox and must own the row, so N2 leaves it.
+      // Unless R19 failed (not a conflict: a database error, say). Then N2
+      // binds as R19 would have, over the old session or an unbound row: if
+      // R19's write never landed, the row kept the old session until that
+      // session's terminate cleared it. Its write may have landed all the
+      // same (CompareAndBindOutcome), so N2 also accepts the new session: that
+      // row is R19's own write, not a newer binding. The new session goes
+      // last, so a write of R19's that commits late (while N2 runs) is still
+      // caught by the final try. Left alone, the row names
+      // the restarting request or nothing, so once that turn ends the moved
+      // request runs off the row: the idle reaper (it reads only the row) can
+      // reap it mid-turn, and Stop and a reconnect can't find it. After a
+      // failed R19, a stale writer's bind of the old session looks the same,
+      // whether the terminate has cleared it or not, and N2 takes the row from
+      // it (accepted: the TASK-1224 decisions shard).
       if (lastMoved !== undefined && conversationId !== undefined && bus.hasService('conversations:bind-session')) {
-        try {
-          await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
-            'conversations:bind-session', restartCtx,
-            { conversationId, sessionId, reqId: lastMoved },
-          );
-        } catch (err) {
-          ctx.logger.warn('conversation_bind_failed_restart', { movedReqId: lastMoved, ...errorLogFields(err) });
-        }
+        await compareAndBind(
+          restartCtx,
+          { conversationId, sessionId, reqId: lastMoved },
+          {
+            expected: rebound === 'failed' ? [pending.sessionId, null, sessionId] : [sessionId],
+            site: 'restart-moved',
+            failLog: 'conversation_bind_failed_restart',
+            failFields: { movedReqId: lastMoved },
+          },
+        );
       }
     };
     // C1 — opening from here (before the rebind below names it on the row)
@@ -3663,15 +3787,32 @@ export function createOrchestrator(
     pendingMessageReqIds.add(ctx.reqId);
     // R19 — rebind FIRST: closing the old sandbox makes @ax/conversations
     // clear a row still bound to it, which would end the caller's stream.
+    // TASK-1226 — only over the old session, or over a row left unbound (the
+    // old sandbox died and its terminate cleared it). A newer request that
+    // bound its own sandbox meanwhile keeps the row; this request still
+    // finishes in the new sandbox. If this bind fails outright (its write may
+    // still land), N2 binds in its place when a request moves (moveWaits).
     if (conversationId !== undefined && bus.hasService('conversations:bind-session')) {
-      try {
-        await bus.call<ConversationsBindSessionInput, ConversationsBindSessionOutput>(
-          'conversations:bind-session', ctx,
-          { conversationId, sessionId: restartCtx.sessionId, reqId: ctx.reqId },
-        );
-      } catch (err) {
-        ctx.logger.warn('conversation_bind_failed_restart', { ...errorLogFields(err) });
-      }
+      rebound = await compareAndBind(
+        ctx,
+        { conversationId, sessionId: restartCtx.sessionId, reqId: ctx.reqId },
+        {
+          expected: [pending.sessionId, null],
+          site: 'restart-rebind',
+          failLog: 'conversation_bind_failed_restart',
+        },
+      );
+    }
+    // TASK-1224 — every request folded into the held segment, a waiting one
+    // or a decision continuation with only a stream, is named on this
+    // request's turn-ends from the new sandbox (onTurnEndHold), so its caller
+    // ends with this turn. Set here, next to the finally that drops it: the
+    // new sandbox opens only below, so no turn-end of it can come earlier.
+    if (pending.foldedReqIds.length > 0) {
+      continuationFoldsBySession.set(restartCtx.sessionId, {
+        reqId: ctx.reqId,
+        foldedReqIds: [...pending.foldedReqIds],
+      });
     }
     let restarted: AgentOutcome | undefined;
     try {
@@ -3687,14 +3828,20 @@ export function createOrchestrator(
         },
       });
     } finally {
+      // TASK-1224 — the invoke is over: a later turn-end of the new sandbox
+      // names nothing folded here.
+      if (continuationFoldsBySession.get(restartCtx.sessionId)?.reqId === ctx.reqId) {
+        continuationFoldsBySession.delete(restartCtx.sessionId);
+      }
       // Every detached wait ends or settles exactly once, even if the line
       // above threw (end/settle are no-ops on a settled wait). A moved wait
       // that was re-attached lives on in the new sandbox like any routed wait.
       const failed = restarted === undefined ? 'chat-run-error' : restarted.kind === 'complete' ? null : restarted.reason;
       // No new sandbox took them: their sandbox is gone, so they end as it did.
       if (!moved) for (const { wait } of movedWaits) wait.end('sandbox-terminated');
-      // Folded into the held segment: the continuing turn answered them, so
-      // they end with it (its own reason, if it failed).
+      // Folded into the held segment: the continuing turn answered them, and
+      // its turn-end named them to their callers (TASK-1224), so their waits
+      // settle with it (or end with its reason, if it failed).
       for (const wait of foldedWaits) {
         if (failed === null) wait.settle();
         else wait.end(failed);
@@ -4001,6 +4148,12 @@ export function createOrchestrator(
     // sites granted after it (see the host-grants load). Null with no
     // conversation, no conversation hooks, a failed read or no turn yet.
     let priorActivityAt: string | null = null;
+    // TASK-1226 — the session this turn last knew on the conversation row
+    // (null: none bound): what routing read, or what its own retire bind
+    // wrote. A fresh spawn's late bind (step 7) writes only over that, or an
+    // unbound row, so it never takes the row back from a newer request.
+    // Undefined when routing never read the row: step 7 binds as it always did.
+    let rowSessionSeen: string | null | undefined;
     // Gate on the peer hooks being actually registered. CLI canary and
     // mcp-client e2e drive the orchestrator without @ax/conversations
     // loaded; in those presets we skip routing entirely. See
@@ -4043,6 +4196,7 @@ export function createOrchestrator(
         priorActivityAt = typeof lastActivityAt === 'string' ? lastActivityAt : null;
         conversationServiceSet = onDemandServicesEnabled ? (conv.conversation.serviceSet ?? null) : null;
         const candidate = conv.conversation.activeSessionId;
+        rowSessionSeen = candidate !== null && candidate.length > 0 ? candidate : null;
         if (candidate !== null && candidate.length > 0) {
           const aliveResult = await bus.call<
             SessionIsAliveInput,
@@ -4259,6 +4413,7 @@ export function createOrchestrator(
                   runnerType: agent.runner,
                 },
               );
+              rowSessionSeen = ctx.sessionId;
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               // NOT spawnModeBySession: the old session stays alive across the
@@ -5993,29 +6148,47 @@ export function createOrchestrator(
     //    session and request before the open, and a request that arrived
     //    since (channel-web binds it at POST) is newer; binding here would
     //    take the row back from it (C1).
+    //
+    //    TASK-1226 — this bind can land long after routing read the row (a
+    //    cold open takes minutes), so it passes `expectedSessionId`: it writes
+    //    only while the row still names the session routing saw (or its own
+    //    retire bind wrote), or is unbound (that session's terminate cleared
+    //    it, e.g. the idle reaper during the open). A newer request that
+    //    bound its own sandbox meanwhile keeps the row. When routing never
+    //    read the row (the read failed), the bind is unconditional as before.
     if (restart === undefined && ctx.conversationId !== undefined && conversationsLoaded) {
-      try {
-        await bus.call<
-          ConversationsBindSessionInput,
-          ConversationsBindSessionOutput
-        >('conversations:bind-session', ctx, {
-          conversationId: ctx.conversationId,
-          sessionId,
-          reqId: ctx.reqId,
-          // Record WHICH runner is about to serve this turn. The row's
-          // `runner_type` is refreshed on every bind rather than frozen at
-          // create, because an agent's runner can be switched at any time and
-          // that switch demotes the next turn to a fresh session, REPLACING
-          // the stored transcript with the new runner's format. A frozen
-          // value would be wrong exactly when someone looked at it.
-          runnerType: agent.runner,
+      const bindInput = {
+        conversationId: ctx.conversationId,
+        sessionId,
+        reqId: ctx.reqId,
+        // Record WHICH runner is about to serve this turn. The row's
+        // `runner_type` is refreshed on every bind rather than frozen at
+        // create, because an agent's runner can be switched at any time and
+        // that switch demotes the next turn to a fresh session, REPLACING
+        // the stored transcript with the new runner's format. A frozen
+        // value would be wrong exactly when someone looked at it.
+        runnerType: agent.runner,
+      };
+      if (rowSessionSeen !== undefined) {
+        await compareAndBind(ctx, bindInput, {
+          expected: [rowSessionSeen, null],
+          site: 'fresh',
+          failLog: 'conversation_bind_failed_fresh',
+          failFields: { conversationId: ctx.conversationId, sessionId },
         });
-      } catch (err) {
-        ctx.logger.warn('conversation_bind_failed_fresh', {
-          conversationId: ctx.conversationId,
-          sessionId,
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+      } else {
+        try {
+          await bus.call<
+            ConversationsBindSessionInput,
+            ConversationsBindSessionOutput
+          >('conversations:bind-session', ctx, bindInput);
+        } catch (err) {
+          ctx.logger.warn('conversation_bind_failed_fresh', {
+            conversationId: ctx.conversationId,
+            sessionId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        }
       }
     }
 

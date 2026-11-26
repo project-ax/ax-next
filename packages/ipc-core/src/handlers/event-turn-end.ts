@@ -42,6 +42,9 @@ import type { HandlerErr } from './types.js';
 //      R27: first it asks `chat:turn-end-hold` whether the turn-end ends a
 //      held segment (a sandbox restart inside one request). Held, it fires
 //      `chat:turn-segment-end` instead, which only the hold's owner consumes.
+//      Not held, the answer may name requests folded into an earlier held
+//      segment of the same request (TASK-1224); they are appended to the
+//      broadcast's `foldedReqIds`, so callers end them with this turn.
 // ---------------------------------------------------------------------------
 
 export function validateEventTurnEnd(rawPayload: unknown):
@@ -136,7 +139,8 @@ export async function fireEventTurnEnd(
   // host emits `chat:turn-end`, so the question is asked here and nowhere
   // else. Not held — no subscriber, none that answers, one that throws, is
   // slow or rejects — fires `chat:turn-end` exactly as before.
-  if (await turnEndHeld(ctx, bus, payload)) {
+  const hold = await turnEndHeld(ctx, bus, payload);
+  if (hold.held) {
     const held = await bus.fire(CHAT_TURN_SEGMENT_END_HOOK, ctx, payload);
     if (held.rejected) {
       ctx.logger.warn('event_subscriber_rejected', {
@@ -146,7 +150,10 @@ export async function fireEventTurnEnd(
     }
     return;
   }
-  const result = await bus.fire('chat:turn-end', ctx, payload);
+  // TASK-1224 — requests the hold's owner says this turn-end also ends (they
+  // were folded into a held segment of this request) join the runner's own
+  // folded ids, so every caller ends them here, as for any fold.
+  const result = await bus.fire('chat:turn-end', ctx, withHostFoldedReqIds(payload, hold.foldedReqIds));
   if (result.rejected) {
     ctx.logger.warn('event_subscriber_rejected', {
       hook: 'chat:turn-end',
@@ -163,19 +170,70 @@ export async function fireEventTurnEnd(
 export const TURN_END_HOLD_SUBSCRIBER_TIMEOUT_MS = 2_000;
 
 /**
+ * TASK-1224 — the bounds `EventTurnEndSchema.foldedReqIds` (@ax/ipc-protocol)
+ * puts on a turn-end's folded ids, kept by the merged list a hold's owner adds
+ * to: each id 1–256 characters, and at most 64 in all (the runner's own plus
+ * the host's).
+ */
+const FOLDED_REQ_ID_MAX_LENGTH = 256;
+const FOLDED_REQ_IDS_MAX = 64;
+
+/**
  * Ask `chat:turn-end-hold` whether this turn-end ends a held segment. The
  * session is the host-stamped one (the runner's token), never a payload field;
  * the reqId is the runner's echo and is only ever matched against a hold the
  * host created. A turn-end naming no reqId can't belong to a held request.
+ *
+ * Not held, the answer may also name folded requests this turn-end ends
+ * (TASK-1224). Only strings within the wire's length bound that are not the
+ * turn-end's own reqId are kept. A rejected, throwing or timed-out answer
+ * names none.
  */
-async function turnEndHeld(ctx: AgentContext, bus: HookBus, payload: unknown): Promise<boolean> {
+async function turnEndHeld(
+  ctx: AgentContext,
+  bus: HookBus,
+  payload: unknown,
+): Promise<{ held: boolean; foldedReqIds: string[] }> {
   const reqId = (payload as { reqId?: unknown } | null | undefined)?.reqId;
-  if (typeof reqId !== 'string' || reqId.length === 0) return false;
+  if (typeof reqId !== 'string' || reqId.length === 0) return { held: false, foldedReqIds: [] };
   const answer = await bus.fire<ChatTurnEndHoldPayload>(
     CHAT_TURN_END_HOLD_HOOK,
     ctx,
     { sessionId: ctx.sessionId, reqId, held: false },
     { subscriberTimeoutMs: TURN_END_HOLD_SUBSCRIBER_TIMEOUT_MS },
   );
-  return !answer.rejected && answer.payload.held === true;
+  if (answer.rejected) return { held: false, foldedReqIds: [] };
+  if (answer.payload.held === true) return { held: true, foldedReqIds: [] };
+  const named: unknown = answer.payload.foldedReqIds;
+  return {
+    held: false,
+    foldedReqIds: Array.isArray(named)
+      ? named.filter(
+          (id): id is string =>
+            typeof id === 'string' &&
+            id.length > 0 &&
+            id.length <= FOLDED_REQ_ID_MAX_LENGTH &&
+            id !== reqId,
+        )
+      : [],
+  };
+}
+
+/**
+ * TASK-1224 — the turn-end payload with the hold's folded ids appended to the
+ * runner's own: the runner's first, then each host id not already listed, the
+ * whole list capped at the wire's 64 (host ids past it are dropped). Nothing
+ * added: the payload itself, unchanged.
+ */
+function withHostFoldedReqIds(payload: unknown, hostIds: readonly string[]): unknown {
+  if (hostIds.length === 0) return payload;
+  const p = payload as { foldedReqIds?: unknown };
+  const merged: unknown[] = Array.isArray(p.foldedReqIds) ? [...p.foldedReqIds] : [];
+  const runnerCount = merged.length;
+  for (const id of hostIds) {
+    if (merged.length >= FOLDED_REQ_IDS_MAX) break;
+    if (merged.includes(id)) continue;
+    merged.push(id);
+  }
+  return merged.length === runnerCount ? payload : { ...p, foldedReqIds: merged };
 }

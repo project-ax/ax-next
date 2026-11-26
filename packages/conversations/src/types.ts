@@ -439,11 +439,26 @@ export type GetByReqIdOutput = Conversation;
  *
  * On a row not matching `(conversation_id, ctx.userId)` (and not
  * tombstoned), throws `PluginError({ code: 'not-found' })`.
+ *
+ * With `expectedSessionId` the bind is a compare-and-set: it writes only if
+ * the row's bound session is still exactly that value, and otherwise writes
+ * nothing and throws `PluginError({ code: 'conflict' })` (TASK-1226). A row
+ * the caller can't see stays `not-found`, never `conflict`.
  */
 export interface BindSessionInput {
   conversationId: string;
   sessionId: string;
   reqId: string;
+  /**
+   * The session the caller last saw bound to the row; `null` means "no
+   * session bound". Present: bind only if the row still says exactly that,
+   * else throw `conflict` and leave the row alone. A late binder (a services
+   * restart's rebind, a cold spawn after a long open) passes it so it never
+   * takes the row back from a newer request that bound its own session first.
+   *
+   * Omitted: the bind is unconditional, as it always was.
+   */
+  expectedSessionId?: string | null;
   /**
    * The runner about to serve this turn (`agents.runner` — `'aisdk'`,
    * `'claude-sdk'`). Recorded onto `runner_type` so the row says whose
