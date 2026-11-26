@@ -1403,3 +1403,68 @@ describe('restart_with_services: a failed services open is told to the agent (TA
     await endTurn(t, next.open.sessionId, 'req-4', next.p);
   });
 });
+
+// ---- TASK-1226: a cold spawn's late bind (step 7) never takes the row back ----
+describe('TASK-1226: a cold spawn keeps a newer binding', () => {
+  const userMessageQueued = (t: Awaited<ReturnType<typeof setup>>, reqId: string): boolean =>
+    t.queued.some((q) => q.entry.type === 'user-message' && q.entry.reqId === reqId);
+  const keptNewer = (t: Awaited<ReturnType<typeof setup>>): boolean =>
+    t.logs.some((l) => l.includes('conversation_bind_kept_newer') && l.includes('fresh'));
+
+  it('a cold spawn keeps a newer binding that landed during its open', async () => {
+    let release!: () => void;
+    const t = await setup({ openGate: { on: 1, until: new Promise<void>((r) => { release = r; }) } });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.opens.length === 1, 'the open');
+    // A newer request opened its own sandbox and bound it while this one opened.
+    Object.assign(t.row('conv-1'), { activeSessionId: 's-newer', activeReqId: 'req-9' });
+    release();
+    await waitFor(() => userMessageQueued(t, 'req-1'), 'the message');
+
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-newer', activeReqId: 'req-9' });
+    expect(keptNewer(t)).toBe(true);
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    expect(await p1).toEqual({ kind: 'complete', messages: [] });
+    expect(t.turnErrors).toEqual([]);
+  });
+
+  it('a cold spawn whose stale row is cleared during its open still binds', async () => {
+    let release!: () => void;
+    const t = await setup({
+      rows: { 'conv-1': { activeSessionId: 's-stale', activeReqId: 'req-0' } }, // not alive
+      openGate: { on: 1, until: new Promise<void>((r) => { release = r; }) },
+    });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => t.opens.length === 1, 'the open');
+    // The stale session's terminate (the idle reaper's clear) lands mid-open.
+    Object.assign(t.row('conv-1'), { activeSessionId: null, activeReqId: null });
+    release();
+    await waitFor(() => userMessageQueued(t, 'req-1'), 'the message');
+
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-1', activeReqId: 'req-1' });
+    expect(keptNewer(t)).toBe(false);
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    expect(await p1).toEqual({ kind: 'complete', messages: [] });
+  });
+
+  it('a spawn that retired the warm sandbox binds over its own retire bind', async () => {
+    const t = await setup({ rows: { 'conv-1': { serviceSet: 'e2e' } } });
+    const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+    await waitFor(() => userMessageQueued(t, 'req-1'), 'turn 1');
+    expect((await t.tool(STOP_SERVICES, 's-1', 'conv-1', {})).ok).toBe(true);
+    await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
+    await p1;
+
+    // The set changed, so routing retires s-1: it binds s-2 first, then opens it.
+    const p2 = t.invoke('s-2', 'conv-1', 'req-2');
+    await waitFor(() => userMessageQueued(t, 'req-2'), 'turn 2');
+    expect(t.terminated).toEqual(['s-1']);
+    expect(t.binds.filter((b) => b.reqId === 'req-2' && b.expectedSessionId !== undefined)).toEqual([
+      expect.objectContaining({ sessionId: 's-2', expectedSessionId: 's-2' }),
+    ]);
+    expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-2', activeReqId: 'req-2' });
+    expect(keptNewer(t)).toBe(false);
+    await t.emitTurnEnd('s-2', 'conv-1', 'req-2', 'assistant');
+    expect(await p2).toEqual({ kind: 'complete', messages: [] });
+  });
+});

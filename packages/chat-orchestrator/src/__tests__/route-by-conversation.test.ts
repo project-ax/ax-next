@@ -314,7 +314,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       // `runnerType` rides along so the row records WHICH runner served the
       // turn — it used to be a host-wide constant frozen at create, which read
       // 'claude-sdk' even for conversations an aisdk agent served.
-      { conversationId: 'conv-1', sessionId: 's-fresh', reqId: 'req-A', runnerType: 'claude-sdk' },
+      // TASK-1226: only while the row is still unbound, as routing read it.
+      {
+        conversationId: 'conv-1', sessionId: 's-fresh', reqId: 'req-A', runnerType: 'claude-sdk',
+        expectedSessionId: null,
+      },
     ]);
     expect(mocks.trace.queueWork).toHaveLength(1);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-fresh');
@@ -603,9 +607,13 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       { sessionId: 's-stale', result: false },
     ]);
     expect(mocks.trace.sandboxOpen).toBe(1);
-    // bind-session attaches the FRESH sessionId, replacing the stale one.
+    // bind-session attaches the FRESH sessionId, replacing the stale one
+    // (TASK-1226: only while the row still names it, or nothing).
     expect(mocks.trace.bindSession).toEqual([
-      { conversationId: 'conv-3', sessionId: 's-fresh-2', reqId: 'req-C', runnerType: 'claude-sdk' },
+      {
+        conversationId: 'conv-3', sessionId: 's-fresh-2', reqId: 'req-C', runnerType: 'claude-sdk',
+        expectedSessionId: 's-stale',
+      },
     ]);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-fresh-2');
     // Stale-session path also spawns a fresh sandbox — conversationId

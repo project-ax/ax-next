@@ -4061,6 +4061,12 @@ export function createOrchestrator(
     // sites granted after it (see the host-grants load). Null with no
     // conversation, no conversation hooks, a failed read or no turn yet.
     let priorActivityAt: string | null = null;
+    // TASK-1226 — the session this turn last knew on the conversation row
+    // (null: none bound): what routing read, or what its own retire bind
+    // wrote. A fresh spawn's late bind (step 7) writes only over that, or an
+    // unbound row, so it never takes the row back from a newer request.
+    // Undefined when routing never read the row: step 7 binds as it always did.
+    let rowSessionSeen: string | null | undefined;
     // Gate on the peer hooks being actually registered. CLI canary and
     // mcp-client e2e drive the orchestrator without @ax/conversations
     // loaded; in those presets we skip routing entirely. See
@@ -4103,6 +4109,7 @@ export function createOrchestrator(
         priorActivityAt = typeof lastActivityAt === 'string' ? lastActivityAt : null;
         conversationServiceSet = onDemandServicesEnabled ? (conv.conversation.serviceSet ?? null) : null;
         const candidate = conv.conversation.activeSessionId;
+        rowSessionSeen = candidate !== null && candidate.length > 0 ? candidate : null;
         if (candidate !== null && candidate.length > 0) {
           const aliveResult = await bus.call<
             SessionIsAliveInput,
@@ -4319,6 +4326,7 @@ export function createOrchestrator(
                   runnerType: agent.runner,
                 },
               );
+              rowSessionSeen = ctx.sessionId;
               respawnSessions.delete(candidate);
               augmentGenBySession.delete(candidate);
               // NOT spawnModeBySession: the old session stays alive across the
@@ -6053,29 +6061,48 @@ export function createOrchestrator(
     //    session and request before the open, and a request that arrived
     //    since (channel-web binds it at POST) is newer; binding here would
     //    take the row back from it (C1).
+    //
+    //    TASK-1226 — this bind can land long after routing read the row (a
+    //    cold open takes minutes), so it passes `expectedSessionId`: it writes
+    //    only while the row still names the session routing saw (or its own
+    //    retire bind wrote), or is unbound (that session's terminate cleared
+    //    it, e.g. the idle reaper during the open). A newer request that
+    //    bound its own sandbox meanwhile keeps the row. When routing never
+    //    read the row (the read failed), the bind is unconditional as before.
     if (restart === undefined && ctx.conversationId !== undefined && conversationsLoaded) {
-      try {
-        await bus.call<
-          ConversationsBindSessionInput,
-          ConversationsBindSessionOutput
-        >('conversations:bind-session', ctx, {
-          conversationId: ctx.conversationId,
-          sessionId,
-          reqId: ctx.reqId,
-          // Record WHICH runner is about to serve this turn. The row's
-          // `runner_type` is refreshed on every bind rather than frozen at
-          // create, because an agent's runner can be switched at any time and
-          // that switch demotes the next turn to a fresh session, REPLACING
-          // the stored transcript with the new runner's format. A frozen
-          // value would be wrong exactly when someone looked at it.
-          runnerType: agent.runner,
+      const bindInput = {
+        conversationId: ctx.conversationId,
+        sessionId,
+        reqId: ctx.reqId,
+        // Record WHICH runner is about to serve this turn. The row's
+        // `runner_type` is refreshed on every bind rather than frozen at
+        // create, because an agent's runner can be switched at any time and
+        // that switch demotes the next turn to a fresh session, REPLACING
+        // the stored transcript with the new runner's format. A frozen
+        // value would be wrong exactly when someone looked at it.
+        runnerType: agent.runner,
+      };
+      if (rowSessionSeen !== undefined) {
+        await compareAndBind(ctx, bindInput, {
+          expected: rowSessionSeen,
+          orUnbound: true,
+          site: 'fresh',
+          failLog: 'conversation_bind_failed_fresh',
+          failFields: { conversationId: ctx.conversationId, sessionId },
         });
-      } catch (err) {
-        ctx.logger.warn('conversation_bind_failed_fresh', {
-          conversationId: ctx.conversationId,
-          sessionId,
-          err: err instanceof Error ? err : new Error(String(err)),
-        });
+      } else {
+        try {
+          await bus.call<
+            ConversationsBindSessionInput,
+            ConversationsBindSessionOutput
+          >('conversations:bind-session', ctx, bindInput);
+        } catch (err) {
+          ctx.logger.warn('conversation_bind_failed_fresh', {
+            conversationId: ctx.conversationId,
+            sessionId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        }
       }
     }
 
