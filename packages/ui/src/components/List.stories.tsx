@@ -5,6 +5,7 @@ import { Stack } from '../layout/Stack.js';
 import { Avatar } from './Avatar.js';
 import { IconButton } from './IconButton.js';
 import { List, ListRow } from './List.js';
+import { Notice } from './Notice.js';
 import { StatusMark } from './StatusMark.js';
 import { Text } from './Text.js';
 
@@ -148,6 +149,20 @@ export const LongTitle: Story = {
         trailing={<IconButton label={`Remove ${LONG}`} icon={Trash2} />}
       />
       <ListRow title={`${LONG}-${LONG}`.replace(/\s/g, '_')} meta="An unbroken 140-character name" />
+    </List>
+  ),
+};
+
+export const WithBelowNotice: Story = {
+  render: () => (
+    <List label="Requests">
+      <ListRow
+        title="Quill Bot for Quill"
+        meta="Asked by Ada"
+        trailing={<IconButton label="Decline Quill Bot" icon={Trash2} />}
+        below={<Notice tone="danger" action={{ label: 'Try again', onClick: () => {} }}>We couldn’t decline that just now.</Notice>}
+      />
+      <ListRow title="Rook Bot for Rook" meta="Asked by Bob" />
     </List>
   ),
 };

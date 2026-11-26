@@ -347,3 +347,51 @@ describe('ListRow', () => {
     expect(html).not.toContain('style=');
   });
 });
+
+describe('ListRow onOpen event and below slot', () => {
+  it('onOpen receives the click event; currentTarget is the title button', () => {
+    let seen: EventTarget | null = null;
+    const onOpen = vi.fn((event: MouseEvent<HTMLButtonElement>) => {
+      seen = event.currentTarget;
+    });
+    render(
+      <List label="X">
+        <ListRow title="GitHub" onOpen={onOpen} />
+      </List>,
+    );
+    const button = screen.getByRole('button', { name: 'GitHub' });
+    fireEvent.click(button);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(seen).toBe(button);
+  });
+
+  it('below renders in the same li, one listitem per row, and its controls never fire onOpen', () => {
+    const onOpen = vi.fn();
+    const onRetry = vi.fn();
+    render(
+      <List label="X">
+        <ListRow title="A" onOpen={onOpen} below={<button type="button" onClick={onRetry}>Try again</button>} />
+        <ListRow title="B" />
+      </List>,
+    );
+    const items = screen.getAllByRole('listitem');
+    expect(items).toHaveLength(2);
+    expect(within(items[0]!).getByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(within(items[1]!).queryByRole('button')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('below sits after the row box inside the li, so the divider (between li) never splits them', () => {
+    render(
+      <List label="X">
+        <ListRow title="A" below={<p>detail</p>} />
+        <ListRow title="B" />
+      </List>,
+    );
+    const li = screen.getAllByRole('listitem')[0]!;
+    expect(li.lastElementChild?.textContent).toBe('detail');
+    expect(li.children).toHaveLength(2);
+  });
+});

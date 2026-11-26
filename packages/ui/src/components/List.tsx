@@ -41,6 +41,10 @@ interface ListRowCommon {
   leading?: ReactNode;
   // Buttons, a Switch, a toggle group, a row menu. Sits above the click layer, so it stays independently clickable.
   trailing?: ReactNode;
+  // Content under the row box, in the same li and outside the click layer, so it may hold interactive content: a Notice
+  // with an action, a panel. It has no toggle (use `expandable` for that). The list's divider stays between li's, never
+  // between a row and its own `below`.
+  below?: ReactNode;
 }
 
 // The content renders below the row, inside the same li.
@@ -54,7 +58,7 @@ interface ExpandableBase {
 // action makes the title itself the expand toggle (named by the title), and the chevron is a decorative indicator, so
 // `label` is not accepted there.
 type ListRowAction =
-  | { onOpen: () => void; href?: never; onNavigate?: never; expandable?: ExpandableBase & { label: string } }
+  | { onOpen: (event: MouseEvent<HTMLButtonElement>) => void; href?: never; onNavigate?: never; expandable?: ExpandableBase & { label: string } }
   | {
       href: string;
       // The link's click handler, given the real click event: the caller decides whether to preventDefault (in-app
@@ -71,6 +75,8 @@ type ListRowAction =
  *
  * - `meta`, `description` and `leading` sit under that layer on actionable rows: give them no interactive content
  *   (a link there can't be clicked, and a `Timestamp`'s hover title is covered). Controls go in `trailing`.
+ * - `onOpen` receives the click event (`currentTarget` is the title button), e.g. to return focus to it later.
+ * - `below` renders under the row box in the same li, outside the click layer: interactive content is fine there.
  * - Under `exactOptionalPropertyTypes`, pass a conditional action by spreading it, not as `onOpen={maybe}`:
  *   `<ListRow title={t} {...(canOpen ? { onOpen: () => open(id) } : {})} />`.
  */
@@ -115,7 +121,7 @@ const INDICATOR_BOX: Record<ListDensity, string> = {
 const INDICATOR = 'ax-h-lg ax-w-lg ax-text-fg-muted';
 
 // Tab order is DOM order: the title control, then trailing controls, then (openable rows only) the expand button.
-export function ListRow({ title, meta, description, leading, trailing, expandable, onOpen, href, onNavigate }: ListRowProps) {
+export function ListRow({ title, meta, description, leading, trailing, below, expandable, onOpen, href, onNavigate }: ListRowProps) {
   const density = useContext(DensityContext);
   const [open, setOpen] = useState(expandable?.defaultOpen ?? false);
   const Chevron = open ? ChevronUp : ChevronDown;
@@ -124,7 +130,7 @@ export function ListRow({ title, meta, description, leading, trailing, expandabl
   let titleNode: ReactNode;
   if (onOpen) {
     titleNode = (
-      <button type="button" title={title} className={titleClass} onClick={() => onOpen()}>
+      <button type="button" title={title} className={titleClass} onClick={(event) => onOpen(event)}>
         {title}
       </button>
     );
@@ -188,11 +194,19 @@ export function ListRow({ title, meta, description, leading, trailing, expandabl
   );
 
   const LI = 'ax-m-none ax-p-none ax-border-0';
-  if (!expandable) return <li className={LI}>{row}</li>;
+  if (!expandable) {
+    return (
+      <li className={LI}>
+        {row}
+        {below}
+      </li>
+    );
+  }
   return (
     <Collapsible.Root asChild open={open} onOpenChange={setOpen}>
       <li className={LI}>
         {row}
+        {below}
         <Collapsible.Content className={cx('ax-text-body ax-text-fg', CONTENT[density])}>{expandable.content}</Collapsible.Content>
       </li>
     </Collapsible.Root>
