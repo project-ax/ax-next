@@ -31,6 +31,9 @@
 .ax-top-lg {
     top: var(--ax-space-lg)
 }
+.ax-isolate {
+    isolation: isolate
+}
 .ax-z-10 {
     z-index: 10
 }

@@ -1,6 +1,6 @@
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useState, type MouseEvent, type ReactNode } from 'react';
 import { cx } from '../internal/cx.js';
 import { IconButton } from './IconButton.js';
 
@@ -33,24 +33,47 @@ export function List({ label, density = 'comfortable', children }: ListProps) {
 
 interface ListRowCommon {
   title: string;
-  // One line under the title, muted (a Timestamp, "3 tools"). Not interactive: the row's open layer covers it.
+  // One line under the title, muted (a Timestamp, "3 tools"). Under the click layer on actionable rows: see ListRowProps.
   meta?: ReactNode;
   // Up to two lines, clamped.
   description?: string;
-  // Avatar, StatusMark, file icon. Decorative or labelled; not interactive.
+  // Avatar, StatusMark, file icon. Decorative or labelled; under the click layer on actionable rows.
   leading?: ReactNode;
-  // Buttons, a Switch, a toggle group, a row menu. Sits above the open layer, so it stays independently clickable.
+  // Buttons, a Switch, a toggle group, a row menu. Sits above the click layer, so it stays independently clickable.
   trailing?: ReactNode;
-  // A chevron toggle named `label` ("Show details for {title}"); the content renders below the row in the same li.
-  expandable?: { content: ReactNode; defaultOpen?: boolean; label: string };
 }
 
-// One primary action per row at most: a button (onOpen) or a link (href), never both.
-type ListRowAction =
-  | { onOpen: () => void; href?: never }
-  | { href: string; onOpen?: never }
-  | { onOpen?: never; href?: never };
+// The content renders below the row, inside the same li.
+interface ExpandableBase {
+  content: ReactNode;
+  defaultOpen?: boolean;
+}
 
+// One primary action per row at most. An openable row (onOpen, or href with an optional onNavigate) keeps its title for
+// that action, so expanding needs its own chevron button, named by `label` ("Show details for {title}"). A row with no
+// action makes the title itself the expand toggle (named by the title), and the chevron is a decorative indicator, so
+// `label` is not accepted there.
+type ListRowAction =
+  | { onOpen: () => void; href?: never; onNavigate?: never; expandable?: ExpandableBase & { label: string } }
+  | {
+      href: string;
+      // The link's click handler, given the real click event: the caller decides whether to preventDefault (in-app
+      // routing) and lets modifier clicks through. ListRow itself never prevents the default.
+      onNavigate?: (event: MouseEvent<HTMLAnchorElement>) => void;
+      onOpen?: never;
+      expandable?: ExpandableBase & { label: string };
+    }
+  | { onOpen?: never; href?: never; onNavigate?: never; expandable?: ExpandableBase & { label?: never } };
+
+/**
+ * A row in a `List`. The title is the row's only primary control: a button (`onOpen`), a link (`href`, optionally
+ * `onNavigate`), or, for a row with only `expandable`, the expand toggle. Its click layer covers the whole row box.
+ *
+ * - `meta`, `description` and `leading` sit under that layer on actionable rows: give them no interactive content
+ *   (a link there can't be clicked, and a `Timestamp`'s hover title is covered). Controls go in `trailing`.
+ * - Under `exactOptionalPropertyTypes`, pass a conditional action by spreading it, not as `onOpen={maybe}`:
+ *   `<ListRow title={t} {...(canOpen ? { onOpen: () => open(id) } : {})} />`.
+ */
 export type ListRowProps = ListRowCommon & ListRowAction;
 
 const ROW: Record<ListDensity, string> = {
@@ -68,9 +91,9 @@ const CONTENT: Record<ListDensity, string> = {
   compact: 'ax-px-sm ax-pb-sm',
 };
 
-// Shared by the button and the link. The ::after is the stretched layer: absolutely positioned against the row (the
-// nearest positioned ancestor, so the title itself must stay unpositioned), it covers the whole row and takes every
-// click that doesn't land on trailing. Being the title's own pseudo-element, a hit on it IS a hit on the title, so the
+// Shared by the button, the link and the expand-only toggle. The ::after is the stretched layer: absolutely positioned
+// against the row (the nearest positioned ancestor, so the title itself must stay unpositioned), it covers the whole row
+// and takes every click that doesn't land on trailing. Being the title's own pseudo-element, a hit on it IS a hit on the title, so the
 // row hover underlines the title and the focus ring is drawn around the whole row, inset so a flush Card can't clip it.
 // The title's overflow-hidden (truncate) doesn't clip the layer: its containing block is an ancestor of the title.
 const ACTION =
@@ -79,13 +102,23 @@ const ACTION =
   'after:ax-absolute after:ax-inset-none after:ax-content-empty after:ax-rounded-md ' +
   'focus-visible:after:ax-outline focus-visible:after:ax-outline-2 focus-visible:after:ax-outline-line-ring focus-visible:after:ax-outline-offset-inset';
 
-// The row's own controls sit above the stretched layer.
+// The row's own controls sit above the stretched layer. Their z-index only competes inside the row: the row box is
+// isolated (its own stacking context), so a sticky header or overlay elsewhere on the page still paints over them.
 const ABOVE = 'ax-relative ax-z-10 ax-flex ax-shrink-0 ax-items-center';
 
-// Tab order is DOM order: the title control, then trailing controls, then the expand toggle.
-export function ListRow({ title, meta, description, leading, trailing, expandable, onOpen, href }: ListRowProps) {
+// Decorative chevron for a row whose title is the expand toggle: it sits under the click layer, so it toggles too. Its
+// box matches the IconButton toggle's size, so chevrons line up across rows with and without an action.
+const INDICATOR_BOX: Record<ListDensity, string> = {
+  comfortable: 'ax-flex ax-h-control-md ax-w-control-md ax-shrink-0 ax-items-center ax-justify-center',
+  compact: 'ax-flex ax-h-control-sm ax-w-control-sm ax-shrink-0 ax-items-center ax-justify-center',
+};
+const INDICATOR = 'ax-h-lg ax-w-lg ax-text-fg-muted';
+
+// Tab order is DOM order: the title control, then trailing controls, then (openable rows only) the expand button.
+export function ListRow({ title, meta, description, leading, trailing, expandable, onOpen, href, onNavigate }: ListRowProps) {
   const density = useContext(DensityContext);
   const [open, setOpen] = useState(expandable?.defaultOpen ?? false);
+  const Chevron = open ? ChevronUp : ChevronDown;
 
   const titleClass = cx(ACTION, TITLE_TEXT[density]);
   let titleNode: ReactNode;
@@ -97,9 +130,16 @@ export function ListRow({ title, meta, description, leading, trailing, expandabl
     );
   } else if (href !== undefined) {
     titleNode = (
-      <a href={href} title={title} className={titleClass}>
+      <a href={href} title={title} className={titleClass} onClick={onNavigate}>
         {title}
       </a>
+    );
+  } else if (expandable) {
+    // Expand-only row: the whole row is one toggle (one Tab stop), named by the title, like a disclosure.
+    titleNode = (
+      <Collapsible.Trigger title={title} className={titleClass}>
+        {title}
+      </Collapsible.Trigger>
     );
   } else {
     titleNode = (
@@ -109,8 +149,25 @@ export function ListRow({ title, meta, description, leading, trailing, expandabl
     );
   }
 
+  let toggle: ReactNode = null;
+  if (expandable?.label !== undefined) {
+    toggle = (
+      <div className={ABOVE}>
+        <Collapsible.Trigger asChild>
+          <IconButton label={expandable.label} icon={Chevron} size={density === 'compact' ? 'sm' : 'md'} />
+        </Collapsible.Trigger>
+      </div>
+    );
+  } else if (expandable) {
+    toggle = (
+      <span className={INDICATOR_BOX[density]}>
+        <Chevron aria-hidden="true" focusable="false" data-part="indicator" className={INDICATOR} />
+      </span>
+    );
+  }
+
   const row = (
-    <div className={cx('ax-relative ax-box-border ax-flex ax-items-center ax-px-sm', ROW[density])}>
+    <div className={cx('ax-relative ax-isolate ax-box-border ax-flex ax-items-center ax-px-sm', ROW[density])}>
       {leading ? <div className="ax-flex ax-shrink-0 ax-items-center">{leading}</div> : null}
       <div className="ax-flex ax-min-w-none ax-flex-1 ax-flex-col">
         {titleNode}
@@ -126,17 +183,7 @@ export function ListRow({ title, meta, description, leading, trailing, expandabl
         ) : null}
       </div>
       {trailing ? <div className={cx(ABOVE, 'ax-gap-sm')}>{trailing}</div> : null}
-      {expandable ? (
-        <div className={ABOVE}>
-          <Collapsible.Trigger asChild>
-            <IconButton
-              label={expandable.label}
-              icon={open ? ChevronUp : ChevronDown}
-              size={density === 'compact' ? 'sm' : 'md'}
-            />
-          </Collapsible.Trigger>
-        </div>
-      ) : null}
+      {toggle}
     </div>
   );
 

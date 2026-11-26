@@ -140,14 +140,24 @@ describe('props', () => {
     const lr4: P<typeof ListRow> = { title: 'x', href: '/x', as: 'div' };
     // @ts-expect-error the title is a string (it is the accessible name and the title attribute)
     const lr5: P<typeof ListRow> = { title: 1 };
-    // @ts-expect-error the expand toggle needs its label
-    const lr6: P<typeof ListRow> = { title: 'x', expandable: { content: 'y' } };
+    // @ts-expect-error an openable row's separate expand button needs its label
+    const lr6: P<typeof ListRow> = { title: 'x', onOpen: () => {}, expandable: { content: 'y' } };
+    // @ts-expect-error a linked row's separate expand button needs its label
+    const lr7: P<typeof ListRow> = { title: 'x', href: '/x', expandable: { content: 'y' } };
+    // @ts-expect-error an expand-only row is named by its title: no separate label
+    const lr8: P<typeof ListRow> = { title: 'x', expandable: { content: 'y', label: 'Show details for x' } };
+    // @ts-expect-error onNavigate belongs to a link row: it needs href
+    const lr9: P<typeof ListRow> = { title: 'x', onNavigate: () => {} };
+    // @ts-expect-error onNavigate is not for an onOpen row
+    const lr10: P<typeof ListRow> = { title: 'x', onOpen: () => {}, onNavigate: () => {} };
     const lrOk: P<typeof ListRow>[] = [
       { title: 'x' },
       { title: 'x', onOpen: () => {} },
+      { title: 'x', expandable: { content: 'y', defaultOpen: true } },
+      { title: 'x', href: '/x', onNavigate: (e) => e.preventDefault() },
       { title: 'x', href: '/x', trailing: 'y', expandable: { content: 'y', label: 'Show details for x', defaultOpen: true } },
     ];
-    void [l1, l2, l3, lr1, lr2, lr3, lr4, lr5, lr6, lrOk];
+    void [l1, l2, l3, lr1, lr2, lr3, lr4, lr5, lr6, lr7, lr8, lr9, lr10, lrOk];
     void [ts1, ts2, ts3, av1, av2, av3, kv1, kv2, cd1, cd2, ib4, ib5, sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });

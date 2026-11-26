@@ -129,3 +129,41 @@ test('components-list--openable-with-trailing-switch: row body opens, trailing c
   await expect(page.getByRole('switch', { name: 'Use GitHub' })).toHaveCount(0);
   await expect(status).toHaveText('Opened: GitHub, GitHub, GitHub');
 });
+
+// Expand-only rows toggle from anywhere on the row, with one Tab stop; the chevron is decorative.
+test('components-list--expandable: an expand-only row toggles from the row body', async ({ page }) => {
+  await page.goto('/iframe.html?id=components-list--expandable&viewMode=story');
+  const toggle = page.getByRole('button', { name: 'Schedule', exact: true });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.getByText('Runs weekly.')).toHaveCount(0);
+  const row = page.getByRole('listitem').filter({ hasText: 'Schedule' });
+  const rb = (await row.boundingBox())!;
+  // Far right, on the decorative chevron: not the title text.
+  await page.mouse.click(rb.x + rb.width - 12, rb.y + rb.height / 2);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.getByText('Runs weekly.')).toBeVisible();
+  await page.keyboard.press('Tab');
+  expect(await page.evaluate(() => document.activeElement?.textContent)).toBe('Last run');
+});
+
+// The trailing controls' z-index stays inside the row (the row box is isolated): a fixed header earlier in the page at
+// the same z-index still paints over a switch scrolled under it.
+test('components-list--openable-with-trailing-switch: an overlay above the row wins over trailing controls', async ({ page }) => {
+  await page.goto('/iframe.html?id=components-list--openable-with-trailing-switch&viewMode=story');
+  const sw = page.getByRole('switch', { name: 'Use GitHub' });
+  const sb = (await sw.boundingBox())!;
+  await page.evaluate(() => {
+    const header = document.createElement('div');
+    header.id = 'sticky-fixture';
+    Object.assign(header.style, { position: 'fixed', top: '0', left: '0', width: '100%', height: '200px', zIndex: '10', background: 'gray' });
+    document.body.prepend(header);
+  });
+  const hit = await page.evaluate(
+    ([x, y]) => {
+      const el = document.elementFromPoint(x!, y!);
+      return el?.id || `${el?.tagName} ${el?.getAttribute('aria-label') ?? ''}`;
+    },
+    [sb.x + sb.width / 2, sb.y + sb.height / 2],
+  );
+  expect(hit).toBe('sticky-fixture');
+});

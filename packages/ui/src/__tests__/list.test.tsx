@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { Trash2 } from 'lucide-react';
+import type { MouseEvent } from 'react';
 import { renderToString } from 'react-dom/server';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IconButton, List, ListRow } from '../index.js';
@@ -103,7 +104,9 @@ describe('ListRow', () => {
     expect(container.querySelector('[title="GitHub"]')?.textContent).toBe('GitHub');
   });
 
-  it('onOpen: title is the only button named by the title; clicking the row body calls onOpen once', () => {
+  // jsdom has no hit-testing, so this clicks the title; the click on the row body (off the title) is proven in
+  // stories-test/stories.spec.ts ('row body opens, trailing controls do not').
+  it('onOpen: title is the only button named by the title, stretched over the row; clicking it calls onOpen once', () => {
     const onOpen = vi.fn();
     const { container } = render(
       <List label="L">
@@ -158,6 +161,10 @@ describe('ListRow', () => {
     // Trailing sits above the stretched layer, so pointer hits reach it in a real browser.
     const trailing = remove.closest('li > div > *');
     expect(classes(trailing)).toEqual(expect.arrayContaining(['ax-relative', 'ax-z-10']));
+    // ...and that z-index stays inside the row: the row box is its own stacking context, so a sticky header or overlay
+    // elsewhere on the page still paints over trailing (elementFromPoint proof in stories.spec.ts).
+    expect(classes(trailing?.parentElement ?? null)).toEqual(expect.arrayContaining(['ax-relative', 'ax-isolate']));
+    expect(css).toMatch(/\.ax-isolate \{\s*isolation: isolate\s*\}/);
     // Exactly one primary action: the trailing controls are siblings of the title, never inside it.
     expect(screen.getByRole('button', { name: 'GitHub' }).contains(remove)).toBe(false);
   });
@@ -202,22 +209,63 @@ describe('ListRow', () => {
     expect(screen.getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['Remove Weekly report']);
   });
 
-  it('expandable toggles aria-expanded and shows content', () => {
+  it('href + onNavigate: a plain click calls onNavigate with the real event; ListRow never prevents the default', () => {
+    const seen: Array<{ meta: boolean; prevented: boolean; target: EventTarget }> = [];
+    // routeLinkProps-style caller: route in-app on a plain click, let modifier clicks reach the browser.
+    const onNavigate = vi.fn((e: MouseEvent<HTMLAnchorElement>) => {
+      seen.push({ meta: e.metaKey, prevented: e.defaultPrevented, target: e.currentTarget });
+      if (!e.metaKey) e.preventDefault();
+    });
     render(
       <List label="L">
-        <ListRow title="About" meta="Created today" expandable={{ label: 'Show details for About', content: <p>Full details</p> }} />
+        {/* A hash href: jsdom implements only hash navigation, and the meta-click is deliberately not prevented. */}
+        <ListRow title="Weekly report" href="#/tasks/42" onNavigate={onNavigate} />
+      </List>,
+    );
+    const link = screen.getByRole('link', { name: 'Weekly report' });
+    // fireEvent returns false when the default was prevented.
+    expect(fireEvent.click(link)).toBe(false);
+    expect(fireEvent.click(link, { metaKey: true })).toBe(true);
+    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual([
+      { meta: false, prevented: false, target: link },
+      { meta: true, prevented: false, target: link },
+    ]);
+  });
+
+  it('href without onNavigate leaves the click alone (plain link)', () => {
+    render(
+      <List label="L">
+        <ListRow title="Docs" href="#docs" />
+      </List>,
+    );
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Docs' }))).toBe(true);
+  });
+
+  // Expand-only rows behave like a disclosure: the title is the one toggle, stretched over the row (row-body click in
+  // stories.spec.ts), and the chevron is a decorative indicator, not a second Tab stop.
+  it('expand-only: the title is the toggle (aria-expanded, aria-controls) and shows content below the row', () => {
+    const { container } = render(
+      <List label="L">
+        <ListRow title="About" meta="Created today" expandable={{ content: <p>Full details</p> }} />
         <ListRow title="Next" />
       </List>,
     );
-    const toggle = screen.getByRole('button', { name: 'Show details for About' });
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    const toggle = screen.getByRole('button', { name: 'About' });
+    expect(toggle.getAttribute('title')).toBe('About');
+    expect(classes(toggle)).toEqual(expect.arrayContaining(['after:ax-absolute', 'after:ax-inset-none', 'after:ax-content-empty']));
+    const indicator = container.querySelector('[data-part="indicator"]');
+    expect(indicator?.getAttribute('aria-hidden')).toBe('true');
+    expect(indicator?.closest('button')).toBeNull();
+    expect(tabOrder(container)).toEqual([toggle]);
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('Full details')).toBeNull();
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const content = screen.getByText('Full details');
-    const li = toggle.closest('li');
-    expect(li?.contains(content)).toBe(true);
-    // Below the row, not inside it (so the stretched layer of an openable row can't cover it).
+    expect(toggle.closest('li')?.contains(content)).toBe(true);
+    // Below the row, not inside it (so the stretched layer can't cover it).
     expect(content.closest('li > div')).not.toBe(toggle.closest('li > div'));
     const controls = toggle.getAttribute('aria-controls');
     expect(controls && document.getElementById(controls)?.contains(content)).toBe(true);
@@ -226,14 +274,38 @@ describe('ListRow', () => {
     expect(screen.queryByText('Full details')).toBeNull();
   });
 
+  it('openable + expandable: the title opens, a separate chevron button named by label expands', () => {
+    const onOpen = vi.fn();
+    render(
+      <List label="L">
+        <ListRow title="Instructions" onOpen={onOpen} expandable={{ label: 'Show details for Instructions', content: 'Every Monday' }} />
+      </List>,
+    );
+    const toggle = screen.getByRole('button', { name: 'Show details for Instructions' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.closest('li > div > *')?.className).toContain('ax-z-10');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Every Monday')).toBeTruthy();
+    expect(onOpen).not.toHaveBeenCalled();
+    const title = screen.getByRole('button', { name: 'Instructions' });
+    expect(title.hasAttribute('aria-expanded')).toBe(false);
+    fireEvent.click(title);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('expandable defaultOpen starts open', () => {
     render(
       <List label="L">
-        <ListRow title="About" expandable={{ label: 'Show details for About', content: 'Open now', defaultOpen: true }} />
+        <ListRow title="About" expandable={{ content: 'Open now', defaultOpen: true }} />
+        <ListRow title="Link" href="/x" expandable={{ label: 'Show details for Link', content: 'Also open', defaultOpen: true }} />
       </List>,
     );
-    expect(screen.getByRole('button', { name: 'Show details for About' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByRole('button', { name: 'About' }).getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('Open now')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show details for Link' }).getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Also open')).toBeTruthy();
   });
 
   it('long title has truncation class and title attribute', () => {
@@ -264,7 +336,7 @@ describe('ListRow', () => {
         <ListRow title="Plain" meta="meta" description="desc" leading={<span>L</span>} />
         <ListRow title="Opens" onOpen={() => {}} trailing={<IconButton label="Remove Opens" icon={Trash2} />} />
         <ListRow title="Link" href="/x" />
-        <ListRow title="Expands" expandable={{ label: 'Show details for Expands', content: 'More', defaultOpen: true }} />
+        <ListRow title="Expands" expandable={{ content: 'More', defaultOpen: true }} />
       </List>,
     );
     expect(html).toContain('<ul');

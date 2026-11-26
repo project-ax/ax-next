@@ -92,6 +92,8 @@ export const Openable: Story = { render: () => <OpenableDemo withTrailing={false
 
 export const OpenableWithTrailingSwitch: Story = { render: () => <OpenableDemo withTrailing /> };
 
+// Expand-only rows toggle from the whole row (the title is the toggle, the chevron is decorative). An openable row
+// keeps its title for opening, so its chevron is a separate button named by `label`.
 export const Expandable: Story = {
   render: () => (
     <List label="About this task">
@@ -99,12 +101,17 @@ export const Expandable: Story = {
         title="Instructions"
         meta="Edited yesterday"
         expandable={{
-          label: 'Show details for Instructions',
           defaultOpen: true,
           content: 'Every Monday, collect the open invoices and post a summary to the finance channel.',
         }}
       />
-      <ListRow title="Schedule" meta="Mondays at 9:00 AM" expandable={{ label: 'Show details for Schedule', content: 'Runs weekly.' }} />
+      <ListRow title="Schedule" meta="Mondays at 9:00 AM" expandable={{ content: 'Runs weekly.' }} />
+      <ListRow
+        title="Last run"
+        meta="Succeeded"
+        onOpen={() => {}}
+        expandable={{ label: 'Show details for Last run', content: 'Posted 12 invoices to #finance.' }}
+      />
     </List>
   ),
 };
