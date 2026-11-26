@@ -214,7 +214,7 @@ function buildRecent(rows: readonly ExportFact[], labels: ReadonlyMap<string, st
  * `labels` says how a member's key reads (TASK-1213): `memberLabels`' answer
  * for this pass, a name or "a teammate". It is printed wherever the export
  * would print the key: team Profile headings, user-journal headings and
- * Recent lines. A key with no label prints as written, so a personal agent's
+ * Recent lines. A key with no label prints as written, so a Just-me agent's
  * export (no labels) is unchanged. Sort orders and file paths stay keyed by
  * the subject itself, so a rename never moves a section.
  */

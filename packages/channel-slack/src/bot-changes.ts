@@ -1,7 +1,7 @@
 import type { AgentContext, HookBus, Logger } from '@ax/core';
 import { isBotNameTaken } from './bot-name.js';
 import { handleFrom, type BotReply } from './bots.js';
-import { checkRights, liveOwnBot, teamAdminAccess, type Rights } from './channels.js';
+import { checkRights, liveOwnBot, managerAccess, type Rights } from './channels.js';
 import { botUrls, buildBotManifest } from './manifest.js';
 import type { Mutex } from './mutex.js';
 import type { SecretStore } from './secrets.js';
@@ -398,10 +398,10 @@ export function createBotChanges(d: BotChangesDeps): BotChanges {
       // As things stand now. A bot row always names its requester (the
       // database's CHECK); with none, nobody vouches for its outsiders.
       const requester =
-        bot.requestedByUserId === null ? 'no' : await teamAdminAccess(d.bus, i.ctx, i.agentId, bot.requestedByUserId);
+        bot.requestedByUserId === null ? 'no' : await managerAccess(d.bus, i.ctx, i.agentId, bot.requestedByUserId);
       if (requester === 'yes') return CLAIM_NOT_NEEDED;
       if (requester === 'agent-gone') return json(404, { error: 'not-found' });
-      if (requester === 'not-team') return json(409, { error: 'personal-agent' });
+      if (requester === 'not-shared') return json(409, { error: 'personal-agent' });
       try {
         // The row and every binding of its install, in one statement.
         await d.installs.claimBot(bot.installId, i.actorUserId);

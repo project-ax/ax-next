@@ -13,7 +13,7 @@ import {
 import { channelInfoFailure, type ChannelCheck } from './channel-check.js';
 import { decideTier, runsAsConnector, type SenderFacts } from './channel-route.js';
 import type { ChannelBinding, ChannelStore } from './channel-store.js';
-import { agentAccess, connectable, teamAdminAccess, type AgentAccess } from './channels.js';
+import { agentAccess, connectable, managerAccess, type AgentAccess } from './channels.js';
 import { COPY } from './copy.js';
 import type { DmAgentStore } from './dm-agents.js';
 import type { EventDispatcher, SlackEnvelope } from './events.js';
@@ -37,17 +37,19 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *   2. The install's bot token, from the vault.
  *
  * Who answers what (TASK-1186; design §4b.1): the shared app answers DMs,
- * and a team agent's own bot (TASK-1167) answers mentions in the channels
- * it was invited to. A team agent is reached in a channel only through its
- * own bot. A team agent's own bot is any install whose kind isn't exactly
- * `shared` (store.ts reads anything else as a bot, the kind that can do less).
+ * and a shared agent's own bot (TASK-1167) answers mentions in the channels
+ * it was invited to. A shared agent is a team agent, or a personal agent
+ * shared with other people (TASK-1248, channels.ts), and it is reached in a
+ * channel only through its own bot. An agent's own bot is any install whose
+ * kind isn't exactly `shared` (store.ts reads anything else as a bot, the
+ * kind that can do less).
  *   - A mention of the shared bot in a channel runs no turn. It reads no
  *     binding, so a row left from before is never used, and asks nothing
  *     about an agent or the channel: an admitted sender is told privately
  *     how to reach an agent instead (`sharedBotInChannel`, answerAdmitted),
  *     anyone else gets silence, and it is logged as `slack_event_ignored`
  *     (`shared-channel`).
- *   - A DM to a team agent's own bot gets nothing, before any vault read or
+ *   - A DM to an agent's own bot gets nothing, before any vault read or
  *     Slack call: its manifest asks for none, and one its approver turns on
  *     by hand reaches nobody.
  *
@@ -57,11 +59,14 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      because Slack was briefly unavailable gets "try again".
  *   4. A shared file gets "I can't read files yet"; an empty message nothing.
  *   5. auth:find-user-by-email with users.info's email → the sender's
- *      personal agent (`personalAgentFor`): the one they chose for their DMs
- *      (TASK-1238, dm-agents.ts) while agents:list-for-user still lists it as
- *      their own personal agent, else their oldest. A choice that can't be
- *      read is "try again", never the oldest instead →
- *      conversations:find-or-create for the thread
+ *      "Just me" personal agent (`personalAgentFor`): the one they chose for
+ *      their DMs (TASK-1238, dm-agents.ts) while agents:list-for-user still
+ *      lists it as their own Just-me personal agent, else their oldest
+ *      Just-me one. A personal agent shared with other people answers no
+ *      DMs, as a team agent answers none (TASK-1248): someone whose own
+ *      agents are all shared is told so (`agentsShared`), someone with none
+ *      to make one (`noAgent`). A choice that can't be read is "try again",
+ *      never the oldest instead → conversations:find-or-create for the thread
  *      (`slack:<installId>:<channel>:<thread_ts>`, origin `'slack'`). The
  *      agent is picked here, before the turn is queued, so a new choice
  *      applies from the next message on: a turn already running or waiting
@@ -72,7 +77,7 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      disconnected (or reset) while the turn waited is dropped, logged as
  *      `slack_turns_dropped`, and its agent never runs.
  *
- * A mention of a team agent's own bot (routeMention; TASK-1094, TASK-1167):
+ * A mention of a shared agent's own bot (routeMention; TASK-1094, TASK-1167):
  *   3. The sender is admitted from users.info, as for a DM ("try again" goes
  *      to them alone, as an ephemeral). A refused sender costs no other Slack
  *      call and binds nothing. An empty mention is ignored.
@@ -90,11 +95,12 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      (auth:find-user-by-email) and its access to the agent
  *      (agents:resolve), or, with no account, whether their email is on an
  *      approved domain (auth:is-approved-email); then, only for a turn that
- *      would run as the bot's requester, whether they are still a team admin
- *      of the agent's team (channels.ts `teamAdminAccess`). channel-route.ts
+ *      would run as the bot's requester, whether the requester still manages
+ *      the agent (channels.ts `managerAccess`: a team admin of a team agent's
+ *      team, an owner of a shared personal agent, TASK-1248). channel-route.ts
  *      decides the tier: attended as the sender, external as the requester,
- *      silence (off-domain), or a private "a team admin needs to check my
- *      settings" (`botUnavailable`) when the agent is gone, or when the
+ *      silence (off-domain), or a private "someone who manages me needs to
+ *      check my settings" (`botUnavailable`) when the agent is gone, or when the
  *      requester can't vouch for outsiders any more: members still run as
  *      themselves.
  *   6. conversations:find-or-create for the thread, one per identity: the
@@ -113,7 +119,7 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      meanwhile is dropped too (`reconnected`), and its sender told to try
  *      again: it was planned as the old requester, in their conversation, and
  *      must not run as anyone else. An outsider's turn runs as the requester
- *      only while they are still a team admin of the agent's team, so it is
+ *      only while they still manage the agent (`managerAccess`), so it is
  *      asked again here: not any more drops the turn (`requester`) with the
  *      polite `botUnavailable` line, and a failed read drops it too
  *      (`slack_event_failed`, stage `requester`), its sender told to try
@@ -130,10 +136,11 @@ import { pickPersonalAgent, runTurn, type TurnDeps } from './turn.js';
  *      answering is no turn either: "try again", and the binding stays. Nor
  *      is Slack saying the bot's own token can't read any public channel
  *      (code `token-scope`): the binding stays, and since no retry fixes
- *      that, its sender is told a team admin must look (`botUnavailable`),
- *      never to try again. A Slack Connect channel seldom gets this far: step
- *      1 drops its events, so only a turn that was waiting when it was
- *      shared, or one while its share is still pending, finds it.
+ *      that, its sender is told someone who manages the agent must look
+ *      (`botUnavailable`), never to try again. A Slack Connect channel
+ *      seldom gets this far: step 1 drops its events, so only a turn that
+ *      was waiting when it was shared, or one while its share is still
+ *      pending, finds it.
  *   9. Before the agent runs, the conversation is recorded as one of the
  *      channel's threads (channel-store.ts `recordThread`), which the capture
  *      veto reads (capture-veto.ts). A new thread is recorded remembered; one
@@ -181,7 +188,7 @@ export interface RouterDeps extends TurnDeps {
   /**
    * Which agent each of a bot's channels is bound to, read when a mention
    * arrives and again when its turn starts; the thread map the capture veto
-   * reads, written just before the turn's agent runs; and the binding a team
+   * reads, written just before the turn's agent runs; and the binding an
    * agent's own bot writes at its first mention in a channel (`upsert`,
    * TASK-1167). And a binding removed when Slack says its channel can't be
    * served any more (`remove`, TASK-1184). The thread as recorded, read back
@@ -214,7 +221,7 @@ export interface RouterDeps extends TurnDeps {
   mentionNames: MentionNames;
 }
 
-type Log = (level: 'info' | 'warn' | 'error', msg: string, fields?: Record<string, string | number>) => void;
+type Log = (level: 'info' | 'warn' | 'error', msg: string, fields?: Record<string, string | number | boolean>) => void;
 
 /** An answer this router couldn't read. Carries a code, so it logs like any other failure. */
 class UnreadableAnswer extends Error {
@@ -232,14 +239,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * The agents in an `agents:list-for-user` answer that carry what picking one
  * needs, each with its display name ('' when it has none) for the settings
- * to name it by.
+ * to name it by. `shared` (TASK-1246) is carried only when the answer says
+ * it as a boolean: turn.ts `pickPersonalAgent` takes out exactly
+ * `shared: true` (TASK-1248), so anything else keeps today's rule.
  */
 function agentsOf(answer: unknown) {
   const raw = isRecord(answer) ? answer['agents'] : undefined;
   if (!Array.isArray(raw)) throw new UnreadableAnswer('agents:list-for-user');
   return raw.flatMap((a: unknown) => {
     if (!isRecord(a)) return [];
-    const { id, ownerId, ownerType, visibility, createdAt, displayName } = a;
+    const { id, ownerId, ownerType, visibility, shared, createdAt, displayName } = a;
     if (typeof id !== 'string' || id.length === 0) return [];
     if (typeof ownerId !== 'string' || typeof ownerType !== 'string' || typeof visibility !== 'string') return [];
     return [
@@ -248,6 +257,7 @@ function agentsOf(answer: unknown) {
         ownerId,
         ownerType,
         visibility,
+        ...(typeof shared === 'boolean' ? { shared } : {}),
         createdAt: createdAt instanceof Date ? createdAt : new Date(Number.NaN),
         displayName: typeof displayName === 'string' ? displayName : '',
       },
@@ -260,7 +270,8 @@ function agentsOf(answer: unknown) {
  * team's (`teamIds` empty). Since TASK-1246 that list also holds personal
  * agents only SHARED with them (another person's, as owner or audience); every
  * caller narrows it with turn.ts `pickPersonalAgent`, which keeps only
- * `ownerId === userId`, so a DM never reaches an agent that is merely shared.
+ * `ownerId === userId`, so a DM never reaches an agent that is merely shared
+ * with them, nor one of their own that is shared with other people (TASK-1248).
  */
 async function ownAgents(bus: HookBus, ctx: AgentContext, userId: string) {
   const listed = await bus.call<{ userId: string; teamIds: string[] }, unknown>('agents:list-for-user', ctx, {
@@ -277,37 +288,86 @@ export interface DmAgent {
   name: string;
 }
 
+/** Where a DM from one person goes (`personalAgentFor`). */
+export interface DmRouting {
+  /** The personal agent it reaches; null when none may answer. */
+  agent: DmAgent | null;
+  /**
+   * They made at least one personal agent (`ownerType 'user'`, `visibility
+   * 'personal'`, `ownerId` theirs) that is shared with other people
+   * (`shared: true`, TASK-1248). When none answers, they are told their
+   * agents are shared, not that they have none.
+   */
+  ownSharedAgents: boolean;
+}
+
 /**
- * The agent a DM from `userId` reaches (turn.ts `pickPersonalAgent`): the
- * personal agent they chose for their DMs (TASK-1238, dm-agents.ts) while
- * AX still lists it as their own personal agent; else their oldest; null
- * when they have none. A stored choice is never trusted as stored: one
- * naming an agent that was deleted, or isn't theirs, or isn't personal, is
- * passed over for the oldest. The choice is read before the list, so a
- * delete between the two is still caught by the list.
+ * The person's DM choice, then their agents (in that order: a delete or a
+ * share between the two is still caught by the list), and where a DM from
+ * them goes. Either read failing throws.
+ */
+async function readDmRouting(bus: HookBus, ctx: AgentContext, userId: string, choices: Pick<DmAgentStore, 'get'>) {
+  const chosen = await choices.get(userId);
+  const listed = await ownAgents(bus, ctx, userId);
+  const id = pickPersonalAgent(listed, userId, chosen);
+  const routing: DmRouting = {
+    agent: id === null ? null : { id, name: listed.find((a) => a.id === id)?.displayName ?? '' },
+    ownSharedAgents: listed.some(
+      (a) => a.ownerType === 'user' && a.visibility === 'personal' && a.ownerId === userId && a.shared === true,
+    ),
+  };
+  return { listed, routing };
+}
+
+/**
+ * Where a DM from `userId` goes (turn.ts `pickPersonalAgent`): the personal
+ * agent they chose for their DMs (TASK-1238, dm-agents.ts) while AX still
+ * lists it as their own "Just me" personal agent; else their oldest Just-me
+ * one; else none. A personal agent shared with other people never answers
+ * a DM, chosen or not (TASK-1248), and `ownSharedAgents` says whether they
+ * made one. A stored choice is never trusted as stored: one naming an agent
+ * that was deleted, or isn't theirs, or isn't personal, or is shared now, is
+ * passed over for the oldest.
  *
  * Either read failing throws, and nothing falls back: a DM sent to the
  * oldest because the choice couldn't be read would put the person's words
  * into the agent they moved away from. The agent settings ask this too
- * (agent-routes.ts), so the two can't disagree.
+ * (agent-routes.ts, through `dmChoiceFor`), so the two can't disagree.
  */
 export async function personalAgentFor(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,
   choices: Pick<DmAgentStore, 'get'>,
-): Promise<DmAgent | null> {
-  const chosen = await choices.get(userId);
-  const listed = await ownAgents(bus, ctx, userId);
-  const id = pickPersonalAgent(listed, userId, chosen);
-  if (id === null) return null;
-  return { id, name: listed.find((a) => a.id === id)?.displayName ?? '' };
+): Promise<DmRouting> {
+  return (await readDmRouting(bus, ctx, userId, choices)).routing;
 }
 
 /**
- * Whether `agentId` is `userId`'s own personal agent, by the list and the
- * rule `personalAgentFor` reads a choice with: so a choice the settings
- * write (agent-routes.ts) is one the next DM honors.
+ * What a Just-me agent's Slack settings say about their reader's DMs
+ * (agent-routes.ts): where a DM from `userId` goes (`personalAgentFor`), and
+ * whether `agentId` is one they may choose for it (`choosable`, the DM agent
+ * route's own question, `isOwnPersonalAgent`), from ONE read of their choice
+ * and their agents, so the page and the next DM can't disagree and the page
+ * never offers a choice that route refuses. A co-owner of someone else's
+ * Just-me agent (TASK-1246) may not choose it (TASK-1248).
+ */
+export async function dmChoiceFor(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  agentId: string,
+  choices: Pick<DmAgentStore, 'get'>,
+): Promise<DmRouting & { choosable: boolean }> {
+  const { listed, routing } = await readDmRouting(bus, ctx, userId, choices);
+  return { ...routing, choosable: pickPersonalAgent(listed, userId, agentId) === agentId };
+}
+
+/**
+ * Whether `agentId` is `userId`'s own Just-me personal agent, by the list
+ * and the rule `personalAgentFor` reads a choice with: so a choice the
+ * settings write (agent-routes.ts) is one the next DM honors. Never one
+ * shared with other people (TASK-1248), nor one they only co-own.
  */
 export async function isOwnPersonalAgent(
   bus: HookBus,
@@ -358,7 +418,7 @@ async function route(d: RouterDeps, install: InstallRow, envelope: SlackEnvelope
     log('info', 'slack_event_ignored', { reason: screened.reason });
     return;
   }
-  // A team agent's own bot answers mentions in channels, nothing else
+  // An agent's own bot answers mentions in channels, nothing else
   // (TASK-1167): its manifest asks for no DMs, and one its approver turns on
   // by hand on api.slack.com reaches nobody. Before any vault read or Slack call.
   if (screened.kind === 'dm' && install.kind !== 'shared') {
@@ -453,20 +513,23 @@ async function routeDm(
   }
 
   const ctx = lookupCtx(userId);
-  let agentId: string | null;
+  let routing: DmRouting;
   try {
-    // The one they chose, while it is still their own personal agent, else their oldest (TASK-1238).
-    agentId = (await personalAgentFor(d.bus, ctx, userId, d.dmAgents))?.id ?? null;
+    // The one they chose, while it is still their own Just-me personal agent, else their oldest (TASK-1238).
+    routing = await personalAgentFor(d.bus, ctx, userId, d.dmAgents);
   } catch (err) {
     // Their agents or their choice couldn't be read: "try again", and never the oldest instead.
     await failed('agents', err);
     return;
   }
-  if (agentId === null) {
-    log('info', 'slack_no_personal_agent');
-    await say(COPY.noAgent(d.publicOrigin));
+  if (routing.agent === null) {
+    // No agent of theirs may answer: they have none, or every one they made is shared with other
+    // people, and a shared agent answers no DMs (TASK-1248). Those are told so, not to make one.
+    log('info', 'slack_no_personal_agent', { sharedOnly: routing.ownSharedAgents });
+    await say(routing.ownSharedAgents ? COPY.agentsShared(d.publicOrigin) : COPY.noAgent(d.publicOrigin));
     return;
   }
+  const agentId = routing.agent.id;
 
   let conversationId: string;
   try {
@@ -605,7 +668,7 @@ async function routeMention(
   log: Log,
 ): Promise<void> {
   const installId = install.installId;
-  // The shared app answers in no channel (TASK-1186; design §4b.1): a team
+  // The shared app answers in no channel (TASK-1186; design §4b.1): a shared
   // agent is reached there only through its own bot. Before any binding read,
   // so a binding the shared app still has (one the boot hasn't deleted yet,
   // or an older replica wrote after it did) never runs a turn, and nothing is
@@ -674,10 +737,11 @@ async function routeMention(
   if (runsAsConnector(sender)) {
     // The connector is the bot's requester, copied into the binding at the
     // channel's first mention (TASK-1167; a Claim moves it), and they lend
-    // outsiders their identity only while still a team admin of the agent's
-    // team. Members never get here: they run as themselves.
+    // outsiders their identity only while they still manage the agent: a
+    // team admin of a team agent's team, an owner of a shared personal agent
+    // (TASK-1248). Members never get here: they run as themselves.
     try {
-      connectorAccess = await teamAdminAccess(d.bus, lookupCtx(connectorId), agentId, connectorId);
+      connectorAccess = await managerAccess(d.bus, lookupCtx(connectorId), agentId, connectorId);
     } catch (err) {
       await failed('connector-access', err);
       return;
@@ -690,7 +754,7 @@ async function routeMention(
   }
   if (tier.tier === 'unavailable') {
     log('warn', 'slack_channel_unavailable', { reason: tier.reason });
-    // Nobody connected a bot's channel by hand: what needs a team admin is the bot itself.
+    // Nobody connected a bot's channel by hand: what needs someone who manages the agent is the bot itself.
     await tell(COPY.botUnavailable);
     return;
   }
@@ -749,14 +813,14 @@ async function routeMention(
       await droppedReconnected();
       return;
     }
-    // An outsider runs as the bot's requester only while they are a team
-    // admin of the agent's team (TASK-1167). Asked at the mention, and again
-    // now: demoted while the turn waited, it never runs as them. Not knowing
-    // is no turn either. Members run as themselves.
+    // An outsider runs as the bot's requester only while they still manage
+    // the agent (TASK-1167, TASK-1248). Asked at the mention, and again now:
+    // demoted while the turn waited, it never runs as them. Not knowing is
+    // no turn either. Members run as themselves.
     if (external) {
       let still: AgentAccess;
       try {
-        still = await teamAdminAccess(d.bus, lookupCtx(runAs), agentId, runAs);
+        still = await managerAccess(d.bus, lookupCtx(runAs), agentId, runAs);
       } catch (err) {
         await failed('requester', err);
         return;
@@ -785,7 +849,7 @@ async function routeMention(
         case 'token-scope': {
           // The bot's own token can't read any public channel (its app lost
           // channels:read): nothing about this channel, so the binding stays. No
-          // retry fixes it, so no "try again": a team admin must look, as for a
+          // retry fixes it, so no "try again": someone who manages the agent must look, as for a
           // requester who can't vouch for outsiders (tier `unavailable`, step 5).
           log('error', 'slack_event_failed', { stage: 'channel-check', code: 'token-scope' });
           await tell(COPY.botUnavailable);
@@ -952,7 +1016,7 @@ async function admitMention(
 }
 
 /**
- * A team agent's own bot's steps 3–4 (TASK-1167). The sender first: a
+ * A shared agent's own bot's steps 3–4 (TASK-1167). The sender first: a
  * refused one costs no conversations.info and binds nothing, and a channel
  * with no binding is never "no agent here" (the bot serves its one agent
  * wherever it was invited). Then the channel's binding, or the one this
@@ -1003,7 +1067,7 @@ async function reachOwnBot(
     if (!outcome.ok) {
       const code = outcome.code !== undefined ? { code: outcome.code } : {};
       if (outcome.reason === 'token-scope') {
-        // As at the turn-start check (step 8): no retry fixes the bot's token, a team admin must.
+        // As at the turn-start check (step 8): no retry fixes the bot's token, someone who manages the agent must.
         log('error', 'slack_event_failed', { stage: 'channel-info', code: 'token-scope' });
         await say.tell(COPY.botUnavailable);
       } else if (outcome.reason === 'slack-error') {
@@ -1042,7 +1106,7 @@ type BindOutcome =
   | { ok: false; reason: 'channel-not-allowed' | 'slack-error' | 'token-scope'; code?: string };
 
 /**
- * A team agent's own bot binds a channel at its first mention there
+ * A shared agent's own bot binds a channel at its first mention there
  * (TASK-1167): Slack's own conversations.info, read with the bot's token,
  * must be about this channel and show one a bot may bind (channels.ts
  * `connectable`: live, not Slack Connect; public or private, TASK-1188, and

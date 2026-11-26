@@ -83,7 +83,7 @@ interface WorkspaceAgent {
 - `packages/channel-web/src/lib/workspace-route.ts`: the `sharing` settings section.
 - Components (new, in `packages/channel-web/src/components/workspace/`): `PeoplePicker.tsx`, `ShareConfirmDialog.tsx`, `AgentSharing.tsx`, `AudienceDialog.tsx`, `AgentOwners.tsx`, `AddOwnerDialog.tsx`.
 - Modified components: `AgentSettings.tsx`, `AgentSwitcher.tsx`, `AgentView.tsx`.
-- Docs: the design doc §10, the architecture doc, a changeset, a context shard, and the stale comments named in Tasks 2, 9 and 10.
+- Docs: the design doc §11 (renumbered: TASK-1248 took §10), the architecture doc, a changeset, a context shard, and the stale comments named in Tasks 2, 9 and 10.
 
 ---
 
@@ -716,7 +716,7 @@ Rules:
 ### Task 10: Docs, changeset, memory, and the PR's notes [tier: mechanical]
 
 **Files:**
-- Modify: `docs/plans/2026-11-25-agent-sharing-design.md`. Append **§10 Found while building phase 1B (TASK-1247)**, one bullet each:
+- Modify: `docs/plans/2026-11-25-agent-sharing-design.md`. Append **§11 Found while building phase 1B (TASK-1247)** (§10 at planning time; TASK-1248 took §10 first), one bullet each:
   - the people search route and its rules (names only, not matched on email, 2–64 characters, at most 10, 60 a minute);
   - the roster lists shared agents while every "agents you manage" list doesn't;
   - the audience never sees an agent's activity line;

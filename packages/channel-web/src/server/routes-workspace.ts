@@ -328,7 +328,13 @@ import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
 // a write (strict), of `agents:list-for-user`'s for the lists of agents the
 // caller manages (lenient), and of either for how the caller stands with an
 // agent on the roster and the agent view (lenient).
-import { agentAccess, hideAgentsSharedWithMe, ownsPersonalAgent } from './agent-ownership.js';
+// TASK-1248 — and of its `shared`, for a shared personal agent (strict).
+import {
+  agentAccess,
+  hideAgentsSharedWithMe,
+  isSharedPersonalAgent,
+  ownsPersonalAgent,
+} from './agent-ownership.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
 // than restated so the host and the browser cannot drift about where that
 // sentence ends (invariant 4) — the module is pure constants and one pure
@@ -443,9 +449,12 @@ interface ResolvedAgent {
    */
   ownerId?: string;
   /**
-   * TASK-1247 — does anyone but its owners use this agent? @ax/agents' one
-   * "is this agent shared?" answer (ask it, never `visibility`). Read only by
-   * the "Shared by" line.
+   * TASK-1248 — does anyone but its owners use this agent? `@ax/agents` says
+   * true for a team agent and for a personal agent shared with other people.
+   * Read only through {@link isSharedPersonalAgent} (`personal` and exactly
+   * `true`), so a personal answer without it keeps the "Just me" rules; a team
+   * agent keeps its own branch whatever this says. TASK-1247's "Shared by"
+   * line reads it the same way.
    */
   shared?: boolean;
   /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
@@ -2092,10 +2101,14 @@ const SHARED_BY_NAME_MAX_CHARS = 80;
  * didn't create the agent (a co-owner, or someone it is only shared with), and
  * only on an agent that is shared: a co-owned agent nobody else uses has no
  * sharer to name. Keyed on `shared`, @ax/agents' one "is it shared?" answer,
- * never on `visibility`; an answer that doesn't say `true` gets no line.
+ * read through TASK-1248's {@link isSharedPersonalAgent} (`personal` and
+ * exactly `true`); an answer that doesn't say so gets no line.
  */
-function showsSharedBy(agent: { shared?: unknown }, access: AgentAccess): boolean {
-  return (access === 'co-owner' || access === 'audience') && agent.shared === true;
+function showsSharedBy(
+  agent: { visibility?: unknown; shared?: unknown },
+  access: AgentAccess,
+): boolean {
+  return (access === 'co-owner' || access === 'audience') && isSharedPersonalAgent(agent);
 }
 
 /** TASK-1247 — how the caller stands with one agent, as its wire row says it. */
@@ -5960,14 +5973,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
     }
 
+    // Whose memory it is, off the RESOLVED agent: `'team'` ("shared with
+    // everyone who can use it") for a team agent and, since TASK-1248, for a
+    // personal agent shared with other people, whose memory @ax/memory shares
+    // the same way; `'personal'` for any other personal agent. Omitted when
+    // the answer says neither.
+    const factsVisibility =
+      agent.visibility === 'team' || isSharedPersonalAgent(agent)
+        ? ('team' as const)
+        : agent.visibility === 'personal'
+          ? ('personal' as const)
+          : undefined;
+
     return {
       rules,
       ...(factsAvailable
         ? {
             factsAvailable: true,
-            ...(agent.visibility === 'personal' || agent.visibility === 'team'
-              ? { factsVisibility: agent.visibility }
-              : {}),
+            ...(factsVisibility !== undefined ? { factsVisibility } : {}),
             ...(factsExtractionPaused ? { factsExtraction: 'paused' as const } : {}),
           }
         : {}),
@@ -6962,8 +6985,11 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * The sites are the AGENT's (TASK-1212). On a team agent that is every
    * site anybody on the team allowed, because every member's runs reach each
    * one, so every member is shown them all (H4: never understate reach) and
-   * `shared` says whose group it is. Only the agent's managers get a Revoke
-   * ({@link sitesRemovable}). The wall's rows stay the reader's own.
+   * `shared` says whose group it is. A personal agent shared with other
+   * people follows the same rule (TASK-1248): anyone it is shared with may
+   * keep a site for it, so its group is `shared` too. Only the agent's
+   * managers get a Revoke ({@link sitesRemovable}): a team agent's admins, a
+   * personal agent's owners. The wall's rows stay the reader's own.
    *
    * The wall's store is keyed by SUBJECT and has no "list them all" read, so we
    * ask once per skill and once per connection this agent carries.
@@ -6972,7 +6998,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     actor: { id: string; isAdmin: boolean },
     agent: ResolvedAgent,
   ): Promise<AgentRailData['grants']> {
-    const shared = agent.visibility === 'team';
+    const shared = agent.visibility === 'team' || isSharedPersonalAgent(agent);
     const hasSites = bus.hasService('host-grants:list');
     const hasWall = bus.hasService('skills:approved-caps-list');
     if (!hasSites && !hasWall) {

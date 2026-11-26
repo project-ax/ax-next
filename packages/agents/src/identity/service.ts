@@ -34,12 +34,14 @@ import type { IdentityStore } from './store.js';
 // save pass the same checks and the same `returns` schemas.
 //
 // Order on every hook: input shape (incl. `input.agentId === ctx.agentId`) →
-// the agent exists → `ctx.userId` reaches it (`checkAccess`). TASK-1246: a
-// person's `set` (any `author` but 'agent') on any agent but a team one also
-// needs `ctx.userId` to be one of its owners. Then `set` normalises, caps the
-// Instructions, scans every non-empty section (fail closed) and
-// compare-and-sets; `saved` and `completed` announce
-// `system-prompt:augment-changed`.
+// the agent exists → `ctx.userId` reaches it (`checkAccess`). `set` and
+// `complete-bootstrap` on any agent but a team one also need `ctx.userId` to
+// be one of its owners (`requireMayChange`): a person's write since TASK-1246,
+// and since TASK-1248 the agent's own too (`author: 'agent'`, and finishing
+// its first-run setup), so it never changes who it is in the turn of someone
+// it is only shared with. Then `set` normalises, caps the Instructions, scans
+// every non-empty section (fail closed) and compare-and-sets; `saved` and
+// `completed` announce `system-prompt:augment-changed`.
 //
 // Never logged: identity, soul or Instructions text, or a scanner's reason.
 // Logged: agentId, section names, revision, refusal code, scan category, an
@@ -258,6 +260,29 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
     return { agent, owner: acl.owner };
   }
 
+  /**
+   * Throws unless `ctx.userId` may change who the agent is: its identity,
+   * soul or Instructions, or the end of its first-run setup. That is
+   * `requireAccess` and, on any agent but a team one (a team agent has no
+   * owners, so any member may), one of its owners, whoever writes: the person
+   * (TASK-1246) or the agent itself in their turn (TASK-1248). Otherwise the
+   * agent's own tools would change it on the say-so of someone it is only
+   * shared with, and its identity and soul reach every session's prompt, its
+   * owners' routines included. Someone it is only shared with still reads it
+   * (`get`).
+   */
+  async function requireMayChange(ctx: AgentContext, agentId: string, hookName: string): Promise<void> {
+    const { agent, owner } = await requireAccess(ctx, agentId, hookName);
+    if (agent.visibility !== 'team' && !owner) {
+      throw new PluginError({
+        code: 'forbidden',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `only an owner of agent '${agentId}' may change it`,
+      });
+    }
+  }
+
   async function scan(
     ctx: AgentContext,
     agentId: string,
@@ -312,19 +337,8 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
 
     async set(ctx, input) {
       const { agentId, patch, expectedRevision, author } = parseSetInput(ctx, input);
-      const access = await requireAccess(ctx, agentId, AGENTS_IDENTITY_SET_HOOK);
-      // TASK-1246 — a person's write changes the agent's settings, so on any
-      // agent but a team one only its owners make it. Someone it is only
-      // shared with still reads it, and the agent's own write in their turn
-      // (`author: 'agent'`) still saves. Any member writes a team agent.
-      if (author !== 'agent' && access.agent.visibility !== 'team' && !access.owner) {
-        throw new PluginError({
-          code: 'forbidden',
-          plugin: PLUGIN_NAME,
-          hookName: AGENTS_IDENTITY_SET_HOOK,
-          message: `only an owner of agent '${agentId}' may change it`,
-        });
-      }
+      // Any `author`: the agent's own write in a turn is that turn's person's.
+      await requireMayChange(ctx, agentId, AGENTS_IDENTITY_SET_HOOK);
 
       // Normalise: trailing whitespace goes, so a whitespace-only section is
       // stored empty (and counts as empty for complete-bootstrap).
@@ -383,7 +397,8 @@ export function createIdentityService(deps: IdentityServiceDeps): IdentityServic
 
     async completeBootstrap(ctx, input) {
       const agentId = parseAgentIdInput(ctx, input, AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK);
-      await requireAccess(ctx, agentId, AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK);
+      // Finishing first-run setup changes who the agent is from its next message.
+      await requireMayChange(ctx, agentId, AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK);
       const result = await deps.identity.completeBootstrap(agentId);
       if (result.kind === 'completed') {
         ctx.logger.info('agent_bootstrap_completed', { agentId, revision: result.record.revision });

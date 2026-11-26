@@ -2633,6 +2633,187 @@ describe('status', () => {
   });
 });
 
+// ── A personal agent shared with other people (TASK-1248) ───────────────────
+
+/*
+  A personal agent whose agents:resolve answer says `shared: true` gets a bot
+  as a team agent does, with its owners where a team agent has its team
+  admins (channels.ts `managerAccess`): any owner asks for it and finishes it
+  with their own token; an AX admin's approve goes live only while the owner
+  who asked is still one; and once they aren't, its outsiders need someone to
+  take it over. Who is an owner comes from the same resolve answer
+  (`isOwner`): agents:can-set-shared-credential, which says no to every
+  personal agent, is never asked.
+*/
+describe('a personal agent shared with other people (TASK-1248)', () => {
+  /** Made the agent and shared it with everyone. */
+  const ALICE = 'usr_alice';
+  /** A co-owner of Alice's agent. */
+  const CAROL = 'usr_carol';
+  /** Any other AX user: the agent is shared with him, and he owns none of it. */
+  const BOB = 'usr_bob';
+  /** Alice's personal agent, shared with everyone; Carol co-owns it (TASK-1246). */
+  const SHARED: FakeAgent = {
+    id: 'agt_alice',
+    displayName: "Alice's agent",
+    visibility: 'personal',
+    ownerType: 'user',
+    ownerId: ALICE,
+    audience: 'everyone',
+    coOwners: [CAROL],
+  };
+  const ALICE_STORED = fakeConfigRefreshToken('ALICESTOREDSECRET');
+  const CAROL_STORED = fakeConfigRefreshToken('CAROLSTOREDSECRET');
+  /** Carol's open request for its bot, waiting for an AX admin (TASK-1169). */
+  const SHARED_REQUEST = 'QWxpY2VzQm90QXNrMDAwMQ';
+
+  /** The shared app live, Alice's agent beside the team agents, its people known to auth, each owner's token stored. */
+  async function sharedWorld(): Promise<World> {
+    const w = world();
+    w.people.addAgent(SHARED);
+    for (const [id, displayName] of [
+      [ALICE, 'Alice Smith'],
+      [CAROL, 'Carol Chen'],
+      [BOB, 'Bob Jones'],
+    ] as const) {
+      w.users.set(id, { id, displayName, email: `${id.slice(4)}@canopyworks.example`, isAdmin: false });
+    }
+    await seedShared(w);
+    w.vault.set(configTokenRef(ALICE), ALICE_STORED);
+    w.vault.set(configTokenRef(CAROL), CAROL_STORED);
+    return w;
+  }
+  /** Alice's agent's bot, if it has one. */
+  const sharedBot = (w: World): Row | undefined =>
+    [...w.memory.rows.values()].find((r) => r.kind === 'bot' && r.agentId === SHARED.id);
+  /** Alice takes Carol off its owners. It is still shared with her, as with everyone. */
+  const carolNoLongerAnOwner = (w: World): void => {
+    w.people.agents.set(SHARED.id, { ...SHARED, coOwners: [] });
+  };
+  /** Back to Just me: its owners can use it, and nobody else. */
+  const justMe = (w: World): void => {
+    w.people.agents.set(SHARED.id, { ...SHARED, audience: 'just-me' });
+  };
+
+  it('an owner of a shared agent asks for its bot and, with their own Slack token, finishes it: its creator or a co-owner, from the resolve answer alone', async () => {
+    for (const [owner, stored] of [
+      [ALICE, ALICE_STORED],
+      [CAROL, CAROL_STORED],
+    ] as const) {
+      const w = await sharedWorld();
+
+      expect(await w.request({ as: owner, agentId: SHARED.id }), owner).toEqual({
+        status: 200,
+        body: { installUrl: expect.any(String), iconSet: true },
+      });
+      // The self path: their own stored token makes the app, and they are its requester and its approver.
+      expect(w.slack.calls.filter((c) => c.method === 'rotateConfigToken').map((c) => c.args), owner).toEqual([[stored]]);
+      const bot = sharedBot(w);
+      expect(bot, owner).toMatchObject({
+        status: 'pending',
+        agentId: SHARED.id,
+        requestedByUserId: owner,
+        connectedByUserId: owner,
+      });
+
+      expect(await w.finish(owner, bot!.installId), owner).toEqual({ outcome: 'connected' });
+      expect(sharedBot(w), owner).toMatchObject({ status: 'active', requestedByUserId: owner, connectedByUserId: owner });
+      // Asked once at the ask and again at the Allow, about themselves; never the team-admin question, never auth.
+      expect(w.people.inputs('agents:resolve'), owner).toEqual([
+        { agentId: SHARED.id, userId: owner },
+        { agentId: SHARED.id, userId: owner },
+      ]);
+      expect(w.people.inputs('agents:can-set-shared-credential'), owner).toEqual([]);
+      expect(w.auth.asked, owner).toEqual([]);
+    }
+
+    // Bob can use it, but isn't one of its owners: refused before anything is read or spent.
+    const w = await sharedWorld();
+    forget(w);
+    expect(await w.request({ as: BOB, agentId: SHARED.id })).toEqual({ status: 403, body: { error: 'forbidden' } });
+    expect(reached(w)).toEqual([]);
+    expect(sharedBot(w)).toBeUndefined();
+  });
+
+  it('the AX-admin path finishes only while the owner who asked is still an owner', async () => {
+    /** Carol asked for the bot; Hedy, an AX admin who can't use the agent, approved it with her own token. */
+    const approved = async (): Promise<{ w: World; installId: string }> => {
+      const w = await sharedWorld();
+      await seedRequest(w, { requestId: SHARED_REQUEST, agentId: SHARED.id, by: CAROL });
+      w.vault.set(configTokenRef(HEDY), HEDY_STORED);
+      expect(await w.create({ approver: HEDY, requester: CAROL, requestId: SHARED_REQUEST, agentId: SHARED.id })).toMatchObject({
+        status: 200,
+      });
+      const bot = sharedBot(w);
+      if (bot === undefined) throw new Error('the approve made no bot');
+      forget(w);
+      return { w, installId: bot.installId };
+    };
+
+    // Carol is still an owner: live, as a team admin's request goes live.
+    const ok = await approved();
+    expect(await ok.w.finish(HEDY, ok.installId)).toEqual({ outcome: 'connected' });
+    expect(sharedBot(ok.w)).toMatchObject({ status: 'active', connectedByUserId: HEDY, requestedByUserId: CAROL });
+    // Hedy is asked whether she is an AX admin; @ax/agents only whether Carol is still an owner.
+    expect(ok.w.auth.asked).toEqual([HEDY]);
+    expect(ok.w.people.inputs('agents:resolve')).toEqual([{ agentId: SHARED.id, userId: CAROL }]);
+    expect(ok.w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+
+    // Alice takes Carol off its owners before Hedy's Allow: Carol can still use it, and vouches for nobody.
+    const removed = await approved();
+    carolNoLongerAnOwner(removed.w);
+    expect(await removed.w.finish(HEDY, removed.installId)).toEqual({ outcome: 'failed', reason: 'requester-not-admin' });
+
+    // Back to Just me before the Allow: a Just-me agent has no bot.
+    const narrowed = await approved();
+    justMe(narrowed.w);
+    expect(await narrowed.w.finish(HEDY, narrowed.installId)).toEqual({ outcome: 'failed', reason: 'personal-agent' });
+
+    for (const w of [removed.w, narrowed.w]) {
+      expect(w.slack.calls).toEqual([]);
+      expect(sharedBot(w)).toMatchObject({ status: 'pending' });
+      expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+    }
+  });
+
+  it('needsClaim is true once the owner who asked is no longer an owner, asked afresh about them at every read', async () => {
+    const w = await sharedWorld();
+    const installId = await addBot(w, { agentId: SHARED.id, approver: CAROL, botName: BOT_NAME, handle: 'alicehelper' });
+    const status = (as: string, manages: boolean) =>
+      w.status({ as, manages, sharedActive: true, agentId: SHARED.id });
+    // Carol asked for it and approved it; Alice reads it unless told otherwise.
+    const live = (o: { needsClaim?: boolean; manages?: boolean; viewerIsApprover?: boolean } = {}) => ({
+      state: 'live',
+      botName: BOT_NAME,
+      handle: 'alicehelper',
+      approver: 'Carol Chen',
+      approverGone: false,
+      viewerIsApprover: o.viewerIsApprover ?? false,
+      needsClaim: o.needsClaim ?? false,
+      installId: (o.manages ?? true) ? installId : null,
+    });
+
+    // Carol is an owner: nobody needs to take it over, whoever reads it.
+    expect(await status(ALICE, true)).toEqual(live());
+    expect(await status(CAROL, true)).toEqual(live({ viewerIsApprover: true }));
+    expect(await status(BOB, false)).toEqual(live({ manages: false }));
+
+    // Alice takes Carol off its owners: its outsiders need a claim, whoever reads it.
+    carolNoLongerAnOwner(w);
+    expect(await status(ALICE, true)).toEqual(live({ needsClaim: true }));
+    expect(await status(BOB, false)).toEqual(live({ needsClaim: true, manages: false }));
+
+    // Nothing was kept: an owner again, and the very next read says so.
+    w.people.agents.set(SHARED.id, SHARED);
+    expect(await status(ALICE, true)).toEqual(live());
+
+    // Asked about the requester each time, from the resolve answer alone.
+    expect(w.people.inputs('agents:resolve')).toHaveLength(6);
+    for (const input of w.people.inputs('agents:resolve')) expect(input).toEqual({ agentId: SHARED.id, userId: CAROL });
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+  });
+});
+
 // ── removeForAgent ──────────────────────────────────────────────────────────
 
 describe('removeForAgent', () => {

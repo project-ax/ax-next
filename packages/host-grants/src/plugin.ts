@@ -10,7 +10,8 @@
  * Callers' contract: host-grants checks no ACL. Before `host-grants:grant`, a
  * caller proves the person may use the agent; before `host-grants:revoke`, that
  * they may manage it. Each writer gating on the agent's own ACL is what keeps a
- * personal agent's list its owner's.
+ * personal agent's list to its owners' adds, and on a shared personal agent
+ * to the adds of anyone who can use it (TASK-1248).
  */
 import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
 import type { Kysely } from 'kysely';

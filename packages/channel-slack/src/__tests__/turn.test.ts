@@ -361,7 +361,8 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
   });
   slackCalls = () => slack.calls;
 
-  const request = (mode: TurnMode, remembered = true): TurnRequest => ({
+  /** The turn the router would ask for; `over` names another user, agent or conversation. */
+  const request = (mode: TurnMode, remembered = true, over: Partial<TurnRequest> = {}): TurnRequest => ({
     mode,
     remembered,
     label: LABEL,
@@ -377,6 +378,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     // As Slack sends `is x < 3?`.
     text: 'is x &lt; 3?',
     names: new Map(),
+    ...over,
   });
 
   /** The invoked turn's own events, sent by the test: under the first invoke's reqId. */
@@ -414,7 +416,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
     reply: () => replyOf(slack.calls),
     /** The reply's own text: what its stream carried, without any message posted after it. */
     streamed: () => replyOf(slack.calls.filter((c) => c.method.endsWith('Stream'))),
-    run: (mode: TurnMode, remembered = true) =>
+    run: (mode: TurnMode, remembered = true, over: Partial<TurnRequest> = {}) =>
       runTurn(
         {
           bus,
@@ -425,7 +427,7 @@ function harness(script: Script = {}, o: HarnessOptions = {}) {
           logger,
           clock: systemClock,
         },
-        request(mode, remembered),
+        request(mode, remembered, over),
       ),
   };
 }
@@ -824,6 +826,31 @@ describe('runTurn: a held call the person who wrote can answer gets a prompt aft
     const h = harness({ chunks: [SAID, ...heldCall('toolu_held')] }, { decisions: [decisionRow('dec_held', 'toolu_held')] });
     await h.run('external');
     expect(h.reply()).toBe(`Let me send that.\n\n${COPY.heldForOwner}`);
+    expect(h.lookups).toEqual([]);
+    expect(h.calls().map((c) => c.method)).not.toContain('postBlocks');
+    expect(h.prompts.size()).toBe(0);
+  });
+
+  /*
+    TASK-1248: a personal agent shared with other people has its own bot, and
+    its outsiders' turns run as the owner who set the bot up (the router
+    decides, channel-route.ts). The turn is the same as a team agent's: it
+    runs as that owner, so @ax/decisions files the held call under them and
+    it waits in their Today; the outsider can't answer it.
+  */
+  it("an outsider's turn on a shared agent: its owner's line, no lookup and no prompt; the held call waits for the owner the turn runs as", async () => {
+    const h = harness(
+      { chunks: [SAID, ...heldCall('toolu_held')] },
+      { decisions: [decisionRow('dec_held', 'toolu_held', { agentId: 'agt_alice', ownerUserId: 'usr_carol' })] },
+    );
+    // Carol co-owns Alice's agent and set its bot up: the outsider's turn runs as her.
+    await h.run('external', true, { userId: 'usr_carol', agentId: 'agt_alice', conversationId: 'conv_alice_external' });
+
+    expect(h.reply()).toBe(`Let me send that.\n\n${COPY.heldForOwner}`);
+    // The call was made as Carol, an outsider's turn: @ax/decisions files what it holds under her.
+    expect(h.invokes.map(({ ctx }) => [ctx.userId, ctx.agentId, ctx.conversationId, ctx.source, ctx.audience])).toEqual([
+      ['usr_carol', 'agt_alice', 'conv_alice_external', 'external', 'shared'],
+    ]);
     expect(h.lookups).toEqual([]);
     expect(h.calls().map((c) => c.method)).not.toContain('postBlocks');
     expect(h.prompts.size()).toBe(0);
@@ -2145,6 +2172,43 @@ describe('pickPersonalAgent: an agent only shared with the user is never theirs 
     expect(pickPersonalAgent([shared], 'usr_bob', 'agt_alice_shared')).toBeNull();
     // Its owner still gets it.
     expect(pickPersonalAgent([shared], 'usr_alice', 'agt_alice_shared')).toBe('agt_alice_shared');
+  });
+});
+
+describe('pickPersonalAgent: a shared agent never answers DMs (TASK-1248)', () => {
+  // Bob's own personal agents, as agents:list-for-user lists them, `shared` carried as the router
+  // reads it (router.ts `agentsOf`): only a boolean, and absent when the answer has none.
+  const bobs = (id: string, createdAt: string, shared?: boolean) => ({
+    id,
+    ownerId: 'usr_bob',
+    ownerType: 'user',
+    visibility: 'personal',
+    ...(shared === undefined ? {} : { shared }),
+    createdAt: new Date(createdAt),
+  });
+  // The oldest is shared with other people, so oldest-wins alone would take it.
+  const sharedOldest = bobs('agt_bob_shared', '2026-01-01T00:00:00Z', true);
+  const justMe = bobs('agt_bob_justme', '2026-03-01T00:00:00Z', false);
+  // An answer that carries no `shared` keeps today's rule: it may answer.
+  const unsaid = bobs('agt_bob_unsaid', '2026-05-01T00:00:00Z');
+  const sharedChosen = bobs('agt_bob_shared_new', '2026-10-01T00:00:00Z', true);
+  const all = [sharedChosen, unsaid, justMe, sharedOldest];
+
+  it('skips a shared agent, even the chosen one, and falls back to the oldest unshared', () => {
+    expect(pickPersonalAgent(all, 'usr_bob')).toBe('agt_bob_justme');
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_shared_new')).toBe('agt_bob_justme');
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_shared')).toBe('agt_bob_justme');
+    // A Just-me choice is honored beside them, and so is one whose answer said nothing.
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_justme')).toBe('agt_bob_justme');
+    expect(pickPersonalAgent(all, 'usr_bob', 'agt_bob_unsaid')).toBe('agt_bob_unsaid');
+    // With the Just-me one gone, the one whose answer said nothing is the oldest that may answer.
+    expect(pickPersonalAgent([sharedChosen, unsaid, sharedOldest], 'usr_bob', 'agt_bob_shared')).toBe('agt_bob_unsaid');
+  });
+
+  it('a person whose only agents are shared has none to pick, whatever they chose', () => {
+    expect(pickPersonalAgent([sharedChosen, sharedOldest], 'usr_bob')).toBeNull();
+    expect(pickPersonalAgent([sharedChosen, sharedOldest], 'usr_bob', 'agt_bob_shared_new')).toBeNull();
+    expect(pickPersonalAgent([sharedOldest], 'usr_bob', 'agt_bob_shared')).toBeNull();
   });
 });
 

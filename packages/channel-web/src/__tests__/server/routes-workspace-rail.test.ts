@@ -127,6 +127,12 @@ interface AgentRecord {
    * `agents:resolve` admits them too, with `isOwner: false`.
    */
   sharedWith?: string[];
+  /**
+   * TASK-1248 — `agents:resolve`'s "is this agent shared?" answer, passed
+   * through as given. Absent unless a test sets it (an answer that doesn't
+   * say), and `unknown` because some tests answer junk on purpose.
+   */
+  shared?: unknown;
 }
 
 interface StoredDecisionLike {
@@ -1997,6 +2003,83 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     const captured = await revokeSite('a-shared');
     expect(captured).toEqual({ statusCode: 503, body: { error: 'grants-unavailable' } });
     expect(revoked).toEqual([]);
+  });
+
+  // TASK-1248 — a personal agent shared with other people follows the team
+  // rule: anyone who can use it may keep a site for it, and every run of it
+  // reaches each one, so its sites read as one shared group. Removing one is
+  // still its owners' (TASK-1246), so the Revoke rule above is unchanged.
+  it("a shared personal agent's sites read as shared (grants.shared true)", async () => {
+    registerGrants();
+    registerManage();
+    agents.set(
+      'a-shared',
+      agent({ id: 'a-shared', ownerId: 'u2', sharedWith: ['u1'], shared: true }),
+    );
+    siteGrants.set('a-shared', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+    manageAnswers.set('u1', { allowed: false });
+
+    // Someone it is shared with: the whole shared group, and no Revoke.
+    const asSharee = (await railFor('a-shared')).body as AgentRailData;
+    expect(asSharee.grants).toMatchObject({ status: 'ok', shared: true });
+    expect(asSharee.grants.rows.map((g) => [g.label, g.revocable])).toEqual([
+      ['api.linear.app', false],
+    ]);
+    // …and their revoke is still 403, with nothing removed.
+    const refused = await revokeSite('a-shared');
+    expect(refused).toEqual({ statusCode: 403, body: { error: 'forbidden' } });
+    expect(revoked).toEqual([]);
+
+    // Its owner reads the same shared group, and takes a site back without
+    // the manage check being asked.
+    caller = { id: 'u2', isAdmin: false };
+    manageCalls = [];
+    const asOwner = (await railFor('a-shared')).body as AgentRailData;
+    expect(asOwner.grants).toMatchObject({ status: 'ok', shared: true });
+    expect(asOwner.grants.rows.map((g) => [g.label, g.revocable])).toEqual([
+      ['api.linear.app', true],
+    ]);
+    const removed = await revokeSite('a-shared');
+    expect(removed).toEqual({ statusCode: 200, body: { revoked: true } });
+    expect(revoked).toEqual([{ agentId: 'a-shared', host: 'api.linear.app' }]);
+    expect(manageCalls).toEqual([]);
+  });
+
+  // Only an exact `shared: true` on a personal agent says "shared". An answer
+  // that doesn't say, or says it some other way, keeps the owner's own group.
+  it.each([
+    ['false', false],
+    ['missing', undefined],
+    ["the string 'true'", 'true'],
+    ['the number 1', 1],
+  ])("a personal agent whose answer's shared is %s reads as not shared", async (_label, shared) => {
+    registerGrants();
+    agents.set('a1', agent({ id: 'a1', ...(shared === undefined ? {} : { shared }) }));
+    siteGrants.set('a1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+
+    const body = (await railFor('a1')).body as AgentRailData;
+    expect(body.grants).toMatchObject({ status: 'ok', shared: false });
+    // The owner's Revoke is unchanged either way.
+    expect(body.grants.rows[0]?.revocable).toBe(true);
+  });
+
+  it('a team agent reads as shared whatever its answer says about shared (unchanged)', async () => {
+    registerGrants();
+    siteGrants.set('t1', [{ host: 'api.linear.app', grantedAt: '2026-08-14T09:00:00.000Z' }]);
+    for (const shared of [undefined, true, false]) {
+      agents.set(
+        't1',
+        agent({
+          id: 't1',
+          ownerId: 'team-1',
+          visibility: 'team',
+          teamMembers: ['u1'],
+          ...(shared === undefined ? {} : { shared }),
+        }),
+      );
+      const body = (await railFor('t1')).body as AgentRailData;
+      expect(body.grants).toMatchObject({ status: 'ok', shared: true });
+    }
   });
 
   it('on a team agent, a missing or throwing manage check means no Revoke', async () => {

@@ -27,13 +27,15 @@ import { logCode } from './log-code.js';
 // `speakerNames`); a thread this lets memory learn from is answered with
 // them, added after any an earlier subscriber put in the payload. Memory
 // reads a subject made of them as the speaker, and never files anything
-// under the name itself: on a team agent (every channel's agent, since only
-// a team agent has a bot) it files what the member says about themself under
-// the member's own AX key, the one their web chats use, kept for the team
-// (TASK-1204); in an outsider's turn, or a personal agent's shared turn, it
-// drops it. A thread's names are its one member's (one conversation per
-// member), which is all memory may be told on a team agent: another person's
-// name would file what's said about them under this member. A dropped name
+// under the name itself: on a shared agent (every channel's agent, since
+// only a team agent or a personal agent shared with other people has a bot,
+// TASK-1248) it files what the member says about themself under the member's
+// own AX key, the one their web chats use, kept for everyone who can use the
+// agent (TASK-1204); in an outsider's turn, or a Just-me personal agent's
+// shared turn, it drops it. A thread's names are its one member's (one
+// conversation per member), which is all memory may be told on a shared
+// agent: another person's name would file what's said about them under this
+// member. A dropped name
 // would let what the member says about themself through under that name, so
 // this never drops one: past what one answer may carry, or on a payload it
 // can't read, it refuses instead. The names are never logged.

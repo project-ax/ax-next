@@ -254,7 +254,10 @@ const MEMORY_OPS_REASONING = 'minimal' as const;
  *   a shared one, borrow another owner, or point at another agent. Sharing
  *   is a property of the RESOLVED agent — `resolveMemoryAccess` asks
  *   `agents:resolve` on every operation — and never of the request, so the
- *   payload cannot carry it.
+ *   payload cannot carry it. The same goes for `shared` and `isOwner`, the
+ *   facts `agents:resolve` answers about an agent and the person asking
+ *   (TASK-1246), and for `memberCheck`, how memory proves who may be named
+ *   where an agent's memory is shared (TASK-1248).
  * - `audience` decides which rows a turn may recall (TASK-1091). The host
  *   stamps it on `ctx`, and a payload that could set it could widen a shared
  *   turn's read back to every row.
@@ -276,6 +279,11 @@ const FORBIDDEN_PAYLOAD_FIELDS = [
   'ownerType',
   'teamId',
   'agentId',
+  // TASK-1248: sharing facts only `agents:resolve` answers, and memory's own
+  // proof of who may be named.
+  'shared',
+  'isOwner',
+  'memberCheck',
   // Also the read-only display field on `MemoryStatement`, refused like
   // `savedBy` so a caller echoing it back learns it did nothing.
   'audience',
@@ -651,12 +659,16 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
             }))),
         // TASK-1209: on a team agent another member's memories read by their
         // display name (`member-names.ts`), asked only about a proven current
-        // member of the agent's team. Only labels depend on either, so
-        // without one of them they read "a teammate" and every read still
-        // answers.
+        // member of the agent's team. Every name comes from `auth:get-user`,
+        // so without it nobody is named on any agent whose memory is shared,
+        // a personal agent shared with other people included (TASK-1248).
+        // `teams:is-member` is the proof for a team agent only. Only labels
+        // depend on either, so without one of them they read "a teammate"
+        // and every read still answers.
         {
           hook: AUTH_GET_USER_HOOK,
-          degradation: 'on a team agent, another member\'s memories read "a teammate" instead of their name',
+          degradation:
+            'on an agent whose memory is shared (a team agent, or a personal agent shared with other people), another person\'s memories read "a teammate" instead of their name',
         },
         {
           hook: TEAMS_IS_MEMBER_HOOK,
@@ -853,12 +865,13 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
                 // design §6.1's "never post-filter a widened pool". It is also
                 // the only version that works at all: the engine's `FactRecord`
                 // does not carry an owner, so there is nothing here to filter
-                // ON. A team agent widens the same push-down deliberately:
-                // `memoryReadScope` omits the owner filter only after
-                // `agents:resolve` proved this caller is a current member of a
-                // team agent, and the rows are that agent's shared knowledge —
+                // ON. An agent whose memory is shared (a team agent, or a
+                // personal agent shared with other people, TASK-1248) widens
+                // the same push-down deliberately: `memoryReadScope` omits the
+                // owner filter only after `agents:resolve` let this caller use
+                // that agent, and the rows are that agent's shared knowledge —
                 // never another agent's, never another person's under a
-                // personal agent.
+                // Just-me agent.
                 //
                 // The conversation feed (TASK-626) is the one read that does NOT
                 // widen on a team agent: a conversation belongs to one person,
@@ -1083,12 +1096,14 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
           // own key: only owner routes send them.)
           const ownSubject = isOutsiderTurn(ctx) ? undefined : rewriteSpeaker(SPEAKER_SUBJECT, ownerUserId);
           // Every other member's key on this page, by their display name
-          // (TASK-1209): only on a team agent, only in a turn whose recall
-          // reads everything, only for a current member of its team, and
-          // never failing the read. The caller (`ownSubject`) is asked too
-          // when another member key is on the page, only so a teammate who
-          // takes their name reads "a teammate" (TASK-1213). Empty on a
-          // personal agent, which asks nobody.
+          // (TASK-1209): only on an agent whose memory is shared (a team
+          // agent, or a personal agent shared with other people, TASK-1248),
+          // only in a turn whose recall reads everything, only for someone
+          // who can use the agent now, and never failing the read. The
+          // caller (`ownSubject`) is asked too when another member key is on
+          // the page, only so a teammate who takes their name reads "a
+          // teammate" (TASK-1213). Empty on a Just-me agent, which asks
+          // nobody.
           const labels = await memberLabels(bus, ctx, access, page.map((row) => row.about), ownSubject);
 
           // Per-answer conversation ordinals (design doc "Signal" section,
@@ -1129,10 +1144,10 @@ export function createMemoryPlugin(config: MemoryPluginConfig = {}): Plugin {
               return {
                 ...mapped,
                 // Another person's speaker subject is `user:<their id>`; a
-                // caller is never handed that id. On a team agent a current
-                // member's reads as their display name where `memberLabels`
-                // has one; anyone else's, "a teammate". Only the caller's own
-                // key reads `you`.
+                // caller is never handed that id. On an agent whose memory is
+                // shared a current member's reads as their display name where
+                // `memberLabels` has one; anyone else's, "a teammate". Only
+                // the caller's own key reads `you`.
                 aboutText:
                   ownSubject !== undefined && row.about === ownSubject
                     ? 'you'

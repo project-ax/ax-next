@@ -14,11 +14,16 @@
  *     the workspace roster and the agent view, and is LENIENT in the same way.
  *     The rows it calls `audience` are exactly the rows the managed lists
  *     leave out, and that agreement is pinned below.
+ *
+ * TASK-1248 — and the one reading of `shared`. `isSharedPersonalAgent` widens
+ * who keeps a site and who sees memory as shared, so it is STRICT too: only an
+ * answer that says `personal` AND `shared: true` is a shared personal agent.
  */
 import { describe, it, expect } from 'vitest';
 import {
   agentAccess,
   hideAgentsSharedWithMe,
+  isSharedPersonalAgent,
   ownsPersonalAgent,
 } from '../../server/agent-ownership.js';
 
@@ -154,5 +159,42 @@ describe('agentAccess', () => {
         }
       }
     }
+  });
+});
+
+describe('isSharedPersonalAgent (TASK-1248)', () => {
+  it('is true only for personal + shared true; false for shared false or missing, or a team agent', () => {
+    expect(isSharedPersonalAgent({ visibility: 'personal', shared: true })).toBe(true);
+    // Whoever is asking: one of its owners, or someone it is shared with.
+    const asOwner = { visibility: 'personal', shared: true, isOwner: true };
+    const asSharee = { visibility: 'personal', shared: true, isOwner: false };
+    expect(isSharedPersonalAgent(asOwner)).toBe(true);
+    expect(isSharedPersonalAgent(asSharee)).toBe(true);
+
+    // "Just me".
+    expect(isSharedPersonalAgent({ visibility: 'personal', shared: false })).toBe(false);
+    // An answer that doesn't say keeps the Just-me rule: never assumed shared.
+    expect(isSharedPersonalAgent({ visibility: 'personal' })).toBe(false);
+    // A team agent keeps its own branch; this asks about personal agents only.
+    expect(isSharedPersonalAgent({ visibility: 'team', shared: true })).toBe(false);
+    // An answer that doesn't say what the agent is.
+    expect(isSharedPersonalAgent({ shared: true })).toBe(false);
+    expect(isSharedPersonalAgent({})).toBe(false);
+  });
+
+  it('reads the two words exactly: a truthy look-alike is not shared', () => {
+    for (const shared of ['true', 1, 'yes', {}, [true], null]) {
+      expect(isSharedPersonalAgent({ visibility: 'personal', shared }), String(shared)).toBe(false);
+    }
+    for (const visibility of ['Personal', 'personal ', 'user', null, undefined]) {
+      expect(isSharedPersonalAgent({ visibility, shared: true }), String(visibility)).toBe(false);
+    }
+  });
+
+  it('never reads audience: shared is the one answer (TASK-1246)', () => {
+    const saysEveryoneOnly = { visibility: 'personal', audience: 'everyone' };
+    expect(isSharedPersonalAgent(saysEveryoneOnly)).toBe(false);
+    const saysSharedOnly = { visibility: 'personal', shared: true, audience: 'just-me' };
+    expect(isSharedPersonalAgent(saysSharedOnly)).toBe(true);
   });
 });

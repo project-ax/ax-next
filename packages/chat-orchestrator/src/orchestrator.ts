@@ -503,6 +503,15 @@ interface AgentRecord extends AgentLimitSettings {
   ownerId: string;
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
+  /**
+   * TASK-1246 — is the turn's person (the `userId` resolve was asked about)
+   * one of this agent's owners? Always false on a team agent, which has none.
+   * Absent from a resolve that predates the field. Read only to decide whether
+   * the session offers the identity tools and first-run setup (TASK-1248,
+   * `mayChangeIdentity` at spawn): UX, never a grant. @ax/agents' identity
+   * hooks refuse a non-owner's write themselves.
+   */
+  isOwner?: boolean;
   displayName: string;
   allowedTools: string[];
   mcpConfigIds: string[];
@@ -1828,11 +1837,13 @@ const COMPLETE_BOOTSTRAP_TOOL = 'complete_bootstrap';
  * (TASK-989) and applied only when `agents:identity:get` exists.
  *
  * - `update_identity` is offered iff a person with access is present
- *   (`attended`, `isAttendedTurn(ctx)`): an unattended run — a routine, a task
- *   check-in, or an external turn (TASK-1091) — never rewrites the agent's
- *   identity.
- * - `complete_bootstrap` is offered iff `attended && bootstrapMode`: there is
- *   nothing to finish outside a first-run chat.
+ *   (`attended`, `isAttendedTurn(ctx)`) who may change who the agent is
+ *   (`mayChangeIdentity`, TASK-1248: any member of a team agent, or one of a
+ *   personal agent's owners). An unattended run — a routine, a task check-in,
+ *   or an external turn (TASK-1091) — never rewrites the agent's identity,
+ *   and nor does the turn of someone a personal agent is only shared with.
+ * - `complete_bootstrap` is offered iff, on top of that, `bootstrapMode`:
+ *   there is nothing to finish outside a first-run chat.
  *
  * An offered tool is appended (deduped, order-stable) to a NON-WILDCARD
  * `allowedTools` — the withBrokerDefaults rule, and for the same reason: the
@@ -1856,13 +1867,14 @@ export function identityToolScope(
   agent: { allowedTools: readonly string[]; mcpConfigIds: readonly string[] },
   allowedTools: readonly string[],
   disallowedTools: readonly string[] | undefined,
-  opts: { attended: boolean; bootstrapMode: boolean },
+  opts: { attended: boolean; bootstrapMode: boolean; mayChangeIdentity: boolean },
 ): { allowedTools: string[]; disallowedTools: string[] | undefined } {
   // Mirrors the empty-empty check in withBrokerDefaults / `filterByAgentScope`.
   const wildcard = agent.allowedTools.length === 0 && agent.mcpConfigIds.length === 0;
+  const mayChange = opts.attended && opts.mayChangeIdentity;
   const offers: ReadonlyArray<readonly [string, boolean]> = [
-    [UPDATE_IDENTITY_TOOL, opts.attended],
-    [COMPLETE_BOOTSTRAP_TOOL, opts.attended && opts.bootstrapMode],
+    [UPDATE_IDENTITY_TOOL, mayChange],
+    [COMPLETE_BOOTSTRAP_TOOL, mayChange && opts.bootstrapMode],
   ];
   const allowed = [...allowedTools];
   const listed = new Set(allowedTools);
@@ -4609,11 +4621,14 @@ export function createOrchestrator(
     // first-run state, read from @ax/agents and frozen into
     // `agentConfig.identity`; the runner composes the prompt from it. The host
     // decides bootstrap mode here, once: the first-run setup is pending AND a
-    // person with access is present (`isAttendedTurn`). An unattended run —
+    // person with access is present (`isAttendedTurn`) AND they may change who
+    // the agent is (`mayChangeIdentity`, TASK-1248: any member of a team
+    // agent, or one of a personal agent's owners). An unattended run —
     // `ctx.source` `'routine'` (routines and task check-ins) or `'external'`
     // (TASK-1091: the person present has no access to the agent), both stamped
-    // host-side only — never bootstraps, and still gets the Instructions. The
-    // identity tools the session is offered follow from the same two facts
+    // host-side only — never bootstraps, and still gets the Instructions; nor
+    // does the turn of someone a personal agent is only shared with. The
+    // identity tools the session is offered follow from the same facts
     // (identityToolScope, applied after the tool-policy denies below).
     //
     // A failed read — a throw, or a reply that isn't three texts and a known
@@ -4625,6 +4640,11 @@ export function createOrchestrator(
     // there is no identity and no scope change: the runner composes normal
     // mode with the display-name line.
     const attended = isAttendedTurn(ctx);
+    // TASK-1248 — UX only: @ax/agents' identity hooks refuse a non-owner's
+    // write on a personal agent themselves. `isOwner` is resolve's answer for
+    // this turn's person; `!== false` keeps today's behaviour for an answer
+    // without the field. A team agent has no owners: any member may.
+    const mayChangeIdentity = agent.visibility === 'team' || agent.isOwner !== false;
     if (bus.hasService(AGENTS_IDENTITY_GET_HOOK)) {
       let read: AgentIdentityAtSpawn | null = null;
       try {
@@ -4660,7 +4680,7 @@ export function createOrchestrator(
         identity: read.identity,
         soul: read.soul,
         instructions: read.instructions,
-        bootstrapMode: attended && read.bootstrap === 'pending',
+        bootstrapMode: attended && read.bootstrap === 'pending' && mayChangeIdentity,
       };
     }
 
@@ -4770,15 +4790,17 @@ export function createOrchestrator(
     }
 
     // TASK-989 — the identity tools this session is offered: `update_identity`
-    // when a person is present, `complete_bootstrap` only in bootstrap mode
-    // (see identityToolScope). AFTER the tool-policy denies, so those stay first
-    // in `disallowedTools` and a deny of an offered tool still hides it. Only
-    // when the identity read above ran — `agentConfig.identity` is set exactly
-    // then — so a preset with no identity store keeps today's scope.
+    // when a person who may change the agent is present (TASK-1248),
+    // `complete_bootstrap` only in bootstrap mode (see identityToolScope).
+    // AFTER the tool-policy denies, so those stay first in `disallowedTools`
+    // and a deny of an offered tool still hides it. Only when the identity
+    // read above ran — `agentConfig.identity` is set exactly then — so a
+    // preset with no identity store keeps today's scope.
     if (agentConfig.identity !== undefined) {
       const scoped = identityToolScope(agent, agentConfig.allowedTools, agentConfig.disallowedTools, {
         attended,
         bootstrapMode: agentConfig.identity.bootstrapMode,
+        mayChangeIdentity,
       });
       agentConfig.allowedTools = scoped.allowedTools;
       if (scoped.disallowedTools !== undefined) {
@@ -5489,7 +5511,8 @@ export function createOrchestrator(
     // session's egress allowlist at open. TASK-1212: the read is keyed by the
     // agent alone, with no user in it. On a team agent, every member's session,
     // an outsider's turn (run as the bot's requester) and a routine run load the
-    // same list. On a personal agent only its owner ever adds to it. Gated by
+    // same list. On a personal agent only its owners add to it, and on a
+    // shared personal agent anyone who can use it does (TASK-1248). Gated by
     // hasService (conditionally called, NOT declared in the manifest — same
     // convention as skills:list-user-attachments above): stripped presets without
     // @ax/host-grants no-op. CREDENTIAL-FREE (hosts only), so a throw still FAILS

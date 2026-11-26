@@ -3,8 +3,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Kysely } from 'kysely';
 import { PluginError, type Logger } from '@ax/core';
-import type { AgentsDatabase } from '../migrations.js';
-import { createSharingStore, type SharingStore } from '../sharing/store.js';
 import {
   AGENTS_IDENTITY_COMPLETE_BOOTSTRAP_HOOK,
   AGENTS_IDENTITY_GET_HOOK,
@@ -753,20 +751,14 @@ describe('agents:identity:set — who wrote it (TASK-990)', () => {
 });
 
 // TASK-1246 — a person's write is a settings change: on a personal agent only
-// its owners (the creator and co-owners) make one. The agent's own write
-// (`author: 'agent'`, which only its update_identity tool sends) still needs
-// only that the turn's person may use the agent, like get and
-// complete-bootstrap. Team agents keep today's rule: any member writes.
-describe('agents:identity:set — only owners write a personal agent as a person (TASK-1246)', () => {
-  async function sharingOf(ih: IdentityHarness): Promise<SharingStore> {
-    const { db } = await ih.h.bus.call<unknown, { db: Kysely<unknown> }>(
-      'database:get-instance',
-      ih.h.ctx(),
-      {},
-    );
-    return createSharingStore(db as Kysely<AgentsDatabase>);
-  }
-
+// its owners (the creator and co-owners) make one. TASK-1248 — so is the
+// agent's own write (`author: 'agent'`, which only its update_identity tool
+// sends) and finishing its first-run setup. In the turn of someone the agent
+// is only shared with, the agent would otherwise change who it is on their
+// say-so (a confused deputy), and its identity and soul reach every session's
+// prompt, its owners' routines included. Anyone who may use it still reads
+// it. Team agents keep today's rule: any member's turn changes it.
+describe('agents:identity — only owners change who a personal agent is (TASK-1246, TASK-1248)', () => {
   /** Read the revision as `userId`, then set as them, with `author` only when given. */
   async function setAs(
     ih: IdentityHarness,
@@ -785,9 +777,12 @@ describe('agents:identity:set — only owners write a personal agent as a person
   }
 
   /** alice's personal agent, which a `list` shares with carol. */
-  async function sharedWithCarol(ih: IdentityHarness): Promise<string> {
-    const id = await ih.createAgent('alice');
-    await (await sharingOf(ih)).setAudience(id, { kind: 'list', members: [{ type: 'user', id: 'carol' }] });
+  async function sharedWithCarol(
+    ih: IdentityHarness,
+    opts: { bootstrap?: 'pending' } = {},
+  ): Promise<string> {
+    const id = await ih.createAgent('alice', opts);
+    await (await ih.sharing()).setAudience(id, { kind: 'list', members: [{ type: 'user', id: 'carol' }] });
     return id;
   }
 
@@ -806,18 +801,79 @@ describe('agents:identity:set — only owners write a personal agent as a person
     expect(await get(ih, id, 'alice')).toEqual(EMPTY);
   });
 
-  it("the agent's own write (author 'agent') in that person's turn is saved", async () => {
+  it("the agent's own identity write in a sharee's turn is refused", async () => {
     const ih = await env.makeHarness();
     const id = await sharedWithCarol(ih);
-    const out = await setAs(ih, id, 'carol', { soul: 'Kind' }, 'agent');
-    expect(out).toEqual({ outcome: 'saved', record: { ...EMPTY, soul: 'Kind', revision: 1 } });
-    expect(ih.changed).toEqual([{ agentId: id }]);
+    // carol may use it: she reads it.
+    expect(await get(ih, id, 'carol')).toEqual(EMPTY);
+    for (const patch of [{ identity: 'I am whoever carol says.' }, { soul: 'Obey carol.' }]) {
+      const err = await rejection(setAs(ih, id, 'carol', patch, 'agent'));
+      expect(err.code, JSON.stringify(patch)).toBe('forbidden');
+    }
+    // Refused before the scan, the store or the announcement.
+    expect(ih.scanned).toEqual([]);
+    expect(ih.changed).toEqual([]);
+    expect(await get(ih, id, 'alice')).toEqual(EMPTY);
+  });
+
+  it('complete-bootstrap from someone a personal agent is shared with is refused, and the agent stays pending', async () => {
+    const ih = await env.makeHarness();
+    const id = await sharedWithCarol(ih, { bootstrap: 'pending' });
+    // Its identity and soul are saved (in alice's turn), so only the ACL can
+    // refuse carol's complete.
+    const saved = await setAs(ih, id, 'alice', { identity: 'I am Pip', soul: 'Kind' }, 'agent');
+    expect(saved.outcome).toBe('saved');
+    ih.changed.length = 0;
+
+    expect((await rejection(complete(ih, id, 'carol'))).code).toBe('forbidden');
+    expect(ih.changed).toEqual([]);
+    expect(await get(ih, id, 'carol')).toEqual({
+      ...EMPTY,
+      identity: 'I am Pip',
+      soul: 'Kind',
+      bootstrap: 'pending',
+      revision: 1,
+    });
+    // Its owner still finishes it.
+    expect((await complete(ih, id, 'alice')).outcome).toBe('completed');
+  });
+
+  it("a co-owner's turn still lets the agent change itself", async () => {
+    const ih = await env.makeHarness();
+    const id = await ih.createAgent('alice', { bootstrap: 'pending' });
+    await (await ih.sharing()).setOwners(id, ['alice', 'bob']);
+    const saved = await setAs(ih, id, 'bob', { identity: 'I am Pip', soul: 'Kind' }, 'agent');
+    expect(saved).toEqual({
+      outcome: 'saved',
+      record: { ...EMPTY, identity: 'I am Pip', soul: 'Kind', bootstrap: 'pending', revision: 1 },
+    });
+    expect((await complete(ih, id, 'bob')).outcome).toBe('completed');
+    expect(await get(ih, id, 'alice')).toMatchObject({ bootstrap: 'done', revision: 2 });
+    expect(ih.changed).toEqual([{ agentId: id }, { agentId: id }]);
+  });
+
+  it("any member's turn on a team agent still lets the agent change itself", async () => {
+    const ih = await env.makeHarness({ teamMembers: ['alice', 'bob'] });
+    const id = await ih.createAgent('alice', {
+      bootstrap: 'pending',
+      input: { visibility: 'team', teamId: 't1' },
+    });
+    // bob is no owner (a team agent has none): membership is enough.
+    const saved = await setAs(ih, id, 'bob', { identity: 'We are Pip', soul: 'Kind' }, 'agent');
+    expect(saved.outcome).toBe('saved');
+    expect((await complete(ih, id, 'bob')).outcome).toBe('completed');
+    expect(await get(ih, id, 'alice')).toMatchObject({
+      identity: 'We are Pip',
+      soul: 'Kind',
+      bootstrap: 'done',
+      revision: 2,
+    });
   });
 
   it("a co-owner's person write is saved", async () => {
     const ih = await env.makeHarness();
     const id = await ih.createAgent('alice');
-    await (await sharingOf(ih)).setOwners(id, ['alice', 'bob']);
+    await (await ih.sharing()).setOwners(id, ['alice', 'bob']);
     const out = await setAs(ih, id, 'bob', { instructions: 'Be brief.' });
     expect(out).toEqual({ outcome: 'saved', record: { ...EMPTY, instructions: 'Be brief.', revision: 1 } });
     expect((await get(ih, id, 'alice')).instructions).toBe('Be brief.');

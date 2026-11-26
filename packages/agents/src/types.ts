@@ -603,13 +603,15 @@ export interface CanSetSharedCredentialOutput {
 //
 // ACL on all three: `input.agentId` must equal `ctx.agentId`, and `ctx.userId`
 // must reach the agent (`checkAccess`: one of a personal agent's owners or its
-// audience (TASK-1246), or a member of the owning team). A person's `set`
-// (`author` absent or 'person') on a personal agent also needs `ctx.userId` to
-// be one of its owners: its audience reads it but doesn't change it. The
-// agent's own write (`author: 'agent'`) needs only the reach. Malformed input
-// is `invalid-payload`, an unknown agent `not-found`, an unreachable one (or a
-// person's write by a non-owner) `forbidden`; every other answer is an
-// outcome, never a throw, so callers map it without parsing error text.
+// audience (TASK-1246), or a member of the owning team). On a personal agent,
+// `set` and `complete-bootstrap` also need `ctx.userId` to be one of its
+// owners, whoever writes: the person (TASK-1246), or the agent itself in their
+// turn (`author: 'agent'` and finishing its first-run setup, TASK-1248). Its
+// audience reads it but never changes it, even through the agent. Any member
+// changes a team agent. Malformed input is `invalid-payload`, an unknown agent
+// `not-found`, an unreachable one (or a write or complete-bootstrap in a
+// non-owner's turn) `forbidden`; every other answer is an outcome, never a
+// throw, so callers map it without parsing error text.
 //
 // Storage-agnostic: `revision` is an opaque change counter (callers only hand
 // it back as `expectedRevision`), not a version id; no field names a file,

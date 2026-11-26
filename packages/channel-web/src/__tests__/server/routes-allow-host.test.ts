@@ -458,39 +458,94 @@ describe('"Always for this agent" keeps the site on the agent (TASK-44, TASK-121
   });
 });
 
-// --- TASK-1246: a shared agent's "Always" stays session-only -----------------
+// --- TASK-1246, TASK-1248: a personal agent's "Always" ------------------------
 
-describe('"Always for this agent" on a shared personal agent (TASK-1246)', () => {
-  /** agents:resolve's answer for someone a personal agent is shared with. */
+describe('"Always for this agent" on a personal agent: its owners, and anyone a shared one is shared with (TASK-1246, TASK-1248)', () => {
+  /**
+   * agents:resolve's answer for someone a personal agent is shared with: the
+   * agent is shared (`shared: true`), and they aren't one of its owners.
+   */
   const sharee = async () => ({
-    agent: { id: 'agent-7', visibility: 'personal', isOwner: false },
+    agent: { id: 'agent-7', visibility: 'personal', shared: true, isOwner: false },
   });
-  /** …and for one of its owners. */
+  /** …and for one of the owners of a "Just me" agent. */
   const owner = async () => ({
-    agent: { id: 'agent-7', visibility: 'personal', isOwner: true },
+    agent: { id: 'agent-7', visibility: 'personal', shared: false, isOwner: true },
   });
 
-  it("a sharee's live Always widens the session only: kept false, nothing kept on the owner's agent", async () => {
+  it("a sharee's live Always on a shared agent keeps the site on the agent", async () => {
+    // TASK-1248: a shared personal agent follows the team rule. Anyone it is
+    // shared with could open a session and Allow the site there, and a kept
+    // site reaches every run of the agent, its owners' included, by design.
     const w = keepWorld({ live: { added: true, agentId: 'agent-7' }, resolve: sharee });
     const out = await post(w.handler, {
       sessionId: 's1',
       host: 'x.example.com',
       persist: true,
-      agentId: 'agent-7',
+      // The body's id is ignored while the session is live.
+      agentId: 'agent-someone-elses',
     });
     expect(out.statusCode).toBe(200);
-    expect(out.body).toStrictEqual({ added: true, kept: false });
-    // The session-only widen still happened, for exactly this session and host.
+    expect(out.body).toStrictEqual({ added: true, kept: true });
+    // The live widen happened, for exactly this session and host.
     expect(w.addHosts).toEqual([{ sessionId: 's1', host: 'x.example.com' }]);
-    // The owner's agent is untouched.
-    expect(w.grants).toEqual([]);
+    // Kept on the proxy's agent, recorded as added by the sharee (from auth).
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
     expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
-    // Said, not silent: the refusal is logged by code only, never the host.
-    expect(w.logger.warns).toEqual([
-      { event: 'host_grant_persist_failed', fields: { code: 'not-owner' } },
-    ]);
-    expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+    expect(w.logger.warns).toEqual([]);
   });
+
+  it('an owner of a shared agent keeps it too', async () => {
+    const w = keepWorld({
+      live: { added: true, agentId: 'agent-7' },
+      resolve: async () => ({
+        agent: { id: 'agent-7', visibility: 'personal', shared: true, isOwner: true },
+      }),
+    });
+    const out = await post(w.handler, { sessionId: 's1', host: 'x.example.com', persist: true });
+    expect(out.body).toStrictEqual({ added: true, kept: true });
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+  });
+
+  // The Just-me rule, unchanged since TASK-1246: only an owner keeps a site on
+  // a personal agent that isn't shared. agents:resolve admits nobody else to
+  // such an agent, so this answer is defence in depth. Only an exact
+  // `shared: true` says "shared": a missing or non-boolean `shared` keeps the
+  // Just-me rule (fail closed).
+  it.each([
+    ['false', { shared: false }],
+    ['missing', {}],
+    ["the string 'true'", { shared: 'true' }],
+    ['the number 1', { shared: 1 }],
+  ])(
+    "a non-owner on a personal agent that isn't shared still keeps nothing (not-owner): shared %s",
+    async (_label, shared) => {
+      const lives: LiveAnswer[] = [{ added: true, agentId: 'agent-7' }, { added: false }];
+      for (const live of lives) {
+        const w = keepWorld({
+          live,
+          resolve: async () => ({
+            agent: { id: 'agent-7', visibility: 'personal', isOwner: false, ...shared },
+          }),
+        });
+        const out = await post(w.handler, {
+          sessionId: 's1',
+          host: 'x.example.com',
+          persist: true,
+          agentId: 'agent-7',
+        });
+        expect(out.statusCode).toBe(200);
+        expect(out.body).toStrictEqual({ added: live.added, kept: false });
+        // The live widen (if any) stands; the agent's list is untouched.
+        expect(w.grants).toEqual([]);
+        // Said, not silent: the refusal is logged by code only, never the host.
+        expect(w.logger.warns).toEqual([
+          { event: 'host_grant_persist_failed', fields: { code: 'not-owner' } },
+        ]);
+        expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+      }
+    },
+  );
 
   it("an owner's live Always still keeps the site on their agent", async () => {
     const w = keepWorld({ live: { added: true, agentId: 'agent-7' }, resolve: owner });
@@ -518,9 +573,10 @@ describe('"Always for this agent" on a shared personal agent (TASK-1246)', () =>
     }
   });
 
-  it("an ended Always naming a personal agent the person doesn't own keeps nothing", async () => {
-    // The ended case's id is the browser's word. A personal agent that is only
-    // shared with the person is never written to from here.
+  it('an ended Always naming a shared agent the person can use keeps it', async () => {
+    // The ended case's id is the browser's word, so it is kept only once
+    // agents:resolve admits the person to THAT agent now, and its answer says
+    // the agent is shared: the reach a live session on it already has.
     const w = keepWorld({ live: { added: false }, resolve: sharee });
     const out = await post(w.handler, {
       sessionId: 's-gone',
@@ -529,13 +585,10 @@ describe('"Always for this agent" on a shared personal agent (TASK-1246)', () =>
       agentId: 'agent-7',
     });
     expect(out.statusCode).toBe(200);
-    expect(out.body).toStrictEqual({ added: false, kept: false });
+    expect(out.body).toStrictEqual({ added: false, kept: true });
     expect(w.resolves).toEqual([{ agentId: 'agent-7', userId: 'u1' }]);
-    expect(w.grants).toEqual([]);
-    expect(w.logger.warns).toEqual([
-      { event: 'host_grant_persist_failed', fields: { code: 'not-owner' } },
-    ]);
-    expect(JSON.stringify(w.logger.warns)).not.toContain('x.example.com');
+    expect(w.grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+    expect(w.logger.warns).toEqual([]);
   });
 
   it("an owner's Always after the session has ENDED still keeps the site on their agent", async () => {
@@ -575,6 +628,26 @@ describe('"Always for this agent" on a shared personal agent (TASK-1246)', () =>
       { agent: { id: 'agent-8', visibility: 'personal', isOwner: true } },
     ],
     ['no agent id', { agent: { visibility: 'team' } }],
+    // TASK-1248: only an exact `shared: true` on a personal agent takes the
+    // shared arm. Anything else falls to the owner rule, which needs isOwner.
+    [
+      "personal, shared the string 'true', isOwner missing",
+      { agent: { id: 'agent-7', visibility: 'personal', shared: 'true' } },
+    ],
+    [
+      'personal, shared the number 1, isOwner missing',
+      { agent: { id: 'agent-7', visibility: 'personal', shared: 1 } },
+    ],
+    // `shared: true` alone is not a visibility: the agent must say personal.
+    ['shared, with no visibility', { agent: { id: 'agent-7', shared: true, isOwner: false } }],
+    [
+      'shared, with an unknown visibility',
+      { agent: { id: 'agent-7', visibility: 'org', shared: true, isOwner: false } },
+    ],
+    [
+      "an agent id that isn't the one being kept (shared personal)",
+      { agent: { id: 'agent-8', visibility: 'personal', shared: true, isOwner: false } },
+    ],
   ])('a malformed agents:resolve answer (%s) keeps nothing', async (_label, answer) => {
     const w = keepWorld({ live: { added: true, agentId: 'agent-7' }, resolve: async () => answer });
     const out = await post(w.handler, { sessionId: 's1', host: 'x.example.com', persist: true });

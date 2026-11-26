@@ -34,8 +34,9 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * into the Slack thread (design §5). A DM and a channel mention run the same
  * turn; its `mode` says which:
  *
- *   - `dm`: the owner, in a 1:1 DM with their own personal agent.
- *   - `attended`: a channel member who can use the channel's team agent.
+ *   - `dm`: the owner, in a 1:1 DM with their own "Just me" personal agent.
+ *   - `attended`: a channel member who can use the channel's agent (a team
+ *     agent, or a personal agent shared with other people, TASK-1248).
  *   - `external`: anyone else the channel admits, run as the bot's
  *     requester, copied into the binding at its first mention; a Claim
  *     moves it.
@@ -237,17 +238,26 @@ interface AgentChoice {
   ownerId: string;
   ownerType: string;
   visibility: string;
+  /**
+   * agents:list-for-user's word that the agent is shared with other people
+   * (TASK-1246), carried only when it was a boolean (router.ts `agentsOf`).
+   */
+  shared?: boolean;
   createdAt: Date;
 }
 
 /**
- * The sender's own personal agent: owned by them (`ownerType 'user'`,
- * `ownerId === userId`) with `visibility 'personal'`. `chosen`, the one they
- * chose for their DMs (TASK-1238, dm-agents.ts), when `agents` has it and it
- * is one of those; otherwise the OLDEST by `createdAt`, ties broken by id.
- * Never a team agent, never someone else's, whatever was chosen. An agent
- * whose date can't be read sorts after every dated one. Null when they have
- * none.
+ * The sender's own "Just me" personal agent: owned by them (`ownerType
+ * 'user'`, `ownerId === userId`) with `visibility 'personal'`, and not shared
+ * with other people. `chosen`, the one they chose for their DMs (TASK-1238,
+ * dm-agents.ts), when `agents` has it and it is one of those; otherwise the
+ * OLDEST by `createdAt`, ties broken by id. Never a team agent, never someone
+ * else's, whatever was chosen. Never a shared one either (TASK-1248): a
+ * personal agent shared with other people follows the team-agent rules, and
+ * answers no DMs. Only an exact `shared: true` takes one out, so a list that
+ * doesn't say keeps today's rule: DM eligibility never widens anyone's
+ * access. An agent whose date can't be read sorts after every dated one.
+ * Null when they have none.
  */
 export function pickPersonalAgent(
   agents: ReadonlyArray<AgentChoice>,
@@ -255,7 +265,7 @@ export function pickPersonalAgent(
   chosen: string | null = null,
 ): string | null {
   const own = (a: AgentChoice): boolean =>
-    a.ownerType === 'user' && a.visibility === 'personal' && a.ownerId === userId;
+    a.ownerType === 'user' && a.visibility === 'personal' && a.ownerId === userId && a.shared !== true;
   if (chosen !== null && agents.some((a) => a.id === chosen && own(a))) return chosen;
   let best: { id: string; at: number } | null = null;
   for (const a of agents) {

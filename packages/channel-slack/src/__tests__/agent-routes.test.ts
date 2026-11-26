@@ -112,7 +112,21 @@ const WANDA = person('usr_wanda', 'Wanda Wsadmin', true); // a workspace admin i
 const OTTO = person('usr_otto', 'Otto Outsider'); // in no team
 const PAT = person('usr_pat', 'Pat Personal'); // owns a personal agent
 const SAM = person('usr_sam', 'Sam Sales'); // a team admin of the sales team
-const USERS = [ADA, GRACE, NONAME, MEL, WILL, WANDA, OTTO, PAT, SAM];
+const ALICE = person('usr_alice', 'Alice Sharer'); // made a personal agent and shared it with everyone
+const CAROL = person('usr_carol', 'Carol Coowner'); // a co-owner of Alice's agent
+const BOB = person('usr_bob', 'Bob Anyone'); // any other AX user: Alice's agent is shared with him
+const USERS = [ADA, GRACE, NONAME, MEL, WILL, WANDA, OTTO, PAT, SAM, ALICE, CAROL, BOB];
+
+/** Alice's personal agent, shared with everyone, Carol its co-owner (TASK-1246): it gets its own bot (TASK-1248). */
+const ALICES: FakeAgent = {
+  id: 'agt_alice',
+  displayName: "Alice's agent",
+  visibility: 'personal',
+  ownerType: 'user',
+  ownerId: ALICE.id,
+  audience: 'everyone',
+  coOwners: [CAROL.id],
+};
 
 const SUPPORT_CH = 'C07SUPPORT1';
 const SALES_CH = 'C07SALES002';
@@ -771,6 +785,125 @@ describe('rights', () => {
     const w = world();
     expect(await w.status(SUPPORT.id, ADA)).toMatchObject({ status: 200, body: { state: 'ready', canManage: true } });
     expect(await w.requestBot(SUPPORT.id, { botName: 'Support Helper' }, ADA)).toMatchObject({ status: 200 });
+  });
+
+  it('an owner of a shared personal agent reads the bot card and may manage it', async () => {
+    const w = world();
+    w.people.addAgent(ALICES);
+    expect(await w.status(ALICES.id, ALICE)).toEqual({
+      status: 200,
+      body: { state: 'ready', botName: 'canopy-works', workspaceName: 'Canopy Works', canManage: true, bot: NO_BOT },
+    });
+    expect(await w.requestBot(ALICES.id, { botName: 'Alice Helper' }, ALICE)).toMatchObject({ status: 200 });
+    // With Slack not connected it is the same card, still hers to manage.
+    w.state.install = null;
+    expect(await w.status(ALICES.id, ALICE)).toEqual({
+      status: 200,
+      body: { state: 'no-workspace', canManage: true, bot: NO_BOT },
+    });
+    // The bot domain read her as a manager, and her request reached it as hers.
+    expect(w.bots.calls.map((c) => [c.method, c.input['ctxUserId'], c.input['manages']])).toEqual([
+      ['status', ALICE.id, true],
+      ['request', ALICE.id, undefined],
+      ['status', ALICE.id, true],
+    ]);
+    // An owner manages from agents:resolve's answer alone: the team-admin question is never asked.
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+    // Nobody's DM agent was read: a shared agent's section is its bot's.
+    expect(w.dm.calls).toEqual([]);
+  });
+
+  it('a co-owner of a shared agent manages it too: every write passes the rights and reaches its domain', async () => {
+    const w = world();
+    w.people.addAgent(ALICES);
+    expect(await w.status(ALICES.id, CAROL)).toMatchObject({ status: 200, body: { state: 'ready', canManage: true } });
+    for (const r of WRITES) {
+      const a = await w.call(r.method, r.suffix, ALICES.id, CAROL, r.body);
+      expect({ status: a.status, body: a.body }, r.suffix).toMatchObject({ status: 200 });
+    }
+    // Each write reached its domain once, as Carol.
+    expect(w.bots.calls.map((c) => c.method)).toEqual([
+      'status',
+      'request',
+      'installUrl',
+      'cancel',
+      'disconnect',
+      'rename',
+      'setPicture',
+      'replaceToken',
+      'claim',
+    ]);
+    expect(w.requests.calls.map((c) => c.method)).toEqual(['ask', 'cancel']);
+    for (const c of [...w.bots.calls, ...w.requests.calls]) {
+      if ('ctxUserId' in c.input) expect(c.input['ctxUserId'], c.method).toBe(CAROL.id);
+    }
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+  });
+
+  it('someone a shared agent is shared with reads it but every write is 403', async () => {
+    const w = world();
+    w.people.addAgent(ALICES);
+    // Its own bot answered in #support: a binding no write of theirs may reach.
+    w.state.bot = { ...OWN_BOT, agentId: ALICES.id, requestedByUserId: ALICE.id, connectedByUserId: ALICE.id };
+    await w.memory.store.upsert({
+      installId: OWN_BOT.installId,
+      channelId: SUPPORT_CH,
+      agentId: ALICES.id,
+      connectedByUserId: ALICE.id,
+      channelName: 'support-desk',
+    });
+    const before = w.memory.row(OWN_BOT.installId, SUPPORT_CH);
+
+    // Bob, and Otto (in no team at all): everyone can use it.
+    for (const as of [BOB, OTTO]) {
+      expect(await w.status(ALICES.id, as), as.id).toMatchObject({ status: 200, body: { state: 'ready', canManage: false } });
+      for (const r of WRITES) {
+        const a = await w.call(r.method, r.suffix, ALICES.id, as, r.body);
+        expect({ status: a.status, body: a.body }, `${r.suffix} ${as.id}`).toEqual(FORBIDDEN);
+      }
+    }
+    expect(w.memory.row(OWN_BOT.installId, SUPPORT_CH)).toEqual(before);
+    // Each section read the bot as a non-manager; no write reached a domain.
+    expect(w.bots.calls.map((c) => [c.method, c.input['manages']])).toEqual([
+      ['status', false],
+      ['status', false],
+    ]);
+    expect(w.requests.calls).toEqual([]);
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+  });
+
+  it("someone a list-shared agent isn't shared with gets the same 404 a missing agent gets, everywhere", async () => {
+    const w = world();
+    // Pat's agent, shared with Mel alone.
+    w.people.shareWith(PATS.id, MEL.id);
+    for (const r of EVERY_ROUTE) {
+      const missing = await w.call(r.method, r.suffix, 'agt_gone', OTTO, r.body);
+      expect({ status: missing.status, body: missing.body }).toEqual(NOT_FOUND);
+      // The whole answer, headers too: nothing tells "exists" from "doesn't".
+      expect(await w.call(r.method, r.suffix, PATS.id, OTTO, r.body), `${r.suffix} not shared with`).toEqual(missing);
+    }
+    // Mel reads it as any member reads a team agent; Pat, its owner, manages it.
+    expect(await w.status(PATS.id, MEL)).toMatchObject({ status: 200, body: { state: 'ready', canManage: false } });
+    expect(await w.status(PATS.id, PAT)).toMatchObject({ status: 200, body: { state: 'ready', canManage: true } });
+    expect(w.requests.calls).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
+  });
+
+  it('a Just-me agent still answers 409 personal-agent to every write, a co-owner included', async () => {
+    const w = world();
+    w.people.agents.set(PATS.id, { ...PATS, coOwners: [CAROL.id] });
+    for (const as of [PAT, CAROL]) {
+      for (const r of WRITES) {
+        const a = await w.call(r.method, r.suffix, PATS.id, as, r.body);
+        expect({ status: a.status, body: a.body }, `${r.suffix} ${as.id}`).toEqual({
+          status: 409,
+          body: { error: 'personal-agent' },
+        });
+      }
+    }
+    expect(w.people.inputs('agents:can-set-shared-credential')).toEqual([]);
+    expect(w.bots.calls).toEqual([]);
+    expect(w.requests.calls).toEqual([]);
   });
 
   it('says a personal agent is one, and refuses every write with 409 personal-agent before anything else is asked', async () => {
@@ -1768,8 +1901,9 @@ describe("the live bot's channels in the section", () => {
   A person's choice of DM agent is stored unchecked (dm-agents.ts), and the
   section reads it exactly as the DM router does (router.ts
   `personalAgentFor`): honored only while agents:list-for-user lists it as
-  their own personal agent, else the oldest answers. So the section never
-  says one agent answers while DMs reach another.
+  their own Just-me personal agent, else the oldest such answers; a shared
+  one answers no DMs (TASK-1248). So the section never says one agent
+  answers while DMs reach another.
 */
 describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
   it("a stored choice moves the DMs, and the other agent's page names it", async () => {
@@ -1859,13 +1993,36 @@ describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
     expect(w.dm.rows.size).toBe(0);
   });
 
-  it('an agent shared with the caller is a 404 and nothing is stored, even beside an agent of their own', async () => {
+  it('an agent shared with the caller is a 403 and nothing is stored, even beside an agent of their own', async () => {
     const w = world();
-    // Ada's personal agent, shared with Pat. Pat can see it (agents:resolve admits them) and AX lists it
-    // for them, `isOwner` false, but it is not Pat's: it can't be the agent their DMs reach.
+    // Ada's personal agent, shared with Pat. Pat can see it (agents:resolve admits them), and an agent
+    // shared with other people answers no DMs (TASK-1248): refused as a team agent is, on that answer alone.
     const adas: FakeAgent = { id: 'agt_ada_own', displayName: "Ada's agent", visibility: 'personal', ownerType: 'user', ownerId: ADA.id };
     w.people.addAgent(adas);
     w.people.shareWith(adas.id, PAT.id);
+    expect(await w.chooseDmAgent(adas.id)).toEqual(FORBIDDEN);
+    expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: adas.id, userId: PAT.id }]);
+    expect(w.people.inputs('agents:list-for-user')).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+    // Pat's own agent is still theirs to choose.
+    expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 200, body: {} });
+    expect(w.dm.rows.get(PAT.id)).toBe(PATS.id);
+  });
+
+  it("a co-owner of someone else's Just-me agent gets a 404 and nothing is stored, even beside an agent of their own", async () => {
+    const w = world();
+    // Ada's personal agent, Just me, with Pat a co-owner. Pat can see it (agents:resolve admits them) and AX
+    // lists it for them, `isOwner` true, but Ada made it: it can't be the agent Pat's DMs reach.
+    const adas: FakeAgent = {
+      id: 'agt_ada_own',
+      displayName: "Ada's agent",
+      visibility: 'personal',
+      ownerType: 'user',
+      ownerId: ADA.id,
+      coOwners: [PAT.id],
+    };
+    w.people.addAgent(adas);
     expect(await w.chooseDmAgent(adas.id)).toEqual(NOT_FOUND);
     // It got as far as the list, which did carry it: the refusal is whose it is.
     expect(w.people.inputs('agents:resolve')).toEqual([{ agentId: adas.id, userId: PAT.id }]);
@@ -1875,6 +2032,81 @@ describe("which personal agent answers its owner's DMs (TASK-1238)", () => {
     // Pat's own agent is still theirs to choose.
     expect(await w.chooseDmAgent(PATS.id)).toEqual({ status: 200, body: {} });
     expect(w.dm.rows.get(PAT.id)).toBe(PATS.id);
+  });
+
+  it('choosing your own shared agent for DMs is 403, and nothing is stored', async () => {
+    const w = world();
+    // Alice made her agent and shared it with everyone; Carol co-owns it. A shared agent answers no DMs (TASK-1248).
+    w.people.addAgent(ALICES);
+    for (const as of [ALICE, CAROL]) {
+      expect(await w.chooseDmAgent(ALICES.id, as), as.id).toEqual(FORBIDDEN);
+    }
+    // Pat's own agent, shared with one person: as shared as everyone.
+    w.people.shareWith(PATS.id, MEL.id);
+    expect(await w.chooseDmAgent(PATS.id, PAT)).toEqual(FORBIDDEN);
+    // Refused on what agents:resolve says alone, before anyone's list or choice is read.
+    expect(w.people.inputs('agents:list-for-user')).toEqual([]);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+  });
+
+  it('an agent shared after the rights saw it, before the DM router would, is a 404, and nothing is stored', async () => {
+    const w = world();
+    const later = addPatLater(w);
+    const get = w.people.agents.get.bind(w.people.agents);
+    w.people.agents.get = (agentId: string) => {
+      const found = get(agentId);
+      // Shared with everyone in another tab the moment agents:resolve has read it as Just me.
+      if (agentId === later.id && found !== undefined) w.people.agents.set(agentId, { ...found, audience: 'everyone' });
+      return found;
+    };
+    expect(await w.chooseDmAgent(later.id)).toEqual(NOT_FOUND);
+    // The list the DM router reads says it is shared now: a choice the next DM would ignore is never stored.
+    expect(w.people.inputs('agents:list-for-user')).toEqual([{ userId: PAT.id, teamIds: [] }]);
+    expect(w.dm.calls).toEqual([]);
+    expect(w.dm.rows.size).toBe(0);
+  });
+
+  it('a co-owner of a Just-me agent reads its Slack tab with no DM choice to make', async () => {
+    const w = world();
+    // Pat's agent, Just me, with Carol a co-owner; Carol has an agent of her own, which answers her DMs.
+    w.people.agents.set(PATS.id, { ...PATS, coOwners: [CAROL.id] });
+    const carols: FakeAgent = { id: 'agt_carol', displayName: "Carol's agent", visibility: 'personal', ownerType: 'user', ownerId: CAROL.id };
+    w.people.addAgent(carols);
+    // No "Use this one instead": the DM agent route would refuse it (404), so the page offers nothing.
+    expect(await w.status(PATS.id, CAROL)).toEqual(personalStatus(false, null));
+    expect(await w.chooseDmAgent(PATS.id, CAROL)).toEqual(NOT_FOUND);
+    // Even a stored choice naming it: her DMs go to her own agent, and her own agent's page says so.
+    w.dm.rows.set(CAROL.id, PATS.id);
+    expect(await w.status(PATS.id, CAROL)).toEqual(personalStatus(false, null));
+    expect(await w.status(carols.id, CAROL)).toEqual(personalStatus(true, null));
+    // With no agent of her own, the same: nothing answers her DMs, and nothing is offered.
+    w.people.agents.delete(carols.id);
+    expect(await w.status(PATS.id, CAROL)).toEqual(personalStatus(false, null));
+    // Pat, its creator, still reads which agent answers his DMs.
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(true, null));
+    // Asked as the DM router asks: one choice and one list per section read (five), and the refused
+    // choice's own list; never a second list per read, and nothing written.
+    expect(w.dm.calls.map((c) => c.method)).toEqual(['get', 'get', 'get', 'get', 'get']);
+    expect(w.people.inputs('agents:list-for-user')).toHaveLength(6);
+  });
+
+  it("the creator's Just-me agent still shows which agent answers their DMs, a shared one of theirs never", async () => {
+    const w = world();
+    const later = addPatLater(w);
+    // Pat's oldest agent is shared with everyone now: it answers no DMs, so his later one does.
+    w.people.agents.set(PATS.id, { ...w.people.agents.get(PATS.id)!, audience: 'everyone' });
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(true, null));
+    // The shared one's own page is its bot's (TASK-1248), and names no DM agent.
+    expect(await w.status(PATS.id, PAT)).toMatchObject({ status: 200, body: { state: 'ready', canManage: true } });
+    // Back to Just me, with his choice on the later one: the choice holds, and both pages say so.
+    w.people.agents.set(PATS.id, { ...w.people.agents.get(PATS.id)!, audience: 'just-me' });
+    w.dm.rows.set(PAT.id, later.id);
+    expect(await w.status(later.id, PAT)).toEqual(personalStatus(true, null));
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(false, 'Pat later'));
+    // The later one shared now: his choice no longer qualifies, and the oldest Just-me agent answers.
+    w.people.agents.set(later.id, { ...later, audience: 'everyone' });
+    expect(await w.status(PATS.id, PAT)).toEqual(personalStatus(true, null));
   });
 
   it('a team agent is never the DM agent: 403 to its members and team admins, 404 to someone outside the team', async () => {
