@@ -98,9 +98,9 @@ const quill: WorkspaceAgent = {
  */
 function readClock(container: HTMLElement): string {
   const seen = new Set<string>();
-  for (const el of container.querySelectorAll('div, span, time, p')) {
-    const text = (el.textContent ?? '').trim();
-    if (/^\d{1,2}:\d{2}(\s?[AP]M)?$/i.test(text)) seen.add(text);
+  for (const el of container.querySelectorAll('time')) {
+    const text = (el.textContent ?? '').replace(/[\u202f\u00a0]/g, ' ').trim();
+    if (/\d{1,2}:\d{2}(\s?[AP]M)?$/i.test(text)) seen.add(text);
   }
   const hits = [...seen];
   if (hits.length === 0) throw new Error('no clock was rendered');
@@ -267,18 +267,19 @@ describe('one event, two tabs', () => {
     const readerSide = new Date(INSTANT);
     expect(readerSide.getHours()).toBe(20);
     expect(readerSide.getDate()).toBe(18);
-    const readerReading = readerSide.toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    const readerReading = readerSide
+      .toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+      .replace(/[\u202f\u00a0]/g, ' ');
     expect(readerReading).not.toBe(hostReading);
+    // The reader's yesterday is a different calendar day from "now", so the bubble's clock carries its weekday.
+    const readerWeekday = readerSide.toLocaleDateString(undefined, { weekday: 'short' });
 
     const chat = render(<AgentConversation {...conversationProps(wire.thread)} />);
     const chatClock = readClock(chat.container);
     chat.unmount();
 
-    expect(chatClock).toBe(readerReading);
-    expect(chatClock).not.toBe(hostReading);
+    expect(chatClock).toBe(`${readerWeekday} ${readerReading}`);
+    expect(chatClock).not.toContain(hostReading);
   });
 
   it('carries an instant on the wire and no display string at all', async () => {

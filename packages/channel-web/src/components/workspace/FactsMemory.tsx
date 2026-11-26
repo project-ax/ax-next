@@ -1,5 +1,5 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, Notice, Inline, Text, StatusBadge } from '@project-ax/ui';
+import { AsyncState, EmptyState, formatTimestamp, Notice, Inline, Text, StatusBadge, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -54,8 +54,6 @@ import {
   MEMORY_SHARED_BADGE,
   MEMORY_SHARED_BADGE_HINT,
   MEMORY_KIND_PREFERENCE,
-  MEMORY_NOTED_TODAY,
-  MEMORY_NOTED_YESTERDAY,
   memoryListFooter,
   memoryFixLabel,
   memoryForgetLabel,
@@ -285,20 +283,8 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
 }
 
 function NotedDate({ when }: { when: string }) {
-  const date = new Date(when);
-  if (Number.isNaN(date.getTime())) return <span>Unknown date</span>;
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  // Calendar days, rather than elapsed hours, also work at midnight and across DST.
-  const label = date.toDateString() === today.toDateString() ? MEMORY_NOTED_TODAY
-    : date.toDateString() === yesterday.toDateString() ? MEMORY_NOTED_YESTERDAY
-    : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  return (
-    <time dateTime={when}>
-      {label}
-    </time>
-  );
+  if (formatTimestamp(when) === null) return <span>Unknown date</span>;
+  return <Timestamp value={when} />;
 }
 
 function MemoryActions({ row, onFix, onForget }: {

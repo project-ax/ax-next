@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { AUTO_PAUSED_LINE } from '../task-miss.js';
-import { CLAIM_LINE, repeatLine, rowFact, rowLatest, shortAgo } from '../task-row-line.js';
+import { CLAIM_LINE, repeatLine, rowFact, rowLatest } from '../task-row-line.js';
 import type { RepeatTaskState, TaskRow, TaskRowReport } from '../workspace-types.js';
 
-const NOW = new Date('2026-10-22T12:00:00.000Z');
+// Local noon, so every "minutes ago" below is the same local day in any time zone.
+const NOW = new Date(2026, 9, 22, 12, 0);
 const minsAgo = (m: number) => new Date(NOW.getTime() - m * 60_000).toISOString();
 
 function report(over: Partial<TaskRowReport> = {}): TaskRowReport {
@@ -55,21 +56,23 @@ const miss = (over: Partial<NonNullable<TaskRow['noRecentUpdate']>> = {}) => ({
   ...over,
 });
 
-describe('shortAgo', () => {
+describe('a row\'s check-in time (was shortAgo, now formatTimestamp)', () => {
+  const short = (reportedAt: string) => rowFact(row({ task: report({ reportedAt }) }), NOW)?.short;
+
   it.each([
-    [0, 'now'],
-    [4, '4m'],
-    [59, '59m'],
-    [60, '1h'],
-    [23 * 60 + 59, '23h'],
-    [24 * 60, '1d'],
-    [-5, 'now'],
-  ])('%i minutes ago reads %s', (mins, text) => {
-    expect(shortAgo(minsAgo(mins), NOW)).toBe(text);
+    [0, 'just now'],
+    [4, '4 min ago'],
+    [59, '59 min ago'],
+    [60, '1 hr ago'],
+    [180, '3 hr ago'],
+    [-0.5, 'just now'], // 30 s ahead of this clock: skew, not a plan
+    [-5, 'in 5 min'],
+  ])('%d minutes ago reads %s', (mins, text) => {
+    expect(short(minsAgo(mins))).toBe(text);
   });
 
-  it('is null on an instant it cannot read', () => {
-    expect(shortAgo('not a time', NOW)).toBeNull();
+  it('is no time at all on an instant it cannot read', () => {
+    expect(rowFact(row({ task: report({ reportedAt: 'not a time' }) }), NOW)).toBeNull();
   });
 });
 
@@ -140,7 +143,7 @@ describe('repeatLine', () => {
 
 describe('rowFact', () => {
   it('says when it last checked: the miss first, else the report, else nothing', () => {
-    expect(rowFact(row({ task: report() }), NOW)).toEqual({ short: '4m', full: 'Checked 4 min ago', late: false });
+    expect(rowFact(row({ task: report() }), NOW)).toEqual({ short: '4 min ago', full: 'Checked 4 min ago', late: false });
     expect(rowFact(row({ task: report(), noRecentUpdate: miss() }), NOW)?.full).toBe('Checked 1 min ago');
     expect(rowFact(row(), NOW)).toBeNull();
   });
@@ -168,16 +171,14 @@ describe('rowFact', () => {
   });
 
   it('a done task says when it was done, or just "Done"', () => {
-    expect(rowFact(row({ doneAt: minsAgo(60) }), NOW)?.full).toMatch(/^Done (at |yesterday at |on )/);
+    expect(rowFact(row({ doneAt: minsAgo(60) }), NOW)).toEqual({ short: '1 hr ago', full: 'Done 1 hr ago', late: false });
     expect(rowFact(row({ doneAt: 'not a time' }), NOW)).toEqual({ short: 'Done', full: 'Done', late: false });
   });
 
   it('a Repeat job says its last run, or nothing before one', () => {
-    // Local noon, so the run is on the same local day in any time zone.
-    const noon = new Date(2026, 9, 22, 12, 0);
-    const halfHourAgo = new Date(noon.getTime() - 30 * 60_000).toISOString();
-    expect(rowFact(row({ kind: 'repeat', repeat: { ...RUN, lastRunAt: halfHourAgo } }), noon)).toEqual({
-      short: 'Today',
+    const halfHourAgo = minsAgo(30);
+    expect(rowFact(row({ kind: 'repeat', repeat: { ...RUN, lastRunAt: halfHourAgo } }), NOW)).toEqual({
+      short: '30 min ago',
       full: 'Last run 30 min ago',
       late: false,
     });

@@ -4,7 +4,7 @@
  * been telling them, and what they told it, over time.
  *
  * ONE LINE EACH (the minimal redesign, 2026-10-29). An entry is its mark (with
- * its word, hidden), what it said, a short time ("7:13 PM", "Fri 7:13 PM",
+ * its word, hidden), what it said, a relative time ("5 min ago", "Yesterday 7:13 PM",
  * "Oct 23"; the whole date hidden beside it, `RowTime`) and an icon link. On the task
  * page the list leaves out the entry the latest card already shows (`latest`),
  * shows the newest few (`shown`) and puts the rest behind one "N earlier"
@@ -48,7 +48,7 @@
  */
 import { useId, useState } from 'react';
 import { ArrowUpRight, ChevronRight, History } from 'lucide-react';
-import { StatusMark, StatusBadge } from '@project-ax/ui';
+import { formatTimestamp, StatusMark, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -69,7 +69,6 @@ import {
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { updateStamp } from '@/lib/workspace-time';
 import type { TaskDetailReport, TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
 import { IconLink, RowTime } from './task-bits';
@@ -219,7 +218,7 @@ function ReplyEntry({ reply, now }: { reply: TaskReply; now: Date }) {
       <p className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-words text-[14px] leading-6">
         {reply.text ?? 'We can’t show this reply.'}
       </p>
-      <RowTime iso={reply.sentAt} now={now} className="pt-0.5 leading-5" />
+      <RowTime at={reply.sentAt} now={now} />
       {/* Holds the link column, so every row's time lines up. */}
       <span aria-hidden="true" className="size-7 shrink-0" />
     </li>
@@ -236,7 +235,7 @@ function UpdateEntry({
   links: EntryLinks;
 }) {
   const mark = update.report?.status ?? 'no-recent-update';
-  const stamp = updateStamp(update.firedAt, now);
+  const stamp = formatTimestamp(update.firedAt, { now });
   // Here, not in the shared `updateText`: a check-in's own page draws its
   // reading on a line of its own, labelled as the agent's, through the same
   // `readingText` (TASK-956).
@@ -264,7 +263,7 @@ function UpdateEntry({
           </p>
         )}
       </div>
-      <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
+      <RowTime at={update.firedAt} now={now} />
       {linked ? (
         <IconLink
           icon={ArrowUpRight}

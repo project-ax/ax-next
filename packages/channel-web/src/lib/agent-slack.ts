@@ -164,12 +164,6 @@ function codeOf(value: unknown): string | null {
 
 const badResponse = (status: number): AgentSlackError => new AgentSlackError(status, 'bad-response');
 
-/** A date for a line of prose ("Nov 20, 2026"); a value that isn't a date shows as it came. */
-export function slackShortDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
-
 const base = (agentId: string): string => `/settings/slack/${encodeURIComponent(agentId)}`;
 
 /**
@@ -497,8 +491,8 @@ export const AGENT_SLACK_CARD_COPY = Object.freeze({
   removedNotice: (who: string): string =>
     `${who} was removed from Slack. Add it again below. It's a new bot in Slack, so invite it to each channel again.`,
   waitingForAdmin: (botName: string): string => `Waiting for an admin to approve ${botName}`,
-  askedOn: (date: string, botName: string): string =>
-    `Asked on ${date}. Once an admin approves it, ${botName} is ready to invite to channels.`,
+  askedOn: (when: string, botName: string): string =>
+    `Asked ${when}. Once an admin approves it, ${botName} is ready to invite to channels.`,
   finishInSlack: (botName: string): string => `Almost there: finish adding ${botName} in Slack`,
   waitingForPerson: (person: string, botName: string): string =>
     `Waiting for ${person} to finish adding ${botName} in Slack`,

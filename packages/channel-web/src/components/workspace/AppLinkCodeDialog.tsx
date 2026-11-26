@@ -11,6 +11,7 @@
 import { useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 import type { LinkCodeResponse } from '@ax/apps-bridge-contract';
+import { formatTimestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -26,8 +27,7 @@ import { useHeldThroughClose } from './use-held-through-close';
 
 /** "3:45 PM", in the person's own locale; a value that isn't a time shows as it came. */
 function shortTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString(undefined, { timeStyle: 'short' });
+  return formatTimestamp(iso, { style: 'clock' }) ?? iso;
 }
 
 export function AppLinkCodeDialog({

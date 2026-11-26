@@ -1,3 +1,4 @@
+import { freezeClock, thawClock, visibleText } from '@/test-utils/time';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
@@ -142,7 +143,7 @@ describe('MemorySurface', () => {
         fact({ id: 'invalid', when: 'unknown' }),
       ], degraded: [] });
       render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-      expect(await screen.findByText('Yesterday')).toBeInTheDocument();
+      expect(await screen.findByText('Yesterday 12:01 AM')).toBeInTheDocument();
       expect(screen.getByText('Unknown date')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -184,9 +185,9 @@ describe('MemorySurface', () => {
       const { container } = render(<CompactSurfaceContext.Provider value={compact}>
         <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
       </CompactSurfaceContext.Provider>);
-      await waitFor(() => expect(container.querySelector('time')?.textContent).toBe('Today'));
+      await waitFor(() => expect(visibleText(container.querySelector('time')!)).toBe('14 min ago'));
       const times = Array.from(container.querySelectorAll('time'));
-      expect(times.map((time) => time.textContent)).toEqual(['Today', 'Yesterday', dates[2]!.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]);
+      expect(times.map((time) => visibleText(time))).toEqual(['14 min ago', 'Yesterday 11:59 PM', dates[2]!.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]);
       expect(times.map((time) => time.dateTime)).toEqual(dates.map((date) => date.toISOString()));
     } finally {
       vi.useRealTimers();
@@ -1104,6 +1105,7 @@ function SharedMemoryManager() {
 
 describe('MemorySurface — settings manager (TASK-890)', () => {
   it('uses one toolbar and a desktop table with Kind, agent memory, and local Noted date', async () => {
+    freezeClock();
     const when = '2026-09-01T00:30:00.000Z';
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1', kind: 'world', when, whenText: 'UTC engine date' })], degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
@@ -1115,7 +1117,8 @@ describe('MemorySurface — settings manager (TASK-890)', () => {
     expect(screen.getAllByRole('switch', { name: 'Show replaced memories' })).toHaveLength(1);
     const date = table.querySelector('time')!;
     expect(date.dateTime).toBe(when);
-    expect(date.textContent).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
+    expect(visibleText(date)).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
+    thawClock();
     expect(screen.queryByText('UTC engine date')).toBeNull();
     expect(screen.getByRole('button', { name: 'Memory actions: Boston' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull();

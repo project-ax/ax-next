@@ -33,7 +33,7 @@ import {
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, EmptyState, Inline, Notice, Stack } from '@project-ax/ui';
+import { AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -54,7 +54,6 @@ import { readNoticeTone } from '@/lib/read-register';
 import { askOwnerInstead, turnErrorText } from '@/lib/turn-error-labels';
 import { canManageAgent } from '@/lib/agent-sharing';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
-import { localTime } from '@/lib/workspace-time';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import {
   composerSendBlock,
@@ -1307,11 +1306,11 @@ function Message({
 
       IT KEEPS ITS CLOCK, like the agent bubble it stands in for — and for the
       same reason the row is not hoisted: WHEN a turn failed is most of what
-      makes it legible as history rather than as now. `localTime` returns null
+      makes it legible as history rather than as now. `formatTimestamp` returns null
       for a missing or unparseable instant and the row is then drawn without
       one, which is the honest render of "we do not have a time to show".
     */
-    const failedAt = localTime(m.at);
+    const failedAt = formatTimestamp(m.at, { style: 'clock' });
     return (
       <div className="flex gap-3">
         <AgentTile agent={agent} size={24} />
@@ -1323,7 +1322,7 @@ function Message({
           </Notice>
           {failedAt !== null && (
             <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-              {failedAt}
+              <Timestamp value={m.at} style="clock" />
             </div>
           )}
         </div>
@@ -1439,7 +1438,7 @@ function AgentReply({
   fileRecheckKey: number;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
-  const clock = localTime(r.at);
+  const clock = formatTimestamp(r.at, { style: 'clock' });
   const lastActivity = r.parts.map((p) => p.kind).lastIndexOf('activity');
   const cards =
     r.artifacts.length > 0 ? (
@@ -1562,7 +1561,7 @@ function AgentReply({
         {/*
           `at` is `''` on the live streaming frame (no committed instant until
           the turn ends) and can be an unparseable instant in principle — either
-          way `localTime` returns `null`, and the row is dropped entirely
+          way `formatTimestamp` returns `null`, and the row is dropped entirely
           rather than drawn as an empty div. An empty clock row used to render
           (an empty string is still a child), which left a sliver of dead
           whitespace under the live bubble; no row at all is the honest render
@@ -1570,7 +1569,7 @@ function AgentReply({
         */}
         {clock !== null && (
           <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-            {clock}
+            <Timestamp value={r.at} style="clock" />
           </div>
         )}
       </div>

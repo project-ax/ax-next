@@ -14,19 +14,18 @@
  * Each run is one row: its mark (done, off-track or no update for completed,
  * failed or finished quietly, with the word hidden beside it), what it said
  * (or its plain status, or a failure's reason through `runFailureText`), its
- * short time (`RowTime`) and a See what it did link. The newest four show; the rest wait behind
+ * time (`RowTime`) and a See what it did link. The newest four show; the rest wait behind
  * "N earlier". An agent-written update and a recorded reason are only ever
  * React text children.
  */
 import { useEffect, useId, useState } from 'react';
 import { ArrowUpRight, History } from 'lucide-react';
-import { StatusMark } from '@project-ax/ui';
+import { formatTimestamp, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { routeLinkProps } from '@/lib/route-link';
 import { runFailureText } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
-import { updateStamp } from '@/lib/workspace-time';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
@@ -162,7 +161,7 @@ function RunRow({
       : update.report?.update != null && update.report.update !== ''
         ? update.report.update
         : word;
-  const stamp = updateStamp(update.firedAt, now);
+  const stamp = formatTimestamp(update.firedAt, { now });
   return (
     <li className="flex items-start gap-2.5 py-1.5">
       <span className="flex h-6 items-center">
@@ -178,7 +177,7 @@ function RunRow({
       >
         {said}
       </p>
-      <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
+      <RowTime at={update.firedAt} now={now} />
       {update.conversationId !== null ? (
         <IconLink
           icon={ArrowUpRight}

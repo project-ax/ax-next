@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SlackBotsCard } from '../SlackBotsCard';
+import { beforeNoon, freezeClock, thawClock } from '@/test-utils/time';
 import { RequestTimeoutError } from '@/lib/http';
 import { SlackAdminError } from '@/lib/slack-admin';
 import { fakeConfigRefreshToken } from '@/test-utils/fake-slack-tokens';
@@ -29,8 +30,9 @@ const list = vi.mocked(fetchSlackBots);
 const disconnect = vi.mocked(disconnectTeamBot);
 const replaceToken = vi.mocked(replaceTeamBotToken);
 
-const ADDED = '2026-11-19T10:00:00.000Z';
-const ADDED_TEXT = new Date(ADDED).toLocaleDateString(undefined, { dateStyle: 'medium' });
+// 30 days before the frozen "now" (Nov 26): far enough back to read as a plain date.
+const ADDED = beforeNoon(30 * 86_400_000);
+const ADDED_TEXT = 'Oct 27';
 const PENDING: AdminSlackBot = {
   installId: 'U3VwcG9ydEJvdEluc3RhbG',
   botName: 'Support Bot',
@@ -66,11 +68,13 @@ function rowOf(botName: string): HTMLElement {
 }
 
 beforeEach(() => {
+  freezeClock();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   disconnect.mockResolvedValue({ appDeleted: true });
 });
 
 afterEach(() => {
+  thawClock();
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });

@@ -31,23 +31,12 @@
  * wasn't.
  */
 import { useState } from 'react';
-import { StatusBadge, type StatusTone } from '@project-ax/ui';
+import { StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
 import type { Fire, FireStatus } from '../../lib/routines';
 import { RunWarning } from './RunWarning';
 
 /** One run's status, as that run's fire row recorded it. A silenced run reads as intentional, not broken. */
 const FIRE_TONE: Record<FireStatus, StatusTone> = { ok: 'success', silenced: 'neutral', error: 'danger' };
-
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const yesterday = new Date(now.getTime() - 86_400_000).toDateString() === d.toDateString();
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  if (sameDay) return `Today ${time}`;
-  if (yesterday) return `Yesterday ${time}`;
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
-}
 
 const TRUNCATE_AT = 120;
 
@@ -79,8 +68,8 @@ export function FireRowsTable({ fires }: { fires: Fire[] }) {
           className="px-3 py-2 border-b border-rule-soft last:border-b-0 flex flex-col gap-1"
         >
           <div className="flex items-center gap-3">
-            <span className="text-[11.5px] text-muted-foreground tabular-nums w-[6.5rem] shrink-0">
-              {formatTimestamp(f.firedAt)}
+            <span className="text-[11.5px] text-muted-foreground tabular-nums min-w-[6.5rem] shrink-0">
+              <Timestamp value={f.firedAt} />
             </span>
             <StatusBadge tone={FIRE_TONE[f.status]} dot>{f.status}</StatusBadge>
             <span className="text-[11px] text-muted-foreground font-mono uppercase tracking-[0.04em]">

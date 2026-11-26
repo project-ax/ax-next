@@ -22,6 +22,7 @@ import type { DirectoryPage } from '@/lib/connector-directory';
 import type { Connector, ConnectorSummary } from '@/lib/connectors';
 import { directoryEntry, directoryPage } from '@/lib/__tests__/directory-fixtures';
 import { headingOutline, headingOutlineProblems } from '@/test-utils/heading-outline';
+import { beforeNoon, byVisibleText, freezeClock, thawClock } from '@/test-utils/time';
 
 const INTRO =
   'Search a public directory of services that work with agents. Anyone can publish to it, so each result shows who published it.';
@@ -115,6 +116,7 @@ let search: MockInstance<typeof directoryLib.searchDirectory>;
 let getConnector: MockInstance<typeof connectorsLib.getConnector>;
 
 beforeEach(() => {
+  freezeClock();
   search = vi
     .spyOn(directoryLib, 'searchDirectory')
     .mockImplementation(async (q) => (q === '' ? directoryPage() : directoryPage({ entries: [linear, community] })));
@@ -122,7 +124,10 @@ beforeEach(() => {
     .spyOn(connectorsLib, 'getConnector')
     .mockImplementation(async (id) => fullConnector({ ...SUMMARY, id }));
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  thawClock();
+  vi.restoreAllMocks();
+});
 
 function renderDirectory(connectors: readonly ConnectorSummary[] = []) {
   const onBack = vi.fn();
@@ -165,7 +170,7 @@ describe('ConnectorDirectory', () => {
       // Even an answer that carries rows lists nothing: the list waits for typing.
       search.mockImplementation(async () => directoryPage({ entries: [linear, community] }));
       renderDirectory();
-      expect(await screen.findByText('List updated 12 min ago')).toBeInTheDocument();
+      expect(await screen.findByText(byVisibleText('List updated 12 min ago'))).toBeInTheDocument();
       expect(screen.getByRole('heading', { level: 2, name: 'Find a connector' })).toBeInTheDocument();
       expect(screen.getByText(INTRO)).toBeInTheDocument();
       const box = screen.getByLabelText('Search the directory');
@@ -189,7 +194,7 @@ describe('ConnectorDirectory', () => {
     });
 
     it('a stale list says how old it is', async () => {
-      const sixHoursAgo = new Date(Date.now() - 6 * 3_600_000).toISOString();
+      const sixHoursAgo = beforeNoon(6 * 3_600_000);
       search.mockImplementation(async () => directoryPage({ stale: true, syncedAt: sixHoursAgo }));
       const view = renderDirectory();
       const note = (
@@ -228,7 +233,7 @@ describe('ConnectorDirectory', () => {
 
       search.mockImplementation(async () => directoryPage({ verifiedOnly: false }));
       renderDirectory();
-      await screen.findByText('List updated 12 min ago');
+      await screen.findByText(byVisibleText('List updated 12 min ago'));
       expect(screen.queryByText(VERIFIED_ONLY)).toBeNull();
     });
 
@@ -310,7 +315,7 @@ describe('ConnectorDirectory', () => {
 
     it('a search answer updates how fresh the list says it is', async () => {
       // Fresh when the admin opened it, stale by the time they searched.
-      const sixHoursAgo = new Date(Date.now() - 6 * 3_600_000).toISOString();
+      const sixHoursAgo = beforeNoon(6 * 3_600_000);
       search.mockImplementation(async (q) =>
         q === '' ? directoryPage() : directoryPage({ entries: [linear], stale: true, syncedAt: sixHoursAgo }),
       );
@@ -429,7 +434,7 @@ describe('ConnectorDirectory', () => {
       await pass(0);
       expect(warn).not.toHaveBeenCalled();
       expect(rowNames()).toEqual([]);
-      expect(screen.getByText('List updated 12 min ago')).toBeInTheDocument();
+      expect(screen.getByText(byVisibleText('List updated 12 min ago'))).toBeInTheDocument();
       expect(screen.getByText(LOCAL_ONLY)).toBeInTheDocument();
       // Typing the same text again searches afresh, with no failure left behind.
       typeQuery(box, 'notion');

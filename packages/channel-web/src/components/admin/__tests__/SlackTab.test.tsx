@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SlackTab } from '../SlackTab';
+import { beforeNoon, byVisibleText, freezeClock } from '@/test-utils/time';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
 import { fetchSlackBotRequests } from '@/lib/slack-bot-requests';
 import {
@@ -54,8 +55,9 @@ const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1.2&state=ab
 // Distinctive, so a leak into the page is easy to spot.
 const ACCESS = fakeConfigAccessToken();
 const REFRESH = fakeConfigRefreshToken();
-const CONNECTED_AT = '2026-11-13T12:00:00.000Z';
-const CONNECTED_DATE = new Date(CONNECTED_AT).toLocaleDateString(undefined, { dateStyle: 'medium' });
+// 30 days before the frozen "now" (Nov 26): far enough back to read as a plain date.
+const CONNECTED_AT = beforeNoon(30 * 86_400_000);
+const CONNECTED_DATE = 'Oct 27';
 
 const NOT_CONNECTED: SlackStatusRead = { state: 'not-connected', defaultBotName: 'canopy', canConnect: true, leftoverApps: [] };
 const NO_HTTPS: SlackStatusRead = {
@@ -105,6 +107,7 @@ async function leftoverNote(several = false): Promise<HTMLElement> {
 }
 
 beforeEach(() => {
+  freezeClock();
   vi.resetAllMocks();
   vi.mocked(renderSlackAvatar).mockResolvedValue('AVATARB64');
   vi.mocked(fetchSlackBotRequests).mockResolvedValue({ requests: [], truncated: false, configTokenStored: false });
@@ -309,7 +312,7 @@ describe('SlackTab states', () => {
   it('pending: almost there, who started it, Continue in Slack and Cancel', async () => {
     renderTab(PENDING);
     expect(await screen.findByText('Almost there: finish installing the bot in Slack.')).toBeInTheDocument();
-    expect(screen.getByText(`Started by Ada Admin on ${CONNECTED_DATE}. Bot name: canopy.`)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(`Started by Ada Admin ${CONNECTED_DATE}. Bot name: canopy.`))).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continue in Slack' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
     expect(screen.queryByLabelText(/refresh token/i)).toBeNull();
@@ -321,7 +324,7 @@ describe('SlackTab states', () => {
     expect(screen.getByText('Bot name')).toBeInTheDocument();
     expect(screen.getByText('canopy')).toBeInTheDocument();
     expect(screen.getByText('Configuration token')).toBeInTheDocument();
-    expect(screen.getByText(`Added by Ada Admin on ${CONNECTED_DATE}`)).toBeInTheDocument();
+    expect(screen.getByText(byVisibleText(`Added by Ada Admin ${CONNECTED_DATE}`))).toBeInTheDocument();
     expect(screen.getByText('People can now DM the bot to talk to their own agent.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
     // The token itself is never shown, and never asked for again.
@@ -837,7 +840,7 @@ describe('Replace the configuration token', () => {
 
   it('the connected card shows who added the token and when, with Replace; the dialog asks for one refresh token from someone who can manage the app', async () => {
     renderTab(CONNECTED);
-    expect(await screen.findByText(`Added by Ada Admin on ${CONNECTED_DATE}`)).toBeInTheDocument();
+    expect(await screen.findByText(byVisibleText(`Added by Ada Admin ${CONNECTED_DATE}`))).toBeInTheDocument();
     const dialog = await openDialog();
     expect(dialog).toHaveTextContent(
       'Do this when the token we have stops working, or when whoever generated it is leaving. Conversations keep working.',

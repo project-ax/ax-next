@@ -313,14 +313,6 @@ export function learnedSourceLabel(speaker: 'person' | 'agent', excerpt: string)
   return excerpt === '' ? text : `${text}: “${excerpt}”`;
 }
 
-/** When a live batch landed. Whole minutes and hours; never a date. */
-export function learnedAgo(ms: number): string {
-  const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
-  return `${Math.floor(minutes / 60)} hr ago`;
-}
-
 export function learnedMore(count: number): string {
   return `+${count} more from this chat`;
 }
@@ -352,8 +344,6 @@ export const MEMORY_KIND_PREFERENCE = 'Preference';
 export const MEMORY_KIND_FACT = 'Fact';
 export const MEMORY_SHARED_BADGE = 'Shared';
 export const MEMORY_SHARED_BADGE_HINT = 'Learned in a shared conversation. Anyone there could see it.';
-export const MEMORY_NOTED_TODAY = 'Today';
-export const MEMORY_NOTED_YESTERDAY = 'Yesterday';
 
 export function memoryListFooter(count: number): string {
   return `${count} ${count === 1 ? 'memory' : 'memories'} · Fix and Forget live in each row's menu.`;

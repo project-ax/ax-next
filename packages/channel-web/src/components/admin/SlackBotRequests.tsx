@@ -23,7 +23,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
-import { Button as AxButton, Notice } from '@project-ax/ui';
+import { Button as AxButton, formatTimestamp, Notice } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
@@ -35,7 +35,6 @@ import {
 } from '@/components/ui/dialog';
 import { FieldGroup } from '@/components/ui/field';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
-import { slackShortDate } from '@/lib/agent-slack';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
@@ -155,7 +154,7 @@ export function SlackBotRequests() {
                     {`${request.botName} for ${request.agentName}${request.teamName !== null ? ` · ${request.teamName}` : ''}`}
                   </p>
                   <p className="text-[12.5px] text-muted-foreground">
-                    {`Asked by ${request.requestedBy} on ${slackShortDate(request.requestedAt)}.`}
+                    {`Asked by ${request.requestedBy} ${formatTimestamp(request.requestedAt) ?? request.requestedAt}.`}
                   </p>
                   {declineFailed === request.requestId && (
                     <Notice tone="danger">{COPY['declineFailed']}</Notice>

@@ -41,7 +41,7 @@
  * only (invariant #6).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice, Timestamp } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listConnectors,
@@ -57,7 +57,6 @@ import {
   type ConnectorSummary,
   type ConnectorWriteBase,
 } from '@/lib/connectors';
-import { relativeDay } from '@/lib/workspace-time';
 import { searchDirectory, prefillFromDirectoryEntry } from '@/lib/connector-directory';
 import { logRequestFailure } from '@/lib/http';
 import { ConnectorEditDialog } from './ConnectorEditDialog';
@@ -366,7 +365,7 @@ export function ConnectorsTab() {
                         {/* Requests from before an upgrade surface too, so the
                             age helps an admin spot (and Dismiss) a stale one. */}
                         <p className="text-xs text-muted-foreground">
-                          {`Requested ${relativeDay(r.updatedAt)}`}
+                          Requested <Timestamp value={r.updatedAt} />
                         </p>
                         {reach.length > 0 && (
                           <p className="break-words text-sm text-muted-foreground">

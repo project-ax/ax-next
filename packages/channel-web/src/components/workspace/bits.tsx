@@ -8,7 +8,7 @@
  */
 import { useState } from 'react';
 import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
-import { Button as AxButton, ConfirmAction, StatusBadge, type StatusTone } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, formatTimestamp, StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
 import { AvatarTile } from '@/components/AvatarTile';
 import {
   Popover,
@@ -24,7 +24,6 @@ import {
 import { cn } from '@/lib/utils';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import type { TaskGroup } from '@/lib/task-groups';
-import { shortDay } from '@/lib/workspace-time';
 import type {
   AgentRunState,
   CapabilityEffect,
@@ -124,12 +123,10 @@ export const STATE_TONE: Record<DotState, StatusTone> = {
  * and how far through a countable list it is.
  */
 export function Elapsed({ since }: { since: string | null }) {
-  if (!since) return null;
-  const ms = Date.now() - Date.parse(since);
-  const mins = Math.max(0, Math.round(ms / 60_000));
+  if (!since || formatTimestamp(since) === null) return null;
   return (
     <span>
-      {mins < 1 ? 'just started' : `started ${mins} min ago`}
+      started <Timestamp value={since} />
     </span>
   );
 }
@@ -386,7 +383,7 @@ export function GrantLine({
         )}
         {row.grantedAt !== null && (
           <span className="ml-1.5 text-[11px] text-muted-foreground">
-            {shortDay(row.grantedAt)}
+            <Timestamp value={row.grantedAt} />
           </span>
         )}
       </span>

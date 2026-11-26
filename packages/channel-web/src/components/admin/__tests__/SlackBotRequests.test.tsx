@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SlackBotRequests } from '../SlackBotRequests';
+import { beforeNoon, freezeClock, thawClock } from '@/test-utils/time';
 import {
   approveSlackBotRequest,
   declineSlackBotRequest,
@@ -38,8 +39,9 @@ const go = vi.mocked(goToSlack);
 const avatar = vi.mocked(renderSlackAvatar);
 
 const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1';
-const ASKED_AT = '2026-11-20T10:00:00.000Z';
-const ASKED_DATE = new Date(ASKED_AT).toLocaleDateString(undefined, { dateStyle: 'medium' });
+// 30 days before the frozen "now" (Nov 26): far enough back to read as a plain date.
+const ASKED_AT = beforeNoon(30 * 86_400_000);
+const ASKED_DATE = 'Oct 27';
 const QUILL: SlackBotRequest = {
   requestId: 'AAAAAAAAAAAAAAAAAAAAAA',
   botName: 'Quill Bot',
@@ -77,6 +79,7 @@ async function openApprove(botName = 'Quill Bot') {
 }
 
 beforeEach(() => {
+  freezeClock();
   avatar.mockResolvedValue('UE5HQVZBVEFS');
   approve.mockResolvedValue({ installUrl: INSTALL_URL });
   decline.mockResolvedValue(undefined);
@@ -84,6 +87,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  thawClock();
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
@@ -99,10 +103,10 @@ describe('the list', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('Quill Bot for Quill · Support')).toBeInTheDocument();
-    expect(screen.getByText(`Asked by Ada Lovelace on ${ASKED_DATE}.`)).toBeInTheDocument();
+    expect(screen.getByText(`Asked by Ada Lovelace ${ASKED_DATE}.`)).toBeInTheDocument();
     // No team name, no dot.
     expect(screen.getByText('Rook Bot for Rook')).toBeInTheDocument();
-    expect(screen.getByText(`Asked by Grace Hopper on ${ASKED_DATE}.`)).toBeInTheDocument();
+    expect(screen.getByText(`Asked by Grace Hopper ${ASKED_DATE}.`)).toBeInTheDocument();
     // Each row's buttons name their bot, so a screen reader can tell them apart; the text on screen is unchanged.
     expect(screen.getByRole('button', { name: 'Approve Quill Bot' })).toHaveTextContent('Approve…');
     expect(screen.getByRole('button', { name: 'Approve Rook Bot' })).toHaveTextContent('Approve…');

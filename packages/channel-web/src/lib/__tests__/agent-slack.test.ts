@@ -754,7 +754,7 @@ describe("the Slack card's words (TASK-1187)", () => {
     );
     expect(C.waitingForAdmin(botName)).toBe('Waiting for an admin to approve Quill Bot');
     expect(C.askedOn('Nov 3', botName)).toBe(
-      'Asked on Nov 3. Once an admin approves it, Quill Bot is ready to invite to channels.',
+      'Asked Nov 3. Once an admin approves it, Quill Bot is ready to invite to channels.',
     );
     expect(C.finishInSlack(botName)).toBe('Almost there: finish adding Quill Bot in Slack');
     expect(C.waitingForPerson(approver, botName)).toBe('Waiting for Ada Lovelace to finish adding Quill Bot in Slack');

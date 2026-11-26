@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from 'react';
 import { listTeams, type Team } from '../../lib/admin';
-import { AsyncState } from '@project-ax/ui';
+import { AsyncState, formatTimestamp } from '@project-ax/ui';
 import { SettingsRow } from '../settings/SettingsLayout';
 
 /**
@@ -25,9 +25,8 @@ import { SettingsRow } from '../settings/SettingsLayout';
  * nothing rather than "Invalid Date".
  */
 function teamCaption(t: Team): string {
-  const created = new Date(t.createdAt);
-  if (Number.isNaN(created.getTime())) return '';
-  return `Created ${created.toLocaleDateString(undefined, { dateStyle: 'medium' })}`;
+  const created = formatTimestamp(t.createdAt);
+  return created === null ? '' : `Created ${created}`;
 }
 
 export function TeamList() {

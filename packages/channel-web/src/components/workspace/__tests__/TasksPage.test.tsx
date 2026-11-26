@@ -141,16 +141,16 @@ describe('TasksPage (TASK-909)', () => {
     expect(screen.queryByRole('combobox', { name: 'Agent' })).not.toBeInTheDocument();
   });
   it('shows Repeat failures and durable waiting counts on one line, without a fabricated report or Today task', async () => {
-    vi.useFakeTimers({ now: Date.parse('2026-10-29T12:00:00Z'), toFake: ['Date'] });
+    vi.useFakeTimers({ now: new Date(2026, 9, 29, 12, 0).getTime(), toFake: ['Date'] });
     tasksMock.mockResolvedValue(page([row('Daily digest', { kind: 'repeat', task: null, canMarkDone: false,
-      repeat: { lastRunAt: '2026-10-26T12:00:00Z', status: 'error', error: 'Delivery failed.', warning: null, active: 0, waiting: 2, sharedThread: false, appUpdates: true } })]));
+      repeat: { lastRunAt: new Date(2026, 9, 26, 12, 0).toISOString(), status: 'error', error: 'Delivery failed.', warning: null, active: 0, waiting: 2, sharedThread: false, appUpdates: true } })]));
     renderPage();
     const line = 'Last run failed. Delivery failed. · 2 app updates waiting';
     expect(await screen.findByText(line)).toHaveAttribute('title', line);
     expect(groupHeadings()).toEqual(['Repeat jobs 1']);
     expect(screen.queryByText('No update yet')).not.toBeInTheDocument();
-    // Its right-hand fact is the last run's day; the sentence says when.
-    expect(within(rowLink('Daily digest')).getByText('Last run 3 days ago')).toBeInTheDocument();
+    // Its right-hand fact is when it last ran: the weekday and clock within the week, spoken in full.
+    expect(within(rowLink('Daily digest')).getByText('Last run Mon 12:00 PM')).toBeInTheDocument();
   });
   it('draws the state it is handed, without reading anything (TASK-933)', () => {
     render(<TasksPage onTaskWriteSucceeded={vi.fn()} state={ready([row('Sweep', { task: report('on-track') })])} retry={vi.fn()} onNavigate={vi.fn()} onReply={vi.fn()} />);
@@ -443,7 +443,7 @@ describe('TasksPage (TASK-909)', () => {
   });
 
   it('dates a report from when it was written, and a never-reported task not at all', async () => {
-    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    const NOW = new Date(2026, 9, 22, 12, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     tasksMock.mockResolvedValue(
@@ -458,7 +458,7 @@ describe('TasksPage (TASK-909)', () => {
     );
     renderPage();
     expect(await screen.findByText('Checked 4 min ago')).toBeInTheDocument();
-    expect(within(rowLink('Support queue')).getByText('4m')).toBeInTheDocument();
+    expect(within(rowLink('Support queue')).getByText('4 min ago')).toBeInTheDocument();
     const digest = rowLink('Weekly digest');
     expect(within(digest).getByText('Juniper').textContent).toBe('Juniper');
     expect(within(digest).queryByText(/^Checked /)).toBeNull();
@@ -471,7 +471,7 @@ describe('TasksPage (TASK-909)', () => {
   });
 
   it('dates rows a retry brings in against the clock now, not when the page opened', async () => {
-    const OPENED = new Date('2026-10-22T12:00:00.000Z');
+    const OPENED = new Date(2026, 9, 22, 12, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(OPENED);
     const later = new Date(OPENED.getTime() + 15 * 60_000);
@@ -498,7 +498,7 @@ describe('TasksPage (TASK-909)', () => {
   });
 
   it('keeps the clock running when the only report is on a paused task', async () => {
-    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    const NOW = new Date(2026, 9, 22, 12, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     tasksMock.mockResolvedValue(
@@ -608,7 +608,7 @@ describe('TasksPage (TASK-909)', () => {
   });
 
   it('a get-done task’s row says how many steps are done, in place of when it checked (TASK-948)', async () => {
-    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    const NOW = new Date(2026, 9, 22, 12, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     tasksMock.mockResolvedValue(
@@ -630,7 +630,7 @@ describe('TasksPage (TASK-909)', () => {
   });
 
   it('a get-done task with no steps yet reads as any other row (TASK-948)', async () => {
-    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    const NOW = new Date(2026, 9, 22, 12, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     tasksMock.mockResolvedValue(
@@ -649,7 +649,7 @@ describe('TasksPage (TASK-909)', () => {
   });
 
   it('a get-done row says how long is left after its steps (TASK-951)', async () => {
-    const NOW = new Date('2026-10-22T12:00:00.000Z');
+    const NOW = new Date(2026, 9, 22, 12, 0);
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     const checked = report('on-track', { reportedAt: new Date(NOW.getTime() - 4 * 60_000).toISOString() });
@@ -789,7 +789,7 @@ describe('TasksPage: agent filter', () => {
 });
 
 describe('TasksPage: Done tasks (TASK-950)', () => {
-  const NOW_MS = Date.parse('2026-10-24T12:00:00Z');
+  const NOW_MS = new Date(2026, 9, 24, 12, 0).getTime();
   const ago = (ms: number) => new Date(NOW_MS - ms).toISOString();
   const HOUR = 3_600_000;
   const DAY = 86_400_000;
@@ -841,7 +841,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
     openDone(1);
     expect(doneToggle).toHaveAttribute('aria-expanded', 'true');
     const list = screen.getByRole('list', { name: 'Done tasks' });
-    expect(within(list).getByText(/^Done (at |yesterday at |tomorrow at |on )/)).toBeInTheDocument();
+    expect(within(list).getByText('Done 2 hr ago')).toBeInTheDocument();
     expect(within(list).getByText('Tidy the garage is finished.')).toBeInTheDocument();
     // Its claim is settled: no Reply, and no "Thinks it's done".
     expect(within(list).queryByRole('button', { name: 'Reply' })).toBeNull();
@@ -855,7 +855,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
     renderPage();
     await screen.findByRole('button', { name: '1 done task' });
     openDone(1);
-    expect(screen.getByText(/^Done (at |yesterday at |tomorrow at |on )/)).toBeInTheDocument();
+    expect(screen.getByText('Done 2 hr ago')).toBeInTheDocument();
     expect(screen.queryByText(/days? left|Due today|past its finish date/)).toBeNull();
   });
 
@@ -1013,14 +1013,15 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
 describe('missed check-in metadata (TASK-940)', () => {
   it.each([true, false])('dates the miss even when an older report exists: %s', async (hasReport) => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(new Date('2026-10-26T15:00:00Z'));
+    // Local noon, so "1 min ago" is the same local day in any time zone.
+    vi.setSystemTime(new Date(2026, 9, 26, 12, 0));
     tasksMock.mockResolvedValue(page([row('Inbox', {
-      task: hasReport ? report('on-track', { reportedAt: '2026-10-25T20:00:00Z' }) : null,
-      noRecentUpdate: { inARow: 1, reason: 'failed', at: '2026-10-26T14:59:00Z', autoPaused: false },
+      task: hasReport ? report('on-track', { reportedAt: new Date(2026, 9, 25, 17, 0).toISOString() }) : null,
+      noRecentUpdate: { inARow: 1, reason: 'failed', at: new Date(2026, 9, 26, 11, 59).toISOString(), autoPaused: false },
     })]));
     renderPage();
     expect(await screen.findByText('Checked 1 min ago')).toBeInTheDocument();
-    expect(screen.queryByText(/checked 19 hr ago/i)).toBeNull();
+    expect(screen.queryByText(/checked Yesterday/i)).toBeNull();
   });
 });
 

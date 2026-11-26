@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type { AgentAppsRead, AppGrant, AppLink } from '@ax/apps-bridge-contract';
 import type { AgentConnectorTool } from '@/lib/workspace-types';
 import { AgentApps } from '../AgentApps';
+import { beforeNoon, freezeClock, thawClock } from '@/test-utils/time';
 import { useHeldThroughClose } from '../use-held-through-close';
 
 const api = vi.hoisted(() => ({
@@ -108,6 +109,7 @@ async function renderApps(answer: AgentAppsRead | 'unavailable' = read()) {
 }
 
 beforeEach(() => {
+  freezeClock();
   for (const fn of Object.values(api)) fn.mockReset();
   hooks.tools = [tool('search_issues', 'allow'), tool('create_issue', 'hold'), tool('delete_issue', 'deny')];
   hooks.manageable = true;
@@ -118,6 +120,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  thawClock();
   vi.unstubAllGlobals();
 });
 
@@ -177,7 +180,7 @@ describe('AgentApps', () => {
   it('Link an app shows a one-time code with Copy and its expiry; there is no app id field', async () => {
     const writeText = vi.fn(async () => {});
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
-    api.mintLinkCode.mockResolvedValue({ code: CODE, expiresAt: '2026-11-21T10:15:00.000Z' });
+    api.mintLinkCode.mockResolvedValue({ code: CODE, expiresAt: beforeNoon(-10 * 60_000) });
     await renderApps(read({ links: [] }));
     expect(screen.queryByLabelText(/app id/i)).toBeNull();
 
@@ -190,7 +193,8 @@ describe('AgentApps', () => {
     // The only field: there is nowhere to type an app id.
     expect(within(dialog).getAllByRole('textbox')).toHaveLength(1);
     expect(within(dialog).queryByLabelText(/app id/i)).toBeNull();
-    const expiry = new Date('2026-11-21T10:15:00.000Z').toLocaleTimeString(undefined, { timeStyle: 'short' });
+    // Ten minutes past the frozen local noon, the same day: the clock alone.
+    const expiry = '12:10 PM';
     expect(dialog).toHaveTextContent(
       `Give this code to your apps platform, or to the agent building the app. It works once, until ${expiry}.`,
     );

@@ -1524,10 +1524,10 @@
       "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 9
+      "count": 8
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 9
     }
   },
   "packages/channel-web/src/components/workspace/visual/VisualFrame.tsx": {

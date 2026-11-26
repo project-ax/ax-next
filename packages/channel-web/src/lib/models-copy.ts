@@ -2,6 +2,7 @@
  * Every sentence the Models tab and the agent editor's moved-model notice say.
  * Project voice: plain words, short sentences, "we", no blame.
  */
+import { formatTimestamp } from '@project-ax/ui';
 import { HTTP_NO_ACCESS, HTTP_SESSION_ENDED } from './http';
 import { ModelsHttpError } from './models-admin';
 
@@ -26,16 +27,9 @@ export function providerProblem(name: string): string {
 export function providerNoKey(name: string): string {
   return `Add an API key to see ${name}'s models.`;
 }
-export function timeAgo(iso: string | undefined, nowMs: number): string {
-  if (iso === undefined) return 'earlier';
-  const mins = Math.floor((nowMs - Date.parse(iso)) / 60_000);
-  if (!(mins >= 1)) return 'a moment ago';
-  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
-  const hrs = Math.floor(mins / 60);
-  return `${hrs} hour${hrs === 1 ? '' : 's'} ago`;
-}
 export function cachedNote(iso: string | undefined, nowMs: number): string {
-  return `Showing models from ${timeAgo(iso, nowMs)}.`;
+  const when = iso === undefined ? null : formatTimestamp(iso, { now: new Date(nowMs) });
+  return `Showing models from ${when ?? 'earlier'}.`;
 }
 export function countLine(shown: number, total: number, filtering: boolean): string {
   if (!filtering) return `${total} model${total === 1 ? '' : 's'}`;

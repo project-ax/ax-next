@@ -14,8 +14,8 @@
  * `answers an approval…` pins that they reach the queue's handlers.
  *
  * Times are built in the reader's own calendar (`new Date(y, m, d, …)`) and the
- * expected words from `localTime`, so nothing depends on where or when the
- * suite runs.
+ * expected words from the frozen clock (`NOW`, two hours after the check-in
+ * fired, so "1 hr ago"), so nothing depends on where or when the suite runs.
  */
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
@@ -25,7 +25,6 @@ import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readingText } from '@/lib/task-reading';
 import { workspaceApi, WorkspaceApiError, type ThreadMessage } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { localTime } from '@/lib/workspace-time';
 import type { TaskCheckin, TaskReading, TaskUpdate } from '@/lib/workspace-types';
 import { saveBlob } from '@/lib/file-download';
 import { DECISION_SESSION_EXPIRED, DECISION_THREAD_READ_FAILED } from '../decision-copy';
@@ -50,6 +49,8 @@ const checkinMock = vi.mocked(workspaceApi.taskCheckin);
 
 const NOW = new Date(2026, 9, 22, 12, 0);
 const FIRED = new Date(2026, 9, 22, 10, 2).toISOString();
+/** The page's title for FIRED, read at NOW. */
+const CHECKIN_TITLE = 'Check-in 1 hr ago';
 const CHECKIN_PATH = '/tasks/a1/t1/checkins/c1';
 const TASK_NAME = 'Zero open support tickets';
 const UPDATE = '3 open. I’m answering #4411 and #4412 now.';
@@ -127,7 +128,7 @@ function summary(): HTMLElement {
 
 /** Wait for the check-in to be on screen, and hand back its summary. */
 async function ready(): Promise<HTMLElement> {
-  await screen.findByRole('heading', { level: 1, name: `Check-in at ${localTime(FIRED)}` });
+  await screen.findByRole('heading', { level: 1, name: CHECKIN_TITLE });
   return summary();
 }
 
@@ -495,7 +496,7 @@ describe('TaskCheckinPage (TASK-911)', () => {
     const line = await screen.findByText(REFRESH_FAILED);
     // What it read before is still there.
     expect(
-      screen.getByRole('heading', { level: 1, name: `Check-in at ${localTime(FIRED)}` }),
+      screen.getByRole('heading', { level: 1, name: CHECKIN_TITLE }),
     ).toBeInTheDocument();
     expect(within(transcript()).getByText('Checking the queue.')).toBeInTheDocument();
     // A failure interrupts: danger is the alert role.

@@ -32,7 +32,7 @@
  * browser fetch, and it leaves file links out of prose.
  */
 import { useId, useLayoutEffect, useState, type ReactNode } from 'react';
-import { AsyncState, Notice, StatusMark } from '@project-ax/ui';
+import { AsyncState, formatTimestamp, Notice, StatusMark } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -51,7 +51,6 @@ import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TaskReadError } from '@/lib/workspace-task';
 import { useTaskCheckin } from '@/lib/workspace-task-checkin';
-import { checkInWhen } from '@/lib/workspace-time';
 import type { TaskCheckin } from '@/lib/workspace-types';
 import { AgentConversation, approvalReadFrom } from './AgentConversation';
 import { STATE_TONE } from './bits';
@@ -135,7 +134,7 @@ export function TaskCheckinPage({
   // effect, so a stale time never reaches the screen.
   const [now, setNow] = useState(() => new Date());
   useLayoutEffect(() => setNow(new Date()), [page]);
-  const when = page === null ? null : checkInWhen(page.checkIn.firedAt, now);
+  const when = page === null ? null : formatTimestamp(page.checkIn.firedAt, { now });
 
   return (
     <>

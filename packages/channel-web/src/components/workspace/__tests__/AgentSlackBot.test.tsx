@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentSlackBot } from '../AgentSlackBot';
+import { beforeNoon, freezeClock, thawClock } from '@/test-utils/time';
 import {
   AgentSlackError,
   askSlackBotApproval,
@@ -67,7 +68,7 @@ const avatar = vi.mocked(renderSlackAvatar);
 const INSTALL_URL = 'https://slack.com/oauth/v2/authorize?client_id=1';
 const NONE_NO_TOKEN: Bot = { state: 'none', configTokenStored: false };
 const NONE_STORED: Bot = { state: 'none', configTokenStored: true };
-const REQUESTED: Bot = { state: 'requested', botName: 'Quill Bot', requestedAt: '2026-11-20T10:00:00.000Z' };
+const REQUESTED: Bot = { state: 'requested', botName: 'Quill Bot', requestedAt: beforeNoon(30 * 86_400_000) };
 /** The bot's install id, as a manager's status carries it: the key its Disconnect takes. */
 const BOT_ID = 'Hb7Kq2Lw8vNc5Xr1Bm7KdA';
 const PENDING: Bot = { state: 'pending', botName: 'Quill Bot', approver: 'Ada Lovelace', canContinue: true, installId: BOT_ID };
@@ -152,6 +153,7 @@ function expectInOrder(...els: Element[]) {
 }
 
 beforeEach(() => {
+  freezeClock();
   avatar.mockResolvedValue('UE5HQVZBVEFS');
   request.mockResolvedValue({ installUrl: INSTALL_URL, iconSet: true });
   continueIt.mockResolvedValue({ installUrl: INSTALL_URL });
@@ -165,6 +167,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  thawClock();
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
@@ -776,8 +779,8 @@ describe('requested', () => {
   it('a manager sees the waiting line, when it was asked, and Cancel request in the ⋯', async () => {
     renderIt(REQUESTED);
     expect(screen.getByRole('heading', { level: 3, name: 'Waiting for an admin to approve Quill Bot' })).toBeInTheDocument();
-    const date = new Date('2026-11-20T10:00:00.000Z').toLocaleDateString(undefined, { dateStyle: 'medium' });
-    expect(screen.getByText(`Asked on ${date}. Once an admin approves it, Quill Bot is ready to invite to channels.`)).toBeInTheDocument();
+    // 30 days before the frozen "now" (Nov 26): a plain date.
+    expect(screen.getByText(`Asked Oct 27. Once an admin approves it, Quill Bot is ready to invite to channels.`)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Continue in Slack' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Cancel request' })).toBeNull();
     const menu = await openMenu('Quill Bot');
@@ -786,14 +789,14 @@ describe('requested', () => {
 
   it('a date we cannot read shows as it came', () => {
     renderIt({ ...REQUESTED, requestedAt: 'last week' });
-    expect(screen.getByText('Asked on last week. Once an admin approves it, Quill Bot is ready to invite to channels.')).toBeInTheDocument();
+    expect(screen.getByText('Asked last week. Once an admin approves it, Quill Bot is ready to invite to channels.')).toBeInTheDocument();
   });
 
   it('anyone else sees the card saying Quill is not in Slack yet, never the request', () => {
     render(<AgentSlackBot agentId="a1" agentName="Quill" bot={REQUESTED} canManage={false} {...QUIET} onChanged={vi.fn()} />);
     expect(screen.getByRole('heading', { level: 3, name: "Quill isn't in Slack yet" })).toBeInTheDocument();
     expect(screen.getByText('A team admin can add it.')).toBeInTheDocument();
-    expect(screen.queryByText(/Waiting|Asked on/)).toBeNull();
+    expect(screen.queryByText(/Waiting|Asked /)).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
   });
 

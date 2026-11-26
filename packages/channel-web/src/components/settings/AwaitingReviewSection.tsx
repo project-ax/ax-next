@@ -17,7 +17,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Inline, Stack, StatusBadge, Text } from '@project-ax/ui';
+import { AsyncState, Inline, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import { listCatalogRequests } from '@/lib/catalog';
 import type { CatalogRequest } from '@ax/skills';
 import { BundleReviewDialog } from '@/components/admin/BundleReviewDialog';
@@ -84,7 +84,7 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
                   <p className="text-sm">{r.description}</p>
                   <p className="text-xs text-muted-foreground">
                     requested by {r.requestedByUserId} ·{' '}
-                    {new Date(r.createdAt).toLocaleString()}
+                    <Timestamp value={r.createdAt} />
                   </p>
                 </div>
                 <Button

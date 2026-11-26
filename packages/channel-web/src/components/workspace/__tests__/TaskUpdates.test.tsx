@@ -7,14 +7,27 @@
  * The copy is asserted verbatim because it is decided (TASK-910 decisions rows
  * 13 and 14). Its apostrophe is U+2019, not the ASCII one.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { compactStamp, fullStamp, localTime, monthDay, updateStamp } from '@/lib/workspace-time';
+import { formatFullTimestamp, formatTimestamp } from '@project-ax/ui';
 import type { TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { TaskUpdates } from '../TaskUpdates';
+import { visibleText } from '@/test-utils/time';
 
 const NOW = new Date('2026-10-22T15:00:00.000Z');
+
+// Pinned, so "today" and "this past week" are the same days wherever the suite runs
+// (`process.env.TZ` is read live; see workspace-timestamp-parity.test.tsx).
+let savedTz: string | undefined;
+beforeAll(() => {
+  savedTz = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+});
+afterAll(() => {
+  if (savedTz === undefined) delete process.env.TZ;
+  else process.env.TZ = savedTz;
+});
 
 function update(over: Partial<TaskUpdate> = {}): TaskUpdate {
   return {
@@ -33,9 +46,9 @@ function onTrack(n: number): TaskUpdate {
   return update({ firedAt: at, report: { status: 'on-track', update: `Update ${n}`, reading: null } });
 }
 
-/** A row's time as its text reads: the short form shown, then the whole date, hidden. */
+/** A row's time as its text reads: the relative form shown, then the whole date, hidden. */
 function stampText(iso: string): string {
-  return `${compactStamp(iso, NOW)}${fullStamp(iso)}`;
+  return `${formatTimestamp(iso, { now: NOW })} (${formatFullTimestamp(iso)})`;
 }
 
 function renderThread(updates: TaskUpdate[], replies: TaskReply[] = []) {
@@ -178,7 +191,7 @@ describe('TaskUpdates (TASK-910)', () => {
 
   it('each check-in links to what it did', () => {
     const { onNavigate } = renderThread([update({ conversationId: 'c1' })]);
-    const stamp = updateStamp('2026-10-22T14:00:00.000Z', NOW);
+    const stamp = formatTimestamp('2026-10-22T14:00:00.000Z', { now: NOW });
     // The name carries the entry's time, so a list of these still says which is
     // which. jsdom puts a space before the visually hidden span when it
     // computes the name (a real browser doesn't), so the exact words are
@@ -263,7 +276,7 @@ describe('TaskUpdates (TASK-910)', () => {
       );
       expect(within(item).queryByRole('link')).toBeNull();
       // Nothing hidden but the time's whole date.
-      expect([...item.querySelectorAll('.sr-only')].map((e) => e.parentElement?.tagName)).toEqual(['TIME']);
+      expect([...item.querySelectorAll('.sr-only, .ax-sr-only')].map((e) => e.parentElement?.tagName)).toEqual(['TIME']);
     });
 
     it('someone else’s reply says so', () => {
@@ -413,18 +426,7 @@ describe('TaskUpdates (TASK-910)', () => {
   });
 
   describe('the row time (2026-10-29)', () => {
-    // Pinned, so "today" and "this past week" are the same days wherever the suite runs.
-    let savedTz: string | undefined;
-    beforeEach(() => {
-      savedTz = process.env.TZ;
-      process.env.TZ = 'America/New_York';
-    });
-    afterEach(() => {
-      if (savedTz === undefined) delete process.env.TZ;
-      else process.env.TZ = savedTz;
-    });
-
-    it('is short on screen, and its whole date is its tooltip and its hidden text', () => {
+    it('is relative on screen, and its whole date is its tooltip and its hidden text', () => {
       const today = '2026-10-22T14:00:00.000Z';
       const lastWeek = new Date(NOW.getTime() - 3 * 86_400_000).toISOString();
       const older = new Date(NOW.getTime() - 20 * 86_400_000).toISOString();
@@ -435,15 +437,16 @@ describe('TaskUpdates (TASK-910)', () => {
       ]);
       const times = [...container.querySelectorAll('time')];
       expect(times.map((t) => t.getAttribute('dateTime'))).toEqual([today, lastWeek, older]);
-      expect(times.map((t) => t.querySelector('[aria-hidden="true"]')?.textContent)).toEqual([
-        localTime(today),
-        `${new Date(lastWeek).toLocaleDateString(undefined, { weekday: 'short' })} ${localTime(lastWeek)}`,
-        monthDay(older),
+      // NOW is 11:00 AM on Thu Oct 22 in the pinned New York zone.
+      expect(times.map((t) => visibleText(t))).toEqual(['1 hr ago', 'Mon 11:00 AM', 'Oct 2']);
+      expect(times.map((t) => t.getAttribute('title'))).toEqual([
+        'Thu, Oct 22, 2026, 10:00 AM',
+        'Mon, Oct 19, 2026, 11:00 AM',
+        'Fri, Oct 2, 2026, 11:00 AM',
       ]);
       for (const t of times) {
-        const full = fullStamp(t.getAttribute('dateTime')!);
-        expect(t).toHaveAttribute('title', full);
-        expect(within(t).getByText(full!)).toHaveClass('sr-only');
+        const full = t.getAttribute('title')!;
+        expect(within(t).getByText(`(${full})`)).toHaveClass('ax-sr-only');
       }
     });
   });

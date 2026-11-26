@@ -185,7 +185,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, Button as AxButton, Notice, StatusBadge, StatusMark } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, formatTimestamp, Notice, StatusBadge, StatusMark, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -213,7 +213,6 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
-import { checkInWhen, monthDay, timeAgo } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
 import { AgentTile, STATE_TONE } from './bits';
 import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT } from './task-bits';
@@ -1058,10 +1057,10 @@ function MetaRow({
 }) {
   const { agentName } = detail;
   const done = detail.doneAt !== null;
-  const next = detail.enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
-  const doneWhen = done ? checkInWhen(detail.doneAt as string, now) : null;
-  // The month-day form every short date on the page uses ("Oct 25", `finishByShort`'s).
-  const doneDay = done ? monthDay(detail.doneAt as string) : '';
+  const next = detail.enabled && detail.nextCheckAt !== null ? formatTimestamp(detail.nextCheckAt, { now }) : null;
+  const doneWhen = done ? formatTimestamp(detail.doneAt as string, { now }) : null;
+  // The short moment the chip shows ("Oct 25", or the clock for today).
+  const doneDay = done ? (formatTimestamp(detail.doneAt as string, { style: 'clock', now }) ?? '') : '';
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <span className="inline-flex items-center gap-1.5 text-[13px]">
@@ -1463,22 +1462,23 @@ function PollLine({ poll, agentName, repeat }: { poll: TaskPoll; agentName: stri
 
 /**
  * A time as the page shows it: a muted "2 hr ago" on screen, and the whole
- * sentence ("Checked at 10:02 AM · Next check at 1:00 PM") for a screen
+ * sentence ("Checked Today 10:02 AM · Next check Tomorrow 1:00 PM") for a screen
  * reader. Nothing at all when there's nothing to say.
  */
-function WhenLine({ short, full }: { short: string | null; full: string | null }) {
-  if (short === null && full === null) return null;
+function WhenLine({ at, now, full }: { at: string; now: Date; full: string | null }) {
   return (
     <span className="shrink-0 text-[12px] leading-6 tabular-nums text-muted-foreground">
-      {short !== null && <span aria-hidden="true">{short}</span>}
+      <span aria-hidden="true">
+        <Timestamp value={at} now={now} />
+      </span>
       {full !== null && <span className="sr-only">{full}</span>}
     </span>
   );
 }
 
-/** "Checked at 10:02 AM · Next check at 1:00 PM", "… · Paused", or less when a time can't be read. */
+/** "Checked Today 10:02 AM · Next check Tomorrow 1:00 PM", "… · Paused", or less when a time can't be read. */
 function checkedSentence(label: 'Checked' | 'Last check-in', at: string, enabled: boolean, next: string | null, now: Date): string | null {
-  const checked = checkInWhen(at, now);
+  const checked = formatTimestamp(at, { now });
   const parts = [
     checked === null ? null : `${label} ${checked}`,
     !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
@@ -1519,7 +1519,7 @@ function LatestUpdate({
   const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
   const cantShow = task !== null && (task.update === null || task.update === '');
   const next =
-    enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+    enabled && detail.nextCheckAt !== null ? formatTimestamp(detail.nextCheckAt, { now }) : null;
   const banner = bannerOf(detail);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2">
@@ -1544,8 +1544,9 @@ function LatestUpdate({
             {cantShow ? CANT_SHOW : task.update}
           </p>
           <WhenLine
-            short={timeAgo(task.reportedAt, now)}
-            full={done ? `Last update ${checkInWhen(task.reportedAt, now) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
+            at={task.reportedAt}
+            now={now}
+            full={done ? `Last update ${formatTimestamp(task.reportedAt, { now }) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
           />
           {fromCheckIn === null ? null : (
             <IconLink
@@ -1606,7 +1607,7 @@ function MissLine({
     checkNow: permissions.fire,
     edit: permissions.edit,
   });
-  const next = enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+  const next = enabled && detail.nextCheckAt !== null ? formatTimestamp(detail.nextCheckAt, { now }) : null;
   const missed = missCheckIn(miss, detail.updates);
   // The button does what its words say: Edit, Resume or Check now. A too-long brief nobody here may
   // shorten names no action, so it stays words.
@@ -1631,7 +1632,7 @@ function MissLine({
           {TASK_GROUP_LABELS[group]}
         </h2>
         <p className="min-w-0 flex-1 break-words text-[14px] leading-6">{missSummary(miss)}</p>
-        <WhenLine short={timeAgo(miss.at, now)} full={checkedSentence('Last check-in', miss.at, enabled, next, now)} />
+        <WhenLine at={miss.at} now={now} full={checkedSentence('Last check-in', miss.at, enabled, next, now)} />
         {missed !== null && (
           <IconLink
             icon={ArrowUpRight}
@@ -1670,7 +1671,7 @@ function DoneBanner({
   now: Date;
   doneLineRef: RefObject<HTMLParagraphElement | null>;
 }) {
-  const doneWhen = checkInWhen(detail.doneAt as string, now);
+  const doneWhen = formatTimestamp(detail.doneAt as string, { now });
   return (
     <section aria-label="Done">
       <Card className="bg-primary-soft px-4 py-3 shadow-none">

@@ -33,7 +33,7 @@
  */
 import type { ReactNode } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
-import { Notice, Text, StatusMark } from '@project-ax/ui';
+import { Notice, Text, StatusMark, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   RESOLUTION_FOCUS_RING,
@@ -59,14 +59,6 @@ import {
   type DecisionOutcome,
 } from './decision-copy';
 import { useDecisionClock } from './use-decision-clock';
-
-function ago(iso: string): string {
-  const mins = Math.round((Date.now() - Date.parse(iso)) / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const h = Math.round(mins / 60);
-  return `${h}h ago`;
-}
 
 /** The dot's colour follows the outcome's tone, so the list scans at a glance. */
 const TONE_DOT: Record<DecisionOutcome['tone'], 'working' | 'resting' | 'stopped'> = {
@@ -299,7 +291,7 @@ export function DecisionRow({
             {stale ? DECISION_STALE_SUMMARY : d.summary}
           </span>
           <span className="shrink-0 text-[12.5px] text-muted-foreground">
-            {ago(d.createdAt)}
+            <Timestamp value={d.createdAt} />
           </span>
           {expanded ? (
             <ChevronUp size={13} className="shrink-0 text-muted-foreground" />

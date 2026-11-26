@@ -36,7 +36,7 @@ import { ChevronLeft, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
-import { AsyncState, Button as AxButton, EmptyState, Heading, Notice, Stack, Text } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, EmptyState, formatTimestamp, Heading, Notice, Stack, Text, Timestamp } from '@project-ax/ui';
 import {
   DIRECTORY_QUERY_MAX,
   connectorServerAddresses,
@@ -47,7 +47,6 @@ import {
 } from '@/lib/connector-directory';
 import { getConnector, type Connector, type ConnectorSummary } from '@/lib/connectors';
 import { logRequestFailure } from '@/lib/http';
-import { timeAgo } from '@/lib/workspace-time';
 import { DirectoryListingRow } from './DirectoryListingRow';
 
 /** How long the box waits for typing to pause before it searches. */
@@ -99,7 +98,7 @@ function countLine({ entries, nextCursor }: Results): string {
 
 /** How old the list is: a muted line, or a note when the last refresh failed. */
 function Freshness({ page }: { page: DirectoryPage }) {
-  const ago = page.syncedAt === null ? null : timeAgo(page.syncedAt);
+  const ago = page.syncedAt === null ? null : formatTimestamp(page.syncedAt);
   if (page.stale) {
     return (
       <Notice tone="info">
@@ -109,8 +108,12 @@ function Freshness({ page }: { page: DirectoryPage }) {
       </Notice>
     );
   }
-  if (ago === null) return null;
-  return <p className="text-xs text-muted-foreground">{`List updated ${ago}`}</p>;
+  if (ago === null || page.syncedAt === null) return null;
+  return (
+    <p className="text-xs text-muted-foreground">
+      List updated <Timestamp value={page.syncedAt} />
+    </p>
+  );
 }
 
 export function ConnectorDirectory({

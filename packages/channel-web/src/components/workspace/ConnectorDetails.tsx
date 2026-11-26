@@ -35,7 +35,7 @@ import {
   LogIn,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, Notice, Stack } from '@project-ax/ui';
+import { AsyncState, formatTimestamp, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
@@ -55,7 +55,6 @@ import {
 } from '@/lib/agent-connector-tools';
 import { cn } from '@/lib/utils';
 import type { GrantRow } from '@/lib/workspace-api';
-import { shortDay } from '@/lib/workspace-time';
 import type {
   AgentConnectorHealth,
   AgentConnectorRow,
@@ -391,13 +390,13 @@ function SignedInLine({ signedIn }: { signedIn: AgentConnectorSignedIn | undefin
       </>
     );
   } else if (signedIn.at !== null) {
-    const day = shortDay(signedIn.at);
+    const when = formatTimestamp(signedIn.at);
     const by = signedIn.byYou ? 'you' : (signedIn.byName ?? 'someone');
-    if (day !== '') {
-      text = `Signed in by ${by} on ${day}`;
+    if (when !== null) {
+      text = `Signed in by ${by} ${when}`;
       line = (
         <>
-          Signed in by <bdi>{by}</bdi> on {day}
+          Signed in by <bdi>{by}</bdi> <Timestamp value={signedIn.at} />
         </>
       );
     }

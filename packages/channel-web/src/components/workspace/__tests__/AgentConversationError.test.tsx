@@ -22,7 +22,6 @@ import { render, screen } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import type { ThreadMessage, WorkspaceAgent } from '@/lib/workspace-api';
 import { DEFAULT_TURN_ERROR, ERROR_LABELS, askOwnerInstead } from '@/lib/turn-error-labels';
-import { localTime } from '@/lib/workspace-time';
 
 const quill: WorkspaceAgent = {
   id: 'a1',
@@ -174,10 +173,19 @@ describe('a replayed turn failure', () => {
   it('keeps its clock, like the agent bubble it stands in for', () => {
     // WHEN it failed is most of what makes this legible as history rather than
     // as the state of things now — the same reason the row is not hoisted.
-    const { container } = renderThread([errorRow()]);
-    expect(container.textContent ?? '').toContain(
-      localTime('2026-09-20T16:12:00.000Z')!,
-    );
+    // "Now" is the failing instant itself, so the clock is the same-day one in any zone.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-09-20T16:12:00.000Z'));
+    try {
+      const { container } = renderThread([errorRow()]);
+      expect(container.textContent ?? '').toContain(
+        new Date('2026-09-20T16:12:00.000Z')
+          .toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+          .replace(/[\u202f\u00a0]/g, ' '),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('draws NOTHING for an instant it cannot read', () => {

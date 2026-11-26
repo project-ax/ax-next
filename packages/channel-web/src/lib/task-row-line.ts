@@ -4,13 +4,13 @@
  * fact with the whole sentence it stands for.
  *
  * The status lives in the row's group, so a row never repeats it. The reading
- * stays on the task page. Pure, with relative imports only.
+ * stays on the task page. Pure: relative imports plus the package time formatter.
  */
 import { taskGroup } from './task-groups.js';
 import { finishByCount } from './task-finish-by.js';
 import { AUTO_PAUSED_LINE, missSummary } from './task-miss.js';
 import { runFailureText } from './task-updates.js';
-import { checkInWhen, localDayKey, timeAgo } from './workspace-time.js';
+import { formatTimestamp } from '@project-ax/ui';
 import type { RepeatTaskState, TaskRow } from './workspace-types.js';
 
 /** The claim, said short: the agent's tile beside it says whose claim it is. */
@@ -76,18 +76,6 @@ export function repeatLine(run: RepeatTaskState | undefined, enabled: boolean): 
   return parts.join(' · ');
 }
 
-/** "now", "4m", "3h" within a day, then "2d"; `timeAgo`'s floors. Null on an instant it can't read. */
-export function shortAgo(iso: string, now: Date): string | null {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return null;
-  const mins = Math.floor((now.getTime() - then) / 60_000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
-}
-
 /** A finish date (a calendar day, read in UTC so no zone moves it) as "Oct 31". */
 function finishDay(date: string): string {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(
@@ -95,28 +83,9 @@ function finishDay(date: string): string {
   );
 }
 
-/** A local instant as "Oct 24", or null. */
-function localMonthDay(iso: string): string | null {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-/** A last run as "Today", "Yesterday", a weekday within the week, else "Oct 24". */
-function runDay(iso: string, now: Date): string | null {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return null;
-  if (localDayKey(d) === localDayKey(now)) return 'Today';
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (localDayKey(d) === localDayKey(yesterday)) return 'Yesterday';
-  if (now.getTime() - d.getTime() < 6 * 86_400_000) return d.toLocaleDateString(undefined, { weekday: 'short' });
-  return localMonthDay(iso);
-}
-
 /**
  * The row's one right-hand fact. Done: when it was marked done. Repeat: the
- * last run's day. Get-done with steps: "2/5", then its finish date. Otherwise
+ * last run's time. Get-done with steps: "2/5", then its finish date. Otherwise
  * when it last checked in ("checked" dates the last miss when present, else
  * the last real report; a task with neither shows no time, since a time on a
  * row is a claim), then a get-done task's finish date. Null when there is
@@ -124,15 +93,13 @@ function runDay(iso: string, now: Date): string | null {
  */
 export function rowFact(row: TaskRow, now: Date): RowFact | null {
   if (row.doneAt !== null) {
-    const when = checkInWhen(row.doneAt, now);
-    const day = localMonthDay(row.doneAt);
-    return { short: day ?? 'Done', full: when === null ? 'Done' : `Done ${when}`, late: false };
+    const when = formatTimestamp(row.doneAt, { now });
+    return { short: when ?? 'Done', full: when === null ? 'Done' : `Done ${when}`, late: false };
   }
   if (row.kind === 'repeat') {
     const at = row.repeat?.lastRunAt ?? null;
-    const day = at === null ? null : runDay(at, now);
-    const ago = at === null ? null : timeAgo(at, now);
-    return day === null || ago === null ? null : { short: day, full: `Last run ${ago}`, late: false };
+    const when = at === null ? null : formatTimestamp(at, { now });
+    return when === null ? null : { short: when, full: `Last run ${when}`, late: false };
   }
   const short: string[] = [];
   const full: string[] = [];
@@ -141,11 +108,10 @@ export function rowFact(row: TaskRow, now: Date): RowFact | null {
     full.push(`${row.steps.done} of ${row.steps.total} steps`);
   } else {
     const at = row.noRecentUpdate?.at ?? row.task?.reportedAt ?? null;
-    const ago = at === null ? null : timeAgo(at, now);
-    const agoShort = at === null ? null : shortAgo(at, now);
-    if (ago !== null && agoShort !== null) {
-      short.push(agoShort);
-      full.push(`checked ${ago}`);
+    const when = at === null ? null : formatTimestamp(at, { now });
+    if (when !== null) {
+      short.push(when);
+      full.push(`checked ${when}`);
     }
   }
   const finishBy = row.kind === 'get-done' ? row.finishBy : null;

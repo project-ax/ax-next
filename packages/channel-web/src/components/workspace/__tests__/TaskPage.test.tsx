@@ -9,7 +9,7 @@
  * and its apostrophe is U+2019, not the ASCII one.
  *
  * Times are built in the reader's own calendar (`new Date(y, m, d, …)`) and
- * the expected words from `localTime`, so nothing depends on where or when the
+ * the expected words from the frozen `NOW` (local noon), so nothing depends on where or when the
  * suite runs.
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type MockInstance } from 'vitest';
@@ -19,8 +19,6 @@ import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
 import { workspaceApi, WorkspaceApiError } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { browserTimeZone, finishByLine } from '@/lib/task-finish-by';
-import { localTime, monthDay } from '@/lib/workspace-time';
-import { finishByShort } from '@/lib/task-meta';
 import type { TaskDetail, TaskDetailReport, TaskNoRecentUpdate } from '@/lib/workspace-types';
 import { MARK_DONE_NOT_ALLOWED } from '../TaskMarkDone';
 import { TaskPage } from '../TaskPage';
@@ -62,6 +60,12 @@ const removeMock = vi.mocked(routineApi.remove);
 const NOW = new Date(2026, 9, 22, 12, 0);
 const REPORTED = new Date(2026, 9, 22, 10, 2).toISOString();
 const NEXT = new Date(2026, 9, 22, 13, 0).toISOString();
+/** A clock the way the page words it, in the reader's own locale. */
+const clockOf = (iso: string) =>
+  new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }).replace(/[\u202f\u00a0]/g, ' ');
+// Each instant as `formatTimestamp` words it against the frozen NOW (12:00 local).
+const REPORTED_WORDS = '1 hr ago';
+const NEXT_WORDS = `Today ${clockOf(NEXT)}`;
 const TASK_PATH = '/tasks/a1/t1';
 /** What `routineApi.update` answers. The page reads the task again instead. */
 const ROUTINE = {} as Routine;
@@ -274,11 +278,13 @@ describe('TaskPage (TASK-910)', () => {
     // The status is the header's pill now: the list's own group.
     expect(screen.getByRole('heading', { level: 1 }).parentElement).toHaveTextContent('Needs you');
     expect(within(latest).getByText('3 open. I’m answering #4411 and #4412 now.')).toBeInTheDocument();
-    // On screen a short "2 hr ago"; for a screen reader, the whole sentence.
-    expect(within(latest).getByText('1 hr ago')).toHaveAttribute('aria-hidden', 'true');
+    // On screen a short "1 hr ago" (a <time>, hidden from the reader); for a screen reader, the whole sentence.
+    const shown = within(latest).getByText(REPORTED_WORDS);
+    expect(shown.tagName).toBe('TIME');
+    expect(shown.closest('[aria-hidden="true"]')).not.toBeNull();
     expect(
       within(latest).getByText(
-        `Checked at ${localTime(REPORTED)} · Next check at ${localTime(NEXT)}`,
+        `Checked ${REPORTED_WORDS} · Next check ${NEXT_WORDS}`,
       ),
     ).toHaveClass('sr-only');
     // The ask is the banner, in the agent's own words, with the reply box inside it.
@@ -304,7 +310,7 @@ describe('TaskPage (TASK-910)', () => {
     taskMock.mockResolvedValue(detail({ task: null, updates: [] }));
     await renderReady();
     expect(
-      within(latestUpdate()).getByText(`No update yet. It’ll check in at ${localTime(NEXT)}.`),
+      within(latestUpdate()).getByText(`No update yet. It’ll check in ${NEXT_WORDS}.`),
     ).toBeInTheDocument();
   });
 
@@ -363,7 +369,7 @@ describe('TaskPage (TASK-910)', () => {
     taskMock.mockResolvedValue(detail({ enabled: false, nextCheckAt: null }));
     await renderReady();
     expect(
-      within(latestUpdate()).getByText(`Checked at ${localTime(REPORTED)} · Paused`),
+      within(latestUpdate()).getByText(`Checked ${REPORTED_WORDS} · Paused`),
     ).toBeInTheDocument();
   });
 
@@ -382,7 +388,7 @@ describe('TaskPage (TASK-910)', () => {
     expect(screen.getByText('1 hr', { selector: '[aria-hidden="true"]' })).toBeInTheDocument();
     expect(
       chip(
-        `Quill checks in every hour, 9:00 AM to 6:00 PM (America/New_York). Next check at ${localTime(NEXT)}.`,
+        `Quill checks in every hour, 9:00 AM to 6:00 PM (America/New_York). Next check ${NEXT_WORDS}.`,
       ),
     ).toBeInTheDocument();
     // Below `md` the shell's nav trigger is the only door to the sidebar.
@@ -1262,6 +1268,7 @@ describe('TaskPage: a get-done task’s finish date (TASK-951)', () => {
 
 describe('TaskPage: a missed check-in (TASK-930)', () => {
   const MISSED = new Date(2026, 9, 22, 11, 2).toISOString();
+  const MISSED_WORDS = '58 min ago';
   const LAST_UPDATE = '3 open. I’m answering #4411 and #4412 now.';
   const AUTO_PAUSED = 'Paused after 5 check-ins in a row didn’t leave an update.';
 
@@ -1291,7 +1298,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const positions = [
       'No recent update',
       'It checked in but didn’t say how it went.',
-      `Last check-in at ${localTime(MISSED)} · Next check at ${localTime(NEXT)}`,
+      `Last check-in ${MISSED_WORDS} · Next check ${NEXT_WORDS}`,
       'Press Check now to try again.',
     ].map((line) => {
       expect(within(banner).getByText(line)).toBeInTheDocument();
@@ -1302,7 +1309,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const latest = latestUpdate();
     expect(banner.compareDocumentPosition(latest) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(latest).getByText(LAST_UPDATE)).toBeInTheDocument();
-    expect(within(latest).getByText(`Checked at ${localTime(REPORTED)} · Next check at ${localTime(NEXT)}`)).toHaveClass('sr-only');
+    expect(within(latest).getByText(`Checked ${REPORTED_WORDS} · Next check ${NEXT_WORDS}`)).toHaveClass('sr-only');
     // The stale status is not drawn as if it were current: the pill says the miss.
     expect(screen.queryByText('On track')).toBeNull();
     // The fix is a button that does it.
@@ -1351,7 +1358,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     taskMock.mockResolvedValue(detail({ task: null, updates: [], noRecentUpdate: missed() }));
     await renderReady();
     expect(missBanner('No recent update')).toBeInTheDocument();
-    expect(within(latestUpdate()).getByText(`No update yet. It’ll check in at ${localTime(NEXT)}.`)).toBeInTheDocument();
+    expect(within(latestUpdate()).getByText(`No update yet. It’ll check in ${NEXT_WORDS}.`)).toBeInTheDocument();
     expect(within(latestUpdate()).queryByText(/Checked/)).toBeNull();
   });
 
@@ -1432,7 +1439,7 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
       within(banner).getByRole('button', { name: 'Press Resume, and it’ll try again at its next check-in.' }),
     ).toBeEnabled();
     expect(within(banner).queryByText(/Press Check now/)).toBeNull();
-    expect(within(banner).getByText(`Last check-in at ${localTime(MISSED)} · Paused`)).toBeInTheDocument();
+    expect(within(banner).getByText(`Last check-in ${MISSED_WORDS} · Paused`)).toBeInTheDocument();
   });
 
   it('a viewer who can’t press Check now is not told to', async () => {
@@ -1555,8 +1562,8 @@ describe('TaskPage: a missed check-in (TASK-930)', () => {
     const latest = latestUpdate();
     expect(banner.textContent).not.toContain('Invalid Date');
     expect(latest.textContent).not.toContain('Invalid Date');
-    expect(within(banner).getByText(`Next check at ${localTime(NEXT)}`)).toBeInTheDocument();
-    expect(within(latest).getByText(`Next check at ${localTime(NEXT)}`)).toBeInTheDocument();
+    expect(within(banner).getByText(`Next check ${NEXT_WORDS}`)).toBeInTheDocument();
+    expect(within(latest).getByText(`Next check ${NEXT_WORDS}`)).toBeInTheDocument();
     expect(within(latest).getByText(LAST_UPDATE)).toBeInTheDocument();
   });
 
@@ -2005,6 +2012,7 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
   ];
   const ALL_TICKED = [STEPS[0]!];
   const DONE_AT = new Date(2026, 9, 22, 11, 30).toISOString();
+  const DONE_WORDS = '30 min ago';
   const NOT_YET_BOX = 'What’s left for Quill to do?';
   const UNCONFIRMED_DONE =
     'We couldn’t confirm the task was marked done. Try again, and it won’t happen twice.';
@@ -2548,16 +2556,15 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(screen.getByRole('button', { name: 'Duplicate' })).toBeEnabled();
     // The banner is the Done line; the latest card keeps the last update, as the record.
     expect(
-      within(screen.getByRole('region', { name: 'Done' })).getByText(`You marked this done at ${localTime(DONE_AT)}.`),
+      within(screen.getByRole('region', { name: 'Done' })).getByText(`You marked this done ${DONE_WORDS}.`),
     ).toBeInTheDocument();
-    // The Done chip's date reads as every short date on the page does: "Oct 22", like a finish date.
-    const doneChip = chip(`You marked it done at ${localTime(DONE_AT)}.`);
-    expect(doneChip.parentElement).toHaveTextContent(new RegExp(`^${monthDay(DONE_AT)}`));
-    expect(monthDay(DONE_AT)).toBe(finishByShort({ date: '2026-10-22', daysLeft: 0 }).split(' · ')[0]);
+    // The Done chip shows the moment in its short form: the clock today (a date once it is a week old).
+    const doneChip = chip(`You marked it done ${DONE_WORDS}.`);
+    expect(doneChip.parentElement).toHaveTextContent(new RegExp(`^${clockOf(DONE_AT)}`));
     expect(
       within(latestUpdate()).getByText('3 open. I’m answering #4411 and #4412 now.'),
     ).toBeInTheDocument();
-    expect(within(latestUpdate()).getByText(`Last update at ${localTime(REPORTED)}`)).toHaveClass('sr-only');
+    expect(within(latestUpdate()).getByText(`Last update ${REPORTED_WORDS}`)).toHaveClass('sr-only');
     // Every check-in, one click down.
     const all = screen.getByRole('button', { name: '1 check-in' });
     expect(all).toHaveAttribute('aria-expanded', 'false');
@@ -2945,6 +2952,7 @@ describe('TaskPage: landed-write announcements and form completion (TASK-959)', 
   const SPECIAL_BOX = 'What’s left for Quill to do?';
   const NORMAL_BOX = 'Reply to Quill about this task';
   const DONE_AT = new Date(2026, 9, 22, 11, 30).toISOString();
+  const DONE_WORDS = '30 min ago';
   const claimed = () => detail({
     kind: 'get-done',
     task: report({ doneClaimed: true }),
@@ -3089,7 +3097,7 @@ describe('TaskPage: landed-write announcements and form completion (TASK-959)', 
     startWrite('Mark done');
     await screen.findByRole('button', { name: 'Reopen' });
     expect(screen.queryByText(/checks in every hour/)).toBeNull();
-    expect(screen.getByText(`You marked this done at ${localTime(DONE_AT)}.`)).toBeVisible();
+    expect(screen.getByText(`You marked this done ${DONE_WORDS}.`)).toBeVisible();
   });
 
   it('omits the schedule on an initially Done task', async () => {

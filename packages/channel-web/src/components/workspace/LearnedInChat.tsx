@@ -16,7 +16,7 @@ import { ChevronRight } from 'lucide-react';
  * `useConversationMemory`, owned by `AgentView` (see that hook for why).
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Text, StatusBadge } from '@project-ax/ui';
+import { Text, StatusBadge, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
@@ -53,7 +53,6 @@ import {
   MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
   MEMORY_RESTORED,
-  learnedAgo,
   learnedHelper,
   learnedMore,
   learnedNewBadge,
@@ -495,7 +494,11 @@ function LearnedLine({
           </Button>
         )}
         {turnId !== undefined && source !== undefined && arrivedAt !== null && <span aria-hidden="true">·</span>}
-        {arrivedAt !== null && <span>{learnedAgo(Math.max(0, now - arrivedAt))}</span>}
+        {arrivedAt !== null && (
+          <span>
+            <Timestamp value={arrivedAt} now={new Date(now)} />
+          </span>
+        )}
         {/* Said out loud by the receipt's announcer, not here (TASK-651). */}
         {note !== null && <span>{note}</span>}
         <span className="ml-auto flex gap-0.5">

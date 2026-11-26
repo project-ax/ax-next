@@ -24,10 +24,9 @@
  */
 import type { ReactNode } from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { Notice, StatusBadge } from '@project-ax/ui';
+import { formatTimestamp, Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
-import { monthDayYear } from '@/lib/workspace-time';
 import { SettingsDetailRow } from './SettingsLayout';
 
 const NO_DESCRIPTION = 'The publisher didn’t add a description.';
@@ -57,11 +56,11 @@ function howPeopleConnect(entry: DirectoryEntry): string {
 }
 
 /**
- * "Version 1.4.0 · updated Nov 3" ("Nov 3, 2024" in another year), or only the
+ * "Version 1.4.0 · updated 5 min ago" ("Nov 3" or "Nov 3, 2024" once it is older), or only the
  * version when the date can't be read.
  */
 function listingLine(entry: DirectoryEntry): string {
-  const updated = monthDayYear(entry.updatedAt);
+  const updated = formatTimestamp(entry.updatedAt);
   return updated ? `Version ${entry.version} · updated ${updated}` : `Version ${entry.version}`;
 }
 

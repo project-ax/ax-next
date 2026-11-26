@@ -76,7 +76,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Button as AxButton, ConfirmAction, Inline, Notice } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, formatTimestamp, Inline, Notice } from '@project-ax/ui';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { AgentSlackMenu } from './AgentSlackMenu';
 import { AgentSlackBotChannels } from './AgentSlackBotChannels';
@@ -94,7 +94,6 @@ import {
   continueSlackBot,
   disconnectSlackBot,
   requestSlackBot,
-  slackShortDate,
   type AgentSlackBot as Bot,
   type BotChannelRow,
 } from '@/lib/agent-slack';
@@ -480,7 +479,7 @@ function Requested({
   return (
     <SlackCard
       title={AGENT_SLACK_CARD_COPY.waitingForAdmin(bot.botName)}
-      description={AGENT_SLACK_CARD_COPY.askedOn(slackShortDate(bot.requestedAt), bot.botName)}
+      description={AGENT_SLACK_CARD_COPY.askedOn(formatTimestamp(bot.requestedAt) ?? bot.requestedAt, bot.botName)}
       menu={
         <AgentSlackMenu
           label={`Actions for ${bot.botName}`}

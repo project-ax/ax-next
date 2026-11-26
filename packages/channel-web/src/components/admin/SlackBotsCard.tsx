@@ -43,7 +43,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
 import { Button } from '@/components/ui/button';
-import { AsyncState, ConfirmAction, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, Notice, StatusBadge, Timestamp } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -69,11 +69,6 @@ import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; bots: AdminSlackBot[] };
 
 const GENERIC_FAILURE = 'Something went wrong. Try again in a minute.';
-
-function shortDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
 
 export interface SlackBotsCardProps {
   /** A bot's Slack app was deleted or listed as left over: the tab's own status may have changed too. */
@@ -196,7 +191,7 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
                     <TableCell>
                       {bot.approver !== null ? bot.approver : <StatusBadge tone="warning" dot>A former member</StatusBadge>}
                     </TableCell>
-                    <TableCell>{shortDate(bot.addedAt)}</TableCell>
+                    <TableCell><Timestamp value={bot.addedAt} /></TableCell>
                     <TableCell>
                       {bot.state === 'live' ? (
                         bot.approver === null ? (

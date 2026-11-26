@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Pencil, Plus } from 'lucide-react';
-import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge, Timestamp } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -178,7 +178,7 @@ export function DefaultRoutinesSection() {
                     </StatusBadge>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
-                    {new Date(d.updatedAt).toLocaleString()}
+                    <Timestamp value={d.updatedAt} />
                   </TableCell>
                   <TableCell className="text-right">
                     <Button

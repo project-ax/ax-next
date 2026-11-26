@@ -824,3 +824,23 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     }
   });
 });
+
+describe('LearnedInChat — when a live batch landed (Timestamp)', () => {
+  it('reads "just now" on arrival and keeps counting on a tab left open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // Local noon: "4 min ago" is the same local day in any time zone.
+    vi.setSystemTime(new Date(2026, 10, 26, 12, 0));
+    renderExpanded(<Harness />);
+    await waitFor(() => expect(events).toHaveBeenCalled());
+    await recordBatch([st('a'), st('b')], ['b']);
+    // The pass's rows land together, so each wears the same arrival time.
+    const landed = await screen.findAllByText('just now');
+    expect(landed.length).toBeGreaterThan(0);
+    for (const when of landed) expect(when.tagName).toBe('TIME');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+    });
+    expect((await screen.findAllByText('4 min ago')).length).toBe(landed.length);
+    expect(screen.queryByText('just now')).toBeNull();
+  });
+});

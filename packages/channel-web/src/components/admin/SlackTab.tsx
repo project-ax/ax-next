@@ -45,7 +45,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Button as AxButton, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, ConfirmAction, EmptyState, Notice, StatusBadge, Timestamp } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -108,11 +108,6 @@ interface Actions {
   onReplaced: () => void;
   /** Someone else changed things first: read again, and say why it moved. */
   onChanged: () => void;
-}
-
-function shortDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
 // ── Around the states ──────────────────────────────────────────────────────
@@ -726,7 +721,7 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <p className="text-sm text-muted-foreground">
-          Started by {status.connectedBy} on {shortDate(status.connectedAt)}. Bot name: {status.botName}.
+          Started by {status.connectedBy} <Timestamp value={status.connectedAt} />. Bot name: {status.botName}.
         </p>
         {error !== null && (
           <Notice tone="danger">{error}</Notice>
@@ -775,7 +770,7 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
             <dt>Configuration token</dt>
             <dd className="flex items-center gap-3">
               <span className="text-muted-foreground">
-                Added by {status.connectedBy} on {shortDate(status.connectedAt)}
+                Added by {status.connectedBy} <Timestamp value={status.connectedAt} />
               </span>
               <Button variant="outline" size="sm" onClick={() => setReplacing(true)}>
                 Replace
