@@ -11,9 +11,8 @@
  * one (the server refuses their writes either way).
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Inline, Stack, Text } from '@project-ax/ui';
+import { Inline, Notice, Stack, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { getAdminAgent } from '@/lib/admin';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
@@ -80,24 +79,18 @@ export function AgentSharing({ agent, onSection }: AgentSharingProps) {
   if (load.status === 'not-owner') return <Text>{SHARING_COPY.errors.forbidden(agent.name)}</Text>;
   if (load.status === 'failed') {
     return (
-      <Alert variant="destructive">
-        <AlertDescription>
-          <Stack gap="sm" align="start">
-            {SHARING_COPY.errors.loadFailed(agent.name)}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setLoad({ status: 'loading' });
-                setAttempt((n) => n + 1);
-              }}
-            >
-              {SHARING_COPY.tryAgain}
-            </Button>
-          </Stack>
-        </AlertDescription>
-      </Alert>
+      <Notice
+        tone="danger"
+        action={{
+          label: SHARING_COPY.tryAgain,
+          onClick: () => {
+            setLoad({ status: 'loading' });
+            setAttempt((n) => n + 1);
+          },
+        }}
+      >
+        {SHARING_COPY.errors.loadFailed(agent.name)}
+      </Notice>
     );
   }
 

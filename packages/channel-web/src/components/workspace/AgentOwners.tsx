@@ -19,9 +19,8 @@
  */
 import { useEffect, useId, useRef, useState } from 'react';
 import { UserPlus, X } from 'lucide-react';
-import { Inline, Stack, Text } from '@project-ax/ui';
+import { Inline, Notice, Stack, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { OWNERS_MAX } from '@/lib/agent-sharing';
@@ -105,9 +104,7 @@ export function AgentOwners({ agentId, agentName, owners, onSaved }: AgentOwners
         })}
       </ul>
       {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
       {owners.length >= OWNERS_MAX ? (
         <Text role="meta">{SHARING_COPY.owners.cap}</Text>

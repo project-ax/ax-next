@@ -28,8 +28,7 @@
  */
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import type { PersonView } from '@ax/agents';
-import { Stack, Text } from '@project-ax/ui';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice, Stack, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -209,33 +208,25 @@ function ShareConfirmBody({
       <Stack gap="md">
         {read.status === 'loading' && <Text role="meta">{SHARING_COPY.confirm.loading}</Text>}
         {read.status === 'failed' && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              <Stack gap="sm" align="start">
-                {SHARING_COPY.confirm.connectionsFailed(agentName)}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setRead({ status: 'loading' });
-                    setAttempt((n) => n + 1);
-                  }}
-                >
-                  {SHARING_COPY.confirm.tryAgain}
-                </Button>
-              </Stack>
-            </AlertDescription>
-          </Alert>
+          <Notice
+            tone="danger"
+            action={{
+              label: SHARING_COPY.confirm.tryAgain,
+              onClick: () => {
+                setRead({ status: 'loading' });
+                setAttempt((n) => n + 1);
+              },
+            }}
+          >
+            {SHARING_COPY.confirm.connectionsFailed(agentName)}
+          </Notice>
         )}
         {connections.length > 0 && <ConnectionsLine agentName={agentName} connections={connections} />}
         <Text>{SHARING_COPY.confirm.memory(agentName)}</Text>
         <Text>{SHARING_COPY.confirm.filesAndInstructions(agentName)}</Text>
       </Stack>
       {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
       <DialogFooter>
         <Button type="button" variant="ghost" disabled={saving} onClick={onCancel}>

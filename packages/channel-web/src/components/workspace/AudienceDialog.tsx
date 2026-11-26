@@ -22,9 +22,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, X } from 'lucide-react';
-import { Inline, Stack, Text } from '@project-ax/ui';
+import { Inline, Notice, Stack, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -274,19 +273,13 @@ function OpenAudienceDialog({
             onRemoveEveryone={() => edit({ kind: 'just-me' })}
           />
           {copyError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{copyError}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{copyError}</Notice>
           )}
           {narrowed && (
-            <Alert>
-              <AlertDescription>{SHARING_COPY.picker.narrowed(agentName)}</AlertDescription>
-            </Alert>
+            <Notice tone="info">{SHARING_COPY.picker.narrowed(agentName)}</Notice>
           )}
           {error !== null && confirming === null && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
         </Stack>
         <DialogFooter>

@@ -18,9 +18,8 @@
  * so a reopen starts from the search. Every name goes through `personLabel`.
  */
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Text } from '@project-ax/ui';
+import { Notice, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -127,9 +126,7 @@ function OpenAddOwnerDialog({ agentId, agentName, owners, onSaved, onClose }: Ad
               {SHARING_COPY.owners.consequences(agentName, routinesRunAs)}
             </Text>
             {error !== null && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
+              <Notice tone="danger">{error}</Notice>
             )}
             <DialogFooter>
               <Button type="button" variant="ghost" disabled={saving} onClick={onClose}>
