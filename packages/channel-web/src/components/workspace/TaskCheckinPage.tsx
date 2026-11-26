@@ -32,7 +32,7 @@
  * browser fetch, and it leaves file links out of prose.
  */
 import { useId, useLayoutEffect, useState, type ReactNode } from 'react';
-import { AsyncState, formatTimestamp, Notice, StatusMark } from '@project-ax/ui';
+import { AsyncState, Notice, StatusMark } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -41,6 +41,7 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
+import { momentWords } from '@/lib/moment-words';
 import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
@@ -134,7 +135,7 @@ export function TaskCheckinPage({
   // effect, so a stale time never reaches the screen.
   const [now, setNow] = useState(() => new Date());
   useLayoutEffect(() => setNow(new Date()), [page]);
-  const when = page === null ? null : formatTimestamp(page.checkIn.firedAt, { now });
+  const when = page === null ? null : momentWords(page.checkIn.firedAt, now);
 
   return (
     <>

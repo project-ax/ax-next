@@ -5,7 +5,7 @@ const tz = { timeZone: 'America/Los_Angeles', locale: 'en-US' };
 // Fri Oct 23 2026, 12:00 PM PDT
 const now = new Date('2026-10-23T19:00:00Z');
 const rel = (v: Date | string | number, n: Date = now) => formatTimestamp(v, { ...tz, now: n });
-const clock = (v: Date | string | number, n: Date = now) => formatTimestamp(v, { ...tz, now: n, style: 'clock' });
+const clock = (v: Date | string | number, n: Date = now) => formatTimestamp(v, { ...tz, now: n, format: 'clock' });
 const ago = (ms: number) => new Date(now.getTime() - ms);
 const MIN = 60_000;
 const HR = 60 * MIN;

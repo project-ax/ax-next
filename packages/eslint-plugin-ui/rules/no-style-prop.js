@@ -13,9 +13,6 @@ export default {
     return {
       JSXAttribute(node) {
         if (node.name.type === 'JSXIdentifier' && node.name.name === 'style') {
-          // `<Timestamp style="clock">` is the package's own enum prop (relative | clock), not CSS.
-          const el = node.parent?.name;
-          if (el?.type === 'JSXIdentifier' && el.name === 'Timestamp' && node.value?.type === 'Literal') return;
           context.report({ node, messageId: 'noStyleProp' });
         }
       },

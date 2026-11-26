@@ -1310,7 +1310,7 @@ function Message({
       for a missing or unparseable instant and the row is then drawn without
       one, which is the honest render of "we do not have a time to show".
     */
-    const failedAt = formatTimestamp(m.at, { style: 'clock' });
+    const failedAt = formatTimestamp(m.at, { format: 'clock' });
     return (
       <div className="flex gap-3">
         <AgentTile agent={agent} size={24} />
@@ -1322,7 +1322,7 @@ function Message({
           </Notice>
           {failedAt !== null && (
             <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-              <Timestamp value={m.at} style="clock" />
+              <Timestamp value={m.at} format="clock" />
             </div>
           )}
         </div>
@@ -1438,7 +1438,7 @@ function AgentReply({
   fileRecheckKey: number;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
-  const clock = formatTimestamp(r.at, { style: 'clock' });
+  const clock = formatTimestamp(r.at, { format: 'clock' });
   const lastActivity = r.parts.map((p) => p.kind).lastIndexOf('activity');
   const cards =
     r.artifacts.length > 0 ? (
@@ -1569,7 +1569,7 @@ function AgentReply({
         */}
         {clock !== null && (
           <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-            <Timestamp value={r.at} style="clock" />
+            <Timestamp value={r.at} format="clock" />
           </div>
         )}
       </div>

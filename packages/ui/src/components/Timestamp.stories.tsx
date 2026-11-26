@@ -37,12 +37,12 @@ const FUTURE = [
   ['other year', '2027-01-05T19:00:00Z'],
 ] as const;
 
-function Rows({ rows, style }: { rows: ReadonlyArray<readonly [string, string]>; style?: 'relative' | 'clock' }) {
+function Rows({ rows, format }: { rows: ReadonlyArray<readonly [string, string]>; format?: 'relative' | 'clock' }) {
   return (
     <Stack gap="sm">
       {rows.map(([label, iso]) => (
         <Text key={label} role="body">
-          {label}: <Timestamp value={at(iso)} now={NOW} {...(style ? { style } : {})} />
+          {label}: <Timestamp value={at(iso)} now={NOW} {...(format ? { format } : {})} />
         </Text>
       ))}
     </Stack>
@@ -58,5 +58,5 @@ export const FutureBuckets = {
 } satisfies Story;
 
 export const Clock = {
-  render: () => <Rows rows={[...PAST.slice(1), ...FUTURE.slice(2)]} style="clock" />,
+  render: () => <Rows rows={[...PAST.slice(1), ...FUTURE.slice(2)]} format="clock" />,
 } satisfies Story;

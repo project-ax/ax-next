@@ -20,9 +20,10 @@
  */
 import { useEffect, useId, useState } from 'react';
 import { ArrowUpRight, History } from 'lucide-react';
-import { formatTimestamp, StatusMark } from '@project-ax/ui';
+import { StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { momentWords } from '@/lib/moment-words';
 import { routeLinkProps } from '@/lib/route-link';
 import { runFailureText } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
@@ -161,7 +162,7 @@ function RunRow({
       : update.report?.update != null && update.report.update !== ''
         ? update.report.update
         : word;
-  const stamp = formatTimestamp(update.firedAt, { now });
+  const stamp = momentWords(update.firedAt, now);
   return (
     <li className="flex items-start gap-2.5 py-1.5">
       <span className="flex h-6 items-center">

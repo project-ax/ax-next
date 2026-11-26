@@ -175,6 +175,23 @@ describe('rowFact', () => {
     expect(rowFact(row({ doneAt: 'not a time' }), NOW)).toEqual({ short: 'Done', full: 'Done', late: false });
   });
 
+  it('a sentence a week or more back still carries the time of day, while the short form stays short', () => {
+    const doneAt = new Date(2026, 9, 14, 10, 2).toISOString(); // eight days before NOW
+    expect(rowFact(row({ doneAt }), NOW)).toEqual({ short: 'Oct 14', full: 'Done Wed, Oct 14, 2026, 10:02 AM', late: false });
+    const lastRunAt = new Date(2026, 9, 10, 9, 0).toISOString();
+    expect(rowFact(row({ kind: 'repeat', repeat: { ...RUN, lastRunAt } }), NOW)).toEqual({
+      short: 'Oct 10',
+      full: 'Last run Sat, Oct 10, 2026, 9:00 AM',
+      late: false,
+    });
+    const reportedAt = new Date(2026, 9, 12, 8, 30).toISOString();
+    expect(rowFact(row({ task: report({ reportedAt }) }), NOW)).toEqual({
+      short: 'Oct 12',
+      full: 'Checked Mon, Oct 12, 2026, 8:30 AM',
+      late: false,
+    });
+  });
+
   it('a Repeat job says its last run, or nothing before one', () => {
     const halfHourAgo = minsAgo(30);
     expect(rowFact(row({ kind: 'repeat', repeat: { ...RUN, lastRunAt: halfHourAgo } }), NOW)).toEqual({

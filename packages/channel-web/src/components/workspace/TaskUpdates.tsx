@@ -48,13 +48,14 @@
  */
 import { useId, useState } from 'react';
 import { ArrowUpRight, ChevronRight, History } from 'lucide-react';
-import { formatTimestamp, StatusMark, StatusBadge } from '@project-ax/ui';
+import { StatusMark, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import { momentWords } from '@/lib/moment-words';
 import { routeLinkProps } from '@/lib/route-link';
 import { readingText } from '@/lib/task-reading';
 import {
@@ -235,7 +236,7 @@ function UpdateEntry({
   links: EntryLinks;
 }) {
   const mark = update.report?.status ?? 'no-recent-update';
-  const stamp = formatTimestamp(update.firedAt, { now });
+  const stamp = momentWords(update.firedAt, now);
   // Here, not in the shared `updateText`: a check-in's own page draws its
   // reading on a line of its own, labelled as the agent's, through the same
   // `readingText` (TASK-956).

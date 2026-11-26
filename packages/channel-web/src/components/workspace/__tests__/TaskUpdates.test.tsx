@@ -347,6 +347,13 @@ describe('TaskUpdates (TASK-910)', () => {
     });
   });
 
+  it('a check-in from over a week ago names its time of day in the link, not just the date', () => {
+    // NOW is Thu Oct 22 11:00 AM New York; Oct 12 10:00 AM New York is ten days back.
+    renderThread([update({ firedAt: '2026-10-12T14:00:00.000Z', conversationId: 'c1' })]);
+    const link = screen.getByRole('link', { name: /^See what it did/ });
+    expect(link.textContent).toBe('See what it did, Mon, Oct 12, 2026, 10:00 AM');
+  });
+
   describe('on the task page (2026-10-29)', () => {
     function renderPageThread(
       updates: TaskUpdate[],

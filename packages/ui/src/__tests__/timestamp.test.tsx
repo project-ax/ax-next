@@ -6,26 +6,27 @@ import { Timestamp } from '../index.js';
 
 afterEach(cleanup);
 
-const now = new Date('2026-10-23T12:00:00Z');
-const value = '2026-10-23T11:55:00Z';
+// Built from local time: a fixed UTC instant is near local midnight in some zone.
+const now = new Date(2026, 9, 23, 12, 0);
+const value = new Date(now.getTime() - 5 * 60_000).toISOString();
 
 describe('Timestamp', () => {
   it('renders a <time> with an ISO dateTime and a full-date title', () => {
     const { container } = render(<Timestamp value={value} now={now} />);
     const el = container.querySelector('time');
-    expect(el?.getAttribute('datetime')).toBe('2026-10-23T11:55:00.000Z');
+    expect(el?.getAttribute('datetime')).toBe(value);
     expect(el?.getAttribute('title')).toMatch(/^\w{3}, \w{3} \d{1,2}, 2026, /);
     expect(el?.textContent).toContain('5 min ago');
   });
 
-  it('relative style carries a visually hidden absolute time', () => {
+  it('relative format carries a visually hidden absolute time', () => {
     const { container } = render(<Timestamp value={value} now={now} />);
     const hidden = container.querySelector('.ax-sr-only');
     expect(hidden?.textContent).toMatch(/2026/);
   });
 
-  it('clock style has no hidden text', () => {
-    const { container } = render(<Timestamp value={value} now={now} style="clock" />);
+  it('clock format has no hidden text', () => {
+    const { container } = render(<Timestamp value={value} now={now} format="clock" />);
     expect(container.querySelector('.ax-sr-only')).toBeNull();
     expect(container.querySelector('time')?.getAttribute('title')).toBeTruthy();
   });

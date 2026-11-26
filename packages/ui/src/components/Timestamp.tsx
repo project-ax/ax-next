@@ -1,23 +1,23 @@
-import { formatFullTimestamp, formatTimestamp, toDate, type TimestampStyle } from '../internal/time.js';
+import { formatFullTimestamp, formatTimestamp, toDate, type TimestampFormat } from '../internal/time.js';
 
-export type { TimestampStyle };
+export type { TimestampFormat };
 
 export interface TimestampProps {
   value: Date | string | number;
-  style?: TimestampStyle;
+  format?: TimestampFormat;
   now?: Date;
 }
 
 // Renders nothing for an unparseable value. The component doesn't tick: `now` is read at render.
-export function Timestamp({ value, style = 'relative', now }: TimestampProps) {
+export function Timestamp({ value, format = 'relative', now }: TimestampProps) {
   const date = toDate(value);
   if (!date) return null;
-  const text = formatTimestamp(date, { style, ...(now ? { now } : {}) });
+  const text = formatTimestamp(date, { format, ...(now ? { now } : {}) });
   const full = formatFullTimestamp(date);
   return (
     <time dateTime={date.toISOString()} {...(full ? { title: full } : {})}>
       {text}
-      {style === 'relative' && full ? <span className="ax-sr-only"> ({full})</span> : null}
+      {format === 'relative' && full ? <span className="ax-sr-only"> ({full})</span> : null}
     </time>
   );
 }

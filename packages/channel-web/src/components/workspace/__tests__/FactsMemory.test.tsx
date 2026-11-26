@@ -54,7 +54,9 @@ const read = (
   ...(factsVisibility !== undefined ? { factsVisibility } : {}),
 });
 
+// Every test runs at the same frozen "now": a noted date reads with its year once it is not this year.
 beforeEach(() => {
+  freezeClock();
   vi.clearAllMocks();
   recallMock.mockResolvedValue({ statements: [], degraded: [] });
   rememberMock.mockResolvedValue({ id: 'mem-new' });
@@ -70,6 +72,8 @@ async function memoryAction(label: string): Promise<HTMLElement> {
   fireEvent.keyDown(trigger, { key: 'ArrowDown' });
   return screen.findByRole('menuitem', { name: label });
 }
+
+afterEach(() => thawClock());
 
 describe('MemorySurface', () => {
   it.each([false, true])('uses Preference and Fact chips with saved-by fallbacks (compact=%s)', async (compact) => {
@@ -1105,7 +1109,6 @@ function SharedMemoryManager() {
 
 describe('MemorySurface — settings manager (TASK-890)', () => {
   it('uses one toolbar and a desktop table with Kind, agent memory, and local Noted date', async () => {
-    freezeClock();
     const when = '2026-09-01T00:30:00.000Z';
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1', kind: 'world', when, whenText: 'UTC engine date' })], degraded: [] });
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
@@ -1118,7 +1121,6 @@ describe('MemorySurface — settings manager (TASK-890)', () => {
     const date = table.querySelector('time')!;
     expect(date.dateTime).toBe(when);
     expect(visibleText(date)).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
-    thawClock();
     expect(screen.queryByText('UTC engine date')).toBeNull();
     expect(screen.getByRole('button', { name: 'Memory actions: Boston' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull();

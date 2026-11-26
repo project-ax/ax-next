@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import { Plus } from 'lucide-react';
-import { AsyncState, Avatar, Card, InsetBlock, KeyValueList, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
+import { AsyncState, Avatar, Card, InsetBlock, KeyValueList, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text, Timestamp } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -102,6 +102,11 @@ describe('props', () => {
     const ib4: P<typeof InsetBlock> = { children: 'x', className: 'x' };
     // @ts-expect-error style is not a prop
     const ib5: P<typeof InsetBlock> = { children: 'x', style: {} };
+    const ts1: P<typeof Timestamp> = { value: 'x', format: 'clock' };
+    // @ts-expect-error the old name: no `style` prop on Timestamp
+    const ts2: P<typeof Timestamp> = { value: 'x', style: 'clock' };
+    // @ts-expect-error format is relative | clock
+    const ts3: P<typeof Timestamp> = { value: 'x', format: 'full' };
     const confirm = { title: 'x', confirmLabel: 'Remove', onConfirm: () => {} };
     // @ts-expect-error trigger and open together
     const c1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove' }, open: true, onOpenChange: () => {} };
@@ -119,7 +124,7 @@ describe('props', () => {
     const c7: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'primary' } };
     const ok1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'quiet', size: 'sm', icon: Plus, iconOnly: true } };
     const ok2: P<typeof ConfirmAction> = { ...confirm, tone: 'neutral', open: false, onOpenChange: () => {} };
-    void [av1, av2, av3, kv1, kv2, cd1, cd2, ib4, ib5, sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
+    void [ts1, ts2, ts3, av1, av2, av3, kv1, kv2, cd1, cd2, ib4, ib5, sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });
 });

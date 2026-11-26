@@ -170,6 +170,15 @@ describe('TaskCheckinPage (TASK-911)', () => {
     expect(checkinMock).toHaveBeenCalledWith('a1', 't1', 'c1');
   });
 
+  it('a check-in from over a week ago still names its time of day, so two on one day stay apart', async () => {
+    // NOW is Oct 22 at noon: eight days back is Oct 14, 10:02 AM local.
+    checkinMock.mockResolvedValue(page({ checkIn: checkIn({ firedAt: new Date(2026, 9, 14, 10, 2).toISOString() }) }));
+    renderPage();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Check-in Wed, Oct 14, 2026, 10:02 AM' }),
+    ).toBeInTheDocument();
+  });
+
   it('says a check-in started outside its schedule, without saying who started it', async () => {
     checkinMock.mockResolvedValueOnce(page({ triggerSource: 'manual' }));
     const first = renderPage();

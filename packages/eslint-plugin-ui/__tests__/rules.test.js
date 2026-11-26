@@ -71,15 +71,9 @@ tester.run('no-classname (intrinsicOnly)', plugin.rules['no-classname'], {
 });
 
 tester.run('no-style-prop', plugin.rules['no-style-prop'], {
-  valid: [
-    { code: 'const a = <Stack gap="md" />;' },
-    // Timestamp's own enum prop, as a string literal: not CSS.
-    { code: 'const a = <Timestamp value={v} style="clock" />;' },
-  ],
+  valid: [{ code: 'const a = <Stack gap="md" />;' }],
   invalid: [
     { code: 'const a = <Stack style={{ color: "red" }} />;', errors: [{ messageId: 'noStyleProp' }] },
-    { code: 'const a = <Timestamp style={{ color: "red" }} />;', errors: [{ messageId: 'noStyleProp' }] },
-    { code: 'const a = <Timestamp style={s} />;', errors: [{ messageId: 'noStyleProp' }] },
     {
       code: 'const a = <Stack style={s} />;',
       languageOptions: tsLanguageOptions,

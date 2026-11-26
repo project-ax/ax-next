@@ -2544,6 +2544,28 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(completeMock).not.toHaveBeenCalled();
   });
 
+  it('a task marked done over a week ago keeps its day on the chip and its time of day in the sentences', async () => {
+    // NOW is Thu Oct 22 noon; Oct 14 is eight days back.
+    const longAgo = new Date(2026, 9, 14, 10, 2).toISOString();
+    taskMock.mockResolvedValue(doneTask({ doneAt: longAgo }));
+    await renderReady();
+    const full = 'Wed, Oct 14, 2026, 10:02 AM';
+    expect(
+      within(screen.getByRole('region', { name: 'Done' })).getByText(`You marked this done ${full}.`),
+    ).toBeInTheDocument();
+    const doneChip = chip(`You marked it done ${full}.`);
+    expect(doneChip.parentElement).toHaveTextContent(/^Oct 14/);
+  });
+
+  it('a weekly task’s next check, exactly a week out, still says 9:00 AM', async () => {
+    const nextWeek = new Date(2026, 9, 29, 9, 0).toISOString();
+    taskMock.mockResolvedValue(detail({ nextCheckAt: nextWeek }));
+    await renderReady();
+    expect(
+      within(latestUpdate()).getByText(`Checked ${REPORTED_WORDS} · Next check Thu, Oct 29, 2026, 9:00 AM`),
+    ).toHaveClass('sr-only');
+  });
+
   it('a Done task: Reopen and ⋯ (TASK-953), the Done line, its steps as they are, no reply box', async () => {
     taskMock.mockResolvedValue(doneTask());
     await renderReady();
@@ -2558,9 +2580,9 @@ describe('TaskPage: finishing a task (TASK-950)', () => {
     expect(
       within(screen.getByRole('region', { name: 'Done' })).getByText(`You marked this done ${DONE_WORDS}.`),
     ).toBeInTheDocument();
-    // The Done chip shows the moment in its short form: the clock today (a date once it is a week old).
+    // The Done chip shows the moment as the page words it: relative today, the date once it is a week old.
     const doneChip = chip(`You marked it done ${DONE_WORDS}.`);
-    expect(doneChip.parentElement).toHaveTextContent(new RegExp(`^${clockOf(DONE_AT)}`));
+    expect(doneChip.parentElement).toHaveTextContent(new RegExp(`^${DONE_WORDS}`));
     expect(
       within(latestUpdate()).getByText('3 open. I’m answering #4411 and #4412 now.'),
     ).toBeInTheDocument();

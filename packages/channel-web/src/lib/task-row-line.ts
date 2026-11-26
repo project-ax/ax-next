@@ -11,6 +11,7 @@ import { finishByCount } from './task-finish-by.js';
 import { AUTO_PAUSED_LINE, missSummary } from './task-miss.js';
 import { runFailureText } from './task-updates.js';
 import { formatTimestamp } from '@project-ax/ui';
+import { momentWords } from './moment-words.js';
 import type { RepeatTaskState, TaskRow } from './workspace-types.js';
 
 /** The claim, said short: the agent's tile beside it says whose claim it is. */
@@ -93,13 +94,15 @@ function finishDay(date: string): string {
  */
 export function rowFact(row: TaskRow, now: Date): RowFact | null {
   if (row.doneAt !== null) {
-    const when = formatTimestamp(row.doneAt, { now });
-    return { short: when ?? 'Done', full: when === null ? 'Done' : `Done ${when}`, late: false };
+    const short = formatTimestamp(row.doneAt, { now });
+    const when = momentWords(row.doneAt, now);
+    return { short: short ?? 'Done', full: when === null ? 'Done' : `Done ${when}`, late: false };
   }
   if (row.kind === 'repeat') {
     const at = row.repeat?.lastRunAt ?? null;
-    const when = at === null ? null : formatTimestamp(at, { now });
-    return when === null ? null : { short: when, full: `Last run ${when}`, late: false };
+    const short = at === null ? null : formatTimestamp(at, { now });
+    const when = at === null ? null : momentWords(at, now);
+    return short === null || when === null ? null : { short, full: `Last run ${when}`, late: false };
   }
   const short: string[] = [];
   const full: string[] = [];
@@ -108,9 +111,10 @@ export function rowFact(row: TaskRow, now: Date): RowFact | null {
     full.push(`${row.steps.done} of ${row.steps.total} steps`);
   } else {
     const at = row.noRecentUpdate?.at ?? row.task?.reportedAt ?? null;
-    const when = at === null ? null : formatTimestamp(at, { now });
-    if (when !== null) {
-      short.push(when);
+    const shortWhen = at === null ? null : formatTimestamp(at, { now });
+    const when = at === null ? null : momentWords(at, now);
+    if (shortWhen !== null && when !== null) {
+      short.push(shortWhen);
       full.push(`checked ${when}`);
     }
   }

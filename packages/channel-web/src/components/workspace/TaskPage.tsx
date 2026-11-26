@@ -215,6 +215,7 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
 import { AgentTile, STATE_TONE } from './bits';
+import { momentWords } from '@/lib/moment-words';
 import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT } from './task-bits';
 import { TaskFinishDate } from './TaskFinishDate';
 import {
@@ -1057,10 +1058,10 @@ function MetaRow({
 }) {
   const { agentName } = detail;
   const done = detail.doneAt !== null;
-  const next = detail.enabled && detail.nextCheckAt !== null ? formatTimestamp(detail.nextCheckAt, { now }) : null;
-  const doneWhen = done ? formatTimestamp(detail.doneAt as string, { now }) : null;
-  // The short moment the chip shows ("Oct 25", or the clock for today).
-  const doneDay = done ? (formatTimestamp(detail.doneAt as string, { style: 'clock', now }) ?? '') : '';
+  const next = detail.enabled && detail.nextCheckAt !== null ? momentWords(detail.nextCheckAt, now) : null;
+  const doneWhen = done ? momentWords(detail.doneAt as string, now) : null;
+  // The short moment the chip shows: "30 min ago" today, the date once it is a week old.
+  const doneDay = done ? (formatTimestamp(detail.doneAt as string, { now }) ?? '') : '';
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <span className="inline-flex items-center gap-1.5 text-[13px]">
@@ -1478,7 +1479,7 @@ function WhenLine({ at, now, full }: { at: string; now: Date; full: string | nul
 
 /** "Checked Today 10:02 AM · Next check Tomorrow 1:00 PM", "… · Paused", or less when a time can't be read. */
 function checkedSentence(label: 'Checked' | 'Last check-in', at: string, enabled: boolean, next: string | null, now: Date): string | null {
-  const checked = formatTimestamp(at, { now });
+  const checked = momentWords(at, now);
   const parts = [
     checked === null ? null : `${label} ${checked}`,
     !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
@@ -1519,7 +1520,7 @@ function LatestUpdate({
   const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
   const cantShow = task !== null && (task.update === null || task.update === '');
   const next =
-    enabled && detail.nextCheckAt !== null ? formatTimestamp(detail.nextCheckAt, { now }) : null;
+    enabled && detail.nextCheckAt !== null ? momentWords(detail.nextCheckAt, now) : null;
   const banner = bannerOf(detail);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2">
@@ -1546,7 +1547,7 @@ function LatestUpdate({
           <WhenLine
             at={task.reportedAt}
             now={now}
-            full={done ? `Last update ${formatTimestamp(task.reportedAt, { now }) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
+            full={done ? `Last update ${momentWords(task.reportedAt, now) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
           />
           {fromCheckIn === null ? null : (
             <IconLink
@@ -1607,7 +1608,7 @@ function MissLine({
     checkNow: permissions.fire,
     edit: permissions.edit,
   });
-  const next = enabled && detail.nextCheckAt !== null ? formatTimestamp(detail.nextCheckAt, { now }) : null;
+  const next = enabled && detail.nextCheckAt !== null ? momentWords(detail.nextCheckAt, now) : null;
   const missed = missCheckIn(miss, detail.updates);
   // The button does what its words say: Edit, Resume or Check now. A too-long brief nobody here may
   // shorten names no action, so it stays words.
@@ -1671,7 +1672,7 @@ function DoneBanner({
   now: Date;
   doneLineRef: RefObject<HTMLParagraphElement | null>;
 }) {
-  const doneWhen = formatTimestamp(detail.doneAt as string, { now });
+  const doneWhen = momentWords(detail.doneAt as string, now);
   return (
     <section aria-label="Done">
       <Card className="bg-primary-soft px-4 py-3 shadow-none">

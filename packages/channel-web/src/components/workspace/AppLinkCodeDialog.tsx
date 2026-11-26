@@ -27,7 +27,7 @@ import { useHeldThroughClose } from './use-held-through-close';
 
 /** "3:45 PM", in the person's own locale; a value that isn't a time shows as it came. */
 function shortTime(iso: string): string {
-  return formatTimestamp(iso, { style: 'clock' }) ?? iso;
+  return formatTimestamp(iso, { format: 'clock' }) ?? iso;
 }
 
 export function AppLinkCodeDialog({

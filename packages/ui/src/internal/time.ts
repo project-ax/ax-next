@@ -1,7 +1,7 @@
-export type TimestampStyle = 'relative' | 'clock';
+export type TimestampFormat = 'relative' | 'clock';
 
 export interface FormatTimestampOptions {
-  style?: TimestampStyle;
+  format?: TimestampFormat;
   now?: Date;
   timeZone?: string;
   locale?: string;
@@ -64,7 +64,7 @@ function weekdayTime(date: Date, locale: string | undefined, timeZone: string | 
 export function formatTimestamp(value: Date | string | number, opts: FormatTimestampOptions = {}): string | null {
   const date = toDate(value);
   if (!date) return null;
-  const { style = 'relative', timeZone, locale } = opts;
+  const { format = 'relative', timeZone, locale } = opts;
   const now = opts.now ?? new Date();
 
   const target = ymd(date, locale, timeZone);
@@ -74,7 +74,7 @@ export function formatTimestamp(value: Date | string | number, opts: FormatTimes
   const delta = now.getTime() - date.getTime(); // positive = past
   const time = (): string => fmt(date, locale, timeZone, TIME);
 
-  if (style === 'clock') {
+  if (format === 'clock') {
     if (dayDiff === 0) return time();
     if (Math.abs(dayDiff) < 7) return weekdayTime(date, locale, timeZone);
     return dateLabel(date, sameYear, locale, timeZone);
