@@ -27,7 +27,7 @@ import {
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createCredentialsPlugin } from '@ax/credentials';
-import { createHttpServerPlugin } from '@ax/http-server';
+import { createHttpServerPlugin, signCookieValue } from '@ax/http-server';
 import { createAuthBetterPlugin } from '../plugin.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from '../migrations.js';
 import { findPeople } from '../people-search.js';
@@ -228,6 +228,8 @@ describe('GET /admin/people (mounted by the plugin)', () => {
   let harness: TestHarness | undefined;
   let baseUrl: string;
   let cookieHeader: string;
+  /** A signed-in person who is NOT an admin (role 'user'): search is for everyone. */
+  let memberCookieHeader: string;
 
   beforeAll(async () => {
     await dropTables();
@@ -264,6 +266,18 @@ describe('GET /admin/people (mounted by the plugin)', () => {
     const db = openDb();
     try {
       await seed(db, [{ id: 'usr_alice', name: 'Alice Archer', email: 'alice@example.com' }]);
+      // seed() inserts role 'user'. A session row whose token is the cookie
+      // plaintext is what auth:require-user looks up.
+      const token = randomBytes(24).toString('base64url');
+      const now = new Date();
+      await db
+        .insertInto('auth_better_v1_sessions')
+        .values({
+          id: 'ses_member', user_id: 'usr_alice', token, expires_at: new Date(now.getTime() + 3_600_000),
+          ip_address: null, user_agent: null, created_at: now, updated_at: now,
+        })
+        .execute();
+      memberCookieHeader = `ax_auth_session=${signCookieValue(COOKIE_KEY, token)}`;
     } finally {
       await db.destroy().catch(() => {});
     }
@@ -287,6 +301,14 @@ describe('GET /admin/people (mounted by the plugin)', () => {
     expect(signedOut.status).toBe(401);
     expect(signedOut.headers.get('cache-control')).toBe('private, no-store');
     expect(await signedOut.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('answers 200 to a signed-in person who is not an admin', async () => {
+    const res = await fetch(`${baseUrl}/admin/people?q=ali`, {
+      headers: { cookie: memberCookieHeader },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ people: [{ id: 'usr_alice', displayName: 'Alice Archer' }] });
   });
 
   it('answers 400, not a database error, for a query with a NUL in it', async () => {
