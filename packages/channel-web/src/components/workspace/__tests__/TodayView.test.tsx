@@ -488,7 +488,7 @@ describe('the queue is one list (one divider method)', () => {
     expect(rows).toHaveLength(3);
     expect(within(rows[0]!).getByText('Allow access to example.org?')).toBeInTheDocument();
     expect(within(rows[1]!).getByRole('group', { name: new RegExp(TASK_NAME) })).toBeInTheDocument();
-    expect(within(rows[2]!).getByRole('button', { name: /^Quill\s*, waiting on you$/ })).toBeInTheDocument();
+    expect(within(rows[2]!).getByRole('button', { name: 'Send the reply to Dana?' })).toBeInTheDocument();
   });
 
   it('draws a task’s approvals as a named list inside its block, and none when it has none', () => {

@@ -4,7 +4,7 @@
  * warning diamond on each surface that shows it, and say the same words.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { UserProvider } from '@/lib/user-context';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { WorkspaceSidebarNav } from '../WorkspaceSidebar';
@@ -83,6 +83,8 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
     const row = container.querySelector(`[data-testid="decision-${d.id}"]`)!.closest('li')!;
     expect(diamondIn(row)).not.toBeNull();
     expect(row.textContent!.toLowerCase()).toContain(WORDS);
+    // Said exactly, in the row's meta (the title is the question).
+    expect(within(row).getByText('Scheduler, waiting on you')).toBeTruthy();
   });
 
   it('the chat approval card badge draws the diamond and says the words', () => {

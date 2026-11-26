@@ -624,7 +624,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(await screen.findByText('Two things are waiting on you.')).toBeTruthy();
     expect(tasksMock).toHaveBeenCalledTimes(1);
     const block = screen.getByRole('group', { name: /Zero open support tickets/ });
-    fireEvent.click(within(block).getByRole('button', { name: /, waiting on you$/ }));
+    fireEvent.click(within(block).getByRole('button', { name: /Move your 1:1/ }));
     fireEvent.click(await within(block).findByRole('button', { name: 'Move it' }));
 
     await waitFor(() => expect(tasksMock).toHaveBeenCalledTimes(2));
@@ -671,7 +671,7 @@ describe('tasks on Today, and one count (TASK-933)', () => {
     expect(await screen.findByText('One thing is waiting on you.')).toBeTruthy();
     expect(tasksMock).toHaveBeenCalledTimes(1);
     const block = screen.getByRole('group', { name: /Zero open support tickets/ });
-    fireEvent.click(within(block).getByRole('button', { name: /, waiting on you$/ }));
+    fireEvent.click(within(block).getByRole('button', { name: /Move your 1:1/ }));
     fireEvent.click(await within(block).findByRole('button', { name: 'Move it' }));
 
     // A fresh read, not a join: the one in flight predates the edit.

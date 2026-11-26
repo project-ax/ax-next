@@ -647,10 +647,10 @@ describe('DecisionRow — the Today queue (site 3)', () => {
 
     expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
-    const question = screen.getByRole('button', { name: /^Quill\s*, waiting on you$/ });
+    // Landing reads the question back: the control's name IS the question (TASK-427).
+    const question = screen.getByRole('button', { name: 'Move your 1:1 with Marcus to Thursday 9:30?' });
     expect(document.activeElement).toBe(question);
-    // Landing reads the question back: the summary is the control's description.
-    expect(question).toHaveAccessibleDescription(/Move your 1:1 with Marcus to Thursday 9:30\?$/);
+    expect(question).toHaveAccessibleDescription(/^Quill, waiting on you · /);
     // The disclosure must stay reachable by Tab — `tabIndex={-1}` here would
     // buy the landing at the cost of the control.
     expect(

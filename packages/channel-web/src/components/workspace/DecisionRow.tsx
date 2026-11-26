@@ -247,9 +247,16 @@ export function DecisionRow({
 
   return (
     <ListRow
-      title={stale ? agent.name : `${agent.name}, ${stateWord('held').toLowerCase()}`}
-      description={stale ? DECISION_STALE_SUMMARY : d.summary}
-      meta={<Timestamp value={d.createdAt} />}
+      title={stale ? DECISION_STALE_SUMMARY : d.summary}
+      meta={
+        <>
+          <Text role="meta" inline>
+            {stale ? agent.name : `${agent.name}, ${stateWord('held').toLowerCase()}`}
+          </Text>
+          {' · '}
+          <Timestamp value={d.createdAt} />
+        </>
+      }
       onOpen={onToggle}
       /*
         THE QUESTION, and therefore where Undo puts you (TASK-427): undoing re-opens the row, unmounting the receipt
