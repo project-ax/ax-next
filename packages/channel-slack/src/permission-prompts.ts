@@ -74,7 +74,8 @@ import type { PermissionIn, SkillReach } from './turn-registry.js';
  * runs as its requester, reaches it too. This widens a capability on
  * purpose: it is why the prompt says "Once allowed, it stays allowed". Its
  * owners and team admins see it, and remove it, in the agent's settings. On
- * a personal agent nothing is different: only its owner can add one.
+ * a personal agent only its owners add one, and on a shared personal agent
+ * anyone who can use it does, as on a team agent (TASK-1248).
  *
  * A SKILL: a catalog skill the agent asked to use (`request_capability`'s
  * card, kind `skill`), asked about in a DM or an attended turn after its

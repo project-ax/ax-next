@@ -140,6 +140,21 @@ const MEL_SUPPORT: PromptContext = {
   conversationId: 'conv_mel_support',
   mode: 'attended',
 };
+/**
+ * Ada's personal agent, shared with everyone (TASK-1248): Mel can use it, and
+ * owns none of it. Like a team agent, it is reached in a channel through its
+ * own bot.
+ */
+const SHARED_AGENT: FakeAgent = {
+  id: 'agt_ada_shared',
+  displayName: "Ada's agent",
+  visibility: 'personal',
+  ownerType: 'user',
+  ownerId: 'usr_ada',
+  audience: 'everyone',
+};
+/** Mel's attended turn in #support, once #support is connected to Ada's shared agent (`connectSupportTo`). */
+const MEL_SHARED: PromptContext = { ...MEL_SUPPORT, agentId: SHARED_AGENT.id, conversationId: 'conv_mel_shared' };
 
 const HELD: PromptSubject = { kind: 'decision', decisionId: 'dec_0001' };
 /** A decision's host-authored summary, exactly as the turn handed it to promptBlocks. */
@@ -459,6 +474,18 @@ async function world(o: WorldOptions = {}) {
   };
 }
 
+/** #support connected to `agentId` in place of the support team's agent, by Ada, as a bot's first mention there writes it. */
+async function connectSupportTo(w: Awaited<ReturnType<typeof world>>, agentId: string): Promise<void> {
+  await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
+  await w.channels.store.upsert({
+    installId: INSTALL_ID,
+    channelId: SUPPORT,
+    agentId,
+    connectedByUserId: 'usr_ada',
+    channelName: 'support',
+  });
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -523,6 +550,38 @@ describe('the click gate: the asker answers', () => {
       { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.decisionDenied) },
     ]);
     expect(w.state(prompt)).toBe('gone');
+  });
+
+  it("someone a shared agent is shared with answers her own prompt in its channel; once it is Just me again, her next one there closes (TASK-1248)", async () => {
+    const w = await world();
+    w.agents.addAgent(SHARED_AGENT);
+    await connectSupportTo(w, SHARED_AGENT.id);
+    const prompt = w.open(MEL_SHARED);
+
+    await w.onClick(INSTALL, w.clickOn(prompt, { action: 'deny' }));
+
+    // Ada's agent, which Mel owns none of: handed to the answer, as her, once #support is still connected to it.
+    expect(w.runs.map((r) => [r.action, r.ctx.userId, r.ctx.agentId, r.ctx.conversationId])).toEqual([
+      ['deny', 'usr_mel', SHARED_AGENT.id, 'conv_mel_shared'],
+    ]);
+    expect(w.resolved.map((r) => r.input)).toEqual([{ agentId: SHARED_AGENT.id, userId: 'usr_mel' }]);
+    expect(w.bindingReads).toEqual([[INSTALL_ID, SUPPORT]]);
+    expect(w.state(prompt)).toBe('gone');
+
+    // Ada narrows it back to Just me: Mel's next prompt there is asked about afresh, and closes.
+    w.agents.agents.set(SHARED_AGENT.id, { ...SHARED_AGENT, audience: 'just-me' });
+    const next = w.open(MEL_SHARED);
+    await w.onClick(INSTALL, w.clickOn(next));
+
+    expect(w.runs).toHaveLength(1);
+    expect(w.state(next)).toBe('gone');
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.decisionDenied) },
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.promptClosed) },
+    ]);
+    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'no-access' }]);
   });
 
   it('the redrawn prompt shows its subject exactly as the prompt drew it: from the raw subject, cleaned once', async () => {
@@ -820,24 +879,52 @@ describe('the click gate: each step refuses on its own (each case valid on every
     expect(w.state(prompt)).toBe('gone');
   });
 
-  it("step 7: a channel prompt's agent that agents no longer calls a team agent: closes (a DM's personal agent is fine)", async () => {
-    const w = await world();
-    // #support connected to Mel's personal agent: what agents:resolve would now say about a demoted team agent.
-    await w.channels.store.remove(INSTALL_ID, SUPPORT, SUPPORT_AGENT.id);
-    await w.channels.store.upsert({
-      installId: INSTALL_ID,
-      channelId: SUPPORT,
-      agentId: MEL_AGENT.id,
-      connectedByUserId: 'usr_ada',
-      channelName: 'support',
-    });
-    const prompt = w.open({ ...MEL_SUPPORT, agentId: MEL_AGENT.id });
+  /*
+    A channel prompt's agent must still be one a channel can have: a team
+    agent, or a personal agent shared with other people (TASK-1248: its
+    resolve answer says `shared: true`). #support connected to Mel's own
+    personal agent stands in for both sides: Just me, it is what agents:resolve
+    would now say about a demoted team agent or a shared agent narrowed back,
+    and though Mel owns it (a DM's personal agent is fine) the prompt closes;
+    shared with everyone, it is answered.
+  */
+  it("step 7: a channel prompt's agent that is neither a team agent nor shared closes; a shared one is answered (a DM's personal agent is fine)", async () => {
+    // Just me.
+    const justMe = await world();
+    await connectSupportTo(justMe, MEL_AGENT.id);
+    const closed = justMe.open({ ...MEL_SUPPORT, agentId: MEL_AGENT.id });
 
-    await w.onClick(INSTALL, w.clickOn(prompt));
+    await justMe.onClick(INSTALL, justMe.clickOn(closed));
 
-    expect(w.runs).toEqual([]);
-    expect(w.state(prompt)).toBe('gone');
-    expect(w.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'no-access' }]);
+    expect(justMe.runs).toEqual([]);
+    expect(justMe.state(closed)).toBe('gone');
+    // Closed at step 7: the binding is never read.
+    expect(justMe.bindingReads).toEqual([]);
+    expect(justMe.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.promptClosed) },
+    ]);
+    expect(justMe.logged('slack_prompt_declined')).toEqual([{ installId: INSTALL_ID, kind: 'decision', reason: 'no-access' }]);
+
+    // The same agent once Mel shares it with everyone: a channel's agent, and her Allow runs.
+    const shared = await world();
+    shared.agents.agents.set(MEL_AGENT.id, { ...MEL_AGENT, audience: 'everyone' });
+    await connectSupportTo(shared, MEL_AGENT.id);
+    const answered = shared.open({ ...MEL_SUPPORT, agentId: MEL_AGENT.id });
+
+    await shared.onClick(INSTALL, shared.clickOn(answered));
+
+    expect(shared.runs.map((r) => [r.action, r.ctx.userId, r.ctx.agentId])).toEqual([['allow', 'usr_mel', MEL_AGENT.id]]);
+    expect(shared.state(answered)).toBe('gone');
+    expect(shared.bindingReads).toEqual([[INSTALL_ID, SUPPORT]]);
+    expect(shared.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawn(SUPPORT, COPY.decisionAllowed) },
+    ]);
+    expect(shared.logged('slack_prompt_declined')).toEqual([]);
+
+    // Asked about Mel either way: only the answer's `shared` differs.
+    for (const w of [justMe, shared]) expect(w.resolved.map((r) => r.input)).toEqual([{ agentId: MEL_AGENT.id, userId: 'usr_mel' }]);
   });
 
   it("step 7: the agents lookup fails: 'try again', privately; the prompt stays open", async () => {
@@ -1849,6 +1936,24 @@ describe('the click gate: a host prompt, answered with the real host answer', ()
     expect(w.logged('slack_prompt_answered')).toEqual([
       { installId: INSTALL_ID, kind: 'host', action: 'allow', settled: true },
     ]);
+  });
+
+  it("a website Allow in a shared agent's channel keeps the site on that agent, added by Mel, who owns none of it (TASK-1212's rule, TASK-1248)", async () => {
+    const { w, added, kept, redrawnHost } = await hostWorld();
+    w.agents.addAgent(SHARED_AGENT);
+    await connectSupportTo(w, SHARED_AGENT.id);
+    const prompt = w.open(MEL_SHARED, { subject: HOST_SUBJECT, subjectText: COPY.hostSubject(HOST) });
+
+    await w.onClick(INSTALL, w.clickOn(prompt));
+
+    // Her live session first, as her; then the agent's own list: the prompt's agent, never the one the proxy names.
+    expect(added.map((a) => [a.ctx.userId, a.input])).toEqual([['usr_mel', { sessionId: SESSION, host: HOST }]]);
+    expect(kept).toEqual([{ ownerUserId: 'usr_mel', agentId: SHARED_AGENT.id, host: HOST }]);
+    expect(w.slack.calls).toEqual([
+      MEL_LOOKED_UP,
+      { method: 'updateMessage', token: BOT_TOKEN, args: redrawnHost(COPY.hostAllowed) },
+    ]);
+    expect(w.state(prompt)).toBe('gone');
   });
 
   it("Ada's click on Mel's host prompt: told privately it isn't hers, and nothing is let through", async () => {

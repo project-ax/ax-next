@@ -9,7 +9,7 @@ import {
 } from '@ax/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { resolveMemoryAccess, type MemoryAccess } from '../access.js';
+import { AGENTS_RESOLVE_HOOK, resolveMemoryAccess, type MemoryAccess } from '../access.js';
 import {
   AUTH_GET_USER_HOOK,
   MEMBER_NAME_MAX,
@@ -21,12 +21,14 @@ import {
   TEAMMATE_TEXT,
   TEAMS_IS_MEMBER_HOOK,
 } from '../member-names.js';
+import { FACTS_RECALL_HOOK } from '../plugin.js';
 import { MEMORY_RECALL_TOOL_HOOK } from '../recall-tool.js';
 import type { MemoryRecallOutput } from '../types.js';
 import {
   ALICE,
   BOB,
   capturingLogger,
+  engineRecall,
   engineRecord,
   eventsNamed,
   makeMemoryHarness,
@@ -1153,5 +1155,815 @@ describe("the agent's own name (TASK-1213)", () => {
       userId: ALICE,
       visibility: 'personal',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-1248: a personal agent shared with other people names the people who
+// take part in it, the way a team agent names its members. The proof differs.
+// `agents:resolve` must admit the id to THIS agent now, and the id must take
+// part in it: one of its owners (`isOwner`), someone its `list` names, or
+// someone who owns a row in this agent's memory (they spoke to it). On an
+// `everyone` agent admission alone is every AX account, so on its own it
+// proves nothing: a crafted `user:<id>` would name anyone (the hole TASK-1209
+// closed for team agents; TASK-1248's security review). Then `auth:get-user`,
+// cleaned, refused and collision-checked the same way, under the same
+// deadline. A refusal, a fault or a stall reads "a teammate", and the read
+// still answers.
+// ---------------------------------------------------------------------------
+
+describe('memberLabels on a personal agent shared with other people (TASK-1248)', () => {
+  const CAROL = 'user-carol';
+  const DAVE = 'user-dave';
+  const NAMES: Record<string, string> = {
+    [ALICE]: 'Alice Jones',
+    [BOB]: 'Bob Smith',
+    [CAROL]: 'Carol Chen',
+    [DAVE]: 'Dave Diaz',
+    [EVE]: 'Eve Example',
+  };
+  /** That agent's access, as `resolveMemoryAccess` answers it: shared, no team, proven through the agent. */
+  const SHARED = { visibility: 'team', memberCheck: 'agent' } as const;
+
+  type ResolveInput = { agentId: string; userId: string };
+  /** What memory asks the store, to see whether someone spoke to the agent. */
+  type RowsInput = { ownerUserId: string; activeOnly?: boolean; limit: number };
+
+  /**
+   * ALICE's agent shared with everyone, as the harness's `agents:resolve` fake
+   * answers it: `ids` stand for the AX accounts it admits. A fresh set each time.
+   */
+  function sharedWith(...ids: string[]): NonNullable<MemoryHarnessOptions['agent']> {
+    return { visibility: 'personal', shared: true, ownerUserId: ALICE, members: new Set(ids) };
+  }
+
+  /** ALICE's agent shared with a list that names `ids`. */
+  function listing(...ids: string[]): NonNullable<MemoryHarnessOptions['agent']> {
+    return { ...sharedWith(...ids), audience: 'list' };
+  }
+
+  /**
+   * What the fake answers for someone it admits: an answer about the agent
+   * asked about, shared with a list (so everyone it admits is named on it)
+   * unless `audience` says otherwise.
+   */
+  function admitted(input: ResolveInput, audience: 'list' | 'everyone' = 'list'): unknown {
+    return {
+      agent: {
+        id: input.agentId,
+        ownerId: ALICE,
+        ownerType: 'user',
+        visibility: 'personal',
+        shared: true,
+        audience,
+        isOwner: input.userId === ALICE,
+      },
+    };
+  }
+
+  /** A store in which only `owners` own a row: the engine's answer to an owner-scoped read. */
+  function rowsOf(...owners: string[]): (input: RowsInput) => unknown {
+    return (input) => ({
+      statements: owners.includes(input.ownerUserId)
+        ? [{ id: `row-${input.ownerUserId}`, about: `user:${input.ownerUserId}`, relation: 'said', value: 'hi', when: JAN, provenance: 'human' }]
+        : [],
+      degraded: [],
+    });
+  }
+
+  /** `auth:get-user` as auth answers it, with some display names replaced. */
+  function authWith(names: Record<string, unknown> = {}): (userId: string) => unknown {
+    return (userId) =>
+      NAMES[userId] === undefined
+        ? null
+        : {
+            id: userId,
+            displayName: userId in names ? names[userId] : NAMES[userId],
+            email: `${userId}@x.test`,
+            isAdmin: false,
+          };
+  }
+
+  /**
+   * A bare bus with `agents:resolve` (the harness's fake for `agent`, by
+   * default ALICE's agent shared with a list naming BOB, CAROL and DAVE, or
+   * `resolve` in its place), `auth:get-user` answering `answer`, and a
+   * `teams:is-member` that would say yes to anyone: if it were ever the proof
+   * here, everyone would be named. With `rows`, a `memory:facts:recall`
+   * answering in the engine's place, which records each read and the agent it
+   * was on. Without it there is no store at all.
+   */
+  function sharedBus(
+    opts: {
+      resolve?: (input: ResolveInput) => unknown;
+      answer?: (userId: string) => unknown;
+      agent?: NonNullable<MemoryHarnessOptions['agent']>;
+      rows?: (input: RowsInput) => unknown;
+    } = {},
+  ) {
+    const bus = new HookBus();
+    const fake =
+      opts.resolve === undefined ? registerMemoryAgents(bus, opts.agent ?? listing(BOB, CAROL, DAVE)) : undefined;
+    const resolveCalls = fake?.resolveCalls ?? [];
+    if (opts.resolve !== undefined) {
+      const resolve = opts.resolve;
+      bus.registerService<ResolveInput, unknown>(AGENTS_RESOLVE_HOOK, '@ax/test-agents', async (_ctx, input) => {
+        resolveCalls.push(input.userId);
+        return resolve(input);
+      });
+    }
+    const asked: string[] = [];
+    const answer = opts.answer ?? authWith();
+    bus.registerService<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, '@ax/test-auth', async (_ctx, input) => {
+      asked.push(input.userId);
+      return answer(input.userId);
+    });
+    const memberAsked: string[] = [];
+    bus.registerService<{ teamId: string; userId: string }, unknown>(
+      TEAMS_IS_MEMBER_HOOK,
+      '@ax/test-teams',
+      async (_ctx, input) => {
+        memberAsked.push(input.userId);
+        return { member: true };
+      },
+    );
+    const rowsAsked: Array<{ agentId: string; input: RowsInput }> = [];
+    if (opts.rows !== undefined) {
+      const rows = opts.rows;
+      bus.registerService<RowsInput, unknown>(FACTS_RECALL_HOOK, '@ax/test-facts', async (ctx, input) => {
+        rowsAsked.push({ agentId: ctx.agentId, input });
+        return rows(input);
+      });
+    }
+    return { bus, resolveCalls, asked, memberAsked, rowsAsked, setShared: fake?.setShared };
+  }
+
+  /** ALICE's turn on `agent-1`, or `userId`'s. */
+  function turn(
+    logs: LoggedEvent[],
+    opts: { source?: AgentContextSource; audience?: AgentContextAudience; agentId?: string; userId?: string } = {},
+  ): AgentContext {
+    return makeAgentContext({
+      sessionId: 's',
+      agentId: opts.agentId ?? 'agent-1',
+      userId: opts.userId ?? ALICE,
+      workspace: { rootPath: '/tmp' },
+      logger: capturingLogger(logs),
+      ...(opts.source !== undefined ? { source: opts.source } : {}),
+      ...(opts.audience !== undefined ? { audience: opts.audience } : {}),
+    });
+  }
+
+  function refusal(code: string, userId: string): PluginError {
+    return new PluginError({
+      code,
+      plugin: '@ax/test-agents',
+      hookName: AGENTS_RESOLVE_HOOK,
+      message: `agent 'agent-1' not accessible to user '${userId}' (${NAMES[userId] ?? ''})`,
+    });
+  }
+
+  /** Bob's `lives_in`, Alice's `favorite_color`, and one non-person subject: the team tests' rows, on this agent. */
+  async function seed(h: MemoryHarness): Promise<void> {
+    await engineRecord(h.bus, h.ctx({ userId: BOB }), [
+      { about: `user:${BOB}`, relation: 'lives_in', value: 'Boston', when: JAN, ownerUserId: BOB, conversationId: 'conv-bob' },
+    ]);
+    await engineRecord(h.bus, h.ctx(), [
+      { about: `user:${ALICE}`, relation: 'favorite_color', value: 'teal', when: JAN, ownerUserId: ALICE, conversationId: 'conv-alice' },
+      { about: 'launch_plan', relation: 'codename', value: 'Nightjar', when: JAN, ownerUserId: ALICE, conversationId: 'conv-alice' },
+    ]);
+  }
+
+  function aboutTexts(out: MemoryRecallOutput): Record<string, string | undefined> {
+    return Object.fromEntries(out.statements.map((s) => [s.value, s.aboutText]));
+  }
+
+  function recallTool(h: MemoryHarness, ctx: AgentContext, query: string): Promise<string> {
+    return h.bus.call<{ input: unknown }, string>(MEMORY_RECALL_TOOL_HOOK, ctx, { input: { query } });
+  }
+
+  it('names someone the agent is shared with who has spoken to it: agents:resolve admits them, their own row in its memory proves it, then auth:get-user names them', async () => {
+    const h = await makeHarness({ agent: sharedWith(BOB), authUser: authWith() });
+    await seed(h);
+    const aliceTurn = h.ctx();
+
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({
+      Boston: 'Bob Smith',
+      teal: 'you',
+      Nightjar: 'launch plan',
+    });
+    // Alice's own access first. Then everyone on the page, asked about this
+    // agent: Bob, to be named (the agent is shared with everyone, and Bob
+    // owns the Boston row), and Alice, only to count her name (TASK-1213).
+    expect(h.resolveCalls[0]).toBe(ALICE);
+    expect(h.resolveCalls.slice(1).sort()).toEqual([ALICE, BOB].sort());
+    expect([...h.authCalls].sort()).toEqual([ALICE, BOB].sort());
+    // There is no team to ask.
+    expect(h.memberCalls).toEqual([]);
+
+    // Bob's own turn names Alice, and he is "you".
+    expect(aboutTexts(await h.recall({}, h.ctx({ userId: BOB })))).toEqual({
+      Boston: 'you',
+      teal: 'Alice Jones',
+      Nightjar: 'launch plan',
+    });
+    const tool = await recallTool(h, aliceTurn, 'Boston');
+    expect(tool).toContain('Bob Smith lives in: Boston');
+    expect(tool).not.toContain(BOB);
+    expect(h.memberCalls).toEqual([]);
+  });
+
+  // A stored subject is model output, so `user:<id>` can name any account,
+  // and auth answers for any account. Only someone `agents:resolve` lets use
+  // this agent is looked up. Eve has an account; the agent isn't shared with her.
+  it('someone agents:resolve refuses reads "a teammate", with no auth:get-user call and no warning', async () => {
+    const h = await makeHarness({ agent: sharedWith(BOB), authUser: authWith() });
+    await seed(h);
+    await engineRecord(h.bus, h.ctx(), [
+      { about: `user:${EVE}`, relation: 'lives_in', value: 'Paris', when: JAN, ownerUserId: ALICE, conversationId: 'conv-alice' },
+    ]);
+    const aliceTurn = h.ctx();
+
+    const out = await h.recall({}, aliceTurn);
+    expect(aboutTexts(out)).toMatchObject({ Paris: TEAMMATE_TEXT, Boston: 'Bob Smith' });
+    expect(h.resolveCalls).toContain(EVE);
+    expect(h.authCalls).not.toContain(EVE);
+    expect(h.authCalls).toContain(BOB);
+    const tool = await recallTool(h, aliceTurn, 'Paris');
+    expect(tool).toContain('a teammate lives in: Paris');
+    for (const text of [JSON.stringify(out), tool]) expect(text).not.toContain('Eve Example');
+    expect(eventsNamed(h.logs, MEMBER_NAMES_FAILED_EVENT)).toEqual([]);
+  });
+
+  // TASK-1248's security review: an `everyone` agent admits every AX account,
+  // so "agents:resolve admits them" alone would name anyone a crafted subject
+  // points at. Eve has an account, so the agent admits her, but she has never
+  // spoken to it.
+  it("an everyone agent: a crafted user:<id> for an account that never spoke to it reads \"a teammate\", and auth:get-user is never asked about it", async () => {
+    const h = await makeHarness({ agent: sharedWith(BOB, EVE), authUser: authWith() });
+    await seed(h);
+    const aliceTurn = h.ctx();
+    await h.remember({ about: `user:${EVE}`, relation: 'lives_in', value: 'Paris' }, aliceTurn);
+
+    const out = await h.recall({}, aliceTurn);
+    expect(aboutTexts(out)).toMatchObject({ Paris: TEAMMATE_TEXT, Boston: 'Bob Smith' });
+    // Admitted, and asked about: that alone names nobody.
+    expect(h.resolveCalls).toContain(EVE);
+    expect(h.authCalls).not.toContain(EVE);
+    expect(h.authCalls).toContain(BOB);
+    // Bob's own turn: the same.
+    expect(aboutTexts(await h.recall({}, h.ctx({ userId: BOB })))).toMatchObject({ Paris: TEAMMATE_TEXT, Boston: 'you' });
+    expect(h.authCalls).not.toContain(EVE);
+    const tool = await recallTool(h, aliceTurn, 'Paris');
+    expect(tool).toContain('a teammate lives in: Paris');
+    for (const text of [JSON.stringify(out), tool]) expect(text).not.toContain('Eve Example');
+    expect(eventsNamed(h.logs, MEMBER_NAMES_FAILED_EVENT)).toEqual([]);
+  });
+
+  // Its owners take part in it by owning it: named with no row of their own.
+  it('an owner is named with no rows of their own: its creator, and a co-owner', async () => {
+    const h = await makeHarness({ agent: { ...sharedWith(BOB), coOwners: [CAROL] }, authUser: authWith() });
+    const bobTurn = h.ctx({ userId: BOB });
+    await h.remember({ about: `user:${ALICE}`, relation: 'favorite_color', value: 'teal' }, bobTurn);
+    await h.remember({ about: `user:${CAROL}`, relation: 'lives_in', value: 'Lisbon' }, bobTurn);
+    expect(await engineRecall(h.bus, bobTurn, { ownerUserId: ALICE, limit: 10, activeOnly: false })).toMatchObject({ statements: [] });
+    expect(await engineRecall(h.bus, bobTurn, { ownerUserId: CAROL, limit: 10, activeOnly: false })).toMatchObject({ statements: [] });
+
+    expect(aboutTexts(await h.recall({}, bobTurn))).toEqual({ teal: 'Alice Jones', Lisbon: 'Carol Chen' });
+    // Both owners, to be named, and Bob, the caller, only to count his name.
+    expect([...h.authCalls].sort()).toEqual([ALICE, BOB, CAROL].sort());
+  });
+
+  // A list names its people: an owner chose each of them.
+  it('someone a list names is named with no rows of their own; someone it does not name is refused', async () => {
+    const h = await makeHarness({ agent: listing(BOB), authUser: authWith() });
+    const aliceTurn = h.ctx();
+    await h.remember({ about: `user:${BOB}`, relation: 'lives_in', value: 'Boston' }, aliceTurn);
+    await h.remember({ about: `user:${EVE}`, relation: 'lives_in', value: 'Paris' }, aliceTurn);
+
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({ Boston: 'Bob Smith', Paris: TEAMMATE_TEXT });
+    expect(h.resolveCalls).toContain(EVE);
+    expect(h.authCalls).toContain(BOB);
+    expect(h.authCalls).not.toContain(EVE);
+  });
+
+  it('someone an everyone agent admits is named once they own a row in its memory, and not before', async () => {
+    const h = await makeHarness({ agent: sharedWith(DAVE), authUser: authWith() });
+    const aliceTurn = h.ctx();
+    await h.remember({ about: `user:${DAVE}`, relation: 'works_at', value: 'Acme' }, aliceTurn);
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({ Acme: TEAMMATE_TEXT });
+    expect(h.authCalls).not.toContain(DAVE);
+
+    // Dave speaks to it: his own turn files his row under him, stamped with him.
+    await h.remember({ about: 'user', relation: 'likes', value: 'tea' }, h.ctx({ userId: DAVE }));
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({ Acme: 'Dave Diaz', tea: 'Dave Diaz' });
+    expect(h.authCalls).toContain(DAVE);
+  });
+
+  // The store is per agent: `ctx.agentId` is the tenant, alone.
+  it("a row in another agent's memory doesn't count", async () => {
+    const h = await makeHarness({ agent: sharedWith(EVE), authUser: authWith() });
+    // Eve spoke to another agent Alice shares with everyone.
+    await h.remember({ about: 'user', relation: 'lives_in', value: 'Paris' }, h.ctx({ agentId: 'agent-2', userId: EVE }));
+    const aliceTurn = h.ctx();
+    await h.remember({ about: `user:${EVE}`, relation: 'works_at', value: 'Initech' }, aliceTurn);
+
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({ Initech: TEAMMATE_TEXT });
+    expect(h.authCalls).not.toContain(EVE);
+    // On the agent she spoke to, she is named.
+    expect(aboutTexts(await h.recall({}, h.ctx({ agentId: 'agent-2' })))).toEqual({ Paris: 'Eve Example' });
+    expect(h.authCalls).toContain(EVE);
+  });
+
+  // A row is its writer's: every write is stamped with the turn's own user,
+  // never with the subject it names, and never from a payload (`owner.ts`).
+  it('a row written by one person about user:<another> makes its writer nameable, never the person it names', async () => {
+    const h = await makeHarness({ agent: sharedWith(BOB, EVE), authUser: authWith() });
+    const bobTurn = h.ctx({ userId: BOB });
+    await h.remember({ about: `user:${EVE}`, relation: 'lives_in', value: 'Paris' }, bobTurn);
+    expect(await engineRecall(h.bus, bobTurn, { ownerUserId: EVE, limit: 10, activeOnly: false })).toMatchObject({ statements: [] });
+    expect(await engineRecall(h.bus, bobTurn, { ownerUserId: BOB, limit: 10, activeOnly: false })).toMatchObject({
+      statements: [{ about: `user:${EVE}`, value: 'Paris' }],
+    });
+
+    const aliceTurn = h.ctx();
+    await h.remember({ about: `user:${BOB}`, relation: 'works_at', value: 'Bob Co' }, aliceTurn);
+    expect(aboutTexts(await h.recall({}, aliceTurn))).toEqual({ Paris: TEAMMATE_TEXT, 'Bob Co': 'Bob Smith' });
+    expect(h.authCalls).toContain(BOB);
+    expect(h.authCalls).not.toContain(EVE);
+  });
+
+  // `not-found` is a refusal too: the agent is gone by the time names are asked.
+  it.each(['forbidden', 'not-found'])('a %s refusal names nobody for that id, quietly; the others are still named', async (code) => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked, memberAsked } = sharedBus({
+      resolve: (input) => {
+        if (input.userId === EVE) throw refusal(code, EVE);
+        return admitted(input);
+      },
+    });
+    const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${EVE}`, `user:${BOB}`], undefined);
+    expect(Object.fromEntries(labels)).toEqual({ [`user:${EVE}`]: TEAMMATE_TEXT, [`user:${BOB}`]: 'Bob Smith' });
+    expect(asked).toEqual([BOB]);
+    expect(memberAsked).toEqual([]);
+    expect(logs).toEqual([]);
+  });
+
+  it.each([
+    [
+      'about another agent',
+      {
+        agent: {
+          id: 'agent-elsewhere',
+          ownerId: ALICE,
+          ownerType: 'user',
+          visibility: 'personal',
+          shared: true,
+          audience: 'everyone',
+          isOwner: false,
+        },
+      },
+    ],
+    ['with no agent', {}],
+    ['whose agent has no id', { agent: { ownerId: ALICE, ownerType: 'user', visibility: 'personal', shared: true } }],
+    ['of null', null],
+    ['that is not an object', 'yes'],
+  ])('an answer %s names nobody for that id, with no auth:get-user call and no warning', async (_label, answer) => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked } = sharedBus({ resolve: (input) => (input.userId === BOB ? answer : admitted(input)) });
+    const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined);
+    expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: 'Carol Chen' });
+    expect(asked).toEqual([CAROL]);
+    expect(logs).toEqual([]);
+  });
+
+  it('a resolve fault reads "a teammate" and warns once, naming agents:resolve; the others are still named', async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked } = sharedBus({
+      resolve: (input) => {
+        if (input.userId === BOB) {
+          throw new PluginError({ code: 'store-unavailable', plugin: '@ax/test-agents', message: `${BOB} bob@x.test Bob Smith` });
+        }
+        if (input.userId === CAROL) throw new Error(`${CAROL} carol@x.test Carol Chen`);
+        return admitted(input);
+      },
+    });
+    const labels = await memberLabels(
+      bus,
+      turn(logs),
+      SHARED,
+      [`user:${BOB}`, `user:${CAROL}`, `user:${DAVE}`],
+      undefined,
+    );
+    expect(Object.fromEntries(labels)).toEqual({
+      [`user:${BOB}`]: TEAMMATE_TEXT,
+      [`user:${CAROL}`]: TEAMMATE_TEXT,
+      [`user:${DAVE}`]: 'Dave Diaz',
+    });
+    expect(asked).toEqual([DAVE]);
+    const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.level).toBe('warn');
+    // The first id asked whose lookup threw: Bob's.
+    expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: AGENTS_RESOLVE_HOOK, code: 'store-unavailable' });
+    const logged = JSON.stringify(logs);
+    for (const secret of [BOB, 'bob@x.test', 'Bob', CAROL, 'carol@x.test', 'Carol', DAVE, 'Dave']) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+
+  // A refusal is exactly `forbidden` or `not-found`. Anything else is an
+  // outage or a bad answer, and is never passed off as one.
+  it.each(['invalid-return', 'timeout', 'invalid-payload', 'unknown'])(
+    'a %s from agents:resolve is a fault, not a refusal: one warn, by its code',
+    async (code) => {
+      const logs: LoggedEvent[] = [];
+      const { bus, asked } = sharedBus({
+        resolve: () => {
+          throw new PluginError({ code, plugin: '@ax/test-agents', message: 'x' });
+        },
+      });
+      const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`], undefined);
+      expect([...labels]).toEqual([[`user:${BOB}`, TEAMMATE_TEXT]]);
+      expect(asked).toEqual([]);
+      const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]!.bindings).toMatchObject({ hook: AGENTS_RESOLVE_HOOK, code });
+    },
+  );
+
+  // Nothing is cached: each call asks again, so an agent taken back to Just
+  // me stops naming the people it was shared with on the very next read.
+  it('asks agents:resolve afresh on every call: once the agent is Just me again, nobody it was shared with is named', async () => {
+    const { bus, resolveCalls, asked, setShared } = sharedBus();
+    const subjects = [`user:${BOB}`];
+    const first = await memberLabels(bus, turn([]), SHARED, subjects, undefined);
+    expect(Object.fromEntries(first)).toEqual({ [`user:${BOB}`]: 'Bob Smith' });
+
+    setShared!(false);
+    const second = await memberLabels(bus, turn([]), SHARED, subjects, undefined);
+    expect(Object.fromEntries(second)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT });
+    expect(resolveCalls).toEqual([BOB, BOB]);
+    expect(asked).toEqual([BOB]);
+  });
+
+  it("an outsider's turn names the same people a member's turn does", async () => {
+    const h = await makeHarness({ agent: sharedWith(BOB), authUser: authWith() });
+    await seed(h);
+    // Bob's own turn: Alice by her name, and he is "you".
+    expect(aboutTexts(await h.recall({}, h.ctx({ userId: BOB })))).toEqual({
+      Boston: 'you',
+      teal: 'Alice Jones',
+      Nightjar: 'launch plan',
+    });
+
+    // An outsider's turn runs as Alice, the owner who set the bot up, and
+    // nobody in it is "you": both of them read by name.
+    const outsider = h.ctx({ conversationId: CHANNEL, source: 'external', audience: 'shared' });
+    const out = await h.recall({}, outsider);
+    expect(aboutTexts(out)).toEqual({ Boston: 'Bob Smith', teal: 'Alice Jones', Nightjar: 'launch plan' });
+    const tool = await recallTool(h, outsider, 'teal');
+    expect(tool).toContain('Alice Jones favorite color: teal');
+    expect(tool).not.toContain('| user favorite color');
+    expect(h.memberCalls).toEqual([]);
+  });
+
+  // Names follow the recall rule here too: a turn from a source this build
+  // doesn't know reads shared rows only (it fails closed), and is told no
+  // names. Nobody is asked, `agents:resolve` included.
+  it.each(['satellite', 'unrecognized'])(
+    "a turn from a source this build doesn't recognise (%j) names nobody and asks nobody",
+    async (source) => {
+      const logs: LoggedEvent[] = [];
+      const { bus, resolveCalls, asked, memberAsked } = sharedBus();
+      for (const audience of ['shared', 'private', undefined] as const) {
+        const labels = await memberLabels(
+          bus,
+          turn(logs, { source: source as AgentContextSource, ...(audience !== undefined ? { audience } : {}) }),
+          SHARED,
+          [`user:${BOB}`],
+          undefined,
+        );
+        expect([...labels]).toEqual([[`user:${BOB}`, TEAMMATE_TEXT]]);
+      }
+      expect(resolveCalls).toEqual([]);
+      expect(asked).toEqual([]);
+      expect(memberAsked).toEqual([]);
+      expect(logs).toEqual([]);
+
+      // The same bus names Bob in a turn from a source it knows.
+      const known = await memberLabels(bus, turn(logs, { source: 'user' }), SHARED, [`user:${BOB}`], undefined);
+      expect(Object.fromEntries(known)).toEqual({ [`user:${BOB}`]: 'Bob Smith' });
+    },
+  );
+
+  // TASK-1213's refusals hold for everyone it is shared with.
+  it('the agent\'s own name and "a teammate" are refused as names', async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked } = sharedBus({ answer: authWith({ [BOB]: 'fern.', [CAROL]: 'A  Teammate' }) });
+    const labels = await memberLabels(
+      bus,
+      turn(logs),
+      { ...SHARED, agentName: 'Fern' },
+      [`user:${BOB}`, `user:${CAROL}`, `user:${DAVE}`],
+      undefined,
+    );
+    expect(Object.fromEntries(labels)).toEqual({
+      [`user:${BOB}`]: TEAMMATE_TEXT,
+      [`user:${CAROL}`]: TEAMMATE_TEXT,
+      [`user:${DAVE}`]: 'Dave Diaz',
+    });
+    expect([...asked].sort()).toEqual([BOB, CAROL, DAVE].sort());
+    expect(logs).toEqual([]);
+  });
+
+  // TASK-1213: the caller is asked, through the same proof, only so their
+  // name counts. Someone who takes it can't pass for the person talking.
+  it('the caller is asked only to count their name: someone renamed to it reads "a teammate"', async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, resolveCalls, asked } = sharedBus({ answer: authWith({ [BOB]: 'alice  jones.' }) });
+    const labels = await memberLabels(
+      bus,
+      turn(logs),
+      SHARED,
+      [`user:${ALICE}`, `user:${BOB}`, `user:${CAROL}`],
+      `user:${ALICE}`,
+    );
+    expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: 'Carol Chen' });
+    expect([...resolveCalls].sort()).toEqual([ALICE, BOB, CAROL].sort());
+    expect([...asked].sort()).toEqual([ALICE, BOB, CAROL].sort());
+    expect(logs).toEqual([]);
+  });
+
+  // Which proof is asked comes from the access alone: a team agent's team
+  // id (today's path, unchanged), else `memberCheck`, else nobody.
+  it('the access picks the proof: a team id asks teams:is-member, memberCheck asks agents:resolve, neither asks nobody', async () => {
+    const { bus, resolveCalls, memberAsked } = sharedBus({ resolve: admitted });
+    const subjects = [`user:${BOB}`];
+    const bob = (labels: ReadonlyMap<string, string>) => labels.get(`user:${BOB}`);
+
+    expect(bob(await memberLabels(bus, turn([]), { visibility: 'team', teamId: TEAM_ID, memberCheck: 'agent' }, subjects, undefined))).toBe('Bob Smith');
+    expect(memberAsked).toEqual([BOB]);
+    expect(resolveCalls).toEqual([]);
+
+    expect(bob(await memberLabels(bus, turn([]), SHARED, subjects, undefined))).toBe('Bob Smith');
+    expect(memberAsked).toEqual([BOB]);
+    expect(resolveCalls).toEqual([BOB]);
+
+    for (const access of [{ visibility: 'team' }, { visibility: 'team', teamId: '' }] as const) {
+      expect(bob(await memberLabels(bus, turn([]), access, subjects, undefined))).toBe(TEAMMATE_TEXT);
+    }
+    // A Just-me agent labels nothing, whatever its access carries.
+    expect([...(await memberLabels(bus, turn([]), { visibility: 'personal', memberCheck: 'agent' }, subjects, undefined))]).toEqual([]);
+    expect(memberAsked).toEqual([BOB]);
+    expect(resolveCalls).toEqual([BOB]);
+  });
+
+  it('without agents:resolve, without auth:get-user, or with no agent id, nobody is named and nothing is logged', async () => {
+    const logs: LoggedEvent[] = [];
+    const subjects = [`user:${BOB}`];
+
+    const noResolve = new HookBus();
+    const authAsked: string[] = [];
+    noResolve.registerService<{ userId: string }, unknown>(AUTH_GET_USER_HOOK, '@ax/test-auth', async (_ctx, input) => {
+      authAsked.push(input.userId);
+      return authWith()(input.userId);
+    });
+    expect([...(await memberLabels(noResolve, turn(logs), SHARED, subjects, undefined))]).toEqual([
+      [`user:${BOB}`, TEAMMATE_TEXT],
+    ]);
+    expect(authAsked).toEqual([]);
+
+    const noAuth = new HookBus();
+    const noAuthResolve = registerMemoryAgents(noAuth, sharedWith(BOB));
+    expect([...(await memberLabels(noAuth, turn(logs), SHARED, subjects, undefined))]).toEqual([
+      [`user:${BOB}`, TEAMMATE_TEXT],
+    ]);
+    expect(noAuthResolve.resolveCalls).toEqual([]);
+
+    // A resolve that would answer anything: with no agent id, an answer
+    // "about" it proves nothing, so it is never asked.
+    const { bus, resolveCalls, asked } = sharedBus({ resolve: admitted });
+    expect([...(await memberLabels(bus, turn(logs, { agentId: '' }), SHARED, subjects, undefined))]).toEqual([
+      [`user:${BOB}`, TEAMMATE_TEXT],
+    ]);
+    expect(resolveCalls).toEqual([]);
+    expect(asked).toEqual([]);
+    expect(logs).toEqual([]);
+  });
+
+  // The rule, step by step. `agents:resolve` first, for everyone; its answer
+  // settles owners and the people a list names. Only someone it admits who is
+  // neither costs one store read: this agent's memory, scoped to their id, one
+  // row at most, closed rows included.
+  it("on an everyone agent admission isn't enough: owners are named; anyone else only with a row of their own, read once, on this agent", async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, resolveCalls, asked, rowsAsked } = sharedBus({
+      agent: { ...sharedWith(BOB, CAROL, EVE), coOwners: [CAROL] },
+      rows: rowsOf(BOB),
+    });
+    const labels = await memberLabels(
+      bus,
+      turn(logs),
+      SHARED,
+      [`user:${ALICE}`, `user:${BOB}`, `user:${CAROL}`, `user:${EVE}`, `user:${EVE}`],
+      undefined,
+    );
+    expect(Object.fromEntries(labels)).toEqual({
+      [`user:${ALICE}`]: 'Alice Jones', // its creator
+      [`user:${BOB}`]: 'Bob Smith', // admitted, and spoke to it
+      [`user:${CAROL}`]: 'Carol Chen', // a co-owner, with no row
+      [`user:${EVE}`]: TEAMMATE_TEXT, // admitted (an account), never spoke to it
+    });
+    expect([...resolveCalls].sort()).toEqual([ALICE, BOB, CAROL, EVE].sort());
+    expect(rowsAsked.map((read) => read.input.ownerUserId).sort()).toEqual([BOB, EVE].sort());
+    for (const read of rowsAsked) {
+      expect(read).toEqual({ agentId: 'agent-1', input: { ownerUserId: read.input.ownerUserId, activeOnly: false, limit: 1 } });
+    }
+    expect([...asked].sort()).toEqual([ALICE, BOB, CAROL].sort());
+    expect(logs).toEqual([]);
+  });
+
+  it('a list names its people: each is named with no store read, and anyone it does not name is refused', async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked, rowsAsked } = sharedBus({ agent: listing(BOB, CAROL), rows: rowsOf() });
+    const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`, `user:${EVE}`], undefined);
+    expect(Object.fromEntries(labels)).toEqual({
+      [`user:${BOB}`]: 'Bob Smith',
+      [`user:${CAROL}`]: 'Carol Chen',
+      [`user:${EVE}`]: TEAMMATE_TEXT,
+    });
+    expect(rowsAsked).toEqual([]);
+    expect([...asked].sort()).toEqual([BOB, CAROL].sort());
+    expect(logs).toEqual([]);
+  });
+
+  it('a store read that throws reads "a teammate" and warns once, naming memory:facts:recall; the others are still named', async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked } = sharedBus({
+      agent: sharedWith(BOB, CAROL),
+      rows: (input) => {
+        if (input.ownerUserId === BOB) {
+          throw new PluginError({ code: 'store-unavailable', plugin: '@ax/test-facts', message: `${BOB} Bob Smith` });
+        }
+        return rowsOf(CAROL)(input);
+      },
+    });
+    const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined);
+    expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: 'Carol Chen' });
+    expect(asked).toEqual([CAROL]);
+    const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: FACTS_RECALL_HOOK, code: 'store-unavailable' });
+    const logged = JSON.stringify(logs);
+    for (const secret of [BOB, 'Bob']) expect(logged).not.toContain(secret);
+  });
+
+  it.each([
+    ['no statements', { statements: [], degraded: [] }],
+    ['a statement that is not a row', { statements: [null], degraded: [] }],
+    ['statements that are not a list', { statements: 'row', degraded: [] }],
+    ['no statements field', { degraded: [] }],
+    ['null', null],
+    ['a string', 'yes'],
+  ])('a store answer with %s proves nothing for that id, quietly', async (_label, answer) => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked } = sharedBus({ agent: sharedWith(BOB, CAROL), rows: (input) => (input.ownerUserId === BOB ? answer : rowsOf(CAROL)(input)) });
+    const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined);
+    expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: 'Carol Chen' });
+    expect(asked).toEqual([CAROL]);
+    expect(logs).toEqual([]);
+  });
+
+  it('without a store, someone admitted only as an account is never named; owners and the people a list names still are; nothing is logged', async () => {
+    const logs: LoggedEvent[] = [];
+    const everyone = sharedBus({ agent: { ...sharedWith(BOB), coOwners: [CAROL] } });
+    const labels = await memberLabels(everyone.bus, turn(logs), SHARED, [`user:${ALICE}`, `user:${BOB}`, `user:${CAROL}`], undefined);
+    expect(Object.fromEntries(labels)).toEqual({
+      [`user:${ALICE}`]: 'Alice Jones',
+      [`user:${BOB}`]: TEAMMATE_TEXT,
+      [`user:${CAROL}`]: 'Carol Chen',
+    });
+    expect([...everyone.asked].sort()).toEqual([ALICE, CAROL].sort());
+
+    const list = sharedBus({ agent: listing(BOB) });
+    expect(Object.fromEntries(await memberLabels(list.bus, turn(logs), SHARED, [`user:${BOB}`], undefined))).toEqual({
+      [`user:${BOB}`]: 'Bob Smith',
+    });
+    expect(logs).toEqual([]);
+  });
+
+  // TASK-1213 for someone who has never spoken to the agent: the person
+  // talking takes part by talking. Their own key is never shown, only counted,
+  // so admission is enough for it, with no store read. Without it, Bob could
+  // pass for Dave in Dave's first turn.
+  it('the person talking counts with no row of their own: someone renamed to their name reads "a teammate"', async () => {
+    const logs: LoggedEvent[] = [];
+    const { bus, asked, rowsAsked } = sharedBus({
+      agent: sharedWith(BOB, CAROL, DAVE),
+      rows: rowsOf(BOB, CAROL),
+      answer: authWith({ [BOB]: 'dave  diaz.' }),
+    });
+    const labels = await memberLabels(
+      bus,
+      turn(logs, { userId: DAVE }),
+      SHARED,
+      [`user:${BOB}`, `user:${CAROL}`],
+      `user:${DAVE}`,
+    );
+    expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: 'Carol Chen' });
+    expect(rowsAsked.map((read) => read.input.ownerUserId).sort()).toEqual([BOB, CAROL].sort());
+    expect([...asked].sort()).toEqual([BOB, CAROL, DAVE].sort());
+    expect(logs).toEqual([]);
+  });
+
+  describe('the deadline', () => {
+    const never = (): Promise<never> => new Promise<never>(() => {});
+    const SHORT = { deadlineMs: 20 } as const;
+
+    it(
+      'past the deadline nobody is named: a resolve that never answers; one warn, code timeout, hook agents:resolve',
+      async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus, asked } = sharedBus({ resolve: () => never() });
+        const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined, SHORT);
+        expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: TEAMMATE_TEXT });
+        expect(asked).toEqual([]);
+        const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]!.level).toBe('warn');
+        expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: AGENTS_RESOLVE_HOOK, code: 'timeout' });
+        const logged = JSON.stringify(logs);
+        for (const secret of [BOB, CAROL]) expect(logged).not.toContain(secret);
+      },
+      2_000,
+    );
+
+    it(
+      'one resolve still out at the deadline: nobody is named, not even someone whose name came back in time',
+      async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus, asked } = sharedBus({ resolve: (input) => (input.userId === CAROL ? never() : admitted(input)) });
+        const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined, SHORT);
+        expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: TEAMMATE_TEXT });
+        expect(asked).toEqual([BOB]);
+        const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]!.bindings).toMatchObject({ hook: AGENTS_RESOLVE_HOOK, code: 'timeout' });
+      },
+      2_000,
+    );
+
+    it(
+      'a name lookup still out at the deadline: the warn names auth:get-user',
+      async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus } = sharedBus({ answer: (userId) => (userId === CAROL ? never() : authWith()(userId)) });
+        const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined, SHORT);
+        expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: TEAMMATE_TEXT });
+        const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]!.bindings).toMatchObject({ hook: AUTH_GET_USER_HOOK, code: 'timeout' });
+      },
+      2_000,
+    );
+
+    it(
+      'a store read still out at the deadline: nobody is named, not even an owner whose name came back; the warn names memory:facts:recall',
+      async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus, asked } = sharedBus({
+          agent: sharedWith(BOB),
+          rows: (input) => (input.ownerUserId === BOB ? never() : rowsOf()(input)),
+        });
+        const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${ALICE}`, `user:${BOB}`], undefined, SHORT);
+        expect(Object.fromEntries(labels)).toEqual({ [`user:${ALICE}`]: TEAMMATE_TEXT, [`user:${BOB}`]: TEAMMATE_TEXT });
+        expect(asked).toEqual([ALICE]);
+        const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]!.bindings).toMatchObject({ agentId: 'agent-1', hook: FACTS_RECALL_HOOK, code: 'timeout' });
+        expect(JSON.stringify(logs)).not.toContain(BOB);
+      },
+      2_000,
+    );
+
+    // The warn names the earliest step still out: resolve, then the store
+    // read, then the name.
+    it(
+      'a resolve and a store read both out at the deadline: the warn names agents:resolve',
+      async () => {
+        const logs: LoggedEvent[] = [];
+        const { bus } = sharedBus({
+          resolve: (input) => (input.userId === CAROL ? never() : admitted(input, 'everyone')),
+          rows: () => never(),
+        });
+        const labels = await memberLabels(bus, turn(logs), SHARED, [`user:${BOB}`, `user:${CAROL}`], undefined, SHORT);
+        expect(Object.fromEntries(labels)).toEqual({ [`user:${BOB}`]: TEAMMATE_TEXT, [`user:${CAROL}`]: TEAMMATE_TEXT });
+        const warns = eventsNamed(logs, MEMBER_NAMES_FAILED_EVENT);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]!.bindings).toMatchObject({ hook: AGENTS_RESOLVE_HOOK, code: 'timeout' });
+      },
+      2_000,
+    );
   });
 });

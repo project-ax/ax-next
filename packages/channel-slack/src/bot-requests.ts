@@ -3,7 +3,7 @@ import { isAxAdmin } from './ax-admin.js';
 import { isBotNameTaken } from './bot-name.js';
 import type { BotRequestDms, PostedDm } from './bot-request-dms.js';
 import type { BotReply, Bots } from './bots.js';
-import { checkRights, teamAdminAccess, type Rights } from './channels.js';
+import { checkRights, managerAccess, type Rights } from './channels.js';
 import type { ParsedIcon } from './icon.js';
 import { BOT_REQUESTS_MAX, INSTALL_ID_BYTES } from './limits.js';
 import { logCode } from './log-code.js';
@@ -15,12 +15,14 @@ import { InstallStoreError, type BotRequest, type InstallStore } from './store.j
 import { agentSeenBy, teamNamesOf } from './team-name.js';
 
 /**
- * Asking an AX admin for a team agent's own Slack bot (TASK-1169; design
- * docs/plans/2026-11-09-channel-slack-design.md §4 steps 2–3). A team admin
- * who can't install Slack apps asks from the agent's settings
- * (agent-routes.ts), and pastes no token. The request waits in its own table
- * (store.ts `BotRequest`) until an AX admin approves or declines it in Admin ›
- * Slack (bot-request-routes.ts), or the team cancels it.
+ * Asking an AX admin for a shared agent's own Slack bot (TASK-1169; design
+ * docs/plans/2026-11-09-channel-slack-design.md §4 steps 2–3). Someone who
+ * manages the agent (a team admin of a team agent's team, an owner of a
+ * personal agent shared with other people, TASK-1248) but can't install
+ * Slack apps asks from the agent's settings (agent-routes.ts), and pastes no
+ * token. The request waits in its own table (store.ts `BotRequest`) until an
+ * AX admin approves or declines it in Admin › Slack
+ * (bot-request-routes.ts), or someone who manages the agent cancels it.
  *
  * A request holds a bot name and its requester, nothing else: no secret, no
  * Slack app, no picture. An agent has an open request or a bot (pending or
@@ -29,7 +31,7 @@ import { agentSeenBy, teamNamesOf } from './team-name.js';
  *
  * Who may do what. The routes check first; this checks again whatever can
  * change while a call waits for the lock:
- *   - `ask`, `cancel`: a team admin of the agent's team (the agent settings'
+ *   - `ask`, `cancel`: someone who manages the agent (the agent settings'
  *     gate, channels.ts). `ask` asks the rights again inside the lock, as the
  *     self path's request does: an agent deleted while it waited has had its
  *     request removed already (that removal takes the lock too), so a request
@@ -43,9 +45,9 @@ import { agentSeenBy, teamNamesOf } from './team-name.js';
  *     request's requester as its requester (whom its channels' outsiders run
  *     as). Only while she is still an AX admin (403 `forbidden`, asked first
  *     inside the lock: one demoted while the call waited makes nothing) and
- *     that requester is still a team admin of the agent's
- *     team, asked inside the lock; the AX admin's own rights over the agent
- *     are never asked, since she needn't be on the team. The request goes
+ *     that requester still manages the agent (channels.ts
+ *     `managerAccess`), asked inside the lock; the AX admin's own rights over
+ *     the agent are never asked, since she needn't be able to use it. The request goes
  *     only once the bot is made (`create` deletes it last), so an approve
  *     that makes nothing leaves it open. A decline is told who declined
  *     (the DMs' redraw names them), and isn't asked again inside the lock:
@@ -100,11 +102,11 @@ export interface AdminBotRequest {
   requestId: string;
   /** Already passed `checkBotName` when it was asked. */
   botName: string;
-  /** The agent's name as its requester sees it, else "A team agent". */
+  /** The agent's name as its requester sees it, else "An agent". */
   agentName: string;
   /** Its team's name as its requester sees it; null without @ax/teams, or when they can't see the agent. */
   teamName: string | null;
-  /** The requester's display name, else their email, else "A team admin". */
+  /** The requester's display name, else their email, else "Someone". */
   requestedBy: string;
   /** When it was asked, as an ISO 8601 instant. */
   requestedAt: string;
@@ -142,7 +144,7 @@ export interface BotRequestsDeps {
 
 export interface BotRequests {
   /**
-   * A team admin asks an AX admin for the agent's own bot, as `actorUserId`,
+   * Someone who manages the agent asks an AX admin for its own bot, as `actorUserId`,
    * its requester. Takes the app lock, then refuses, in this order: 404 / 403
    * / 409 `personal-agent` as the rights re-check says; 409 `no-workspace`
    * (no live shared bot) and `public-origin-not-https` (nothing is asked
@@ -155,8 +157,8 @@ export interface BotRequests {
    */
   ask(i: { ctx: AgentContext; actorUserId: string; agentId: string; botName: string }): Promise<BotReply>;
   /**
-   * The team takes its request back (the route let only a team admin of the
-   * agent through). Takes the app lock, so it waits for an approve in
+   * Someone who manages the agent takes its request back (the route let no
+   * one else through). Takes the app lock, so it waits for an approve in
    * flight. 200 `{}`, logged `slack_bot_request_cancelled { requestId }`;
    * once the lock is free, its DMs are forgotten (`dms.forget`), so a
    * fan-out still running stops. 409 `not-requested` when the agent has no
@@ -176,7 +178,7 @@ export interface BotRequests {
    * the app lock, asks inside it whether she still is an AX admin (403
    * `forbidden`), reads the request (404 `not-found` when it is
    * gone: approved, declined or cancelled first), asks whether its requester
-   * is still a team admin of the agent's team (409 `requester-not-admin`;
+   * still manages the agent (409 `requester-not-admin`, a name from before sharing;
    * `agent-gone` for an agent deleted), then makes the bot through `create`,
    * with her as the approver and the requester as the requester, and answers
    * what it answers: 200 `{ installUrl, iconSet }`, or a refusal with the
@@ -209,10 +211,16 @@ export interface BotRequests {
   decline(i: { requestId: string; actorUserId: string; clicked?: PostedDm }): Promise<BotReply>;
 }
 
-/** The agent's name when its requester can't see it, or nobody says. */
-const AGENT_FALLBACK = 'A team agent';
-/** The requester's name when auth has no name, no email, no account or no answer. */
-const REQUESTER_FALLBACK = 'A team admin';
+/**
+ * The agent's name when its requester can't see it, or nobody says. Names no
+ * team: a personal agent shared with other people has a bot too (TASK-1248).
+ */
+const AGENT_FALLBACK = 'An agent';
+/**
+ * The requester's name when auth has no name, no email, no account or no
+ * answer: a team agent's team admin, or a shared personal agent's owner.
+ */
+const REQUESTER_FALLBACK = 'Someone';
 
 const json = (status: number, body: unknown): BotReply => ({ status, body });
 const NOT_FOUND = json(404, { error: 'not-found' });
@@ -319,10 +327,11 @@ export function createBotRequests(d: BotRequestsDeps): BotRequests {
       // Read under the lock: an approve, a decline or a cancel that got here first has taken it.
       const request = await d.installs.getBotRequest(i.requestId);
       if (request === null) return refused(NOT_FOUND);
-      // Whom its outsiders will run as must still be a team admin of the
-      // agent's team. The AX admin's own rights over the agent are never
-      // asked: she needn't be on the team.
-      const requester = await teamAdminAccess(d.bus, i.ctx, request.agentId, request.requestedByUserId);
+      // Whom its outsiders will run as must still manage the agent: a team
+      // admin of a team agent's team, an owner of a shared personal agent
+      // (TASK-1248). The AX admin's own rights over the agent are never
+      // asked: she needn't be able to use it.
+      const requester = await managerAccess(d.bus, i.ctx, request.agentId, request.requestedByUserId);
       if (requester === 'agent-gone') return refused(json(409, { error: 'agent-gone' }));
       if (requester !== 'yes') return refused(json(409, { error: 'requester-not-admin' }));
       const reply = await d.bots.create({

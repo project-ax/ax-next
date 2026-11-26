@@ -191,6 +191,54 @@ describe('memory facts export — real engine + real volume', () => {
     }
   });
 
+  // TASK-1248: a personal agent shared with other people names them in its
+  // export the same way, each proven through `agents:resolve` (there is no
+  // team to ask): one file, whoever triggers the pass.
+  it('the /memory export names the people the agent is shared with', async () => {
+    const { h, flush, listPaths, readText } = await makeExportHarness({
+      agent: { visibility: 'personal', shared: true, members: new Set([BOB]) },
+      authUser: authNames({ [ALICE]: 'Alice Jones', [BOB]: 'Bob Smith' }),
+    });
+    await h.remember(
+      { about: 'user', relation: 'lives in', value: 'Seattle' },
+      h.ctx({ userId: ALICE }),
+    );
+    await h.remember(
+      { about: 'user', relation: 'works at', value: 'Bob Co' },
+      h.ctx({ userId: BOB }),
+    );
+    const bobCtx = h.ctx({ userId: BOB });
+    await flush(bobCtx);
+    const paths = await listPaths(bobCtx);
+    const journal = paths.find((p) => p.startsWith(`${ROOT}/user/`))!;
+    const byBob = await readText(journal, bobCtx);
+
+    const aliceCtx = h.ctx({ userId: ALICE });
+    const asked = h.resolveCalls.length;
+    await flush(aliceCtx);
+    const byAlice = await readText(journal, aliceCtx);
+    // Alice's pass asked `agents:resolve` about Bob, to name him.
+    expect(h.resolveCalls.slice(asked)).toContain(BOB);
+
+    expect(byBob).toBe(byAlice);
+    expect(byBob).toContain('Seattle');
+    expect(byBob).toContain('Bob Co');
+    expect(byBob).toContain('## Alice Jones');
+    expect(byBob).toContain('## Bob Smith');
+
+    const profile = await readText(`${ROOT}/profile.md`, aliceCtx);
+    expect(profile).toContain('## Alice Jones');
+    expect(profile).toContain('## Bob Smith');
+    expect(profile).not.toMatch(/\byou\b/i);
+    for (const path of await listPaths(aliceCtx)) {
+      const text = await readText(path, aliceCtx);
+      expect(text, path).not.toContain('user:user-alice');
+      expect(text, path).not.toContain('user:user-bob');
+      expect(text, path).not.toContain('@x.test');
+    }
+    expect(h.memberCalls).toEqual([]);
+  });
+
   it('a key for an account outside the team reads "a teammate" in the export, and auth is never asked about it', async () => {
     const EVE = 'user-eve';
     const { h, flush, listPaths, readText } = await makeExportHarness({

@@ -4,13 +4,15 @@ import { isRecord } from './slack-apps.js';
 import type { BotRequest } from './store.js';
 
 /**
- * A team agent, and its team's name, as one person sees them (TASK-1169,
- * TASK-1203): the agent as `agents:resolve` answers that person, and its
- * team by name as `teams:list-for-user` (optional: @ax/teams) lists that
- * person's own teams. Each name is cleaned to one line (label.ts) and read
- * when shown, never stored (invariant 4): Admin › Slack's list of bot
- * requests (bot-requests.ts) and a bot request's DMs (bot-request-dms.ts)
- * name them from here.
+ * A shared agent, and a team agent's team's name, as one person sees them
+ * (TASK-1169, TASK-1203): the agent as `agents:resolve` answers that person,
+ * and its team by name as `teams:list-for-user` (optional: @ax/teams) lists
+ * that person's own teams. A shared agent is one that may have a bot: a team
+ * agent, or a personal agent whose answer says `shared: true` exactly
+ * (TASK-1248), which has no team. Each name is cleaned to one line
+ * (label.ts) and read when shown, never stored (invariant 4): Admin ›
+ * Slack's list of bot requests (bot-requests.ts) and a bot request's DMs
+ * (bot-request-dms.ts) name them from here.
  *
  * Every name here is from outside (a person typed it): cleaned, never
  * escaped, so a caller that shows one in Slack passes it through copy.ts
@@ -20,7 +22,9 @@ import type { BotRequest } from './store.js';
 
 /**
  * The agent as one requester sees it: its name, cleaned to one line, or null
- * when it can't be named. `teamId` is only ever used to find its team's name.
+ * when it can't be named. `teamId` is only ever used to find its team's name:
+ * a team agent's team, and null on a shared personal agent, whose owner is a
+ * person.
  */
 export interface SeenAgent {
   name: string | null;
@@ -29,11 +33,11 @@ export interface SeenAgent {
 
 /**
  * The agent as its requester sees it (Admin › Slack's list, a bot request's
- * DMs): only an
- * answer about this agent, as a team agent, names it. One they can't see
- * (they left the team) or one that's gone has no name, quietly; nor does one
- * whose name has nothing printable, or any other fault, which is handed to
- * `onFault` first (each caller logs it its own way).
+ * DMs): only an answer about this agent, as a shared agent, names it. One
+ * they can't see (they left the team, or it isn't shared with them any
+ * more) or one that's gone has no name, quietly; nor does a Just-me
+ * personal agent, one whose name has nothing printable, or any other fault,
+ * which is handed to `onFault` first (each caller logs it its own way).
  */
 export async function agentSeenBy(
   bus: HookBus,
@@ -54,13 +58,17 @@ export async function agentSeenBy(
     return unnamed;
   }
   const agent = isRecord(out) ? out['agent'] : undefined;
-  if (!isRecord(agent) || agent['id'] !== r.agentId || agent['visibility'] !== 'team') return unnamed;
+  if (!isRecord(agent) || agent['id'] !== r.agentId) return unnamed;
+  const team = agent['visibility'] === 'team';
+  // A personal agent shared with other people (TASK-1248): `shared` exactly true. Anything else is Just me.
+  if (!team && !(agent['visibility'] === 'personal' && agent['shared'] === true)) return unnamed;
   const name = agent['displayName'];
   const owner = agent['ownerId'];
   return {
     name: (typeof name === 'string' ? cleanLabel(name) : '') || null,
     // A team agent's owner is its team (@ax/agents): only ever matched against the requester's teams.
-    teamId: typeof owner === 'string' && owner !== '' ? owner : null,
+    // A personal agent's owner is a person, never a team.
+    teamId: team && typeof owner === 'string' && owner !== '' ? owner : null,
   };
 }
 

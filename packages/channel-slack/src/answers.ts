@@ -44,7 +44,7 @@ import type { InstallRow } from './store.js';
  *   6. Their verified email still maps to the AX user the turn ran as
  *      (`findSenderUser`), else they are told only the asker can answer.
  *   7. That user can still use the agent (`agentAccess`): a DM's personal
- *      agent, or an attended channel's team agent (`'yes'` only there, the
+ *      agent, or an attended channel's shared agent (`'yes'` only there, the
  *      router's own rule for an attended turn, channel-route.ts). Else the
  *      prompt closes.
  *   8. An attended prompt's channel is still connected to that agent
@@ -179,11 +179,12 @@ const lookupCtx = (userId: string, logger: Logger): AgentContext =>
 /**
  * Step 7: whether `agents:resolve`'s answer still lets the prompt's user
  * answer for its agent. A DM's agent is the asker's personal agent, which
- * resolves as `'not-team'`; an attended prompt's is the channel's team
- * agent, where only `'yes'` attends (channel-route.ts `decideTier`).
+ * resolves as `'not-shared'` while it is Just me (and `'yes'` once shared,
+ * TASK-1248); an attended prompt's is the channel's shared agent, where only
+ * `'yes'` attends (channel-route.ts `decideTier`).
  */
 function reaches(mode: Prompt['mode'], access: AgentAccess): boolean {
-  return access === 'yes' || (mode === 'dm' && access === 'not-team');
+  return access === 'yes' || (mode === 'dm' && access === 'not-shared');
 }
 
 export function createClickHandler(d: AnswerDeps): ClickHandler {

@@ -301,10 +301,11 @@ export interface AgentContext {
   /**
    * Whose memory this turn may read and write. `'private'` (or absent) is
    * the owner's own conversation. `'shared'` is a turn other people are
-   * part of (e.g. a channel). On a personal agent a shared turn recalls
-   * only shared statements and stores no speaker facts, and so does an
-   * outsider's turn (`isOutsiderTurn`) whatever this field says. A team
-   * agent's memory is shared with anyone who talks to it (design §4c,
+   * part of (e.g. a channel). On a "Just me" personal agent a shared turn
+   * recalls only shared statements and stores no speaker facts, and so does
+   * an outsider's turn (`isOutsiderTurn`) whatever this field says. A team
+   * agent's memory, and a personal agent's shared with other people
+   * (TASK-1248), is shared with anyone who talks to it (design §4c,
    * TASK-1209): a member's, a routine's or an outsider's turn on it
    * recalls everything whatever this field says, and a member's turn files
    * their facts under them. A turn from a source this build doesn't know

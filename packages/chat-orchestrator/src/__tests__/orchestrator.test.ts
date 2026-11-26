@@ -7892,15 +7892,17 @@ describe('outsiderToolScope (TASK-1091, TASK-1122)', () => {
 // rule), or an allowlisted agent could never finish its first-run setup. A
 // tool NOT offered is hidden through disallowedTools, but only where it would
 // otherwise show: a wildcard agent sees the whole catalog, an allowlisted one
-// only what it lists. The integration tests in 'TASK-989 identity at spawn'
-// prove it is wired into session-open; these pin the helper's contract.
+// only what it lists. TASK-1248: neither is offered to a person who may not
+// change who the agent is (someone a personal agent is only shared with). The
+// integration tests in 'TASK-989 identity at spawn' prove it is wired into
+// session-open; these pin the helper's contract.
 // ---------------------------------------------------------------------------
 describe('identityToolScope (TASK-989)', () => {
   const WILDCARD = { allowedTools: [] as string[], mcpConfigIds: [] as string[] };
   const BASH_ONLY = { allowedTools: ['Bash'], mcpConfigIds: [] as string[] };
-  const ATTENDED_NORMAL = { attended: true, bootstrapMode: false };
-  const ATTENDED_BOOTSTRAP = { attended: true, bootstrapMode: true };
-  const UNATTENDED = { attended: false, bootstrapMode: false };
+  const ATTENDED_NORMAL = { attended: true, bootstrapMode: false, mayChangeIdentity: true };
+  const ATTENDED_BOOTSTRAP = { attended: true, bootstrapMode: true, mayChangeIdentity: true };
+  const UNATTENDED = { attended: false, bootstrapMode: false, mayChangeIdentity: true };
 
   it('wildcard, person present, normal mode: hides only complete_bootstrap', () => {
     expect(identityToolScope(WILDCARD, [], undefined, ATTENDED_NORMAL)).toEqual({
@@ -7952,9 +7954,33 @@ describe('identityToolScope (TASK-989)', () => {
     const scoped = identityToolScope(BASH_ONLY, ['Bash'], undefined, {
       attended: false,
       bootstrapMode: true,
+      mayChangeIdentity: true,
     });
     expect(scoped.allowedTools).toEqual(['Bash']);
     expect(scoped.disallowedTools).toBeUndefined();
+  });
+
+  // TASK-1248 — someone a personal agent is only shared with is present, but
+  // may not change who it is. Catalog hygiene only: @ax/agents refuses the
+  // write either way. Even a bootstrap flag offers nothing to them.
+  it('identityToolScope hides update_identity and complete_bootstrap when the person may not change the agent', () => {
+    for (const bootstrapMode of [false, true]) {
+      const opts = { attended: true, bootstrapMode, mayChangeIdentity: false };
+      const label = `bootstrapMode ${String(bootstrapMode)}`;
+      expect(identityToolScope(WILDCARD, [], undefined, opts), label).toEqual({
+        allowedTools: [],
+        disallowedTools: ['update_identity', 'complete_bootstrap'],
+      });
+      expect(identityToolScope(BASH_ONLY, ['Bash'], undefined, opts), label).toEqual({
+        allowedTools: ['Bash'],
+        disallowedTools: undefined,
+      });
+      const listsIt = { allowedTools: ['Bash', 'update_identity'], mcpConfigIds: [] as string[] };
+      expect(identityToolScope(listsIt, ['Bash', 'update_identity'], ['x'], opts), label).toEqual({
+        allowedTools: ['Bash', 'update_identity'],
+        disallowedTools: ['x', 'update_identity'],
+      });
+    }
   });
 
   it('keeps an existing disallowedTools first and adds no duplicate', () => {
@@ -9100,6 +9126,92 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
         expect.arrayContaining(['file.read', 'update_identity', 'complete_bootstrap']),
       );
       expect('disallowedTools' in cfg).toBe(false);
+    });
+
+    // TASK-1248 — on a personal agent only its owners change who it is. In the
+    // turn of someone it is only shared with (`agents:resolve` answers
+    // `isOwner: false` for them), it is not in first-run setup and is offered
+    // neither identity tool. UX and catalog hygiene only: @ax/agents refuses
+    // the write itself. A team agent has no owners, and any member's turn
+    // keeps both, as before.
+    it("a sharee's attended turn on a pending personal agent is not in first-run setup", async () => {
+      const store = identityStore({ identity: '', soul: '', bootstrap: 'pending', revision: 0 });
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({ agent: { ...TEST_AGENT, isOwner: false } }),
+        'agents:identity:get': store.service,
+      });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      // The people's Instructions still reach the turn; first-run setup doesn't.
+      expect(cfg.identity).toEqual({
+        identity: '',
+        soul: '',
+        instructions: 'Be brief',
+        bootstrapMode: false,
+      });
+      expect(cfg.allowedTools).not.toContain('update_identity');
+      expect(cfg.allowedTools).not.toContain('complete_bootstrap');
+      // TEST_AGENT's restrictive list never named either, so nothing needs hiding.
+      expect('disallowedTools' in cfg).toBe(false);
+    });
+
+    it("a sharee's turn on a wildcard personal agent hides both identity tools from its whole catalog", async () => {
+      const store = identityStore();
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({
+          agent: { ...TEST_AGENT, allowedTools: [], mcpConfigIds: [], isOwner: false },
+        }),
+        'agents:identity:get': store.service,
+      });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.identity?.bootstrapMode).toBe(false);
+      expect(cfg.allowedTools).toEqual([]); // still the wildcard
+      expect(cfg.disallowedTools).toEqual(['update_identity', 'complete_bootstrap']);
+    });
+
+    it("an owner's attended turn on a pending agent still is", async () => {
+      const store = identityStore({ identity: '', soul: '', bootstrap: 'pending', revision: 0 });
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({ agent: { ...TEST_AGENT, isOwner: true } }),
+        'agents:identity:get': store.service,
+      });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.identity?.bootstrapMode).toBe(true);
+      expect(cfg.allowedTools).toEqual(
+        expect.arrayContaining(['file.read', 'update_identity', 'complete_bootstrap']),
+      );
+    });
+
+    it("any member's attended turn on a pending team agent still is, though a team agent has no owners", async () => {
+      const store = identityStore({ identity: '', soul: '', bootstrap: 'pending', revision: 0 });
+      const { h, counters } = await makeKeepaliveHarness({
+        'agents:resolve': async () => ({
+          agent: {
+            ...TEST_AGENT,
+            ownerId: 'team-1',
+            ownerType: 'team',
+            visibility: 'team',
+            isOwner: false,
+          },
+        }),
+        'agents:identity:get': store.service,
+      });
+
+      await turn(h, 'req-1');
+
+      const cfg = counters.openInputs[0]!.owner.agentConfig;
+      expect(cfg.identity?.bootstrapMode).toBe(true);
+      expect(cfg.allowedTools).toEqual(
+        expect.arrayContaining(['file.read', 'update_identity', 'complete_bootstrap']),
+      );
     });
 
     it('a routine run never bootstraps and is offered neither identity tool', async () => {

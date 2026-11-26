@@ -161,6 +161,10 @@ interface BootOpts {
   metadata?: (input: { conversationId: string; userId: string }) => unknown;
   /** `conversations:bind-session` mock. Absent = no producer (degraded). */
   bind?: (input: { conversationId: string; sessionId: string; reqId: string }) => unknown;
+  /** Who `auth:require-user` says is asking. Default `u1`, whose row `STORED` is. */
+  caller?: string;
+  /** `agents:resolve`'s answer for `a1`. Default `{ id: 'a1', displayName: 'Inbox' }`. */
+  agent?: Record<string, unknown>;
 }
 
 interface Booted extends BootOpts {
@@ -172,6 +176,12 @@ interface Booted extends BootOpts {
     continuationReqId: string;
     requestShownInFull: boolean;
   }>;
+  /** The ctx identity each `decisions:approve` ran under, in order. */
+  approveCtxs: Array<{ agentId: string; userId: string }>;
+  /** Every input `decisions:get` was handed, in order. */
+  getInputs: Array<{ decisionId: string; userId: string }>;
+  /** Every input `agents:resolve` was handed, in order. */
+  resolveInputs: Array<{ agentId: string; userId: string }>;
   binds: Array<{ conversationId: string; sessionId: string; reqId: string }>;
 }
 
@@ -186,26 +196,34 @@ async function boot(opts: BootOpts = {}): Promise<Booted> {
   // pin it to keep test output quiet (same as http-server's own tests).
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
   const approveInputs: Booted['approveInputs'] = [];
+  const approveCtxs: Booted['approveCtxs'] = [];
+  const getInputs: Booted['getInputs'] = [];
+  const resolveInputs: Booted['resolveInputs'] = [];
   const binds: Booted['binds'] = [];
   const services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {
-    'auth:require-user': async () => ({ user: { id: 'u1', isAdmin: false } }),
+    'auth:require-user': async () => ({ user: { id: opts.caller ?? 'u1', isAdmin: false } }),
     'agents:list-for-user': async () => ({
       agents: [{ id: 'a1', displayName: 'Inbox' }],
     }),
     'agents:resolve': async (_ctx: unknown, input: unknown) => {
-      const { agentId } = input as { agentId: string };
-      if (agentId !== 'a1') {
-        throw new Error(`agent '${agentId}' not found`);
+      const typed = input as { agentId: string; userId: string };
+      resolveInputs.push(typed);
+      if (typed.agentId !== 'a1') {
+        throw new Error(`agent '${typed.agentId}' not found`);
       }
-      return { agent: { id: 'a1', displayName: 'Inbox' } };
+      return { agent: opts.agent ?? { id: 'a1', displayName: 'Inbox' } };
     },
     'decisions:list': async () => ({ decisions: [opts.stored ?? STORED] }),
     'decisions:get': async (_ctx: unknown, input: unknown) => {
-      const { decisionId } = input as { decisionId: string };
+      const typed = input as { decisionId: string; userId: string };
+      getInputs.push(typed);
+      const row = opts.stored ?? STORED;
       // Owner-scoped: anything that is not this caller's row is `null`.
-      return { decision: decisionId === STORED.id ? (opts.stored ?? STORED) : null };
+      return {
+        decision: typed.decisionId === STORED.id && row.ownerUserId === typed.userId ? row : null,
+      };
     },
-    'decisions:approve': async (_ctx: unknown, input: unknown) => {
+    'decisions:approve': async (ctx: unknown, input: unknown) => {
       const typed = input as {
         decisionId: string;
         userId: string;
@@ -213,6 +231,8 @@ async function boot(opts: BootOpts = {}): Promise<Booted> {
         requestShownInFull: boolean;
       };
       approveInputs.push(typed);
+      const { agentId, userId } = ctx as AgentContext;
+      approveCtxs.push({ agentId, userId });
       if (opts.approve !== undefined) return opts.approve(typed);
       return {
         decision: {
@@ -251,7 +271,15 @@ async function boot(opts: BootOpts = {}): Promise<Booted> {
   }
   const harness = await createTestHarness({ services, plugins: [http] });
   await registerWorkspaceRoutes(harness.bus, initCtx);
-  return { harness, port: http.boundPort(), approveInputs, binds };
+  return {
+    harness,
+    port: http.boundPort(),
+    approveInputs,
+    approveCtxs,
+    getInputs,
+    resolveInputs,
+    binds,
+  };
 }
 
 describe('the decision routes over a real socket', () => {
@@ -420,6 +448,65 @@ describe('the decision routes over a real socket', () => {
     );
     // 404, not 403: we do not tell a foreign caller whether an id is real.
     expect(r.status).toBe(404);
+  });
+
+  // TASK-1248 — someone a personal agent is shared with approves their OWN
+  // held calls on it, the way an owner does. @ax/decisions files each row
+  // under the person whose turn raised it, and the route asks two things as
+  // the authenticated caller: is the row theirs (`decisions:get`), and may they
+  // still use the agent (`agents:resolve`). Neither asks who owns the agent.
+  /** agents:resolve's answer for `u2`, someone `a1` is shared with. */
+  const SHARED_WITH_U2 = {
+    id: 'a1',
+    displayName: 'Inbox',
+    visibility: 'personal',
+    shared: true,
+    isOwner: false,
+  };
+
+  it('someone a personal agent is shared with approves their own held call on it', async () => {
+    const theirs = { ...STORED, ownerUserId: 'u2' };
+    const booted = await boot({
+      caller: 'u2',
+      agent: SHARED_WITH_U2,
+      stored: theirs,
+      approve: () => ({
+        decision: { ...theirs, status: 'executed', resolvedAt: '2026-08-21T11:00:00.000Z' },
+        executed: true,
+        path: 'host-replays',
+        error: null,
+        pendingUntil: null,
+        streamReqId: null,
+      }),
+    });
+    harness = booted.harness;
+
+    const body = await postApprove(booted.port);
+    expect(body.decision.id).toBe('d1');
+    expect(body.decision.status).toBe('executed');
+    expect(body.executed).toBe(true);
+    // Read, checked and approved as the person themself, never as the
+    // agent's owner.
+    expect(booted.getInputs).toEqual([{ decisionId: 'd1', userId: 'u2' }]);
+    expect(booted.resolveInputs).toEqual([{ agentId: 'a1', userId: 'u2' }]);
+    expect(booted.approveInputs).toHaveLength(1);
+    expect(booted.approveInputs[0]!.userId).toBe('u2');
+    expect(booted.approveCtxs).toEqual([{ agentId: 'a1', userId: 'u2' }]);
+  });
+
+  it("…but never a held call of the agent's owner: that is a 404 to them, and nothing is approved", async () => {
+    // STORED is filed under u1, the agent's owner.
+    const booted = await boot({ caller: 'u2', agent: SHARED_WITH_U2 });
+    harness = booted.harness;
+
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions/d1/approve`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: '{}',
+    });
+    expect(r.status).toBe(404);
+    expect(booted.getInputs).toEqual([{ decisionId: 'd1', userId: 'u2' }]);
+    expect(booted.approveInputs).toEqual([]);
   });
 
   // Review F2. The card shows a held call's input cut to `wireRequest`'s caps
