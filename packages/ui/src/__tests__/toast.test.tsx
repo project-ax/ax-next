@@ -23,6 +23,9 @@ const show = (input: Parameters<typeof toast.show>[0]) => {
   return id;
 };
 
+/** Queries scoped to the visible stack (the announcers repeat each toast's words). */
+const stack = () => within(screen.getByRole('region', { name: 'Notifications' }));
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   cleanup();
@@ -36,18 +39,18 @@ describe('Toast', () => {
   it('info auto-dismisses at 5000ms', () => {
     render(<ToastRegion />);
     show({ title: 'Saved' });
-    expect(screen.getByText('Saved')).toBeTruthy();
+    expect(stack().getByText('Saved')).toBeTruthy();
     act(() => void vi.advanceTimersByTime(4999));
-    expect(screen.getByText('Saved')).toBeTruthy();
+    expect(stack().getByText('Saved')).toBeTruthy();
     act(() => void vi.advanceTimersByTime(1));
-    expect(screen.queryByText('Saved')).toBeNull();
+    expect(stack().queryByText('Saved')).toBeNull();
   });
 
   it('success auto-dismisses and a custom duration wins', () => {
     render(<ToastRegion />);
     show({ title: 'Connected', tone: 'success', duration: 100 });
     act(() => void vi.advanceTimersByTime(100));
-    expect(screen.queryByText('Connected')).toBeNull();
+    expect(stack().queryByText('Connected')).toBeNull();
   });
 
   it('danger and warning stay after 60s', () => {
@@ -55,21 +58,21 @@ describe('Toast', () => {
     show({ title: 'Disconnected', tone: 'danger' });
     show({ title: 'Heads up', tone: 'warning' });
     act(() => void vi.advanceTimersByTime(60_000));
-    expect(screen.getByText('Disconnected')).toBeTruthy();
-    expect(screen.getByText('Heads up')).toBeTruthy();
+    expect(stack().getByText('Disconnected')).toBeTruthy();
+    expect(stack().getByText('Heads up')).toBeTruthy();
   });
 
   it('shows the description under the title', () => {
     render(<ToastRegion />);
     show({ title: 'Quota exceeded', description: 'Try again tomorrow.', tone: 'danger' });
-    expect(screen.getByText('Try again tomorrow.')).toBeTruthy();
+    expect(stack().getByText('Try again tomorrow.')).toBeTruthy();
   });
 
   it('the Dismiss button removes the toast', () => {
     render(<ToastRegion />);
     show({ title: 'Disconnected', tone: 'danger' });
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    expect(screen.queryByText('Disconnected')).toBeNull();
+    expect(stack().queryByText('Disconnected')).toBeNull();
   });
 
   it('dismiss(id) removes only that toast', () => {
@@ -78,9 +81,9 @@ describe('Toast', () => {
     const second = show({ title: 'Second', tone: 'danger' });
     show({ title: 'Third', tone: 'danger' });
     act(() => toast.dismiss(second));
-    expect(screen.getByText('First')).toBeTruthy();
-    expect(screen.queryByText('Second')).toBeNull();
-    expect(screen.getByText('Third')).toBeTruthy();
+    expect(stack().getByText('First')).toBeTruthy();
+    expect(stack().queryByText('Second')).toBeNull();
+    expect(stack().getByText('Third')).toBeTruthy();
   });
 
   it('dismissing clears the timer, so a later toast is not cut short', () => {
@@ -98,15 +101,43 @@ describe('Toast', () => {
     expect(titles).toEqual(['one', 'two', 'three', 'four', 'five']);
   });
 
-  it('the region has the accessible name "Notifications" and is polite', () => {
+  it('the visual stack is a named region that is not itself a live region', () => {
     render(<ToastRegion />);
-    expect(screen.getByRole('region', { name: 'Notifications' }).getAttribute('aria-live')).toBe('polite');
+    expect(screen.getByRole('region', { name: 'Notifications' }).getAttribute('aria-live')).toBeNull();
   });
 
-  it('toasts add no per-item alert role (the polite region announces them once)', () => {
+  it('a danger toast interrupts: its words go to the assertive announcer', () => {
     render(<ToastRegion />);
+    show({ title: 'Download failed', description: 'Try again in a minute.', tone: 'danger' });
+    expect(screen.getByRole('alert').textContent).toBe('Download failed. Try again in a minute.');
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('info, success and warning toasts are announced politely', () => {
+    render(<ToastRegion />);
+    show({ title: 'Saved' });
+    expect(screen.getByRole('status').textContent).toBe('Saved');
+    show({ title: 'Heads up', tone: 'warning' });
+    expect(screen.getByRole('status').textContent).toBe('Heads up');
+    expect(screen.getByRole('alert').textContent).toBe('');
+  });
+
+  it('the announcers are mounted before any toast and sit outside the visual stack (no nested live regions)', () => {
+    render(<ToastRegion />);
+    const region = screen.getByRole('region', { name: 'Notifications' });
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('status')).toBeTruthy();
     show({ title: 'Disconnected', tone: 'danger' });
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(region.querySelector('[role="alert"],[role="status"],[aria-live]')).toBeNull();
+  });
+
+  it('dismissing the newest danger toast falls back to the previous one, then clears', () => {
+    render(<ToastRegion />);
+    show({ title: 'First', tone: 'danger' });
+    const second = show({ title: 'Second', tone: 'danger' });
+    expect(screen.getByRole('alert').textContent).toBe('Second');
+    act(() => toast.dismiss(second));
+    expect(screen.getByRole('alert').textContent).toBe('First');
   });
 
   it('SSR renders an empty region without throwing', () => {

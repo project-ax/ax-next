@@ -12,13 +12,18 @@
  * `slack-install-return-app.test.tsx`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { App } from '../App';
 import { getSession, type AuthSession } from '../lib/auth';
 import { fetchBootstrapStatus } from '../lib/bootstrap-status';
 import { fetchSlackStatus } from '../lib/slack-admin';
 import { toast } from '@project-ax/ui';
 import { rail as railFixture } from '../components/workspace/__tests__/rail-fixture';
+
+/** The visible toast stack (a hidden announcer repeats each toast's words for screen readers). */
+const toasts = () => within(screen.getByRole('region', { name: 'Notifications' }));
+const findToast = async (text: string | RegExp) =>
+  within(await screen.findByRole('region', { name: 'Notifications' })).findByText(text);
 
 vi.mock('../lib/bootstrap-status', () => ({
   fetchBootstrapStatus: vi.fn(async () => 'completed'),
@@ -124,8 +129,8 @@ describe('back from Slack for an agent\'s own bot (TASK-1167)', () => {
     render(<App />);
 
     const message = 'The Slack bot is live. Invite it to a channel with /invite.';
-    expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(await findToast(message)).toBeInTheDocument();
+    expect(toasts().getAllByText(message)).toHaveLength(1);
     expect(movedTo()).toBe('/workspace/agents/a1/settings/slack');
   });
 
@@ -136,8 +141,8 @@ describe('back from Slack for an agent\'s own bot (TASK-1167)', () => {
     vi.mocked(getSession).mockResolvedValue(ALICE);
     arriveAt(`?slack-bot=${outcome}&agentId=a1`);
     render(<App />);
-    expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(await findToast(message)).toBeInTheDocument();
+    expect(toasts().getAllByText(message)).toHaveLength(1);
     expect(movedTo()).toBe('/workspace/agents/a1/settings/slack');
   });
 
@@ -145,7 +150,7 @@ describe('back from Slack for an agent\'s own bot (TASK-1167)', () => {
     vi.mocked(getSession).mockResolvedValue(ALICE);
     arriveAt('?slack-bot=connected&agentId=..');
     render(<App />);
-    expect(await screen.findByText('The Slack bot is live. Invite it to a channel with /invite.')).toBeInTheDocument();
+    expect(await findToast('The Slack bot is live. Invite it to a channel with /invite.')).toBeInTheDocument();
     expect(movedTo()).toBe('/');
   });
 
@@ -180,8 +185,8 @@ describe("back from Slack after approving a team's bot request (TASK-1169)", () 
     expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
     expect(await screen.findByText('Connected to Canopy Works')).toBeInTheDocument();
     const message = 'The Slack bot is live. Its team can add it to a channel with /invite.';
-    expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(await findToast(message)).toBeInTheDocument();
+    expect(toasts().getAllByText(message)).toHaveLength(1);
     expect(movedTo()).toBe('/');
   });
 
@@ -207,8 +212,8 @@ describe("back from Slack after approving a team's bot request (TASK-1169)", () 
     arriveAt(`?slack-bot=${outcome}&from=admin`);
     render(<App />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Slack' })).toBeInTheDocument();
-    expect(await screen.findByText(message)).toBeInTheDocument();
-    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(await findToast(message)).toBeInTheDocument();
+    expect(toasts().getAllByText(message)).toHaveLength(1);
   });
 
   it('a non-admin with from=admin gets nothing, and the address is still cleaned', async () => {
@@ -227,7 +232,7 @@ describe("back from Slack after approving a team's bot request (TASK-1169)", () 
     vi.mocked(getSession).mockResolvedValue(ALICE_ADMIN);
     arriveAt('?slack-bot=connected&agentId=a1');
     render(<App />);
-    expect(await screen.findByText('The Slack bot is live. Invite it to a channel with /invite.')).toBeInTheDocument();
+    expect(await findToast('The Slack bot is live. Invite it to a channel with /invite.')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 1, name: 'Slack' })).toBeNull();
     expect(movedTo()).toBe('/workspace/agents/a1/settings/slack');
   });
