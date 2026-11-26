@@ -1238,13 +1238,13 @@
   },
   "packages/channel-web/src/components/workspace/RepeatTaskBody.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 12
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 9
+      "count": 5
     }
   },
   "packages/channel-web/src/components/workspace/SidebarChats.tsx": {
@@ -1396,13 +1396,13 @@
   },
   "packages/channel-web/src/components/workspace/TaskUpdates.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 6
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 17
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 13
+      "count": 3
     }
   },
   "packages/channel-web/src/components/workspace/TasksPage.tsx": {
@@ -1495,13 +1495,13 @@
   },
   "packages/channel-web/src/components/workspace/task-bits.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 8
+      "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 9
+      "count": 8
     }
   },
   "packages/channel-web/src/components/workspace/visual/VisualFrame.tsx": {

@@ -14,22 +14,20 @@
  * Each run is one row: its mark (done, off-track or no update for completed,
  * failed or finished quietly, with the word hidden beside it), what it said
  * (or its plain status, or a failure's reason through `runFailureText`), its
- * time (`RowTime`) and a See what it did link. The newest four show; the rest wait behind
+ * time (a `Timeline` entry's time) and a See what it did link. The newest four show; the rest wait behind
  * "N earlier". An agent-written update and a recorded reason are only ever
  * React text children.
  */
 import { useEffect, useId, useState } from 'react';
-import { ArrowUpRight, History } from 'lucide-react';
-import { Card, StatusMark } from '@project-ax/ui';
+import { History } from 'lucide-react';
+import { Card, StatusMark, Timeline, TimelineEntry } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { momentWords } from '@/lib/moment-words';
 import { routeLinkProps } from '@/lib/route-link';
 import { runFailureText } from '@/lib/task-updates';
-import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
-import { IconLink, RowTime } from './task-bits';
 
 /** How many runs show before "N earlier". */
 const SHOWN = 4;
@@ -96,7 +94,7 @@ export function RepeatTaskBody({
         {runs.length === 0 ? (
           <p className="text-[13px] text-muted-foreground">No runs yet.</p>
         ) : (
-          <ul className="flex flex-col">{keyed(head).map(row)}</ul>
+          <Timeline label="Runs">{keyed(head).map(row)}</Timeline>
         )}
         {rest.length > 0 && (
           <>
@@ -113,7 +111,7 @@ export function RepeatTaskBody({
               {`${rest.length} earlier`}
             </Button>
             <div id={restId} hidden={!open}>
-              {open && <ul className="flex flex-col">{keyed(rest, head).map(row)}</ul>}
+              {open && <Timeline label="Earlier runs">{keyed(rest, head).map(row)}</Timeline>}
             </div>
           </>
         )}
@@ -162,36 +160,29 @@ function RunRow({
         ? update.report.update
         : word;
   const stamp = momentWords(update.firedAt, now);
+  const link =
+    update.conversationId !== null
+      ? routeLinkProps({ kind: 'task-checkin', agentId, routineId, conversationId: update.conversationId }, onNavigate)
+      : null;
   return (
-    <li className="flex items-start gap-2.5 py-1.5">
-      <span className="flex h-6 items-center">
-        <StatusMark tone={STATE_TONE[RUN_MARK[update.status]]} />
-      </span>
-      {said !== word && <span className="sr-only">{`${word}:`}</span>}
-      {/* A failure's reason is read whole, never clamped; any other run's line is. */}
-      <p
-        className={cn(
-          'min-w-0 flex-1 break-words text-[14px] leading-6',
-          update.status === 'error' ? 'whitespace-pre-wrap' : 'line-clamp-2',
-        )}
-      >
-        {said}
-      </p>
-      <RowTime at={update.firedAt} now={now} />
-      {update.conversationId !== null ? (
-        <IconLink
-          icon={ArrowUpRight}
-          label="See what it did"
-          {...routeLinkProps(
-            { kind: 'task-checkin', agentId, routineId, conversationId: update.conversationId },
-            onNavigate,
-          )}
-        >
-          {stamp !== null && <span className="sr-only">, {stamp}</span>}
-        </IconLink>
-      ) : (
-        <span aria-hidden="true" className="size-7 shrink-0" />
-      )}
-    </li>
+    <TimelineEntry
+      mark={<StatusMark tone={STATE_TONE[RUN_MARK[update.status]]} />}
+      time={update.firedAt}
+      now={now}
+      // A failure's reason is read whole, never clamped; any other run's line is.
+      {...(update.status === 'error' ? { full: true } : {})}
+      {...(link
+        ? {
+            action: {
+              label: stamp !== null ? `See what it did, ${stamp}` : 'See what it did',
+              href: link.href,
+              onNavigate: link.onClick,
+            },
+          }
+        : {})}
+    >
+      {said !== word && <span className="sr-only">{`${word}: `}</span>}
+      {said}
+    </TimelineEntry>
   );
 }

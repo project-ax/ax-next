@@ -3384,7 +3384,7 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     await renderReady();
     const line = within(screen.getByRole('region', { name: 'Run history' })).getByText(reason);
     expect(line.closest('[class*="line-clamp"]')).toBeNull();
-    expect(line).toHaveClass('whitespace-pre-wrap', 'break-words');
+    expect(line).toHaveClass('ax-whitespace-pre-wrap', 'ax-break-words');
   });
 
   it('⋯ holds Edit task, Duplicate and Delete task…, and Delete asks first', async () => {

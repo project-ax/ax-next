@@ -167,3 +167,25 @@ test('components-list--openable-with-trailing-switch: an overlay above the row w
   );
   expect(hit).toBe('sticky-fixture');
 });
+
+// TimelineEntry at 390px: every entry, its time and its link end inside the box, and the long text is clamped (not wrapped
+// to full height) so a row stays a few lines tall.
+test('components-timeline--long-text stays inside its 390px box', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto('/iframe.html?id=components-timeline--long-text&viewMode=story');
+  const container = page.locator('#storybook-root > div').first();
+  await page.getByRole('list', { name: 'Long entries' }).waitFor();
+  const box = (await container.boundingBox())!;
+  expect(box.width).toBe(390);
+  const right = box.x + box.width + 0.5;
+  for (const el of await page.locator('#storybook-root li, #storybook-root li time, #storybook-root li a, #storybook-root li p').all()) {
+    const b = (await el.boundingBox())!;
+    expect(b.x + b.width, await el.evaluate((n) => n.outerHTML.slice(0, 80))).toBeLessThanOrEqual(right);
+  }
+  expect(await container.evaluate((n) => n.scrollWidth <= n.clientWidth)).toBe(true);
+  const link = (await page.getByRole('link', { name: 'See what it did, 5 min ago' }).boundingBox())!;
+  expect(link.width).toBeGreaterThanOrEqual(24);
+  // Clamped to two lines: the first entry's text box is no taller than two lines of body text plus a little.
+  const text = (await page.locator('#storybook-root li').first().locator('[data-part="text"]').boundingBox())!;
+  expect(text.height).toBeLessThan(80);
+});

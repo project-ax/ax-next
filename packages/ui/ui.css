@@ -289,6 +289,9 @@
 .ax-whitespace-nowrap {
     white-space: nowrap
 }
+.ax-whitespace-pre-wrap {
+    white-space: pre-wrap
+}
 .ax-break-words {
     overflow-wrap: break-word
 }
@@ -428,6 +431,9 @@
 }
 .ax-pr-sm {
     padding-right: var(--ax-space-sm)
+}
+.ax-pt-xs {
+    padding-top: var(--ax-space-xs)
 }
 .ax-text-left {
     text-align: left
@@ -603,6 +609,10 @@
 .hover\:ax-bg-status-danger-hover:hover {
     --tw-bg-opacity: 1;
     background-color: hsl(var(--ax-status-danger-hover) / var(--tw-bg-opacity, 1))
+}
+.hover\:ax-text-fg:hover {
+    --tw-text-opacity: 1;
+    color: hsl(var(--ax-fg-default) / var(--tw-text-opacity, 1))
 }
 .hover\:ax-underline:hover {
     text-decoration-line: underline

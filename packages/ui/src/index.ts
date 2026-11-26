@@ -21,3 +21,4 @@ export { KeyValueList, type KeyValueListProps } from './components/KeyValueList.
 export { Card, type CardProps } from './components/Card.js';
 export { InsetBlock, type InsetBlockProps } from './components/InsetBlock.js';
 export { List, ListRow, type ListProps, type ListRowProps, type ListDensity } from './components/List.js';
+export { Timeline, TimelineEntry, type TimelineProps, type TimelineEntryProps, type TimelineEntryAction } from './components/Timeline.js';

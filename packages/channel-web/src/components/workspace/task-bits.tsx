@@ -24,7 +24,6 @@
  */
 import type { ComponentProps, ReactNode, Ref } from 'react';
 import { ListChecks, RefreshCw, Repeat2, type LucideIcon } from 'lucide-react';
-import { Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
@@ -183,14 +182,5 @@ export function IconLink({
         </a>
       </Button>
     </Tip>
-  );
-}
-
-/** A compact row's time: the shared `Timestamp` ("5 min ago", "Yesterday 7:13 PM", "Oct 23"), laid out as the row's muted trailing column. */
-export function RowTime({ at, now }: { at: string; now: Date }) {
-  return (
-    <span className="shrink-0 whitespace-nowrap pt-0.5 text-[12px] leading-5 tabular-nums text-muted-foreground">
-      <Timestamp value={at} now={now} />
-    </span>
   );
 }

@@ -5,7 +5,7 @@
  *
  * ONE LINE EACH (the minimal redesign, 2026-10-29). An entry is its mark (with
  * its word, hidden), what it said, a relative time ("5 min ago", "Yesterday 7:13 PM",
- * "Oct 23"; the whole date hidden beside it, `RowTime`) and an icon link. On the task
+ * "Oct 23"; the whole date hidden beside it, the `Timeline` entry's time) and an icon link. On the task
  * page the list leaves out the entry the latest card already shows (`latest`),
  * shows the newest few (`shown`) and puts the rest behind one "N earlier"
  * button; a Done task's whole list starts behind "N check-ins" (`collapsed`).
@@ -47,8 +47,8 @@
  * (`sharedConversationIds`).
  */
 import { useId, useState } from 'react';
-import { ArrowUpRight, ChevronRight, History } from 'lucide-react';
-import { StatusMark, StatusBadge } from '@project-ax/ui';
+import { ChevronRight, History } from 'lucide-react';
+import { StatusMark, StatusBadge, Text, Timeline, TimelineEntry } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -72,7 +72,6 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TaskDetailReport, TaskReply, TaskUpdate } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
-import { IconLink, RowTime } from './task-bits';
 
 /** Where an entry's "See what it did" goes: the task it is listed under. */
 interface EntryLinks {
@@ -160,7 +159,7 @@ export function TaskUpdates({
 
 function Entries({ items, now, links }: { items: TimelineItem[]; now: Date; links: EntryLinks }) {
   return (
-    <ul className="flex flex-col">
+    <Timeline label="Updates">
       {items.map((item, i) => {
         if (item.kind === 'update') {
           return (
@@ -176,7 +175,7 @@ function Entries({ items, now, links }: { items: TimelineItem[]; now: Date; link
           </li>
         );
       })}
-    </ul>
+    </Timeline>
   );
 }
 
@@ -199,11 +198,11 @@ function Fold({ updates, now, links }: { updates: TaskUpdate[]; now: Date; links
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <ul className="flex flex-col">
+        <Timeline label="Earlier check-ins">
           {updates.map((update, i) => (
             <UpdateEntry key={`${update.firedAt}:${i}`} update={update} now={now} links={links} />
           ))}
-        </ul>
+        </Timeline>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -212,17 +211,17 @@ function Fold({ updates, now, links }: { updates: TaskUpdate[]; now: Date; links
 /** What the person sent: who said it, the words as plain text, and their time. No mark, no link. */
 function ReplyEntry({ reply, now }: { reply: TaskReply; now: Date }) {
   return (
-    <li className="flex items-start gap-2.5 py-1.5">
-      <StatusBadge tone="neutral" size="sm">
-        {reply.byYou ? 'You' : 'Someone else'}
-      </StatusBadge>
-      <p className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-words text-[14px] leading-6">
-        {reply.text ?? 'We can’t show this reply.'}
-      </p>
-      <RowTime at={reply.sentAt} now={now} />
-      {/* Holds the link column, so every row's time lines up. */}
-      <span aria-hidden="true" className="size-7 shrink-0" />
-    </li>
+    <TimelineEntry
+      mark={
+        <StatusBadge tone="neutral" size="sm">
+          {reply.byYou ? 'You' : 'Someone else'}
+        </StatusBadge>
+      }
+      time={reply.sentAt}
+      now={now}
+    >
+      {reply.text ?? 'We can’t show this reply.'}
+    </TimelineEntry>
   );
 }
 
@@ -242,48 +241,34 @@ function UpdateEntry({
   // `readingText` (TASK-956).
   const reading = update.report?.reading ?? null;
   const linked = update.conversationId !== null && !links.shared.has(update.conversationId);
+  const route: WorkspaceRoute | null = linked
+    ? {
+        kind: 'task-checkin',
+        agentId: links.agentId,
+        routineId: links.routineId,
+        conversationId: update.conversationId as string,
+      }
+    : null;
+  const link = route ? routeLinkProps(route, links.onNavigate) : null;
   return (
-    <li className="flex items-start gap-2.5 py-1.5">
-      <span className="flex h-6 items-center">
-        <StatusMark tone={STATE_TONE[mark]} />
-      </span>
-      <span className="sr-only">{TASK_GROUP_LABELS[mark]}</span>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <p className="line-clamp-2 break-words text-[14px] leading-6">
-          {updateText(update)}
-          {reading !== null && (
-            <span className="text-muted-foreground">
-              {` · ${readingText(reading)}`}
-            </span>
-          )}
-        </p>
-        {/* Its own line, never clamped: a reason is the one thing here that must be read whole. */}
-        {update.status === 'error' && (
-          <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-muted-foreground">
-            {runFailureText(update.error)}
-          </p>
-        )}
-      </div>
-      <RowTime at={update.firedAt} now={now} />
-      {linked ? (
-        <IconLink
-          icon={ArrowUpRight}
-          label="See what it did"
-          {...routeLinkProps(
-            {
-              kind: 'task-checkin',
-              agentId: links.agentId,
-              routineId: links.routineId,
-              conversationId: update.conversationId as string,
+    <TimelineEntry
+      mark={<StatusMark tone={STATE_TONE[mark]} label={TASK_GROUP_LABELS[mark]} />}
+      time={update.firedAt}
+      now={now}
+      // Its own line, never clamped: a reason is the one thing here that must be read whole.
+      {...(update.status === 'error' ? { detail: runFailureText(update.error) } : {})}
+      {...(link
+        ? {
+            action: {
+              label: stamp !== null ? `See what it did, ${stamp}` : 'See what it did',
+              href: link.href,
+              onNavigate: link.onClick,
             },
-            links.onNavigate,
-          )}
-        >
-          {stamp !== null && <span className="sr-only">, {stamp}</span>}
-        </IconLink>
-      ) : (
-        <span aria-hidden="true" className="size-7 shrink-0" />
-      )}
-    </li>
+          }
+        : {})}
+    >
+      {updateText(update)}
+      {reading !== null && <Text role="meta" inline>{` · ${readingText(reading)}`}</Text>}
+    </TimelineEntry>
   );
 }
