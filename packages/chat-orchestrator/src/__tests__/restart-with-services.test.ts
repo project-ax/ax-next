@@ -1215,6 +1215,28 @@ describe('restart_with_services (dev services on demand)', () => {
       await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
       await p1;
     });
+
+    // The bus hands each hold subscriber the answer before it. Another owner
+    // that answered first keeps its ids: the orchestrator appends to the list
+    // rather than replacing it, so both owners' requests end with the turn.
+    it('(guard) the answer adds to the ids an earlier owner named', async () => {
+      const t = await setup();
+      t.h.bus.subscribe<ChatTurnEndHoldPayload>(
+        CHAT_TURN_END_HOLD_HOOK,
+        'test/earlier-owner',
+        async (_c, p) => (p.reqId === 'req-1' ? { ...p, foldedReqIds: [...(p.foldedReqIds ?? []), 'other-1'] } : undefined),
+        { priority: -1 },
+      );
+      const p1 = t.invoke('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 1, 'turn 1');
+      expect((await t.tool(RESTART_WITH_SERVICES, 's-1', 'conv-1', { set: 'e2e' })).ok).toBe(true);
+      await t.endSegment('s-1', 'conv-1', 'req-1', ['cont-1']);
+      await waitFor(() => t.notes().length === 1, 'the note');
+      const fresh = t.opens[1]!.sessionId;
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(await p1).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnEnds).toEqual([{ reqId: 'req-1', sessionId: fresh, foldedReqIds: ['other-1', 'cont-1'] }]);
+    });
   });
 
   // TASK-1225 — the old session's terminate is what cuts the old runner off:

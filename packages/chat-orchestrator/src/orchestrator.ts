@@ -3576,7 +3576,9 @@ export function createOrchestrator(
   // tool's, may find them gone; in production the assistant turn-end may
   // also arrive before the invoke's finally runs and carry them too. Either
   // is harmless: each caller ends a request on the first turn-end naming it,
-  // whatever its role, and ending one twice is idempotent.
+  // whatever its role, and ending one twice is idempotent. The ids are added
+  // to any an earlier hold owner already named (the bus passes its answer
+  // on), never in place of them, so more than one owner composes.
   function onTurnEndHold(
     _ctx: AgentContext,
     payload: ChatTurnEndHoldPayload,
@@ -3586,7 +3588,8 @@ export function createOrchestrator(
     if (serviceRestarts.isHeld(payload.sessionId, payload.reqId)) return { ...payload, held: true };
     const folds = continuationFoldsBySession.get(payload.sessionId);
     if (folds === undefined || folds.reqId !== payload.reqId) return undefined;
-    return { ...payload, foldedReqIds: [...folds.foldedReqIds] };
+    const earlier = Array.isArray(payload.foldedReqIds) ? payload.foldedReqIds : [];
+    return { ...payload, foldedReqIds: [...earlier, ...folds.foldedReqIds] };
   }
 
   // `chat:turn-segment-end` (R27): a held segment's turn-end. The CLOSING one

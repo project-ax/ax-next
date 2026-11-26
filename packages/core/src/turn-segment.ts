@@ -62,7 +62,11 @@ export interface ChatTurnEndHoldPayload {
    * requests this turn-end also ends, because they were folded into an
    * earlier, held segment of the same request. The emitter appends them to
    * the broadcast's `foldedReqIds` (after the runner's own, none repeated,
-   * the whole list capped at the wire's 64 ids of 1-256 characters). Ignored when `held` is true.
+   * the whole list capped at the wire's 64 ids of 1-256 characters). Ignored
+   * when `held` is true. A hold owner spreads the payload it received and
+   * appends its ids to this list rather than rebuilding it: the bus hands
+   * each subscriber the answer before it, so that is how more than one owner
+   * composes.
    */
   foldedReqIds?: string[];
 }
