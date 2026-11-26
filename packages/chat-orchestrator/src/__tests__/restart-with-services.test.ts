@@ -1055,12 +1055,18 @@ describe('restart_with_services (dev services on demand)', () => {
       expect(t.turnErrors).toEqual([]);
     });
 
-    /** The rebind (R19) fails for a reason other than a newer binding, once: a DB blip. */
-    const failRebindOnce = () => {
+    /**
+     * The rebind (R19) fails for a reason other than a newer binding, once: a
+     * DB blip. `landed`: its write lands all the same, and only the call fails
+     * (the bus timed it out and the UPDATE committed later, or the connection
+     * reset after the commit).
+     */
+    const failRebindOnce = (opts: { landed?: boolean } = {}) => {
       let acted = false;
-      return (i: BindInput): void => {
+      return (i: BindInput, r: Row): void => {
         if (acted || !isRestartRebind(i)) return;
         acted = true;
+        if (opts.landed === true) Object.assign(r, { activeSessionId: i.sessionId, activeReqId: i.reqId });
         throw new Error('connection reset');
       };
     };
@@ -1071,12 +1077,12 @@ describe('restart_with_services (dev services on demand)', () => {
         return e.level === 'warn' && e.msg === 'conversation_bind_failed_restart' && e.movedReqId === undefined;
       });
 
-    // A failed R19 leaves the row on the old session, and the old session's
-    // terminate then clears it. N2 binds the way R19 would have (over the old
-    // session, or an unbound row), not strictly over the new session R19
-    // never wrote: left unbound, the moved request runs off the row, so the
-    // idle reaper (it reads only the row) can reap it mid-turn, and Stop and a
-    // stream reconnect can't find it.
+    // A failed R19 that never wrote leaves the row on the old session, and the
+    // old session's terminate then clears it. N2 binds the way R19 would have
+    // (over the old session, or an unbound row), not strictly over the new
+    // session R19 never wrote: left unbound, the moved request runs off the
+    // row, so the idle reaper (it reads only the row) can reap it mid-turn,
+    // and Stop and a stream reconnect can't find it.
     it('the moved-request bind after a failed rebind binds as the rebind would have', async () => {
       const t = await setup({ onBind: failRebindOnce() });
       const { p1, p2, out1, out2 } = await restartWithQueued(t);
@@ -1093,6 +1099,44 @@ describe('restart_with_services (dev services on demand)', () => {
       // The restarting request ends; the moved one still owns the row, so Stop reaches it.
       await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
       await p1;
+      const stop = await t.h.bus.call<unknown, { interrupted: boolean }>(
+        'agent:interrupt', makeAgentContext({ sessionId: 'x', agentId: AGENT.id, userId: AGENT.ownerId }),
+        { conversationId: 'conv-1', userId: AGENT.ownerId },
+      );
+      expect(stop.interrupted).toBe(true);
+      expect(t.queued.at(-1)).toEqual({ sessionId: fresh, entry: { type: 'interrupt' } });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await p2;
+      await flush();
+      expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
+      expect(t.turnErrors).toEqual([]);
+    });
+
+    // A failed R19 may still have written: the bus can time the call out
+    // while its UPDATE commits later, and a connection can reset after the
+    // commit. Then the row names the new session with the restarting request,
+    // R19's own write, not a newer binding, and N2 must take it. Left on
+    // req-1, the row loses its request at req-1's turn end while the moved
+    // req-2 still runs there, so Stop misses req-2 and the idle reaper can
+    // reap it mid-turn.
+    it('the moved-request bind after a failed rebind whose write landed still binds the moved request', async () => {
+      const t = await setup({ onBind: failRebindOnce({ landed: true }) });
+      const { p1, p2, out1, out2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+      await flush();
+
+      expect(rebindFailureWarned(t)).toBe(true);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      expect(keptNewer(t, 'restart-moved')).toBe(false);
+
+      // req-1's turn end clears req-1 only: the moved req-2 keeps the row, so Stop reaches it.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await p1;
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
       const stop = await t.h.bus.call<unknown, { interrupted: boolean }>(
         'agent:interrupt', makeAgentContext({ sessionId: 'x', agentId: AGENT.id, userId: AGENT.ownerId }),
         { conversationId: 'conv-1', userId: AGENT.ownerId },
