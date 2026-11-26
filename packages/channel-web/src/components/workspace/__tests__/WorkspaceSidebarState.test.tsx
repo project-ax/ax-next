@@ -10,16 +10,14 @@
  * jsdom has no CSS and no layout, so nothing here asserts what a dot LOOKS
  * like. The first block asserts the accessibility tree, which is real: each
  * row's accessible name carries the state. The second pins that the non-colour
- * channel exists at all — every state group gets its own geometry classes, once
- * the colour (`bg-*`) classes are set aside — which is a structural claim about
- * the markup, not a visual one.
+ * channel exists at all — every state gets its own `data-shape` — which is a
+ * structural claim about the markup, not a visual one.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { UserProvider } from '@/lib/user-context';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { WorkspaceSidebarNav } from '../WorkspaceSidebar';
-import { StateDotSlot } from '../bits';
 
 function agent(id: string, name: string, state: WorkspaceAgent['state']): WorkspaceAgent {
   return { id, name, state, now: null } as unknown as WorkspaceAgent;
@@ -101,32 +99,28 @@ describe('WorkspaceSidebar switcher — agent state is not colour-only (TASK-485
   it('gives each state its own shape, not just its own colour', () => {
     renderRoster();
     openSwitcher();
-    const geometry = (who: string) => {
+    const shape = (who: string) => {
       const row = screen.getByRole('menuitem', { name: new RegExp(`^${who}\\b`) });
-      const dot = row.querySelector('span[aria-hidden="true"]');
-      expect(dot, `${who} row has no state mark`).not.toBeNull();
-      return dot!.className
-        .split(/\s+/)
-        .filter((c) => c && !c.startsWith('bg-'))
-        .sort()
-        .join(' ');
+      const mark = row.querySelector('svg[data-shape]');
+      expect(mark, `${who} row has no state mark`).not.toBeNull();
+      return mark!.getAttribute('data-shape');
     };
-    const shapes = ['Ada', 'Bo', 'Cy', 'Di'].map(geometry);
+    const shapes = ['Ada', 'Bo', 'Cy', 'Di'].map(shape);
+    expect(shapes).toEqual(['circle', 'diamond', 'ring', 'square']);
     expect(new Set(shapes).size).toBe(4);
   });
 
-  it('puts every dot in the shared StateDotSlot (TASK-546)', () => {
-    // The slot's width is pinned against every shape in StateDotSlot.test;
-    // that pin only covers the roster while the roster uses THIS slot.
-    const shared = render(<StateDotSlot>x</StateDotSlot>);
-    const slotClass = (shared.container.firstElementChild as HTMLElement).className;
-    shared.unmount();
+  it('draws every roster mark at one fixed size (TASK-546)', () => {
+    // A fixed-size SVG replaces the old per-state slot: the agent names start
+    // at one offset whatever the state.
     renderRoster();
     openSwitcher();
     for (const who of ['Ada', 'Bo', 'Cy', 'Di']) {
       const row = screen.getByRole('menuitem', { name: new RegExp(`^${who}\\b`) });
-      const dot = row.querySelector('span[aria-hidden="true"]')!;
-      expect(dot.parentElement!.className, who).toBe(slotClass);
+      const mark = row.querySelector('svg[data-shape]')!;
+      expect(mark.getAttribute('class')!.split(/\s+/), who).toEqual(
+        expect.arrayContaining(['ax-h-md', 'ax-w-md', 'ax-shrink-0']),
+      );
     }
   });
 

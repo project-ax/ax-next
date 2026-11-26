@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Pencil, Plus } from 'lucide-react';
-import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -19,7 +19,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
 import {
   listDefaultRoutines,
   deleteDefaultRoutine,
@@ -166,16 +165,17 @@ export function DefaultRoutinesSection() {
                   <TableCell className="font-mono text-xs">
                     {d.name}
                     {!d.enabled && (
-                      <Badge variant="outline" className="ml-2 text-[10px]">
-                        disabled
-                      </Badge>
+                      <>
+                        {' '}
+                        <StatusBadge tone="neutral" dot>disabled</StatusBadge>
+                      </>
                     )}
                   </TableCell>
                   <TableCell className="text-sm">{d.description}</TableCell>
                   <TableCell>
-                    <Badge variant="secondary" className="text-xs font-mono">
+                    <StatusBadge tone="neutral">
                       {triggerLabel(d.trigger)}
-                    </Badge>
+                    </StatusBadge>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {new Date(d.updatedAt).toLocaleString()}

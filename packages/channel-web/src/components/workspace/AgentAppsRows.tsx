@@ -5,9 +5,8 @@
  */
 import { useState } from 'react';
 import { Plus } from 'lucide-react';
-import { Button as AxButton, ConfirmAction } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, StatusBadge } from '@project-ax/ui';
 import type { AppGrant, AppLink, ViewerApproval } from '@ax/apps-bridge-contract';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { APP_MODE_COPY } from './AppGrantEditor';
 
@@ -80,9 +79,9 @@ export function LinkRow({
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-[13px] font-medium">{grant.connectorName}</span>
-                    <Badge variant="secondary" size="compact">
+                    <StatusBadge tone="neutral" size="sm">
                       {APP_MODE_COPY[grant.mode].badge}
-                    </Badge>
+                    </StatusBadge>
                   </div>
                   <span className="break-all font-mono text-[12px] text-muted-foreground">
                     {grant.tools.map((t) => t.name).join(', ')}

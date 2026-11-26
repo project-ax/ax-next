@@ -26,8 +26,7 @@ import {
 } from '@/lib/connector-tool-permissions';
 import type { ToolPermissionsState } from '@/lib/use-tool-permissions';
 import { cn } from '@/lib/utils';
-import { AsyncState, Notice } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { AsyncState, Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { FieldDescription, FieldSet, FieldLegend } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -123,13 +122,7 @@ function ToolRow({
           {title}
         </span>
         {suggested && (
-          <Badge
-            variant="outline"
-            data-testid="tool-permission-suggested"
-            className="shrink-0 border-border px-2 font-normal text-muted-foreground"
-          >
-            Suggested
-          </Badge>
+          <StatusBadge tone="neutral">Suggested</StatusBadge>
         )}
       </div>
       {tool.description.trim() && (

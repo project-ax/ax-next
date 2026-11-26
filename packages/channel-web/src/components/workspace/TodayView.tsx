@@ -29,7 +29,7 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      failure already stops the empty sentence.
  */
 import { CheckCircle2 } from 'lucide-react';
-import { Notice, Stack } from '@project-ax/ui';
+import { Notice, Stack, StatusMark } from '@project-ax/ui';
 import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
@@ -56,7 +56,7 @@ import {
   DECISION_SESSION_EXPIRED,
   GRANT_READ_FAILED,
 } from './decision-copy';
-import { Elapsed, StateDot } from './bits';
+import { Elapsed } from './bits';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
 
@@ -625,7 +625,7 @@ export function TodayView({
                 onClick={() => onOpenAgent(a.id)}
                 className="flex w-full items-center gap-3 border-b border-rule-soft px-5 py-3.5 text-left last:border-b-0"
               >
-                <StateDot state="working" />
+                <StatusMark tone="info" />
                 <span className="shrink-0 text-[13px] font-medium">{a.name}</span>
                 {/*
                   `now` is null until something real produces the activity line

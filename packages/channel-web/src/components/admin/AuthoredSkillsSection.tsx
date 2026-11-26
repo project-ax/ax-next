@@ -18,7 +18,6 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -36,7 +35,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthoredSkills,
@@ -311,9 +310,9 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
                       <span className="text-sm font-mono truncate">{skill.id}</span>
                       <span className="text-xs text-muted-foreground">v{skill.version}</span>
                       {skill.hasForbiddenCapabilities && (
-                        <Badge variant="destructive">
+                        <StatusBadge tone="danger" dot>
                           declares capabilities — remove from SKILL.md before promoting
-                        </Badge>
+                        </StatusBadge>
                       )}
                     </div>
                     {skill.description && (

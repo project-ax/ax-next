@@ -19,14 +19,12 @@
  * "No sign-in".
  *
  * shadcn primitives and semantic tokens only (invariant 6). The chips are
- * `badgeVariants` on a `span` rather than `Badge`, because `Badge` renders a
- * `div` and a row's value sits inside the row's `button` (the `UsageTab`
- * precedent).
+ * `StatusBadge`s, which render a `span`, so they are valid inside the row's
+ * `button`.
  */
 import type { ReactNode } from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { Notice } from '@project-ax/ui';
-import { badgeVariants } from '@/components/ui/badge';
+import { Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
 import { monthDayYear } from '@/lib/workspace-time';
@@ -122,13 +120,9 @@ export function DirectoryListingRow({
       value={
         hasChips ? (
           <span className="flex items-center gap-1.5">
-            {added && <span className={badgeVariants({ variant: 'accent', size: 'compact' })}>Added</span>}
-            {entry.deprecated && (
-              <span className={badgeVariants({ variant: 'warning', size: 'compact' })}>Deprecated</span>
-            )}
-            {authChip !== null && (
-              <span className={badgeVariants({ variant: 'secondary', size: 'compact' })}>{authChip}</span>
-            )}
+            {added && <StatusBadge tone="info" size="sm">Added</StatusBadge>}
+            {entry.deprecated && <StatusBadge tone="warning" size="sm">Deprecated</StatusBadge>}
+            {authChip !== null && <StatusBadge tone="neutral" size="sm">{authChip}</StatusBadge>}
           </span>
         ) : undefined
       }

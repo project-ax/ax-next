@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { AsyncState, EmptyState } from '@project-ax/ui';
+import { AsyncState, EmptyState, StatusBadge } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
@@ -191,7 +190,7 @@ export function RememberedSitesPanel() {
               </span>
               {date && <span className="text-xs text-muted-foreground">{date}</span>}
               {site.scope === 'global' ? (
-                <Badge variant="secondary">Set by your admin</Badge>
+                <StatusBadge tone="neutral">Set by your admin</StatusBadge>
               ) : (
                 <Button
                   variant="ghost"

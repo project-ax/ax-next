@@ -26,8 +26,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
-import { Notice } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   attachConnectionSkill,
@@ -99,9 +98,9 @@ export function SkillInstallConsentDialog({
                     these services" — so the label promised a service name and
                     the badge delivered a slug. */}
                 {skill.connectors.map((c) => (
-                  <Badge key={c} variant="secondary">
+                  <StatusBadge key={c} tone="neutral">
                     {humanizeId(c)}
-                  </Badge>
+                  </StatusBadge>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">

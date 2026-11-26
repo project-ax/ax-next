@@ -44,12 +44,10 @@
  * itself.
  */
 import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
-import { Notice } from '@project-ax/ui';
+import { Notice, StatusBadge } from '@project-ax/ui';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
-import { StateDot } from './bits';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -242,7 +240,7 @@ export function ApprovalCard({
         data-status={d.status}
       >
         <CardContent className="p-3.5">
-          <Badge variant="warning" className="mb-2.5 gap-1.5 text-[12px] font-medium"><StateDot state="waiting" />Waiting on you</Badge>
+          <StatusBadge tone="warning" dot>Waiting on you</StatusBadge>
           {/*
             THE QUESTION, and therefore a focus target (TASK-427). Undo re-opens
             this card, which unmounts the receipt the person was standing on — so

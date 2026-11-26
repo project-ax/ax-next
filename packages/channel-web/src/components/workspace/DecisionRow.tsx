@@ -33,7 +33,7 @@
  */
 import type { ReactNode } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
-import { Notice, Text } from '@project-ax/ui';
+import { Notice, Text, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   RESOLUTION_FOCUS_RING,
@@ -42,7 +42,7 @@ import {
 import { routeLinkProps } from '@/lib/route-link';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { StateDot, StateDotSlot, stateWord } from './bits';
+import { STATE_TONE, stateWord } from './bits';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
 import { DecisionRequestBlock } from './DecisionRequestBlock';
 import { DecisionTaskBlock } from './DecisionTaskBlock';
@@ -206,9 +206,7 @@ export function DecisionRow({
             data-testid={`decision-outcome-${d.id}`}
             className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
           >
-            <StateDotSlot>
-              <StateDot state={TONE_DOT[outcome.tone]} />
-            </StateDotSlot>
+            <StatusMark tone={STATE_TONE[TONE_DOT[outcome.tone]]} />
             <span
               className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
               title={outcome.line}
@@ -278,9 +276,7 @@ export function DecisionRow({
           onClick={onToggle}
           className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
         >
-          <StateDotSlot>
-            <StateDot state={stale ? 'stopped' : 'held'} />
-          </StateDotSlot>
+          <StatusMark tone={STATE_TONE[stale ? 'stopped' : 'held']} />
           <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
           {/*
             On a held question the dot is the only thing that says the state —

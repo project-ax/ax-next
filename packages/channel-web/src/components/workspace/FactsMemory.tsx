@@ -1,6 +1,5 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, Notice, Text } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { AsyncState, EmptyState, Notice, Text, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -19,6 +18,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { MoreHorizontal, Search } from 'lucide-react';
 import { MemoryFixesContext } from '@/lib/use-conversation-memory';
 import { Switch } from '@/components/ui/switch';
+import { IconTooltip } from './IconTooltip';
 import {
   Table,
   TableBody,
@@ -107,13 +107,17 @@ function kindLabel(row: FactMemoryStatement): string {
 }
 
 function KindBadge({ row }: { row: FactMemoryStatement }) {
-  return <Badge variant={row.kind === 'opinion' ? 'accent' : 'secondary'} size="compact">{kindLabel(row)}</Badge>;
+  return <StatusBadge tone={row.kind === 'opinion' ? 'info' : 'neutral'} size="sm">{kindLabel(row)}</StatusBadge>;
 }
 
 /** Marks a memory learned in a shared conversation; absent for private ones. */
 function SharedBadge({ row }: { row: FactMemoryStatement }) {
   if (row.audience !== 'shared') return null;
-  return <Badge variant="outline" size="compact" title={MEMORY_SHARED_BADGE_HINT}>{MEMORY_SHARED_BADGE}</Badge>;
+  return (
+    <IconTooltip label={MEMORY_SHARED_BADGE_HINT} side="top">
+      <StatusBadge tone="neutral" size="sm">{MEMORY_SHARED_BADGE}</StatusBadge>
+    </IconTooltip>
+  );
 }
 
 /** The kind badge, with the Shared badge beside it when the memory is shared. */
@@ -171,7 +175,7 @@ function ClosureNote({
     // effect (TASK-526, card item 8).
     return (
       <span className="text-sm text-muted-foreground">
-        <Badge variant="secondary">{MEMORY_CLOSURE_BADGE.overridden}</Badge>
+        <StatusBadge tone="neutral">{MEMORY_CLOSURE_BADGE.overridden}</StatusBadge>
         {MEMORY_OVERRIDDEN_NOTE}
       </span>
     );
@@ -183,11 +187,11 @@ function ClosureNote({
       : undefined;
   return (
     <span className="text-sm text-muted-foreground">
-      <Badge variant="secondary">
+      <StatusBadge tone="neutral">
         {row.closure === 'forgotten' || row.closure === 'retracted'
           ? MEMORY_CLOSURE_BADGE[row.closure]
           : MEMORY_CLOSURE_BADGE.replaced}
-      </Badge>{' '}
+      </StatusBadge>{' '}
       {row.until.slice(0, 10)}
       {row.closure === 'replaced' &&
         (replacement !== undefined

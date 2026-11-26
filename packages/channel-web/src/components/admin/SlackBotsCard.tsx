@@ -42,9 +42,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, Notice, StatusBadge } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Table,
@@ -195,18 +194,18 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {bot.approver !== null ? bot.approver : <Badge variant="warning">A former member</Badge>}
+                      {bot.approver !== null ? bot.approver : <StatusBadge tone="warning" dot>A former member</StatusBadge>}
                     </TableCell>
                     <TableCell>{shortDate(bot.addedAt)}</TableCell>
                     <TableCell>
                       {bot.state === 'live' ? (
                         bot.approver === null ? (
-                          <Badge variant="warning">Needs rebuilding</Badge>
+                          <StatusBadge tone="warning" dot>Needs rebuilding</StatusBadge>
                         ) : (
-                          <Badge variant="secondary">Live</Badge>
+                          <StatusBadge tone="success" dot>Live</StatusBadge>
                         )
                       ) : (
-                        <Badge variant="warning">Not finished</Badge>
+                        <StatusBadge tone="warning" dot>Not finished</StatusBadge>
                       )}
                     </TableCell>
                     <TableCell>

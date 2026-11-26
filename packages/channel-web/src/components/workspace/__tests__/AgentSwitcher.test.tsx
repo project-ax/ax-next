@@ -72,7 +72,7 @@ describe('AgentSwitcher — picking an agent', () => {
   });
 
   it('flags another agent waiting on you — and only another one', () => {
-    const dot = () => trigger().querySelector('.bg-warning');
+    const dot = () => trigger().querySelector('[data-shape="diamond"]');
     const { unmount } = renderSwitcher({ agents: [agent('a1', 'Ada', 'waiting'), BO], selected: agent('a1', 'Ada', 'waiting') });
     expect(dot()).toBeNull();
     unmount();

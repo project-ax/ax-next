@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AsyncState, ConfirmAction, EmptyState } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, StatusBadge } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import { listAllAllowedSites, setSiteAgents } from '@/lib/connections';
 import { SiteAgentsDialog } from './SiteAgentsDialog';
@@ -168,15 +167,15 @@ export function AllowedSitesPanel() {
               <span className="flex-1 min-w-0 break-all text-sm text-foreground">{host}</span>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {isAllAgents(ids) ? (
-                  <Badge variant="secondary">All agents</Badge>
+                  <StatusBadge tone="neutral">All agents</StatusBadge>
                 ) : (
                   ids
                     .slice()
                     .sort()
                     .map((id) => (
-                      <Badge key={id} variant="secondary">
+                      <StatusBadge key={id} tone="neutral">
                         {agentName(id)}
-                      </Badge>
+                      </StatusBadge>
                     ))
                 )}
               </div>

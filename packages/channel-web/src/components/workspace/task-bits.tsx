@@ -24,14 +24,11 @@
  */
 import type { ComponentProps, ReactNode, Ref } from 'react';
 import { ListChecks, RefreshCw, Repeat2, type LucideIcon } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { cn } from '@/lib/utils';
 import { compactStamp, fullStamp } from '@/lib/workspace-time';
-import { StateDot } from './bits';
 
 type Kind = keyof typeof TASK_KIND_LABELS;
 
@@ -208,29 +205,5 @@ export function RowTime({ iso, now, className }: { iso: string; now: Date; class
       <span aria-hidden="true">{short}</span>
       <span className="sr-only">{full}</span>
     </time>
-  );
-}
-
-const PILL: Record<TaskGroup, string> = {
-  'needs-you': 'bg-warning-soft text-warning',
-  'off-track': 'bg-destructive-soft text-destructive',
-  'on-track': 'bg-primary-soft text-primary',
-  done: 'bg-primary-soft text-primary',
-  'no-recent-update': 'bg-canvas text-muted-foreground',
-  'no-update': 'bg-canvas text-muted-foreground',
-  paused: 'bg-canvas text-muted-foreground',
-};
-
-/** The task's state as a pill: its mark's shape and colour, and its word. Never colour alone. */
-export function TaskStatusPill({ group, label, className }: { group: TaskGroup; label?: string; className?: string }) {
-  return (
-    <Badge
-      variant="outline"
-      size="compact"
-      className={cn('gap-1.5 border-transparent px-2 py-1 text-[12px]', PILL[group], className)}
-    >
-      <StateDot state={group} />
-      {label ?? TASK_GROUP_LABELS[group]}
-    </Badge>
   );
 }

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Check, ChevronsUpDown, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -33,7 +32,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
-import { AsyncState, Grid, Notice } from '@project-ax/ui';
+import { AsyncState, Grid, Notice, StatusBadge } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -644,7 +643,7 @@ function FormFields({
         <Label className="text-xs font-medium text-muted-foreground">Connectors · optional</Label>
         <div className="flex flex-wrap items-center gap-1.5">
           {form.connectors.map((c) => (
-            <Badge key={c} variant="secondary" className="text-xs gap-1 pr-1">
+            <StatusBadge key={c} tone="neutral">
               {c}
               <button
                 type="button"
@@ -654,7 +653,7 @@ function FormFields({
               >
                 <X className="h-3 w-3" />
               </button>
-            </Badge>
+            </StatusBadge>
           ))}
           <Popover open={connectorPickerOpen} onOpenChange={setConnectorPickerOpen}>
             <PopoverTrigger asChild>
@@ -782,9 +781,9 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
                 <span className="text-xs text-muted-foreground">none</span>
               ) : (
                 parsed.value.connectors.map((c) => (
-                  <Badge key={c} variant="secondary" className="text-xs mr-1">
+                  <StatusBadge key={c} tone="neutral">
                     {c}
-                  </Badge>
+                  </StatusBadge>
                 ))
               )}
             </div>

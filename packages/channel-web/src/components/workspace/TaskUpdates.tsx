@@ -48,7 +48,7 @@
  */
 import { useId, useState } from 'react';
 import { ArrowUpRight, ChevronRight, History } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { StatusMark, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -71,7 +71,7 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { updateStamp } from '@/lib/workspace-time';
 import type { TaskDetailReport, TaskReply, TaskUpdate } from '@/lib/workspace-types';
-import { StateDot, StateDotSlot } from './bits';
+import { STATE_TONE } from './bits';
 import { IconLink, RowTime } from './task-bits';
 
 /** Where an entry's "See what it did" goes: the task it is listed under. */
@@ -213,13 +213,9 @@ function Fold({ updates, now, links }: { updates: TaskUpdate[]; now: Date; links
 function ReplyEntry({ reply, now }: { reply: TaskReply; now: Date }) {
   return (
     <li className="flex items-start gap-2.5 py-1.5">
-      <Badge
-        variant="accent"
-        size="compact"
-        className="mt-0.5 shrink-0 rounded-sm px-1.5 py-1 text-[12px] font-medium"
-      >
+      <StatusBadge tone="neutral" size="sm">
         {reply.byYou ? 'You' : 'Someone else'}
-      </Badge>
+      </StatusBadge>
       <p className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-words text-[14px] leading-6">
         {reply.text ?? 'We can’t show this reply.'}
       </p>
@@ -249,9 +245,7 @@ function UpdateEntry({
   return (
     <li className="flex items-start gap-2.5 py-1.5">
       <span className="flex h-6 items-center">
-        <StateDotSlot>
-          <StateDot state={mark} />
-        </StateDotSlot>
+        <StatusMark tone={STATE_TONE[mark]} />
       </span>
       <span className="sr-only">{TASK_GROUP_LABELS[mark]}</span>
       <div className="flex min-w-0 flex-1 flex-col">

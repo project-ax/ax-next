@@ -31,9 +31,12 @@
  * wasn't.
  */
 import { useState } from 'react';
-import type { Fire } from '../../lib/routines';
+import { StatusBadge, type StatusTone } from '@project-ax/ui';
+import type { Fire, FireStatus } from '../../lib/routines';
 import { RunWarning } from './RunWarning';
-import { StatusChip } from './StatusChip';
+
+/** One run's status, as that run's fire row recorded it. A silenced run reads as intentional, not broken. */
+const FIRE_TONE: Record<FireStatus, StatusTone> = { ok: 'success', silenced: 'neutral', error: 'danger' };
 
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);
@@ -79,7 +82,7 @@ export function FireRowsTable({ fires }: { fires: Fire[] }) {
             <span className="text-[11.5px] text-muted-foreground tabular-nums w-[6.5rem] shrink-0">
               {formatTimestamp(f.firedAt)}
             </span>
-            <StatusChip status={f.status} />
+            <StatusBadge tone={FIRE_TONE[f.status]} dot>{f.status}</StatusBadge>
             <span className="text-[11px] text-muted-foreground font-mono uppercase tracking-[0.04em]">
               {f.triggerSource}
             </span>

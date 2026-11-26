@@ -84,8 +84,10 @@ describe('MemorySurface', () => {
     render(<CompactSurfaceContext.Provider value={compact}>
       <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
     </CompactSurfaceContext.Provider>);
-    expect(await screen.findByText('Preference')).toHaveClass('bg-primary-soft', 'text-primary');
+    // The kind badge keeps its distinction: a preference is the info tone, a fact the plain one.
+    expect((await screen.findByText('Preference')).parentElement).toHaveClass('ax-bg-status-info-soft');
     expect(screen.getAllByText('Fact')).toHaveLength(3);
+    for (const fact of screen.getAllByText('Fact')) expect(fact.parentElement).toHaveClass('ax-bg-surface-raised');
     expect(screen.getByText('Saved by a person')).toBeInTheDocument();
     expect(screen.getByText('Agent note')).toBeInTheDocument();
     expect(screen.getByText('Older memory')).toBeInTheDocument();
@@ -103,9 +105,13 @@ describe('MemorySurface', () => {
     </CompactSurfaceContext.Provider>);
     const badge = await screen.findByText('Shared');
     expect(screen.getAllByText('Shared')).toHaveLength(1);
-    expect(badge).toHaveAttribute('title', 'Learned in a shared conversation. Anyone there could see it.');
+    // Hovering the badge shows the hint: who could see this memory.
+    const trigger = badge.parentElement!.parentElement!;
+    fireEvent.pointerMove(trigger);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Learned in a shared conversation. Anyone there could see it.');
     // Beside its kind: the same container as the shared row's Fact badge.
-    expect(badge.parentElement).toContainElement(within(badge.parentElement!).getByText('Fact'));
+    const badges = trigger.parentElement!;
+    expect(badges).toContainElement(within(badges).getByText('Fact'));
   });
 
   it.each([0, 1, 3])('shows the current-memory footer for %s memories', async (count) => {

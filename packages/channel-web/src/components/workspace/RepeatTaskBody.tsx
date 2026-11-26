@@ -20,6 +20,7 @@
  */
 import { useEffect, useId, useState } from 'react';
 import { ArrowUpRight, History } from 'lucide-react';
+import { StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { routeLinkProps } from '@/lib/route-link';
@@ -28,7 +29,7 @@ import { cn } from '@/lib/utils';
 import { updateStamp } from '@/lib/workspace-time';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
-import { StateDot, StateDotSlot } from './bits';
+import { STATE_TONE } from './bits';
 import { IconLink, RowTime } from './task-bits';
 
 /** How many runs show before "N earlier". */
@@ -165,9 +166,7 @@ function RunRow({
   return (
     <li className="flex items-start gap-2.5 py-1.5">
       <span className="flex h-6 items-center">
-        <StateDotSlot>
-          <StateDot state={RUN_MARK[update.status]} />
-        </StateDotSlot>
+        <StatusMark tone={STATE_TONE[RUN_MARK[update.status]]} />
       </span>
       {said !== word && <span className="sr-only">{`${word}:`}</span>}
       {/* A failure's reason is read whole, never clamped; any other run's line is. */}

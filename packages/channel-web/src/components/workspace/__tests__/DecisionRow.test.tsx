@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { DecisionRow } from '../DecisionRow';
-import { StateDotSlot } from '../bits';
 import {
   DECISION_EXPIRED,
   DECISION_FAILED,
@@ -259,56 +258,48 @@ describe('DecisionRow — a clamped summary (TASK-436)', () => {
 });
 
 /*
-  TASK-544 — the dot's shape varies with state (bits.tsx `STATE_SHAPE`: 6px
-  diamond, 7px circle/square, 8px dash), so a bare dot shifted the text after
-  it by a pixel or two from row to row. Every dot sits in the same fixed `w-2`
-  slot the sidebar roster uses, so text starts at one x-offset whatever the
-  state. jsdom has no layout, so this pins the STRUCTURE that guarantees it:
-  one slot class for every state this row can draw.
+  TASK-544 — a dot whose size varied with its state shifted the text after it
+  by a pixel or two from row to row. Every mark is now one `StatusMark`, a
+  fixed-size SVG, so text starts at one x-offset whatever the state. jsdom has
+  no layout, so this pins the STRUCTURE that guarantees it: exactly one mark per
+  row, drawn from the shared vocabulary, with the same size classes for every
+  state this row can draw, and the shape that state means.
 */
-describe('DecisionRow — the dot sits in a fixed-width slot', () => {
-  const cases: Array<[string, Decision]> = [
-    ['held question', decisionFixture()],
+describe('DecisionRow — the mark is one fixed-size StatusMark', () => {
+  const cases: Array<[string, Decision, string]> = [
+    ['held question', decisionFixture(), 'diamond'],
     [
       'stale question',
       decisionFixture({ status: 'stale', staleReason: 'Thursday 9:30 was booked.' }),
+      'square',
     ],
-    ['executed receipt', resolvedFixture('executed')],
-    ['dismissed receipt', resolvedFixture('dismissed')],
-    ['failed receipt', resolvedFixture('failed', { undoable: false })],
-    ['expired receipt', resolvedFixture('expired', { undoable: false })],
-    ['pending-agent receipt', resolvedFixture('approved-pending-agent')],
+    ['executed receipt', resolvedFixture('executed'), 'circle'],
+    ['dismissed receipt', resolvedFixture('dismissed'), 'ring'],
+    ['failed receipt', resolvedFixture('failed', { undoable: false }), 'square'],
+    ['expired receipt', resolvedFixture('expired', { undoable: false }), 'ring'],
+    ['pending-agent receipt', resolvedFixture('approved-pending-agent'), 'ring'],
   ];
 
-  function slotOf(d: Decision): string {
+  function markOf(d: Decision): SVGElement {
     const { container, unmount } = renderRow(d, false);
     const row = container.querySelector(`[data-testid="decision-${d.id}"]`)!;
-    // The dot is the row's only aria-hidden SPAN (lucide icons are SVGs).
-    const dots = row.querySelectorAll('span[aria-hidden="true"]');
-    expect(dots).toHaveLength(1);
-    const cls = dots[0]!.parentElement!.className;
+    const marks = row.querySelectorAll('svg[data-shape]');
+    expect(marks).toHaveLength(1);
+    const mark = marks[0]!.cloneNode(true) as SVGElement;
     unmount();
-    return cls;
+    return mark;
   }
 
-  it.each(cases)('%s: the dot is centred in a w-2 slot', (_label, d) => {
-    expect(slotOf(d).split(/\s+/)).toEqual(
-      expect.arrayContaining(['w-2', 'shrink-0', 'justify-center']),
-    );
+  it.each(cases)('%s: one mark, the shape its state means', (_label, d, shape) => {
+    expect(markOf(d).getAttribute('data-shape')).toBe(shape);
   });
 
-  it('every state uses the SAME slot, so the text starts at one offset', () => {
-    const slots = new Set(cases.map(([, d]) => slotOf(d)));
-    expect(slots.size).toBe(1);
-  });
-
-  it('that slot is the shared StateDotSlot the sidebar uses (TASK-546)', () => {
-    // StateDotSlot.test pins the slot's width against every shape; that pin
-    // only covers this row while the row uses the shared slot.
-    const shared = render(<StateDotSlot>x</StateDotSlot>);
-    const slotClass = (shared.container.firstElementChild as HTMLElement).className;
-    shared.unmount();
-    for (const [, d] of cases) expect(slotOf(d)).toBe(slotClass);
+  it('every state uses the SAME size, so the text starts at one offset', () => {
+    for (const [, d] of cases) {
+      expect(markOf(d).getAttribute('class')!.split(/\s+/)).toEqual(
+        expect.arrayContaining(['ax-h-md', 'ax-w-md', 'ax-shrink-0']),
+      );
+    }
   });
 });
 

@@ -18,10 +18,9 @@ import { UsageOverrideEditor } from './UsageOverrideEditor';
  * h1 → h2 without the `h5` that `AlertTitle` would add (see TASK-446).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { badgeVariants, type BadgeProps } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { AsyncState, EmptyState, Notice, toast } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice, StatusBadge, type StatusTone, toast } from '@project-ax/ui';
 import {
   fetchUsage,
   resumeUser,
@@ -49,12 +48,12 @@ type LoadState =
   | { kind: 'error'; message: string }
   | { kind: 'ready'; report: UsageReport };
 
-/** Words carry the status; the variant only backs them up. */
-const STATUS_VARIANT: ReadonlyMap<UsageStatus, BadgeProps['variant']> = new Map([
-  ['ok', 'outline'],
-  ['near-limit', 'secondary'],
-  ['at-limit', 'destructive'],
-  ['suspended', 'default'],
+/** Words carry the status; the tone only backs them up. */
+const STATUS_TONE: ReadonlyMap<UsageStatus, StatusTone> = new Map<UsageStatus, StatusTone>([
+  ['ok', 'neutral'],
+  ['near-limit', 'neutral'],
+  ['at-limit', 'danger'],
+  ['suspended', 'info'],
 ]);
 
 /**
@@ -354,7 +353,7 @@ function UsageRow({ user, limits, busy, onPause, onResume, onEditLimits }: Usage
 
   return (
     <SettingsDetailRow label={label} detail={<span className="flex flex-col gap-0.5"><span>{formatCount(user.turnsLast24h)} messages</span>{subline && <span>{subline}</span>}</span>}
-      value={<span className="flex flex-wrap items-center justify-end gap-2 tabular-nums">{formatUsd(user.spendUsd)}{user.status !== 'ok' && <span className={badgeVariants({ variant: STATUS_VARIANT.get(user.status) ?? 'outline' })}>{statusLabel(user.status)}</span>}</span>}>
+      value={<span className="flex flex-wrap items-center justify-end gap-2 tabular-nums">{formatUsd(user.spendUsd)}{user.status !== 'ok' && <StatusBadge tone={STATUS_TONE.get(user.status) ?? 'neutral'} dot>{statusLabel(user.status)}</StatusBadge>}</span>}>
       {(close) => <>
       <p className="text-sm text-muted-foreground">{`${formatCount(user.turnsLastHour)} messages in the last hour`}</p>
       {share !== null && <p className="text-sm text-muted-foreground">{share}</p>}

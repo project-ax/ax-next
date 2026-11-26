@@ -28,8 +28,7 @@
  * to ask an admin for more room (the sentences live in `lib/storage-copy.ts`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, type BadgeProps } from '@/components/ui/badge';
-import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice, StatusBadge, type StatusTone } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -154,11 +153,11 @@ function useRead<T>(fetcher: () => Promise<T>, what: string): Read<T> {
 // Pieces
 // ---------------------------------------------------------------------------
 
-/** Words carry the status; the variant only backs them up. */
-const STATUS_VARIANT: ReadonlyMap<StorageStatus, BadgeProps['variant']> = new Map([
-  ['ok', 'outline'],
-  ['near-limit', 'secondary'],
-  ['full', 'destructive'],
+/** Words carry the status; the tone only backs them up. */
+const STATUS_TONE: ReadonlyMap<StorageStatus, StatusTone> = new Map<StorageStatus, StatusTone>([
+  ['ok', 'neutral'],
+  ['near-limit', 'neutral'],
+  ['full', 'danger'],
 ]);
 
 // ---------------------------------------------------------------------------
@@ -243,7 +242,7 @@ function OwnerRow({ owner, limitBytes }: { owner: StorageOwner; limitBytes: numb
       <TableCell className="align-top">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium break-words">{ownerLabel(owner)}</span>
-          {owner.kind === 'team' && <Badge variant="secondary">Team</Badge>}
+          {owner.kind === 'team' && <StatusBadge tone="neutral">Team</StatusBadge>}
         </div>
         {subline !== null && (
           <div className="text-xs text-muted-foreground break-words">{subline}</div>
@@ -255,12 +254,9 @@ function OwnerRow({ owner, limitBytes }: { owner: StorageOwner; limitBytes: numb
         <div className="text-xs text-muted-foreground">{ownerBreakdown(owner)}</div>
       </TableCell>
       <TableCell className="align-top">
-        <Badge
-          variant={STATUS_VARIANT.get(owner.status) ?? 'outline'}
-          className="whitespace-nowrap"
-        >
+        <StatusBadge tone={STATUS_TONE.get(owner.status) ?? 'neutral'} dot>
           {statusLabel(owner.status)}
-        </Badge>
+        </StatusBadge>
       </TableCell>
     </TableRow>
   );

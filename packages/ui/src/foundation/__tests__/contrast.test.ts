@@ -37,5 +37,7 @@ describe.each(themes)('contrast (%s)', (t) => {
     check(`${tone}.base on bg.surface`, s.base, bg[t].surface, 4.5);
     // StatusBadge: the mark sits on the plain raised fill (neutral, success), where non-text contrast needs 3:1.
     check(`${tone}.base on bg.surface-raised`, s.base, bg[t]['surface-raised'], 3.0);
+    // StatusMark lands on every row surface (sidebar, switcher menu, queue rows, selected and muted rows): 3:1 non-text.
+    for (const surface of surfaces) check(`${tone}.base on bg.${surface}`, s.base, bg[t][surface], 3.0);
   });
 });

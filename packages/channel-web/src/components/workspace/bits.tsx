@@ -8,9 +8,8 @@
  */
 import { useState } from 'react';
 import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
-import { Button as AxButton, ConfirmAction } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, StatusBadge, type StatusTone } from '@project-ax/ui';
 import { AvatarTile } from '@/components/AvatarTile';
-import { Badge, badgeVariants } from '@/components/ui/badge';
 import {
   Popover,
   PopoverContent,
@@ -94,134 +93,27 @@ export function stateWord(state: AgentRunState | 'held'): string {
 }
 
 /**
- * Shape is the second channel (WCAG 1.4.1, TASK-485). Colour used to be the
- * whole message, so someone who cannot tell the hues apart got no state at
- * all. Each state now has its own outline too, readable in greyscale:
- *
- *   working ● circle · waiting/held ◆ diamond · resting ○ hollow ring · stopped ■ square
- *   Task marks (TASK-909) reuse them: needs-you ◆, off-track ■, on-track ●, no-update ○, no-recent-update ○, paused ▬ dash, and done ✓ (a check, TASK-950).
- *
- * Deliberately a separate record, NOT more `state === … && '…'` arms inside
- * the `cn()` below: `theme-contrast.test.ts` reads those arms back as the
- * dot's FILL, keyed by state, so a second arm per state would overwrite the
- * fill it measures. Fill lives there; geometry lives here.
- *
- * Every width here must fit inside `StateDotSlot` below (8px).
- * `StateDotSlot.test.tsx` fails if one doesn't.
- */
-const CIRCLE = 'h-[7px] w-[7px] rounded-full';
-const DIAMOND = 'h-[6px] w-[6px] rotate-45 rounded-[1px]';
-const RING = 'box-border size-[7px] rounded-full border-[1.5px] border-state-quiet';
-const SQUARE = 'h-[7px] w-[7px] rounded-[1px]';
-/** `resting`'s shape before Design 5 (#829) made it a ring; only a paused task draws it now. */
-const DASH = 'h-[3px] w-[8px] rounded-full';
-/**
- * A tick: two borders of a tilted box, drawn in the primary colour. Every other
- * task mark is a blob, so a finished one gets the one mark that isn't
- * (TASK-950 decisions row 18).
- */
-const CHECK = 'box-border h-[7px] w-[4px] -translate-y-px rotate-45 border-b-[1.5px] border-r-[1.5px]';
-
-/**
- * What a `StateDot` can draw: an agent's state, a decision held for you, or a
- * task's group (TASK-909). A task mark shares its geometry and fill with the
- * agent mark it means, so a task waiting on you looks exactly like an agent
- * waiting on you.
+ * What a status mark can draw: an agent's state, a decision held for you, or a
+ * task's group (TASK-909). Every state maps to one `StatusTone` of the shared
+ * vocabulary (`@project-ax/ui`), whose SHAPE is the second channel (WCAG 1.4.1):
+ * a task waiting on you is the same warning diamond as an agent waiting on you.
  */
 export type DotState = AgentRunState | 'held' | TaskGroup;
 
-export const STATE_SHAPE: Record<DotState, string> = {
-  working: CIRCLE,
-  waiting: DIAMOND,
-  held: DIAMOND,
-  resting: RING,
-  stopped: SQUARE,
-  'needs-you': DIAMOND,
-  'off-track': SQUARE,
-  'on-track': CIRCLE,
-  'no-update': RING,
-  'no-recent-update': RING,
-  paused: DASH,
-  done: CHECK,
+export const STATE_TONE: Record<DotState, StatusTone> = {
+  working: 'info',
+  'on-track': 'info',
+  waiting: 'warning',
+  held: 'warning',
+  'needs-you': 'warning',
+  stopped: 'danger',
+  'off-track': 'danger',
+  resting: 'neutral',
+  'no-update': 'neutral',
+  'no-recent-update': 'neutral',
+  paused: 'neutral',
+  done: 'success',
 };
-
-/**
- * The state mark: a coloured SHAPE, never colour alone.
- *
- * It stays `aria-hidden` on purpose. A mark before a name cannot carry an
- * accessible name that reads well ("Waiting on you Ada"), and at most call
- * sites the adjacent text already says the state — a receipt line, a question
- * summary, a list of who is working. Where the dot is the ONLY carrier (the
- * sidebar roster), the call site adds the `STATE_WORDS` word as `sr-only` text
- * after the name. A new call site where the dot stands alone owes the same.
- *
- * Every fill still owes 3:1 against the surfaces it lands on — an
- * information-bearing non-text element under WCAG 1.4.11. `resting` used to be
- * `bg-ink-ghost` and measured 1.72:1 light / 2.04:1 dark on the page — and
- * 1.50:1 / 1.56:1 on the selected row's `--primary-soft`, the worst surface it
- * lands on — so on a pale row it was less "quiet" than "absent". It is
- * `bg-state-quiet` now; `--ink-ghost` was the composer's send-circle fill token
- * (a disabled control, the one thing 1.4.11 exempts) and was deleted with the
- * composer in TASK-360. `theme-contrast.test.ts` reads these classes back out
- * of this file and measures whatever it finds.
- */
-export function StateDot({
-  state,
-  className,
-}: {
-  state: DotState;
-  className?: string;
-}) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cn(
-        'shrink-0',
-        STATE_SHAPE[state],
-        state === 'working' && 'bg-primary',
-        state === 'waiting' && 'bg-warning',
-        state === 'held' && 'bg-warning',
-        state === 'resting' && 'border-state-quiet',
-        state === 'stopped' && 'bg-destructive',
-        state === 'needs-you' && 'bg-warning',
-        state === 'off-track' && 'bg-destructive',
-        state === 'on-track' && 'bg-primary',
-        state === 'no-update' && 'border-state-quiet',
-        state === 'no-recent-update' && 'border-state-quiet',
-        state === 'paused' && 'bg-state-quiet',
-        state === 'done' && 'border-primary',
-        className,
-      )}
-    />
-  );
-}
-
-/**
- * A fixed-width slot for `StateDot` (TASK-544, shared since TASK-546). The
- * shapes above differ in width by state, so a bare dot nudged the text after
- * it by a pixel from row to row. Centred in one 8px slot, every row's text
- * starts at the same offset. Use it wherever text lines up after a dot.
- *
- * The slot fixes where the text starts. Every `STATE_SHAPE` layout width must
- * also fit inside it, or that shape spills into the gap beside it;
- * `StateDotSlot.test.tsx` pins this. (Rotation is not layout: the 6px diamond
- * reaches about 8.5px corner to corner, and the row gap absorbs that.)
- */
-export function StateDotSlot({ children }: { children: React.ReactNode }) {
-  return <span className="flex w-2 shrink-0 justify-center">{children}</span>;
-}
-
-export function AgentStateLabel({ agent }: { agent: WorkspaceAgent }) {
-  const word = stateWord(agent.state);
-  if (agent.state === 'stopped') return <Badge variant="destructive">{word}</Badge>;
-  if (agent.state === 'waiting')
-    return (
-      <Badge variant="secondary" className="bg-warning-soft text-warning">
-        {word}
-      </Badge>
-    );
-  return <Badge variant="secondary">{word}</Badge>;
-}
 
 /**
  * Elapsed, never remaining.
@@ -318,19 +210,13 @@ function TheirDescription({ row }: { row: PermissionRow }) {
  * explanatory affordance behind a `Popover` for the same reason, and this
  * follows that structure closely on purpose.
  *
- * The trigger is a real `<button>` wearing `badgeVariants` rather than the
- * `Badge` component (D6). `Badge` renders a `<div>`, and `PermissionLine`'s
- * content sits inside a `<span>` — a `div` there is invalid nesting, and a
- * `PopoverTrigger asChild` over a non-interactive `div` is not a
- * keyboard-reachable control. Applying the exported `badgeVariants` to a
- * `<button>` is shadcn's own documented escape hatch for exactly this. Layout
- * classes shrink the badge to the rail's micro-type (the badge's base class
- * sets `text-xs`; the rail runs `text-[10.5px]`/`text-[11px]`) — that override
- * is type-scale and padding only, never colour.
+ * The trigger is a real `<button>` wrapping a neutral `StatusBadge` (D6): the
+ * badge is a `<span>`, which is valid inside the `<span>` that `PermissionLine`'s
+ * content sits in, and the button is the keyboard-reachable control that
+ * `PopoverTrigger asChild` needs.
  *
- * `variant="outline"` plus `text-muted-foreground`, explicitly NOT
- * `variant="destructive"`. A red badge would out-shout the verdict glyph to
- * its left, which is the more important claim on this row ("can it run at
+ * Neutral, explicitly NOT danger. A red badge would out-shout the verdict glyph
+ * to its left, which is the more important claim on this row ("can it run at
  * all"), and a cost is not a danger — painting it in the same red as "Never"
  * would tell a scanning reader the wrong thing about which fact matters more.
  * Hierarchy stays glyph > badge > the muted `source` id that follows it.
@@ -348,12 +234,9 @@ function EffectMark({ effect }: { effect: CapabilityEffect }) {
         <button
           type="button"
           aria-label={`${d.srLabel} Details.`}
-          className={cn(
-            badgeVariants({ variant: 'outline' }),
-            'ml-1.5 px-1.5 py-0 text-[10.5px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-          )}
+          className="ml-1.5 max-w-full rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          {d.label}
+          <StatusBadge tone="neutral" size="sm">{d.label}</StatusBadge>
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72">

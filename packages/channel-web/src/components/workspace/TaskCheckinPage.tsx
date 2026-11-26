@@ -32,7 +32,7 @@
  * browser fetch, and it leaves file links out of prose.
  */
 import { useId, useLayoutEffect, useState, type ReactNode } from 'react';
-import { AsyncState, Notice } from '@project-ax/ui';
+import { AsyncState, Notice, StatusMark } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -54,7 +54,7 @@ import { useTaskCheckin } from '@/lib/workspace-task-checkin';
 import { checkInWhen } from '@/lib/workspace-time';
 import type { TaskCheckin } from '@/lib/workspace-types';
 import { AgentConversation, approvalReadFrom } from './AgentConversation';
-import { StateDot, StateDotSlot } from './bits';
+import { STATE_TONE } from './bits';
 import { WorkspaceHeader } from './WorkspaceHeader';
 
 const LOAD_COPY: Record<TaskReadError, string> = {
@@ -282,9 +282,7 @@ function CheckinSummary({ page }: { page: TaskCheckin }) {
       {report !== null ? (
         <>
           <p className="flex items-center gap-2 text-[12.5px] font-medium">
-            <StateDotSlot>
-              <StateDot state={report.status} />
-            </StateDotSlot>
+            <StatusMark tone={STATE_TONE[report.status]} />
             <span>{TASK_GROUP_LABELS[report.status]}</span>
           </p>
           <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
@@ -298,9 +296,7 @@ function CheckinSummary({ page }: { page: TaskCheckin }) {
         </>
       ) : (
         <p className="flex items-center gap-2 text-[13px] leading-relaxed">
-          <StateDotSlot>
-            <StateDot state="no-update" />
-          </StateDotSlot>
+          <StatusMark tone="neutral" />
           <span className="min-w-0 whitespace-pre-wrap break-words">{updateText(checkIn)}</span>
         </p>
       )}

@@ -185,7 +185,7 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, Button as AxButton, Notice } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Notice, StatusBadge, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -215,8 +215,8 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
 import { checkInWhen, monthDay, timeAgo } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
-import { AgentTile, StateDot, StateDotSlot } from './bits';
-import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT, TaskStatusPill } from './task-bits';
+import { AgentTile, STATE_TONE } from './bits';
+import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT } from './task-bits';
 import { TaskFinishDate } from './TaskFinishDate';
 import {
   MARK_DONE_NOT_ALLOWED,
@@ -327,6 +327,15 @@ function bannerOf(detail: TaskDetail): Banner {
 }
 
 /** The header's pill: the list's own group, or a Repeat job's "Scheduled" / "Paused". */
+/** The task's state as a badge: its mark's shape and its word. Never colour alone. */
+function StatusPill({ group, label }: { group: TaskGroup; label?: string }) {
+  return (
+    <StatusBadge tone={STATE_TONE[group]} dot>
+      {label ?? TASK_GROUP_LABELS[group]}
+    </StatusBadge>
+  );
+}
+
 function pillOf(detail: TaskDetail): { group: TaskGroup; label?: string } {
   if (detail.kind === 'repeat' && detail.doneAt === null) {
     return detail.enabled ? { group: 'on-track', label: 'Scheduled' } : { group: 'paused' };
@@ -731,7 +740,7 @@ export function TaskPage({
               <h1 className="min-w-0 break-words text-[24px] font-semibold leading-tight tracking-[-0.01em]">
                 {detail?.name ?? 'Task'}
               </h1>
-              {detail !== null && <TaskStatusPill {...pillOf(detail)} />}
+              {detail !== null && <StatusPill {...pillOf(detail)} />}
             </div>
             <div className="flex flex-col gap-2">
               {detail !== null && (
@@ -1520,9 +1529,7 @@ function LatestUpdate({
       {missLine !== null && <div className="text-muted-foreground">{missLine}</div>}
       {task === null ? (
         <p className="flex items-center gap-2 text-[14px] text-muted-foreground">
-          <StateDotSlot>
-            <StateDot state="no-update" />
-          </StateDotSlot>
+          <StatusMark tone="neutral" />
           <span>{next === null || done ? 'No update yet.' : `No update yet. It’ll check in ${next}.`}</span>
         </p>
       ) : (
@@ -1618,9 +1625,7 @@ function MissLine({
     <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
       <div className="flex items-start gap-2.5">
         <span className="flex h-6 items-center">
-          <StateDotSlot>
-            <StateDot state={group} />
-          </StateDotSlot>
+          <StatusMark tone={STATE_TONE[group]} />
         </span>
         <h2 id={headingId} className="sr-only">
           {TASK_GROUP_LABELS[group]}

@@ -19,9 +19,8 @@
  */
 import { useEffect, useId, useRef, useState } from 'react';
 import { UserPlus, X } from 'lucide-react';
-import { Inline, Notice, Stack, Text } from '@project-ax/ui';
+import { Inline, Notice, Stack, StatusBadge, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { OWNERS_MAX } from '@/lib/agent-sharing';
 import { setOwners, sharingErrorMessage } from '@/lib/agent-sharing-api';
@@ -84,8 +83,8 @@ export function AgentOwners({ agentId, agentName, owners, onSaved }: AgentOwners
               <Inline justify="between" gap="sm">
                 <Inline gap="sm" wrap>
                   <Text>{name}</Text>
-                  {o.creator && <Badge variant="secondary">{SHARING_COPY.owners.creator}</Badge>}
-                  {o.id === me && <Badge variant="outline">{SHARING_COPY.owners.you}</Badge>}
+                  {o.creator && <StatusBadge tone="neutral">{SHARING_COPY.owners.creator}</StatusBadge>}
+                  {o.id === me && <StatusBadge tone="neutral">{SHARING_COPY.owners.you}</StatusBadge>}
                 </Inline>
                 {removable && (
                   <Button

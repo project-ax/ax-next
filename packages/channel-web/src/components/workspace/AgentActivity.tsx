@@ -1,7 +1,8 @@
+import { StatusMark } from '@project-ax/ui';
 import { Card, CardContent } from '@/components/ui/card';
 import { useAgentRail } from '@/lib/workspace-rail';
 import type { AgentDetail, AgentRailData } from '@/lib/workspace-api';
-import { Elapsed, SectionLabel, StateDot, stateWord } from './bits';
+import { Elapsed, SectionLabel, STATE_TONE, stateWord } from './bits';
 
 /**
  * The side panel's Activity view: what the agent is doing right now, and the
@@ -66,7 +67,7 @@ function RightNow({
       <Card className="rounded-md bg-muted shadow-none">
         <CardContent className="flex flex-col gap-2 p-3.5">
           <div className="flex items-center gap-2 text-[12.5px] font-medium">
-            <StateDot state={word} />
+            <StatusMark tone={STATE_TONE[word]} />
             {stateWord(word)}
           </div>
           <div className="text-[13px]">{line?.phrase ?? ''}</div>

@@ -10,7 +10,7 @@
  *
  * The page draws the shell's tasks read (TASK-933), the same one Today and the
  * sidebar badge count from. `groupTasks` decides the groups
- * and their order; each group's mark is `StateDot`'s task mark, so a task
+ * and their order; each group's mark is `StatusMark`'s task mark, so a task
  * waiting on you looks exactly like an agent waiting on you. With more than
  * one agent among the rows, an agent filter narrows them, client-side.
  *
@@ -28,7 +28,7 @@
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
-import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
@@ -54,7 +54,7 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
-import { AgentTile, StateDot, StateDotSlot } from './bits';
+import { AgentTile, STATE_TONE } from './bits';
 import { IconAction, TaskKindIcon } from './task-bits';
 import { TaskDialog } from './TaskDialog';
 
@@ -362,7 +362,7 @@ function TaskGroupSection({
 }) {
   return (
     <RowSection
-      mark={<StateDot state={group} />}
+      mark={<StatusMark tone={STATE_TONE[group]} />}
       title={TASK_GROUP_LABELS[group]}
       rows={rows}
       now={now}
@@ -393,7 +393,7 @@ function RowSection({
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2">
       <h2 id={headingId} className="flex items-center gap-2 text-[13px] font-medium text-muted-foreground">
-        <StateDotSlot>{mark}</StateDotSlot>
+        {mark}
         <span>
           {title} <span className="font-normal tabular-nums">{rows.length}</span>
         </span>
@@ -445,9 +445,7 @@ function RowsToggle({
     <Collapsible open={open} onOpenChange={onOpenChange} className="flex flex-col gap-2">
       <CollapsibleTrigger asChild>
         <Button ref={triggerRef} variant="ghost" size="sm" className="-ml-3 self-start text-[13px] text-muted-foreground">
-          <StateDotSlot>
-            <StateDot state={state} />
-          </StateDotSlot>
+          <StatusMark tone={STATE_TONE[state]} />
           <span>
             {`${count} ${word}`}
             <span className="sr-only">{` ${noun}`}</span>

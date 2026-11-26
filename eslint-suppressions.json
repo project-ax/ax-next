@@ -137,11 +137,6 @@
       "count": 1
     }
   },
-  "packages/channel-web/src/components/SourceBadge.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "packages/channel-web/src/components/UserMenu.tsx": {
     "ax-ui/no-arbitrary-values": {
       "count": 7
@@ -262,7 +257,7 @@
   },
   "packages/channel-web/src/components/admin/BundleDiffView.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-classname": {
       "count": 8
@@ -292,24 +287,13 @@
   },
   "packages/channel-web/src/components/admin/DefaultRoutinesSection.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
       "count": 1
     },
     "ax-ui/no-raw-elements": {
       "count": 1
-    }
-  },
-  "packages/channel-web/src/components/admin/KeyForm.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 2
-    },
-    "ax-ui/no-classname": {
-      "count": 3
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 3
     }
   },
   "packages/channel-web/src/components/admin/ModelCatalogPane.tsx": {
@@ -359,17 +343,6 @@
   "packages/channel-web/src/components/admin/PauseAgentsDialog.tsx": {
     "ax-ui/no-classname": {
       "count": 1
-    }
-  },
-  "packages/channel-web/src/components/admin/ProviderRow.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 5
-    },
-    "ax-ui/no-classname": {
-      "count": 9
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 9
     }
   },
   "packages/channel-web/src/components/admin/ProvidersPanel.tsx": {
@@ -442,14 +415,6 @@
       "count": 16
     }
   },
-  "packages/channel-web/src/components/admin/StatusDot.tsx": {
-    "ax-ui/no-classname": {
-      "count": 1
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 1
-    }
-  },
   "packages/channel-web/src/components/admin/StorageTab.tsx": {
     "ax-ui/no-arbitrary-values": {
       "count": 1
@@ -490,10 +455,10 @@
       "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 13
+      "count": 12
     },
     "ax-ui/no-raw-elements": {
-      "count": 16
+      "count": 15
     }
   },
   "packages/channel-web/src/components/credentials/ConnectorAccessNotice.tsx": {
@@ -623,17 +588,6 @@
       "count": 1
     }
   },
-  "packages/channel-web/src/components/routines/StatusChip.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 2
-    },
-    "ax-ui/no-classname": {
-      "count": 2
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 2
-    }
-  },
   "packages/channel-web/src/components/routines/TriggerChip.tsx": {
     "ax-ui/no-classname": {
       "count": 1
@@ -662,9 +616,6 @@
     }
   },
   "packages/channel-web/src/components/settings/AwaitingReviewSection.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 1
-    },
     "ax-ui/no-classname": {
       "count": 7
     },
@@ -706,10 +657,10 @@
   },
   "packages/channel-web/src/components/settings/DirectoryListingRow.tsx": {
     "ax-ui/no-classname": {
-      "count": 19
+      "count": 16
     },
     "ax-ui/no-raw-elements": {
-      "count": 16
+      "count": 13
     }
   },
   "packages/channel-web/src/components/settings/LegacyConnectorEditDialog.tsx": {
@@ -1073,10 +1024,10 @@
       "count": 7
     },
     "ax-ui/no-classname": {
-      "count": 6
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/channel-web/src/components/workspace/AgentView.tsx": {
@@ -1103,7 +1054,7 @@
   },
   "packages/channel-web/src/components/workspace/ApprovalCard.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 14
+      "count": 13
     },
     "ax-ui/no-classname": {
       "count": 17
@@ -1468,7 +1419,7 @@
   },
   "packages/channel-web/src/components/workspace/TaskUpdates.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 7
+      "count": 6
     },
     "ax-ui/no-classname": {
       "count": 17
@@ -1545,7 +1496,7 @@
   },
   "packages/channel-web/src/components/workspace/WorkspaceSidebar.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-classname": {
       "count": 9
@@ -1556,13 +1507,13 @@
   },
   "packages/channel-web/src/components/workspace/bits.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 16
+      "count": 15
     },
     "ax-ui/no-classname": {
-      "count": 23
+      "count": 21
     },
     "ax-ui/no-raw-elements": {
-      "count": 25
+      "count": 23
     },
     "ax-ui/no-style-prop": {
       "count": 1
@@ -1570,7 +1521,7 @@
   },
   "packages/channel-web/src/components/workspace/task-bits.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-classname": {
       "count": 9

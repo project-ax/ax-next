@@ -268,7 +268,8 @@ describe('TaskUpdates (TASK-910)', () => {
 
     it('someone else’s reply says so', () => {
       renderThread([], [reply({ byYou: false })]);
-      expect(screen.getByText('Someone else')).toHaveClass('font-medium');
+      // A label, not a status: the plain badge, same as "You".
+      expect(screen.getByText('Someone else').parentElement).toHaveClass('ax-bg-surface-raised');
       expect(screen.queryByText('You')).toBeNull();
     });
 

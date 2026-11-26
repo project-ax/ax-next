@@ -17,7 +17,6 @@
  */
 import { useContext, useRef, useState } from 'react';
 import { BookOpen, ChevronRight } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -43,6 +42,7 @@ import {
   memoryUsedLabel,
   type MemoryUsedSinceKind,
 } from './memory-copy';
+import { StatusBadge } from '@project-ax/ui';
 
 const DATE = new Intl.DateTimeFormat(undefined, {
   month: 'short',
@@ -123,9 +123,9 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
                   </span>
                 </div>
                 {since !== undefined ? (
-                  <Badge variant="secondary" className="shrink-0">
+                  <StatusBadge tone="neutral">
                     {MEMORY_USED_SINCE[since]}
-                  </Badge>
+                  </StatusBadge>
                 ) : (
                   <Button
                     type="button"

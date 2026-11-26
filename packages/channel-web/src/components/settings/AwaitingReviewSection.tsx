@@ -17,8 +17,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { AsyncState, Inline, Stack, Text } from '@project-ax/ui';
+import { AsyncState, Inline, Stack, StatusBadge, Text } from '@project-ax/ui';
 import { listCatalogRequests } from '@/lib/catalog';
 import type { CatalogRequest } from '@ax/skills';
 import { BundleReviewDialog } from '@/components/admin/BundleReviewDialog';
@@ -79,12 +78,7 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
               >
                 <div className="flex flex-col gap-1 min-w-0">
                   <Inline gap="sm">
-                    <Badge
-                      variant={r.kind === 'share' ? 'secondary' : 'outline'}
-                      className="text-[10px]"
-                    >
-                      {r.kind}
-                    </Badge>
+                    <StatusBadge tone="neutral">{r.kind}</StatusBadge>
                     <span className="font-mono text-xs">{r.skillId}</span>
                   </Inline>
                   <p className="text-sm">{r.description}</p>

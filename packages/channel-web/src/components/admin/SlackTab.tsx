@@ -44,9 +44,8 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { MessageSquare } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Button as AxButton, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -721,7 +720,7 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
           <CardTitle role="heading" aria-level={2} className="text-lg">
             Finish in Slack
           </CardTitle>
-          <Badge variant="warning">Not finished</Badge>
+          <StatusBadge tone="warning" dot>Not finished</StatusBadge>
         </div>
         <CardDescription>Almost there: finish installing the bot in Slack.</CardDescription>
       </CardHeader>
@@ -757,7 +756,7 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
           <CardTitle role="heading" aria-level={2} className="text-lg">
             Connected to {status.workspaceName !== '' ? status.workspaceName : 'Slack'}
           </CardTitle>
-          <Badge variant="secondary">Connected</Badge>
+          <StatusBadge tone="success" dot>Connected</StatusBadge>
         </div>
         <CardDescription>People can now DM the bot to talk to their own agent.</CardDescription>
       </CardHeader>
