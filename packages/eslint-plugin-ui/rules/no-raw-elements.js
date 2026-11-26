@@ -6,6 +6,8 @@ add('div|section|article|header|footer|main|aside|nav', 'Stack / Inline / Sectio
 add('span|p', 'Text');
 add('h1|h2|h3|h4|h5|h6', 'PageHeader / Section / Heading');
 add('ul|ol|li', 'List / ListRow');
+add('dl|dt|dd', 'KeyValueList');
+add('time', 'Timestamp');
 add('button', 'Button / IconButton');
 add('input|textarea|select|label', 'TextField / TextArea / Select');
 add('table|thead|tbody|tr|td|th', 'DataTable');

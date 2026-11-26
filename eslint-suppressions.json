@@ -12,7 +12,7 @@
       "count": 6
     },
     "ax-ui/no-raw-elements": {
-      "count": 4
+      "count": 6
     }
   },
   "packages/channel-web/src/components/AxDesignMark.tsx": {
@@ -175,7 +175,7 @@
       "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 3
+      "count": 5
     }
   },
   "packages/channel-web/src/components/admin/AgentForm.tsx": {
@@ -194,7 +194,7 @@
       "count": 2
     },
     "ax-ui/no-raw-elements": {
-      "count": 1
+      "count": 3
     }
   },
   "packages/channel-web/src/components/admin/AuthProvidersTab.tsx": {
@@ -249,7 +249,7 @@
       "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 4
     }
   },
   "packages/channel-web/src/components/admin/BundleReviewDialog.tsx": {
@@ -276,7 +276,7 @@
       "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 9
     }
   },
   "packages/channel-web/src/components/admin/ModelCombobox.tsx": {
@@ -339,6 +339,9 @@
   "packages/channel-web/src/components/admin/SaveImpactDialog.tsx": {
     "ax-ui/no-classname": {
       "count": 1
+    },
+    "ax-ui/no-raw-elements": {
+      "count": 2
     }
   },
   "packages/channel-web/src/components/admin/SelectedModelsPane.tsx": {
@@ -365,7 +368,7 @@
       "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 2
+      "count": 5
     }
   },
   "packages/channel-web/src/components/admin/SlackBotsCard.tsx": {
@@ -384,7 +387,7 @@
       "count": 15
     },
     "ax-ui/no-raw-elements": {
-      "count": 12
+      "count": 21
     }
   },
   "packages/channel-web/src/components/admin/StorageTab.tsx": {
@@ -610,7 +613,7 @@
       "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 7
+      "count": 9
     }
   },
   "packages/channel-web/src/components/settings/ConnectorsTab.tsx": {
@@ -637,7 +640,7 @@
       "count": 65
     },
     "ax-ui/no-raw-elements": {
-      "count": 61
+      "count": 71
     }
   },
   "packages/channel-web/src/components/settings/RememberedSitesPanel.tsx": {
@@ -662,6 +665,9 @@
   "packages/channel-web/src/components/settings/RequestLeftOutNotice.tsx": {
     "ax-ui/no-classname": {
       "count": 1
+    },
+    "ax-ui/no-raw-elements": {
+      "count": 2
     }
   },
   "packages/channel-web/src/components/settings/SettingsLayout.tsx": {
@@ -772,6 +778,9 @@
   "packages/channel-web/src/components/slack/BotTokenReplaceDialog.tsx": {
     "ax-ui/no-classname": {
       "count": 2
+    },
+    "ax-ui/no-raw-elements": {
+      "count": 3
     }
   },
   "packages/channel-web/src/components/slack/SlackConfigToken.tsx": {
@@ -858,7 +867,7 @@
       "count": 54
     },
     "ax-ui/no-raw-elements": {
-      "count": 43
+      "count": 55
     }
   },
   "packages/channel-web/src/components/workspace/AgentFiles.tsx": {
@@ -881,6 +890,11 @@
     },
     "ax-ui/no-raw-elements": {
       "count": 3
+    }
+  },
+  "packages/channel-web/src/components/workspace/AgentOwners.tsx": {
+    "ax-ui/no-raw-elements": {
+      "count": 2
     }
   },
   "packages/channel-web/src/components/workspace/AgentRail.tsx": {
@@ -913,7 +927,7 @@
       "count": 25
     },
     "ax-ui/no-raw-elements": {
-      "count": 20
+      "count": 22
     }
   },
   "packages/channel-web/src/components/workspace/AgentSlack.tsx": {
@@ -935,7 +949,7 @@
       "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 10
+      "count": 13
     }
   },
   "packages/channel-web/src/components/workspace/AgentSlackBotChanges.tsx": {
@@ -998,7 +1012,7 @@
       "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 3
+      "count": 6
     }
   },
   "packages/channel-web/src/components/workspace/ApprovalCard.tsx": {
@@ -1042,6 +1056,11 @@
       "count": 11
     }
   },
+  "packages/channel-web/src/components/workspace/AudienceDialog.tsx": {
+    "ax-ui/no-raw-elements": {
+      "count": 2
+    }
+  },
   "packages/channel-web/src/components/workspace/ChatComposer.tsx": {
     "ax-ui/no-classname": {
       "count": 2
@@ -1069,7 +1088,7 @@
       "count": 22
     },
     "ax-ui/no-raw-elements": {
-      "count": 20
+      "count": 22
     }
   },
   "packages/channel-web/src/components/workspace/ConnectorsTab.tsx": {
@@ -1129,7 +1148,7 @@
       "count": 14
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
+      "count": 16
     }
   },
   "packages/channel-web/src/components/workspace/GrantRow.tsx": {
@@ -1208,7 +1227,7 @@
       "count": 9
     },
     "ax-ui/no-raw-elements": {
-      "count": 6
+      "count": 8
     }
   },
   "packages/channel-web/src/components/workspace/SkippedConnectorsNotice.tsx": {
@@ -1224,7 +1243,7 @@
       "count": 8
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 10
     }
   },
   "packages/channel-web/src/components/workspace/TaskAppUpdates.tsx": {
@@ -1344,7 +1363,7 @@
       "count": 18
     },
     "ax-ui/no-raw-elements": {
-      "count": 14
+      "count": 17
     }
   },
   "packages/channel-web/src/components/workspace/TaskUpdates.tsx": {
@@ -1355,7 +1374,7 @@
       "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 3
+      "count": 4
     }
   },
   "packages/channel-web/src/components/workspace/TasksPage.tsx": {
@@ -1377,7 +1396,7 @@
       "count": 15
     },
     "ax-ui/no-raw-elements": {
-      "count": 15
+      "count": 16
     }
   },
   "packages/channel-web/src/components/workspace/TodayView.tsx": {

@@ -6,8 +6,8 @@ The user's directive for this migration applies: **the functionality must stay t
 
 ## Should become cards
 
-- **Retry drops focus.** Pressing "Try again" switches `AsyncState` from error to loading, so the button unmounts and keyboard focus falls to `<body>`. Fix it once in `packages/ui`, for example by focusing the status container on retry.
-- **GeneratedFileChip stays on its own markup until S4 `FileTile`.** Moving it onto the one-line ui `Button` (fixed 40px height, no wrap) made long names overflow the chip and cover the next one, checked on kind; the change was reverted in #1262. Its shadcn button still sets `disabled` while busy, which drops focus.
+- **Retry drops focus (partly closed in S4).** `WorkspaceAttachmentChip`'s "Try again" now keeps focus. The package-level `AsyncState` retry is still open. Pressing "Try again" switches `AsyncState` from error to loading, so the button unmounts and keyboard focus falls to `<body>`. Fix it once in `packages/ui`, for example by focusing the status container on retry.
+- **CLOSED in S4: GeneratedFileChip stays on its own markup until S4 `FileTile`.** It now uses `FileTile`, and a busy chip keeps focus. Original note: Moving it onto the one-line ui `Button` (fixed 40px height, no wrap) made long names overflow the chip and cover the next one, checked on kind; the change was reverted in #1262. Its shadcn button still sets `disabled` while busy, which drops focus.
 - **IconAction busy sites need a disabled-reason tooltip.** The sites are TaskPage 907/971/992/1019 and TaskReplyBox 316. The package `IconButton` shows no tooltip while disabled. Do this in S6a.
 - **Delete task dialog.** It stays a `Dialog` because it offers "Pause instead". Moving it to `ConfirmAction` would drop that choice, which needs product sign-off; revisit in S6b. Pause agents also stays a `Dialog`, because it has a Reason field.
 - **Conversation welcome needs a hero treatment.** Either a title role or an `EmptyState` size variant. S5b/S7.
@@ -41,3 +41,14 @@ The user's directive for this migration applies: **the functionality must stay t
   - A second config block that matches channel-web goes unseen.
 - **Lint coverage.** Channel-web `.ts` files aren't covered by the tsx-only `ax-ui` block.
 - **Busy label swaps.** About 35 shadcn buttons still swap their label while busy ("Saving…"). Migrate them in S6a.
+
+## S4 follow-ups
+
+Gaps in `ListRow` and friends that S4 found but did not fill. None loses functionality; each has a workaround in place.
+
+- **`ListRow` has no current-item state.** `SidebarChats` needs `aria-current="page"`, so it keeps hand-written `<li>`s (frozen in `eslint-suppressions.json`).
+- **`ListRow` can't hold a group heading.** `TodayTaskGroup` is an `h2` plus a named group inside the queue `List`, so it stays a raw `<li>`. Either a `ListGroup` or a heading slot would let both go.
+- **`expandable` is not controllable.** `RoutinesList` and `DecisionRow` need the parent to open or close a row, so they own their own toggles.
+- **No `aria-controls` on the `RoutinesList` runs toggle.** The button says it is expanded but does not point at what it expands.
+- **`HeadingLevelContext` is not public.** Three raw `h1`/`h3` in channel-web wait on it.
+- **Frozen raw `ul`/`li`/`dl`/`time` outside chat.** Widening `no-raw-elements` froze them in admin, settings and workspace files that S5/S6 will migrate, plus chat and markdown (S7). The ratchet only lets those counts fall.
