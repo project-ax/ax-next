@@ -2,7 +2,7 @@ import { CONNECTORS_TAB_REASONS, ERROR_LABELS } from '@ax/core/turn-error-text';
 import { describe, expect, it } from 'vitest';
 import { COPY } from '../copy.js';
 import { cleanDetailLine } from '../format.js';
-import { OUTSIDER_TURN_ERRORS, SLACK_TURN_ERRORS, turnFailureLine } from '../turn-error-line.js';
+import { OUTSIDER_TURN_ERRORS, SLACK_CONNECTORS_LINES, SLACK_TURN_ERRORS, turnFailureLine } from '../turn-error-line.js';
 import type { TurnMode } from '../turn.js';
 
 /** The agent's Connectors settings, as the turn builds it: host-built, never from outside. */
@@ -29,8 +29,11 @@ describe('turnFailureLine: what a failed Slack turn says (TASK-1250)', () => {
   });
 
   it('Slack’s own wording and the outsider list name only reasons the table has', () => {
-    for (const r of [...SLACK_TURN_ERRORS.keys(), ...OUTSIDER_TURN_ERRORS]) expect(Object.keys(ERROR_LABELS)).toContain(r);
-    expect([...SLACK_TURN_ERRORS.keys()].sort()).toEqual(Object.keys(OWN).sort());
+    const own = [...SLACK_TURN_ERRORS.keys(), ...SLACK_CONNECTORS_LINES.keys()];
+    for (const r of [...own, ...OUTSIDER_TURN_ERRORS]) expect(Object.keys(ERROR_LABELS)).toContain(r);
+    expect(own.sort()).toEqual(Object.keys(OWN).sort());
+    // Every reason the shared set sends to the Connectors tab has Slack words of its own, and none but those.
+    expect([...SLACK_CONNECTORS_LINES.keys()].sort()).toEqual([...CONNECTORS_TAB_REASONS].sort());
   });
 
   // Invariant 4: which reasons the Connectors tab fixes is the shared set's

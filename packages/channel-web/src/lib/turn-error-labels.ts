@@ -18,6 +18,8 @@
  * line under the surface's own prose rather than as a standalone instruction.
  */
 
+import { CONNECTORS_TAB_REASONS } from '@ax/core/turn-error-text';
+
 export {
   DEFAULT_TURN_ERROR,
   ERROR_LABELS,
@@ -26,29 +28,17 @@ export {
 } from '@ax/core/turn-error-text';
 
 /**
- * The reason codes a LIVE turn can still fail with that a person fixes on the
- * agent's Connectors tab (TASK-796). The live failure strip offers an "Open
- * Connectors" button for these, so the sentence's "Open Connectors" is one
- * click rather than a hunt. The reloaded error row stays text-only by design
- * (see `AgentConversation`).
+ * True when the turn failed for a reason the Connectors tab fixes, so the
+ * live failure strip offers an "Open Connectors" button and the sentence's
+ * "Open Connectors" is one click rather than a hunt. The reloaded error row
+ * stays text-only by design (see `AgentConversation`).
  *
- * Only `connector-needs-reconnect` (and, since TASK-828, its plural
- * `connectors-need-reconnect`) is left (TASK-806): a connector never
- * signed in to is skipped for the turn rather than failing it, so
- * `connector-needs-sign-in` and `provider-key-missing-connector-needs-sign-in`
- * can no longer arrive on a live stream. Their LABELS stay in `ERROR_LABELS`
- * for persisted rows replayed on reload, but a replayed row has no button, so
- * they have no business here — and a stale set would offer one for a failure
- * this build never produces. A never-signed-in connector is told to the person
- * by the chat notice instead, which has its own Open Connectors button.
+ * Which reasons those are is `CONNECTORS_TAB_REASONS` in
+ * `@ax/core/turn-error-text` (TASK-1250), the set Slack's failed-turn line
+ * links the Connectors settings for too, so the two never disagree. Why it
+ * holds only the reconnect codes, and not the replay-only sign-in ones, is
+ * written there.
  */
-const CONNECTORS_TAB_REASONS: ReadonlySet<string> = new Set([
-  'connector-needs-reconnect',
-  // TASK-828 — the plural of the line above; same fix, same tab.
-  'connectors-need-reconnect',
-]);
-
-/** True when the turn failed for a reason the Connectors tab fixes. */
 export function turnErrorOpensConnectors(reason: string | null | undefined): boolean {
   return typeof reason === 'string' && CONNECTORS_TAB_REASONS.has(reason);
 }

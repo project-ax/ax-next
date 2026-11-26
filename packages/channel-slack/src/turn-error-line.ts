@@ -1,4 +1,4 @@
-import { turnErrorLabel } from '@ax/core/turn-error-text';
+import { CONNECTORS_TAB_REASONS, turnErrorLabel } from '@ax/core/turn-error-text';
 import { COPY } from './copy.js';
 import { cleanDetailLine } from './format.js';
 import type { TurnErrorIn } from './turn-registry.js';
@@ -11,13 +11,16 @@ import type { TurnMode } from './turn.js';
  *
  * The turn-error's `reason` picks the sentence. It is looked up, never
  * shown: on a member's turn it can be the runner's own text. Slack's own
- * wording comes first (`SLACK_TURN_ERRORS`, lines in copy.ts), for the three
- * reasons whose web sentence points at a web-app screen; then the shared
- * table (`@ax/core/turn-error-text`), the web's own sentences. A reason in
- * neither, or none at all, keeps Slack's generic line (`COPY.turnFailed`),
- * not the web's default: Slack says its own words for what the table
- * doesn't explain. Only a Map, a Set and core's guarded `turnErrorLabel`
- * are asked, so a reason spelled `toString` or `__proto__` finds nothing.
+ * wording comes first (lines in copy.ts), for the reasons whose web sentence
+ * points at a web-app screen: a reason in core's shared
+ * `CONNECTORS_TAB_REASONS` gets a line linking the agent's Connectors
+ * settings (`SLACK_CONNECTORS_LINES`), and the provider reason its own
+ * (`SLACK_TURN_ERRORS`); then the shared table (`@ax/core/turn-error-text`),
+ * the web's own sentences. A reason in none, or none at all, keeps Slack's
+ * generic line (`COPY.turnFailed`), not the web's default: Slack says its
+ * own words for what the table doesn't explain. Only Maps, Sets and core's
+ * guarded `turnErrorLabel` are asked, so a reason spelled `toString` or
+ * `__proto__` finds nothing.
  *
  * An outsider's turn (`external`) runs as the bot's requester, so most
  * sentences would tell a third party something false about themselves:
@@ -40,18 +43,27 @@ import type { TurnMode } from './turn.js';
  */
 
 /**
- * Slack's own sentence, given the agent's Connectors settings link, for each
- * reason a live Slack turn can fail with whose web sentence points at a
- * web-app screen. The table's other such reasons (`connector-needs-sign-in`,
- * `provider-key-missing-connector-needs-sign-in`,
+ * Slack's own sentence for each reason a live Slack turn can fail with whose
+ * web sentence points at a web-app screen, other than the Connectors tab's
+ * (`SLACK_CONNECTORS_LINES`). The table's other such reasons
+ * (`connector-needs-sign-in`, `provider-key-missing-connector-needs-sign-in`,
  * `system-prompt:brief-too-long`) are replayed rows or routine check-ins,
  * never a live Slack turn.
  */
-export const SLACK_TURN_ERRORS: ReadonlyMap<string, (connectorsLink: string) => string> = new Map<
-  string,
-  (connectorsLink: string) => string
->([
-  ['agent-model-provider-unknown', () => COPY.turnErrorProvider],
+export const SLACK_TURN_ERRORS: ReadonlyMap<string, string> = new Map([
+  ['agent-model-provider-unknown', COPY.turnErrorProvider],
+]);
+
+/**
+ * How Slack words a reason the Connectors tab fixes, given the agent's
+ * Connectors settings link. WHICH reasons get that link is not this map's
+ * call: it is `CONNECTORS_TAB_REASONS` in `@ax/core/turn-error-text`, the
+ * set the web's "Open Connectors" button reads too (invariant 4), so Slack
+ * and the web never disagree about a reason. This map only words them; a
+ * reason the shared set gains before it gains a line here still gets the
+ * link, in the plural line's words (turn-error-line.test.ts flags the gap).
+ */
+export const SLACK_CONNECTORS_LINES: ReadonlyMap<string, (connectorsLink: string) => string> = new Map([
   ['connector-needs-reconnect', COPY.turnErrorReconnect],
   ['connectors-need-reconnect', COPY.turnErrorReconnectMany],
 ]);
@@ -90,5 +102,7 @@ function sentenceFor(reason: string | undefined, mode: TurnMode, connectorsLink:
   // Exact matches only: any other mode is an outsider's (fail closed).
   const member = mode === 'dm' || mode === 'attended';
   if (!member && !OUTSIDER_TURN_ERRORS.has(reason)) return COPY.turnFailed;
-  return SLACK_TURN_ERRORS.get(reason)?.(connectorsLink) ?? turnErrorLabel(reason) ?? COPY.turnFailed;
+  if (CONNECTORS_TAB_REASONS.has(reason))
+    return (SLACK_CONNECTORS_LINES.get(reason) ?? COPY.turnErrorReconnectMany)(connectorsLink);
+  return SLACK_TURN_ERRORS.get(reason) ?? turnErrorLabel(reason) ?? COPY.turnFailed;
 }
