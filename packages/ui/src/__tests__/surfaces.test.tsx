@@ -7,6 +7,7 @@ import { Avatar, Card, InsetBlock, KeyValueList } from '../index.js';
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -58,6 +59,32 @@ describe('KeyValueList', () => {
     expect(dl).not.toBeNull();
     const kids = Array.from(dl!.querySelectorAll('dt, dd')).map((e) => `${e.tagName}:${e.textContent}`);
     expect(kids).toEqual(['DT:Owner', 'DD:Vinay', 'DT:Created', 'DD:Today']);
+  });
+
+  it('draws visible dividers between rows only (border-t + border-solid after the first)', () => {
+    const { container } = render(
+      <KeyValueList
+        items={[
+          { label: 'a', value: '1' },
+          { label: 'b', value: '2' },
+          { label: 'c', value: '3' },
+        ]}
+      />,
+    );
+    const rows = Array.from(container.querySelectorAll('dl > div'));
+    expect(rows[0]?.className).not.toContain('ax-border-t');
+    for (const row of rows.slice(1)) {
+      expect(row.className).toContain('ax-border-t');
+      expect(row.className).toContain('ax-border-solid');
+      expect(row.className).toContain('ax-border-0');
+    }
+  });
+
+  it('lets a long label wrap too', () => {
+    const { container } = render(<KeyValueList items={[{ label: 'L'.repeat(80), value: 'v' }]} />);
+    const dt = container.querySelector('dt')!;
+    expect(dt.className).toContain('ax-break-words');
+    expect(dt.className).not.toContain('ax-shrink-0');
   });
 
   it('lets long values wrap in both layouts', () => {
@@ -129,7 +156,6 @@ describe('Card and InsetBlock', () => {
         <Card>x</Card>
       </Card>,
     );
-    vi.unstubAllEnvs();
     expect(err).not.toHaveBeenCalled();
   });
 

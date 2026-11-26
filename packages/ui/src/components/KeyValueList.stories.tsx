@@ -32,6 +32,7 @@ export const LongValue: Story = {
     layout: 'rows',
     items: [
       { label: 'Owner', value: 'Vinay Pulim' },
+      { label: 'Notification delivery preferences for weekly summaries', value: 'Email' },
       { label: 'Endpoint', value: 'https://example.com/a/very/long/path/with/no/natural/breaks/abcdefghijklmnopqrstuvwxyz0123456789' },
       { label: 'Description', value: 'An agent that reads the quarterly finance exports, reconciles them against the ledger, and posts a summary every Friday morning.' },
     ],

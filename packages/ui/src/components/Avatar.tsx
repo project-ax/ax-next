@@ -22,7 +22,7 @@ const SHAPE: Record<NonNullable<AvatarProps['shape']>, string> = {
 
 const TONE: Record<NonNullable<AvatarProps['tone']>, string> = {
   brand: 'ax-bg-accent-soft ax-text-accent',
-  neutral: 'ax-bg-muted ax-text-fg ax-border ax-border-line-border',
+  neutral: 'ax-bg-muted ax-text-fg ax-border ax-border-solid ax-border-line-border',
 };
 
 // First letters of the first two words (one for a single word), uppercase.

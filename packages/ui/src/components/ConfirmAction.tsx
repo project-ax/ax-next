@@ -45,7 +45,7 @@ const defaultErrorMessage = (): string => DEFAULT_ERROR;
 // There is no scrim token: the canvas color at 80% darkens in dark mode and washes out in light mode.
 const OVERLAY = 'ax-fixed ax-inset-none ax-z-50 ax-flex ax-items-center ax-justify-center ax-overflow-y-auto ax-bg-canvas/80 ax-p-md';
 const CONTENT =
-  'ax-flex ax-w-full ax-max-w-narrow ax-flex-col ax-gap-lg ax-rounded-lg ax-border ax-border-line-border ax-bg-overlay ax-p-lg ax-shadow-overlay ' +
+  'ax-flex ax-w-full ax-max-w-narrow ax-flex-col ax-gap-lg ax-rounded-lg ax-border ax-border-solid ax-border-line-border ax-bg-overlay ax-p-lg ax-shadow-overlay ' +
   'focus:ax-outline-none';
 
 // Internal: the dialog for a given state. ConfirmAction owns the state; stories render this directly to pin the busy and error states.
