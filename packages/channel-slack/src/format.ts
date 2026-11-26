@@ -199,10 +199,14 @@ export function cleanPromptSubject(raw: string): string {
  * elsewhere in the same message could still make it a link. Nothing in this
  * line can make that definition (it is one line, and it starts with a mark,
  * below); it would have to come from the model's text in the same reply.
- * Today no exit that carries a detail shares its message with model text:
- * the reasons that carry one (a dev service that failed to start, connectors
- * to sign in again) end a turn before the model has said anything. A new
- * detail-carrying exit later in a turn would reopen this.
+ * That can happen today: a `restart_with_services` turn streams the model's
+ * text, then reopens the sandbox in the same reply, and a failed reopen ends
+ * the turn with a detail (chat-orchestrator `restart-with-services.test.ts`,
+ * "a failed restart clears serviceSet and reports the service"). Accepted:
+ * text that can write a definition can already write `[label](url)` itself,
+ * so the residual adds almost no reach. Closing it for real means putting a
+ * detail-carrying failure line in its own message when the reply already has
+ * text; a mark after `[` would not hold, since the model can type it too.
  *
  * The order matters. The cut comes first, at the web's cap (the shared
  * MAX_DETAIL_CHARS; never half an emoji), so Slack shows no more of the line

@@ -175,9 +175,10 @@ export const ERROR_LABELS: Readonly<Record<string, string>> = Object.freeze({
  * so they have no business here, and a stale set would offer one for a
  * failure this build never produces.
  *
- * Read-only for real, not just in its type: two plugins share this one
- * object, so `add`, `delete` and `clear` throw rather than let one of them
- * change what the other offers.
+ * Read-only beyond its type: two plugins share this one object, so its own
+ * `add`, `delete` and `clear` throw rather than let one of them change what
+ * the other offers by accident. (`Set.prototype.add.call` still reaches the
+ * contents; freezing doesn't protect a Set's entries.)
  */
 export const CONNECTORS_TAB_REASONS: ReadonlySet<string> = readOnlySet([
   'connector-needs-reconnect',
