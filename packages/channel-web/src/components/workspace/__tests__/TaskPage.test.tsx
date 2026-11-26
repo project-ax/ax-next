@@ -460,7 +460,8 @@ describe('TaskPage (TASK-910)', () => {
     const { onNavigate } = await renderReady();
     // A count of the note's lines, said in words.
     const notes = within(about()).getByRole('button', { name: /^Quill’s notes/ });
-    expect(notes).toHaveAccessibleName(/2 lines/);
+    // (In the row beside the toggle: a row's toggle is named by its title alone.)
+    expect(within(notes.closest('li')!).getByText(/2 lines/)).toBeInTheDocument();
     fireEvent.click(notes);
     expect(within(about()).getByText(/Ticket 4410 is from an enterprise customer\./)).toBeInTheDocument();
     expect(within(about()).getByRole('button', { name: 'Clear notes' })).toBeInTheDocument();

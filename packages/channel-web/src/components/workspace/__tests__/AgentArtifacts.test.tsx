@@ -73,6 +73,13 @@ describe('AgentArtifacts', () => {
     expect(within(items[1]!).getByText('Document · PDF')).toBeVisible();
   });
 
+  it('draws the artifacts as one named list, a row each', async () => {
+    listMock.mockResolvedValue([art({ artifactId: 'a', title: 'One' }), art({ artifactId: 'b', title: 'Two' })]);
+    renderPanel();
+    const list = await screen.findByRole('list', { name: 'Quill’s artifacts' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+  });
+
   it('the empty state speaks plainly, and Download all is hidden', async () => {
     listMock.mockResolvedValue([]);
     renderPanel();

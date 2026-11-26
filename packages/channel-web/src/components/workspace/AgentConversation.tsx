@@ -33,7 +33,7 @@ import {
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import { Avatar, AsyncState, EmptyState, fileIcon, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
+import { Avatar, AsyncState, EmptyState, fileIcon, formatTimestamp, Inline, List, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -854,14 +854,16 @@ export function AgentConversation({
         {grants.length > 0 && (
           <div className={cn(CHAT_CONTENT_CLASS, "pt-4")} data-testid="thread-grants">
             <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
-              {grants.map((g) => (
-                <GrantRow
-                  key={g.key}
-                  grant={g}
-                  onResolved={onGrantResolved}
-                  onGranted={onGranted}
-                />
-              ))}
+              <List label="Waiting on you in this chat">
+                {grants.map((g) => (
+                  <GrantRow
+                    key={g.key}
+                    grant={g}
+                    onResolved={onGrantResolved}
+                    onGranted={onGranted}
+                  />
+                ))}
+              </List>
             </div>
           </div>
         )}

@@ -28,7 +28,6 @@ import {
   AppWindow,
   ArrowLeft,
   Brain,
-  ChevronRight,
   Clock,
   Cpu,
   MessageSquare,
@@ -37,7 +36,7 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { Card, EmptyState } from '@project-ax/ui';
+import { Card, EmptyState, List, ListRow } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -176,35 +175,23 @@ export function AgentSettings(props: AgentSettingsProps) {
           <h1 className="font-brand text-[22px] font-semibold">{agent.name} settings</h1>
           <p className="mt-1 text-[13.5px] text-muted-foreground">{subtitle}</p>
           <Card flush>
-            <ul aria-label="Settings sections" className="m-0 list-none divide-y divide-border p-0">
+            <List label="Settings sections">
               {AGENT_SETTINGS_SECTIONS.map((id) => {
                 const { label, Icon, summary } = SETTINGS_SECTIONS[id];
                 return (
-                  <li key={id}>
-                    <Button
-                      variant="ghost"
-                      type="button"
-                      onClick={() => {
-                        onSection(id);
-                        setDrilled(true);
-                      }}
-                      className="h-auto min-h-11 w-full justify-start gap-3 whitespace-normal rounded-none px-4 py-3 text-left"
-                    >
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
-                        <Icon aria-hidden="true" />
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="text-[14px] font-medium">{label}</span>
-                        <span className="truncate text-[12.5px] text-muted-foreground">
-                          {summary(agent.name)}
-                        </span>
-                      </span>
-                      <ChevronRight data-icon="inline-end" aria-hidden="true" />
-                    </Button>
-                  </li>
+                  <ListRow
+                    key={id}
+                    title={label}
+                    description={summary(agent.name)}
+                    leading={<Icon aria-hidden="true" width={18} height={18} />}
+                    onOpen={() => {
+                      onSection(id);
+                      setDrilled(true);
+                    }}
+                  />
                 );
               })}
-            </ul>
+            </List>
           </Card>
         </div>
       </div>

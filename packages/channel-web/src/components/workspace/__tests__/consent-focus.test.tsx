@@ -58,7 +58,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState, type ReactNode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import { ApprovalCard } from '../ApprovalCard';
 import { DecisionRow } from '../DecisionRow';
@@ -615,9 +615,10 @@ describe('DecisionRow — the Today queue (site 3)', () => {
   });
 
   it('undo re-opens the queue row and lands on the row\u2019s own question', () => {
-    // Same journey on the queue row. Its question is the disclosure button,
-    // whose accessible name IS the question — so landing there reads it back,
-    // and it keeps its place in the Tab order because it is a real control.
+    // Same journey on the queue row. Its question is the row's title button,
+    // named for whose question it is and that it waits on a person; the question
+    // itself (the summary) is in the same row. It keeps its place in the Tab
+    // order because it is a real control.
     function UndoableQueueHarness() {
       const open = decisionFixture();
       const [d, setD] = useState<Decision>(open);
@@ -646,9 +647,11 @@ describe('DecisionRow — the Today queue (site 3)', () => {
 
     expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(
-      screen.getByRole('button', { name: /Move your 1:1 with Marcus/ }),
-    );
+    const question = screen.getByRole('button', { name: /^Quill\s*, waiting on you$/ });
+    expect(document.activeElement).toBe(question);
+    expect(
+      within(question.closest('li')!).getByText('Move your 1:1 with Marcus to Thursday 9:30?'),
+    ).toBeTruthy();
     // The disclosure must stay reachable by Tab — `tabIndex={-1}` here would
     // buy the landing at the cost of the control.
     expect(

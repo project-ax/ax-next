@@ -22,6 +22,13 @@ import type { AgentConnectorRow, AgentConnectorToolsRead } from '@/lib/workspace
 import { AgentSettings } from '../AgentSettings';
 import { rail } from './rail-fixture';
 
+/** The title of the row an icon sits in, only if the icon comes after it: the icon is "right after its name". */
+function rowTitleBefore(icon: HTMLElement): string | null | undefined {
+  const title = icon.closest('li')?.querySelector('button');
+  if (title == null) return undefined;
+  return title.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING ? title.textContent : undefined;
+}
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
@@ -174,7 +181,7 @@ describe('the row icon', () => {
   ])('%s wears a neutral icon named “%s”, right after its name', async (name, reason) => {
     renderTab();
     const icon = await screen.findByRole('button', { name: reason });
-    expect(icon.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe(name);
+    expect(rowTitleBefore(icon)).toBe(name);
     expect(icon.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     // Nothing is broken — it just isn't set up yet. Not the red error icon.
     expect(icon.className).toContain('text-muted-foreground');
@@ -390,48 +397,31 @@ describe('which account the agent uses (slice 4)', () => {
   const EXPIRED = (account: string | null) =>
     row({ id: 'gmail', name: 'Gmail', health: 'needs-reconnect', signedIn: signedIn(account) });
 
-  it('a row shows only the name; the account is in a tooltip on hover', async () => {
+  it('a row shows the name and, under it, which account the agent signed in as', async () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') }), SIGN_IN]);
     renderTab();
-    const name = await screen.findByTestId('connector-name-gmail');
-    // The row draws the name alone; the account is for screen readers only.
-    const shown = [...name.childNodes].filter(
-      (n) => !(n instanceof HTMLElement && n.classList.contains('sr-only')),
-    );
-    expect(shown.map((n) => n.textContent).join('')).toBe('Gmail');
-    expect(name.querySelector('.sr-only')?.textContent).toBe(', signed in as bob@x.com');
-    fireEvent.pointerMove(name.closest('button') ?? name, { pointerType: 'mouse' });
-    expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
+    const title = await screen.findByRole('button', { name: 'Gmail' });
+    const li = title.closest('li')!;
+    expect(within(li).getByText(/Signed in as/).textContent).toContain('bob@x.com');
   });
 
-  it('the account tooltip opens on keyboard focus too', async () => {
-    list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn('bob@x.com') })]);
-    renderTab();
-    const name = await screen.findByRole('button', { name: 'Edit Gmail' });
-    expect(name).toBeEnabled();
-    name.focus();
-    expect((await screen.findByRole('tooltip')).textContent).toBe('bob@x.com');
-  });
-
-  it('a row with no recorded account is just its name, with no tooltip', async () => {
+  it('a row with no recorded account says nothing about one', async () => {
     list([row({ id: 'gmail', name: 'Gmail', signedIn: { account: null, byName: null, byYou: false, at: null } })]);
     renderTab();
-    const name = await screen.findByTestId('connector-name-gmail');
-    expect(name.textContent).toBe('Gmail');
-    expect(name.getAttribute('tabindex')).toBeNull();
-    fireEvent.pointerMove(name.closest('button') ?? name, { pointerType: 'mouse' });
-    await new Promise((r) => setTimeout(r, 300));
-    expect(screen.queryByRole('tooltip')).toBeNull();
+    const title = await screen.findByRole('button', { name: 'Gmail' });
+    expect(title).toBeEnabled();
+    expect(within(title.closest('li')!).queryByText(/Signed in as/)).toBeNull();
   });
 
   it('renders a hostile account as literal text, never markup', async () => {
     const evil = '<img src=x onerror=alert(1)>\u202Egro.live';
     list([row({ id: 'gmail', name: 'Gmail', signedIn: signedIn(evil) })]);
     renderTab();
-    const name = await screen.findByTestId('connector-name-gmail');
-    expect(name.querySelector('.sr-only')?.textContent).toBe(`, signed in as ${evil}`);
-    expect(name.querySelector('bdi')?.textContent).toBe(evil);
-    expect(name.querySelector('img')).toBeNull();
+    const title = await screen.findByRole('button', { name: 'Gmail' });
+    const li = title.closest('li')!;
+    // Isolated (U+2068 .. U+2069) so a right-to-left account can't reorder the words around it.
+    expect(within(li).getByText(/Signed in as/).textContent).toBe(`Signed in as \u2068${evil}\u2069`);
+    expect(li.querySelector('img')).toBeNull();
     expect(document.querySelector('img[src="x"]')).toBeNull();
   });
 

@@ -1,7 +1,6 @@
 /** Agent connector management in Settings: list, details, sign-in, keys and removal. */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import {
-  ChevronRight,
   CircleAlert,
   KeyRound,
   LogIn,
@@ -11,7 +10,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, Card, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, List, ListRow, Notice, Stack } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Button } from '@/components/ui/button';
 import {
@@ -30,7 +29,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Separator } from '@/components/ui/separator';
 import {
   Tooltip,
   TooltipContent,
@@ -308,52 +306,39 @@ export function AgentConnectors({
       )}
       {status === 'ok' && connectors !== null && connectors.length > 0 && (
         <Card flush>
-          {connectors.map((row, i) => (
-            <Fragment key={row.id}>
-              {i > 0 && <Separator />}
-              <div className="flex flex-wrap items-center justify-end gap-2 px-3 py-2">
-                <AccountTooltip account={row.signedIn?.account ?? null}>
-                <Button
-                  variant="ghost"
-                  type="button"
-                  aria-label={`Edit ${row.name}`}
-                  aria-describedby={row.signedIn?.account ? `connector-account-${row.id}` : undefined}
-                  onClick={() => onView?.(row.id)}
-                  disabled={onView === undefined}
-                  className={cn(
-                    'h-auto min-h-11 min-w-0 flex-1 justify-start gap-3 whitespace-normal px-1 py-2 text-left',
-                    // At phone/tablet widths, the longer sign-in action gets
-                    // its own line so it cannot consume the identity column.
-                    canSetAccount && needsSignIn(row) && 'basis-full lg:basis-0',
-                  )}
-                >
-                  <span className="flex size-10 shrink-0 items-center justify-center rounded-md bg-muted">
-                    <Plug aria-hidden="true" />
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <ConnectorName id={row.id} name={row.name} account={row.signedIn?.account ?? null} />
-                    <span className="truncate text-[12px] text-muted-foreground">
-                      {row.health === 'ok' ? 'Ready to use' : healthReason(row, canSetAccount, isAdmin)}
-                    </span>
-                  </span>
-                  <ChevronRight data-icon="inline-end" aria-hidden="true" />
-                </Button>
-                </AccountTooltip>
-                {row.health !== 'ok' && (
-                  <HealthIcon
-                    reason={healthReason(row, canSetAccount, isAdmin)}
-                    tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
-                  />
-                )}
-                {canSetAccount && needsSignIn(row) && (
-                  <Button variant="outline" size="sm" onClick={() => onSignInAgain(row)} className="min-h-11 shrink-0">
-                    {signInLabelFor(row)}
-                  </Button>
-                )}
-                {menuFor(row, true)}
-              </div>
-            </Fragment>
-          ))}
+          <List label={`${name}’s connectors`}>
+            {connectors.map((row) => {
+              const account = row.signedIn?.account ?? null;
+              const status = row.health === 'ok' ? 'Ready to use' : healthReason(row, canSetAccount, isAdmin);
+              return (
+                <ListRow
+                  key={row.id}
+                  title={row.name}
+                  meta={status}
+                  // U+2068/U+2069 isolate a provider-supplied account (it may be right-to-left) from the words around it.
+                  {...(account !== null ? { description: `Signed in as \u2068${account}\u2069` } : {})}
+                  leading={<Plug aria-hidden="true" />}
+                  {...(onView !== undefined ? { onOpen: () => onView(row.id) } : {})}
+                  trailing={
+                    <>
+                      {row.health !== 'ok' && (
+                        <HealthIcon
+                          reason={healthReason(row, canSetAccount, isAdmin)}
+                          tone={row.health === 'needs-sign-in' ? 'neutral' : 'error'}
+                        />
+                      )}
+                      {canSetAccount && needsSignIn(row) && (
+                        <Button variant="outline" size="sm" onClick={() => onSignInAgain(row)} className="min-h-11 shrink-0">
+                          {signInLabelFor(row)}
+                        </Button>
+                      )}
+                      {menuFor(row, true)}
+                    </>
+                  }
+                />
+              );
+            })}
+          </List>
         </Card>
       )}
       </Stack>
@@ -524,49 +509,6 @@ function NoConnectors({
 }
 
 /**
- * The icon after a row's name when its health is not ok. A real `<button>` so
- * keyboard users reach it and the tooltip opens on focus as well as hover; its
- * accessible name IS the reason, so a screen reader hears it without the
- * tooltip. Clicking it does nothing on its own — the fix lives in the `⋯`
- * menu. Standard tooltip colours (product owner's call); only the icon is
- * coloured: red for an error, muted for `neutral` (TASK-795 — not set up yet,
- * which is nothing broken).
- */
-/**
- * A row's name (slice 4). Which account the agent signed in as stays off the
- * row so the list is easy to scan: the bare account shows in a tooltip on
- * hover or keyboard focus of the row button (and atop the row menu), and screen readers hear
- * ", signed in as …" with the name. A row with no recorded
- * account is plain text with no tooltip; the details button remains keyboard reachable.
- * Provider text: text nodes only, never markup; `bdi` so a right-to-left
- * account can't reorder what's around it.
- */
-function AccountTooltip({ account, children }: { account: string | null; children: React.ReactElement }) {
-  if (account === null) return children;
-  return (
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger asChild>{children}</TooltipTrigger>
-        <TooltipContent side="top"><bdi>{account}</bdi></TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
-}
-
-function ConnectorName({ id, name, account }: { id: string; name: string; account: string | null }) {
-  return (
-    <span data-testid={`connector-name-${id}`} className="min-w-0 truncate text-[13px] font-medium">
-      {name}
-      {account !== null && (
-        <span id={`connector-account-${id}`} className="sr-only">
-          , signed in as <bdi>{account}</bdi>
-        </span>
-      )}
-    </span>
-  );
-}
-
-/**
  * The agent's account atop a row menu: smaller and lighter than the actions,
  * since it is context, not something to pick. A long account is clipped and
  * faded out at the right edge rather than ellipsized; the fade is added only
@@ -595,6 +537,15 @@ function AccountLabel({ account }: { account: string }) {
   );
 }
 
+/**
+ * The icon after a row's name when its health is not ok. A real `<button>` so
+ * keyboard users reach it and the tooltip opens on focus as well as hover; its
+ * accessible name IS the reason, so a screen reader hears it without the
+ * tooltip. Clicking it does nothing on its own — the fix lives in the `⋯`
+ * menu. Standard tooltip colours (product owner's call); only the icon is
+ * coloured: red for an error, muted for `neutral` (TASK-795 — not set up yet,
+ * which is nothing broken).
+ */
 function HealthIcon({ reason, tone }: { reason: string; tone: 'error' | 'neutral' }) {
   return (
     <TooltipProvider delayDuration={200}>

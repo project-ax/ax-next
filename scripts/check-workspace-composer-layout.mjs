@@ -63,7 +63,7 @@ try {
   if(bounds.y<0 || bounds.y+bounds.height>height) failures.push(`${label}: Send is unreachable in the viewport`);
   if(await page.getByRole('button',{name:/Agent details/}).count()) await page.getByRole('button',{name:/Agent details/}).click();
   await page.getByRole('button',{name:'Settings',exact:true}).click();
-  if(width<768) await page.getByRole('button',{name:/^Instructions Rules/}).click();
+  if(width<768) await page.getByRole('list',{name:'Settings sections'}).getByRole('button',{name:'Instructions',exact:true}).click();
   await page.getByRole('heading',{name:'Instructions',exact:true}).waitFor();
   if(width<768){await page.getByRole('button',{name:'Settings',exact:true}).click();await page.getByRole('button',{name:'Chat',exact:true}).click();}
   else await page.getByRole('button',{name:'Back to chat',exact:true}).click();

@@ -781,13 +781,13 @@
   },
   "packages/channel-web/src/components/workspace/AddConnector.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 11
+      "count": 7
     },
     "ax-ui/no-classname": {
-      "count": 14
+      "count": 7
     },
     "ax-ui/no-raw-elements": {
-      "count": 16
+      "count": 10
     }
   },
   "packages/channel-web/src/components/workspace/AddKeyDialog.tsx": {
@@ -822,21 +822,10 @@
       "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 10
+      "count": 8
     },
     "ax-ui/no-raw-elements": {
       "count": 7
-    }
-  },
-  "packages/channel-web/src/components/workspace/AgentAppsRows.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 7
-    },
-    "ax-ui/no-classname": {
-      "count": 17
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 14
     }
   },
   "packages/channel-web/src/components/workspace/AgentArtifacts.tsx": {
@@ -844,7 +833,7 @@
       "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
       "count": 4
@@ -852,13 +841,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentConnectors.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 5
+      "count": 3
     },
     "ax-ui/no-classname": {
-      "count": 11
+      "count": 5
     },
     "ax-ui/no-raw-elements": {
-      "count": 11
+      "count": 5
     }
   },
   "packages/channel-web/src/components/workspace/AgentConversation.tsx": {
@@ -907,24 +896,24 @@
   },
   "packages/channel-web/src/components/workspace/AgentSelfChanges.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 8
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 2
     }
   },
   "packages/channel-web/src/components/workspace/AgentSettings.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 14
+      "count": 12
     },
     "ax-ui/no-classname": {
-      "count": 30
+      "count": 25
     },
     "ax-ui/no-raw-elements": {
-      "count": 24
+      "count": 20
     }
   },
   "packages/channel-web/src/components/workspace/AgentSlack.tsx": {
@@ -959,13 +948,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentSlackBotChannels.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "ax-ui/no-classname": {
-      "count": 7
+      "count": 2
     },
     "ax-ui/no-raw-elements": {
-      "count": 5
+      "count": 2
     }
   },
   "packages/channel-web/src/components/workspace/AgentSlackDms.tsx": {
@@ -1074,24 +1063,24 @@
   },
   "packages/channel-web/src/components/workspace/ConnectorDetails.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 14
+      "count": 13
     },
     "ax-ui/no-classname": {
-      "count": 24
+      "count": 22
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 20
     }
   },
   "packages/channel-web/src/components/workspace/ConnectorsTab.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 14
+      "count": 13
     },
     "ax-ui/no-classname": {
-      "count": 17
+      "count": 16
     },
     "ax-ui/no-raw-elements": {
-      "count": 19
+      "count": 18
     }
   },
   "packages/channel-web/src/components/workspace/ConsentAnnouncement.tsx": {
@@ -1115,13 +1104,13 @@
   },
   "packages/channel-web/src/components/workspace/DecisionRow.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 19
+      "count": 12
     },
     "ax-ui/no-classname": {
-      "count": 23
+      "count": 14
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 15
     }
   },
   "packages/channel-web/src/components/workspace/DecisionTaskBlock.tsx": {
@@ -1145,13 +1134,13 @@
   },
   "packages/channel-web/src/components/workspace/GrantRow.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 15
+      "count": 12
     },
     "ax-ui/no-classname": {
-      "count": 25
+      "count": 22
     },
     "ax-ui/no-raw-elements": {
-      "count": 26
+      "count": 23
     }
   },
   "packages/channel-web/src/components/workspace/HomeComposer.tsx": {
@@ -1175,13 +1164,13 @@
   },
   "packages/channel-web/src/components/workspace/LearnedInChat.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 9
+      "count": 7
     },
     "ax-ui/no-classname": {
-      "count": 18
+      "count": 12
     },
     "ax-ui/no-raw-elements": {
-      "count": 21
+      "count": 17
     }
   },
   "packages/channel-web/src/components/workspace/MemoryCorrection.tsx": {
@@ -1194,13 +1183,10 @@
   },
   "packages/channel-web/src/components/workspace/MemoryUsedChip.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
-    },
-    "ax-ui/no-classname": {
-      "count": 4
+      "count": 3
     },
     "ax-ui/no-raw-elements": {
-      "count": 3
+      "count": 1
     }
   },
   "packages/channel-web/src/components/workspace/RepeatTaskBody.tsx": {
@@ -1319,13 +1305,13 @@
   },
   "packages/channel-web/src/components/workspace/TaskPage.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 30
+      "count": 25
     },
     "ax-ui/no-classname": {
-      "count": 62
+      "count": 56
     },
     "ax-ui/no-raw-elements": {
-      "count": 58
+      "count": 55
     }
   },
   "packages/channel-web/src/components/workspace/TaskReadingBlock.tsx": {
@@ -1374,13 +1360,13 @@
   },
   "packages/channel-web/src/components/workspace/TasksPage.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 10
+      "count": 7
     },
     "ax-ui/no-classname": {
-      "count": 23
+      "count": 15
     },
     "ax-ui/no-raw-elements": {
-      "count": 25
+      "count": 21
     }
   },
   "packages/channel-web/src/components/workspace/TodayTaskGroup.tsx": {
@@ -1396,13 +1382,13 @@
   },
   "packages/channel-web/src/components/workspace/TodayView.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 9
+      "count": 5
     },
     "ax-ui/no-classname": {
-      "count": 17
+      "count": 11
     },
     "ax-ui/no-raw-elements": {
-      "count": 19
+      "count": 14
     }
   },
   "packages/channel-web/src/components/workspace/WorkspaceHeader.tsx": {

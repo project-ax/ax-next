@@ -6,9 +6,9 @@ import {
   Link as LinkIcon,
   Terminal,
 } from 'lucide-react';
-import { AsyncState, Card, Notice, Text } from '@project-ax/ui';
+import { AsyncState, Card, List, ListRow, Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
+import { FieldSet } from '@/components/ui/field';
 import { ConfirmAction } from '@project-ax/ui';
 import {
   Collapsible,
@@ -281,64 +281,52 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
   return (
     <>
       <Card flush>
-        <FieldGroup className="gap-0">
-        {ABILITY_ROWS.map(({ ability, label, Icon, note }, i) => {
-          const id = `ability-${ability}`;
-          const on = abilities[ability];
-          // One rule feeds both, so the row never shows what it doesn't say.
-          const rowNote = note(on);
-          const shownHint = rowNote?.hint;
-          const description = rowNote?.description;
-          const descriptionId = description ? `${id}-description` : undefined;
-          return (
-            <Fragment key={ability}>
-              {i > 0 && <Separator />}
-              <Field orientation="horizontal" data-disabled={pending.has(ability)} className="min-h-14 gap-2.5 px-4 py-3">
-                <Icon
-                  aria-hidden="true"
-                  className="size-4 shrink-0 text-muted-foreground"
-                />
-                <FieldLabel
-                  htmlFor={id}
-                  className="flex-1 text-[13px] font-normal"
-                >
-                  {label}
-                  {shownHint && (
-                    // Hidden from the accessible NAME on purpose: the switch
-                    // keeps its plain label, and a screen reader hears the
-                    // fuller sentence as its description instead (below).
-                    <span aria-hidden="true" className="ml-1 text-muted-foreground">
-                      {shownHint}
-                    </span>
-                  )}
-                </FieldLabel>
-                <Switch
-                  id={id}
-                  checked={on}
-                  disabled={pending.has(ability)}
-                  aria-describedby={descriptionId}
-                  onCheckedChange={(next) => {
-                    if (ability === 'runCode' && !next) {
-                      setConfirmRunCodeOff(true);
-                      return;
-                    }
-                    void change(ability, next);
-                  }}
-                />
-                {description && (
-                  // TASK-768 — aria-describedby, not aria-description: the
-                  // latter is read unevenly (VoiceOver). `hidden` keeps the
-                  // sentence out of browse-mode reading (no echo after the
-                  // row) while the switch's description still resolves it.
-                  <span id={descriptionId} hidden>
-                    {description}
-                  </span>
-                )}
-              </Field>
-            </Fragment>
-          );
-        })}
-        </FieldGroup>
+        <List label={`What ${name} can use`}>
+          {ABILITY_ROWS.map(({ ability, label, Icon, note }) => {
+            const id = `ability-${ability}`;
+            const on = abilities[ability];
+            // One rule feeds both, so the row never shows what it doesn't say.
+            const rowNote = note(on);
+            const shownHint = rowNote?.hint;
+            const description = rowNote?.description;
+            const descriptionId = description ? `${id}-description` : undefined;
+            return (
+              <ListRow
+                key={ability}
+                title={label}
+                leading={<Icon aria-hidden="true" width={16} height={16} />}
+                {...(shownHint ? { meta: shownHint } : {})}
+                trailing={
+                  <>
+                    <Switch
+                      id={id}
+                      aria-label={label}
+                      checked={on}
+                      disabled={pending.has(ability)}
+                      aria-describedby={descriptionId}
+                      onCheckedChange={(next) => {
+                        if (ability === 'runCode' && !next) {
+                          setConfirmRunCodeOff(true);
+                          return;
+                        }
+                        void change(ability, next);
+                      }}
+                    />
+                    {description && (
+                      // TASK-768 — aria-describedby, not aria-description: the
+                      // latter is read unevenly (VoiceOver). `hidden` keeps the
+                      // sentence out of browse-mode reading (no echo after the
+                      // row) while the switch's description still resolves it.
+                      <span id={descriptionId} hidden>
+                        {description}
+                      </span>
+                    )}
+                  </>
+                }
+              />
+            );
+          })}
+        </List>
       </Card>
       {failed && (
         <div className="mt-3">

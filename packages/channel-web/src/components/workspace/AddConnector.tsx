@@ -36,7 +36,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, Search } from 'lucide-react';
-import { AsyncState, Button as AxButton, Card, EmptyState, Notice, Text } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Card, EmptyState, List, ListRow, Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   InputGroup,
@@ -363,6 +363,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
       {load === 'ok' && available.length > 0 && (
         <div hidden={shown.length === 0}>
           <Card flush>
+            <List label={`Connectors ${name} can add`}>
             {available.map((c) => (
               <AvailableRow
                 key={c.id}
@@ -387,6 +388,7 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
                 onAdd={() => void attach(c)}
               />
             ))}
+            </List>
           </Card>
         </div>
       )}
@@ -479,13 +481,15 @@ function AvailableRow({
     );
   } else if (action === 'unloaded') {
     control = (
-      <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">{UNLOADED}</span>
+      <Text role="caption" inline>
+        {UNLOADED}
+      </Text>
     );
   } else if ((action === 'sign-in' || action === 'key') && !canSetCredential) {
     control = (
-      <span className="mr-1.5 shrink-0 text-[12px] text-muted-foreground">
+      <Text role="caption" inline>
         {action === 'sign-in' ? ASK_OWNER_SIGN_IN : ASK_OWNER_KEY}
-      </span>
+      </Text>
     );
   } else {
     control = (
@@ -509,45 +513,50 @@ function AvailableRow({
   }
 
   const message = problem?.text ?? signIn.error;
+  // A filtered-out row draws nothing, but THIS component stays mounted: it owns an in-flight sign-in (see the
+  // note at the list), so only the markup goes, never the state.
+  if (hidden) return null;
   return (
-    <div hidden={hidden} className={pending ? 'bg-primary-soft' : undefined}>
-      <div className="flex h-11 items-center gap-2 pl-3 pr-1.5">
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="truncate text-[13px] font-medium">{connector.name}</span>
-          {pending && (
-            <span role="status" className="shrink-0 text-[12px] text-muted-foreground">
-              Waiting for sign-in
-            </span>
+    <ListRow
+      title={connector.name}
+      {...(pending
+        ? {
+            meta: (
+              <span role="status">Waiting for sign-in</span>
+            ),
+          }
+        : {})}
+      trailing={control}
+      below={
+        <>
+          {consenting && !pending && (
+            <div className="flex flex-col gap-2 px-3 pb-3">
+              <Notice tone="info">
+                {`Signing in here lets ${agentName} use your ${connector.name} account for everyone who uses this agent. Only people already on it are affected.`}
+              </Notice>
+              <div className="flex justify-end gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setConsenting(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    setConsenting(false);
+                    void signIn.start();
+                  }}
+                >
+                  Continue
+                </Button>
+              </div>
+            </div>
           )}
-        </span>
-        {control}
-      </div>
-      {consenting && !pending && (
-        <div className="flex flex-col gap-2 px-3 pb-3">
-          <Notice tone="info">
-            {`Signing in here lets ${agentName} use your ${connector.name} account for everyone who uses this agent. Only people already on it are affected.`}
-          </Notice>
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setConsenting(false)}>
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                setConsenting(false);
-                void signIn.start();
-              }}
-            >
-              Continue
-            </Button>
-          </div>
-        </div>
-      )}
-      {message !== null && (
-        <div className="mx-3 mb-3">
-          <Notice tone="danger">{message}</Notice>
-        </div>
-      )}
-    </div>
+          {message !== null && (
+            <div className="mx-3 mb-3">
+              <Notice tone="danger">{message}</Notice>
+            </div>
+          )}
+        </>
+      }
+    />
   );
 }

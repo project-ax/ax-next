@@ -731,7 +731,8 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     press(screen.getByRole('button', { name: memoryUndoLabel('Boston') }));
 
     const fix = await screen.findByRole('button', { name: memoryFixLabel(text) });
-    const row = screen.getByText(text);
+    // The landing is the memory's own line, named by the statement.
+    const row = screen.getByRole('group', { name: text });
     await waitFor(() => expect(document.activeElement).toBe(row));
     expect(row.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -745,7 +746,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
     press(screen.getByRole('button', { name: memoryUndoFixLabel('Denver') }));
 
     await screen.findByRole('button', { name: memoryFixLabel(text) });
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByText(text)));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('group', { name: text })));
   });
 
   it('an Undo that fails lands on "Try again"', async () => {
@@ -798,7 +799,7 @@ describe('LearnedInChat — where focus goes after Undo or when the receipt runs
       await vi.advanceTimersByTimeAsync(11_000);
     });
     await waitFor(() => expect(screen.queryByText(MEMORY_UPDATED)).toBeNull());
-    const fixed = screen.getByText(memoryStatementText(st('a2', { value: 'Denver' })));
+    const fixed = screen.getByRole('group', { name: memoryStatementText(st('a2', { value: 'Denver' })) });
     await waitFor(() => expect(document.activeElement).toBe(fixed));
   });
 

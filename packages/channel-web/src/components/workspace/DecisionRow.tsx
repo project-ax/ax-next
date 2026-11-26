@@ -31,9 +31,9 @@
  * a blind crawl away. The row also declares no consent region of its own —
  * `TodayView` owns that, because the node has to outlive the row.
  */
-import type { ReactNode } from 'react';
-import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
-import { InsetBlock, Notice, StatusMark, Text, Timestamp } from '@project-ax/ui';
+import { useCallback, type ReactNode } from 'react';
+import { ArrowRight, RotateCcw } from 'lucide-react';
+import { InsetBlock, ListRow, Notice, StatusMark, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   RESOLUTION_FOCUS_RING,
@@ -140,11 +140,22 @@ export function DecisionRow({
             `open:${d.status}:${d.resolvedAt ?? ''}`;
   const { answerRef, armForResolution } = useResolutionFocus(answerKey);
   /*
+    The question's landing is its row's title button, and a `ListRow` hands out no ref to it. The mark in the row's
+    `leading` slot gets this ref instead and finds the button from there (the only button before the row's trailing
+    controls). It never lands on the mark itself.
+  */
+  const questionRef = useCallback(
+    (mark: HTMLElement | null) => {
+      answerRef(mark === null ? null : (mark.closest('li')?.querySelector<HTMLElement>('button') ?? null));
+    },
+    [answerRef],
+  );
+  /*
     ANNOUNCED, not only focused (TASK-442). Hung ABOVE the branch split on
     purpose: resolving swaps one subtree for another, and a live region that
     went with it would arrive already holding its message, which assistive tech
-    does not reliably announce. It is also FIRST, so the row's own `div` is
-    still its parent's last child and `last:border-b-0` keeps working.
+    does not reliably announce. It lives in the row's `below` slot, which is
+    mounted for the collapsed row and the receipt alike.
     `ConsentAnnouncement` carries the rest of the argument.
 
     THE OPEN BRANCH SPEAKS HERE TOO (TASK-535). Collapsed is the Today
@@ -179,129 +190,94 @@ export function DecisionRow({
 
   if (outcome !== null) {
     return (
-      <>
-        {announcement}
-        <div
-          className="flex flex-col gap-1 border-b border-rule-soft px-5 py-3.5 last:border-b-0"
-          data-testid={`decision-${d.id}`}
-          data-status={d.status}
-        >
-          {/*
-            THE FOCUS TARGET. Undo sits INSIDE it so that the first tabbable
-            thing from here is Undo itself — one Tab, well inside the ten
-            seconds the window lasts. `tabIndex={-1}` keeps it a destination
-            rather than an extra stop in everyone else's Tab order.
-          */}
-          <div
-            ref={answerRef}
-            tabIndex={-1}
-            data-testid={`decision-outcome-${d.id}`}
-            className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
-          >
-            <StatusMark tone={STATE_TONE[TONE_DOT[outcome.tone]]} />
+      <ListRow
+        title={outcome.line}
+        // The row is one receipt: its mark, the authored line, the way back (Undo, only while the server says it can
+        // still be taken back) and, under it, the note and any refusal.
+        leading={
+          <span data-testid={`decision-${d.id}`} data-status={d.status}>
+            {/*
+              THE FOCUS TARGET. Undo is the very next tabbable thing after it, so one Tab reaches Undo, well
+              inside the ten seconds the window lasts. `tabIndex={-1}` keeps it a destination rather than an
+              extra stop in everyone else's Tab order. Named by the outcome line, so landing here reads it back.
+            */}
             <span
-              className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
-              title={outcome.line}
-            >
-              {outcome.line}
-            </span>
-            {undoLeft > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  armForResolution();
-                  onUndo();
-                }}
-                disabled={busy}
-                className="h-7 gap-1.5 text-[12px] text-primary"
-              >
-                <RotateCcw size={11} />
-                Undo · {undoLeft}s
-              </Button>
-            )}
-          </div>
-          {outcome.note !== null && (
-            <p className="pl-[22px] text-[12px] leading-relaxed text-muted-foreground">
-              {outcome.note}
-            </p>
-          )}
-          {/*
-            A REFUSED UNDO lands here (TASK-427) — the row is still resolved, the
-            Undo button has gone, and this line is the only thing that changed.
-            Last among this branch's `answerRef` holders, so it wins the ref.
-          */}
-          {notice !== null && (
-            <p
               ref={answerRef}
               tabIndex={-1}
-              className={`pl-[22px] text-[12px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+              role="group"
+              aria-label={outcome.line}
+              data-testid={`decision-outcome-${d.id}`}
+              className={`inline-flex rounded-sm ${RESOLUTION_FOCUS_RING}`}
             >
-              {notice}
-            </p>
-          )}
-        </div>
-      </>
+              <StatusMark tone={STATE_TONE[TONE_DOT[outcome.tone]]} />
+            </span>
+          </span>
+        }
+        {...(outcome.note !== null ? { description: outcome.note } : {})}
+        {...(undoLeft > 0
+          ? {
+              trailing: (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    armForResolution();
+                    onUndo();
+                  }}
+                  disabled={busy}
+                  className="h-7 gap-1.5 text-[12px] text-primary"
+                >
+                  <RotateCcw size={11} />
+                  Undo · {undoLeft}s
+                </Button>
+              ),
+            }
+          : {})}
+        below={
+          <>
+            {announcement}
+            {/*
+              A REFUSED UNDO lands here (TASK-427) — the row is still resolved, the
+              Undo button has gone, and this line is the only thing that changed.
+              Last among this branch's `answerRef` holders, so it wins the ref.
+            */}
+            {notice !== null && (
+              <p
+                ref={answerRef}
+                tabIndex={-1}
+                className={`px-3 pb-3 text-[12px] leading-relaxed text-destructive ${RESOLUTION_FOCUS_RING}`}
+              >
+                {notice}
+              </p>
+            )}
+          </>
+        }
+      />
     );
   }
 
   return (
-    <>
-      {announcement}
-      <div
-        className={cnRow(stale)}
-        data-testid={`decision-${d.id}`}
-        data-status={d.status}
-      >
-        {/*
-          THE QUESTION, and therefore where Undo puts you (TASK-427): undoing
-          re-opens the row, unmounting the receipt the person was standing on.
-          This button's accessible name IS the question — agent, summary, age —
-          so landing here reads it back. NO `tabIndex={-1}`: it is a real control
-          and taking it out of the Tab order would be a regression. Pressing it
-          only opens or closes the row, which is the one thing on this card that
-          cannot cost anybody anything.
-        */}
-        <button
-          ref={answerRef}
-          type="button"
-          onClick={onToggle}
-          className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
-        >
+    <ListRow
+      title={stale ? agent.name : `${agent.name}, ${stateWord('held').toLowerCase()}`}
+      description={stale ? DECISION_STALE_SUMMARY : d.summary}
+      meta={<Timestamp value={d.createdAt} />}
+      onOpen={onToggle}
+      /*
+        THE QUESTION, and therefore where Undo puts you (TASK-427): undoing re-opens the row, unmounting the receipt
+        the person was standing on. The title button is a real control, so it is the landing: its name says whose
+        question this is and that it waits on a person, and the summary and age sit in the row beside it. The mark
+        carries the ref because the row has none of its own: it finds its row's title button.
+      */
+      leading={
+        <span ref={questionRef} data-testid={`decision-${d.id}`} data-status={d.status}>
           <StatusMark tone={STATE_TONE[stale ? 'stopped' : 'held']} />
-          <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
-          {/*
-            On a held question the dot is the only thing that says the state —
-            the text beside it is the question, not the state — and the dot is
-            `aria-hidden` (TASK-544). So the button SAYS it too, after the name,
-            the way the sidebar roster does: "Scheduler, waiting on you". A
-            stale row skips it: its visible summary already says what happened.
-          */}
-          {!stale && (
-            <span className="sr-only">, {stateWord('held').toLowerCase()}</span>
-          )}
-          <span
-            className={
-              stale
-                ? 'min-w-0 flex-1 truncate text-[13.5px] text-destructive'
-                : 'min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground'
-            }
-            title={stale ? DECISION_STALE_SUMMARY : d.summary}
-          >
-            {stale ? DECISION_STALE_SUMMARY : d.summary}
-          </span>
-          <span className="shrink-0 text-[12.5px] text-muted-foreground">
-            <Timestamp value={d.createdAt} />
-          </span>
-          {expanded ? (
-            <ChevronUp size={13} className="shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronDown size={13} className="shrink-0 text-muted-foreground" />
-          )}
-        </button>
-
-        {expanded && (
-          <div className="px-5 pb-5 pl-[46px]">
+        </span>
+      }
+      below={
+        <>
+          {announcement}
+          {expanded && (
+          <div className="px-3 pb-4">
             {/*
               A FOCUS TARGET, because this is an ANSWER (TASK-427) — approving a
               row the guard trips re-opens it rather than resolving it, so there
@@ -445,8 +421,9 @@ export function DecisionRow({
             </div>
           </div>
         )}
-      </div>
-    </>
+        </>
+      }
+    />
   );
 }
 
@@ -473,10 +450,4 @@ function AnswerNotice({
       </Notice>
     </div>
   );
-}
-
-function cnRow(stale: boolean): string {
-  return stale
-    ? 'border-b border-rule-soft bg-destructive-soft/50 last:border-b-0'
-    : 'border-b border-rule-soft last:border-b-0';
 }

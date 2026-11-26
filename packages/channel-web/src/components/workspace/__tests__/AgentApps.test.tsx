@@ -150,7 +150,9 @@ describe('AgentApps', () => {
     };
     await renderApps(read({ links: [{ ...LINK, grants: [GRANT, viewerGrant] }] }));
     const list = screen.getByRole('list', { name: 'Apps that use this agent' });
-    const app = within(list).getByRole('listitem', { name: 'Sprint board' });
+    const app = within(list).getByText('Sprint board').closest('li')!;
+    // The what-it-can-use list is its own named list inside the app's row.
+    expect(within(app).getByRole('list', { name: 'What Sprint board can use' })).toBeTruthy();
     expect(within(app).getByText(LINK.appId)).toBeTruthy();
     expect(within(app).getByText('Linear')).toBeTruthy();
     expect(within(app).getByText("This agent's sign-in")).toBeTruthy();

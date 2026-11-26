@@ -475,12 +475,58 @@ describe('a grant when the decisions queue cannot be read', () => {
   the element in `title`, and an agent with NOTHING to report gets no `title`
   at all rather than an empty tooltip.
 */
+describe('the queue is one list (one divider method)', () => {
+  it('holds a grant, a task block and a loose approval as the rows of one named list', () => {
+    renderToday({
+      grants: [hostGrant],
+      tasks: [needsYouTask()],
+      decisions: [decision({ id: 'd2' })],
+    });
+    const queue = screen.getByRole('list', { name: 'Waiting on you' });
+    // Three rows of the queue itself: the grant, the task's block, the loose approval.
+    const rows = within(queue).getAllByRole('listitem').filter((li) => li.closest('ul') === queue);
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]!).getByText('Allow access to example.org?')).toBeInTheDocument();
+    expect(within(rows[1]!).getByRole('group', { name: new RegExp(TASK_NAME) })).toBeInTheDocument();
+    expect(within(rows[2]!).getByRole('button', { name: /^Quill\s*, waiting on you$/ })).toBeInTheDocument();
+  });
+
+  it('draws a task’s approvals as a named list inside its block, and none when it has none', () => {
+    renderToday({
+      tasks: [needsYouTask()],
+      decisions: [heldDuring('t1', TASK_NAME, { id: 'd1', summary: 'Close ticket #4410?' })],
+    });
+    const approvals = within(taskBlock()).getByRole('list', { name: `Approvals for ${TASK_NAME}` });
+    expect(within(approvals).getByText('Close ticket #4410?')).toBeInTheDocument();
+  });
+
+  it('draws no queue list when nothing is waiting (no empty list for a screen reader to announce)', () => {
+    renderToday();
+    expect(screen.queryByRole('list')).toBeNull();
+  });
+
+  it('lists the agents that are working as rows that open the agent', () => {
+    const onOpenAgent = vi.fn();
+    renderToday({
+      filter: 'working',
+      onOpenAgent,
+      agents: [agent({ state: 'working', now: 'Reading the inbox', counter: { done: 2, total: 5, unit: 'tickets' } })],
+    });
+    const list = screen.getByRole('list', { name: 'Working now' });
+    const row = within(list).getByRole('listitem');
+    expect(within(row).getByText('Reading the inbox')).toBeInTheDocument();
+    expect(within(row).getByText(/2 of 5 tickets/)).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole('button', { name: 'Quill' }));
+    expect(onOpenAgent).toHaveBeenCalledWith('a-quill');
+  });
+});
+
 describe('a clamped activity line (TASK-436)', () => {
-  it('keeps the whole line reachable in `title`', () => {
+  it('keeps the whole line in the row as its description', () => {
     const now =
       'Reading the EMEA regional breakdown and reconciling it against the Q3 purchase orders';
     renderToday({ filter: 'working', agents: [agent({ state: 'working', now })] });
-    expect(screen.getByText(now).getAttribute('title')).toBe(now);
+    expect(screen.getByText(now).getAttribute('data-part')).toBe('description');
   });
 
   it('adds no empty `title` when there is nothing to say', () => {
@@ -884,6 +930,18 @@ describe('the changes agents made to themselves', () => {
     expect(screen.getByText('changed its personality')).toBeInTheDocument();
     expect(screen.getByText('changed how it describes itself')).toBeInTheDocument();
     expect(screen.getAllByText('Quill')).toHaveLength(2);
+  });
+
+  it('lists them as one named list, a row per change, with Review beside the row it reviews', () => {
+    renderToday({
+      selfChanges: [soulChange, { ...soulChange, section: 'identity' }],
+      onReviewSelfChange: vi.fn(),
+    });
+    const list = screen.getByRole('list', { name: HEADING });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByRole('button', { name: 'Review: Quill changed its personality' })).toBeTruthy();
+    expect(within(rows[1]!).getByRole('button', { name: 'Review: Quill changed how it describes itself' })).toBeTruthy();
   });
 
   it('never counts as waiting', () => {

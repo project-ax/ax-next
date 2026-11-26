@@ -116,7 +116,7 @@ function renderAdd(role: 'admin' | 'user' = 'user') {
 
 function row(name: string): HTMLElement {
   const label = screen.getByText(name, { selector: 'span' });
-  return label.closest('div[class*="h-11"]') as HTMLElement;
+  return label.closest('li') as HTMLElement;
 }
 
 async function ready() {
@@ -278,6 +278,22 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     expect(attachMock).not.toHaveBeenCalled();
   });
 
+  it('a search that hides a row does not end its sign-in: the row comes back still waiting', async () => {
+    renderAdd();
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+    const search = screen.getByRole('searchbox', { name: 'Search connectors' });
+    fireEvent.change(search, { target: { value: 'zen' } });
+    // Gone from the list while it does not match...
+    expect(screen.queryByText('Notion', { selector: 'span' })).toBeNull();
+    // ...but its popup is still open and its state is still held.
+    expect(popup.close).not.toHaveBeenCalled();
+    fireEvent.change(search, { target: { value: '' } });
+    expect(within(row('Notion')).getByText('Waiting for sign-in')).toBeTruthy();
+    expect(within(row('Notion')).getByRole('button', { name: 'Cancel' })).toBeTruthy();
+  });
+
   // Review focus — the popup closed mid-flow with no answer: nothing is added,
   // no spinner is left behind, and the row offers Add again.
   it('a popup closed without any message puts the row back to Add — no spinner, no attach', async () => {
@@ -404,7 +420,7 @@ describe('OAuth: Add opens the sign-in, and the server adds it', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add — Notion' }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
     postOAuth('notion', 'error', reason);
-    expect(await within(row('Notion').parentElement!).findByText(copy)).toBeTruthy();
+    expect(await within(row('Notion')).findByText(copy)).toBeTruthy();
     expect(screen.queryByText(/provider said/)).toBeNull();
     expect(onAttached).not.toHaveBeenCalled();
     expect(attachMock).not.toHaveBeenCalled();

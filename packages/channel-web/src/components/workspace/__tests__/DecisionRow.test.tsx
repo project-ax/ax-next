@@ -244,16 +244,17 @@ describe('DecisionRow — the outcomes the host cannot claim', () => {
 });
 
 /*
-  TASK-436 — the collapsed summary is one clamped line, and it is the only
-  thing the reader has to go on before opening the row. jsdom has no CSS, so
-  this asserts the recoverable half: the whole summary is in `title`.
+  TASK-436 — the collapsed summary is the only thing the reader has to go on
+  before opening the row. jsdom has no CSS, so this asserts the recoverable
+  half: the row draws the whole summary as its description (the list row clamps
+  it to two lines in CSS), never a cut copy.
 */
 describe('DecisionRow — a clamped summary (TASK-436)', () => {
-  it('keeps the whole summary reachable in `title`', () => {
+  it('keeps the whole summary in the row as its description', () => {
     const summary =
       'Move the quarterly review with the EMEA regional leads from Thursday 09:30 to Friday 14:00 and re-invite everyone';
     renderRow(decisionFixture({ summary }), false);
-    expect(screen.getByText(summary).getAttribute('title')).toBe(summary);
+    expect(screen.getByText(summary).getAttribute('data-part')).toBe('description');
   });
 });
 
@@ -317,10 +318,9 @@ describe('DecisionRow — the held question says its state', () => {
     ).toBeTruthy();
   });
 
-  it('keeps the word out of sight — it is for assistive tech only', () => {
+  it('says it in the row’s title, where everyone can read it', () => {
     renderRow(decisionFixture(), false);
-    const word = screen.getByText(/^, waiting on you$/);
-    expect(word.className.split(/\s+/)).toContain('sr-only');
+    expect(screen.getByText('Scheduler, waiting on you')).toBeVisible();
   });
 
   it('does not add it to a stale row, whose visible summary already says it', () => {

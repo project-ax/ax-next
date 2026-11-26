@@ -28,7 +28,7 @@
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
-import { AsyncState, Avatar, Card, EmptyState, Notice, StatusMark } from '@project-ax/ui';
+import { AsyncState, Avatar, Card, EmptyState, List, ListRow, Notice, StatusBadge, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -43,7 +43,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Separator } from '@/components/ui/separator';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
@@ -397,7 +396,7 @@ function RowSection({
           {title} <span className="font-normal tabular-nums">{rows.length}</span>
         </span>
       </h2>
-      <TaskList rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} />
+      <TaskList rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} label={title} />
     </section>
   );
 }
@@ -474,20 +473,15 @@ function TaskList({
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
   onReply?: ((route: TaskRoute) => void) | undefined;
-  label?: string;
+  label: string;
 }) {
-  // `overflow-hidden`: a row's hover fill must follow the card's rounded
-  // corners, and its focus ring is drawn inside the row for the same reason.
   return (
     <Card flush>
-      <ul aria-label={label}>
-        {rows.map((row, i) => (
-          <li key={`${row.agentId}:${row.routineId}`}>
-            {i > 0 && <Separator />}
-            <TaskItem row={row} now={now} onNavigate={onNavigate} onReply={onReply} />
-          </li>
+      <List label={label}>
+        {rows.map((row) => (
+          <TaskItem key={`${row.agentId}:${row.routineId}`} row={row} now={now} onNavigate={onNavigate} onReply={onReply} />
         ))}
-      </ul>
+      </List>
     </Card>
   );
 }
@@ -519,52 +513,59 @@ function TaskItem({
   const needsYou = row.kind !== 'repeat' && taskGroup(row) === 'needs-you';
   const latest = rowLatest(row);
   const fact = rowFact(row, now);
+  const link = routeLinkProps(route, onNavigate);
+  // The visible words are hidden from screen readers so the sentence isn't read twice.
+  const factWords =
+    fact === null ? null : (
+      <span title={fact.full}>
+        <span aria-hidden="true">{fact.short}</span>
+        <span className="sr-only">{fact.full}</span>
+      </span>
+    );
   return (
-    <div className="flex items-center gap-1 transition-colors hover:bg-accent">
-      <a
-        {...routeLinkProps(route, onNavigate)}
-        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      >
-        <span className="shrink-0" title={row.agentName}>
-          <Avatar name={row.agentName} size="sm" />
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
-          <span id={nameId} className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0" title={row.name}>
-            {row.name}
-          </span>
-          {latest !== null && (
-            <span
-              className={cn('min-w-0 truncate text-[13px]', needsYou ? 'text-foreground' : 'text-muted-foreground')}
-              title={latest.text}
-            >
-              {latest.ask ? '“' : null}
-              {latest.text}
-              {latest.ask ? '”' : null}
-            </span>
+    <ListRow
+      title={row.name}
+      href={link.href}
+      onNavigate={link.onClick}
+      leading={<Avatar name={row.agentName} size="sm" />}
+      // The agent's name is said on every row (the avatar is only its initial); every row keeps its fact, a late
+      // finish date in the danger tone.
+      meta={
+        <>
+          <span>{row.agentName}</span>
+          {fact !== null && (
+            <>
+              {' · '}
+              {fact.late ? (
+                <StatusBadge tone="danger" size="sm">
+                  {factWords}
+                </StatusBadge>
+              ) : (
+                factWords
+              )}
+            </>
           )}
-        </span>
-        <TaskKindIcon kind={row.kind} className="hidden sm:inline-flex" />
-        <span className="sr-only">{row.agentName}</span>
-        {/* Every row keeps its fact (a late finish date is the one in the error colour); a needs-you row's Reply follows it, beside the link. */}
-        {fact !== null && (
-          <span
-            className={cn('shrink-0 text-[13px] tabular-nums', fact.late ? 'text-destructive' : 'text-muted-foreground')}
-            title={fact.full}
-          >
-            <span aria-hidden="true">{fact.short}</span>
-            <span className="sr-only">{fact.full}</span>
-          </span>
-        )}
-      </a>
-      {needsYou && (
-        <IconAction
-          icon={MessageSquare}
-          label="Reply"
-          aria-describedby={nameId}
-          className="mr-3 shrink-0"
-          onClick={() => (onReply ?? onNavigate)(route)}
-        />
-      )}
-    </div>
+        </>
+      }
+      {...(latest !== null ? { description: latest.ask ? `“${latest.text}”` : latest.text } : {})}
+      trailing={
+        <>
+          <TaskKindIcon kind={row.kind} />
+          {needsYou && (
+            <>
+              <span id={nameId} hidden>
+                {row.name}
+              </span>
+              <IconAction
+                icon={MessageSquare}
+                label="Reply"
+                aria-describedby={nameId}
+                onClick={() => (onReply ?? onNavigate)(route)}
+              />
+            </>
+          )}
+        </>
+      }
+    />
   );
 }

@@ -80,7 +80,7 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
         onUndo={vi.fn()}
       />,
     );
-    const row = container.querySelector(`[data-testid="decision-${d.id}"]`)!;
+    const row = container.querySelector(`[data-testid="decision-${d.id}"]`)!.closest('li')!;
     expect(diamondIn(row)).not.toBeNull();
     expect(row.textContent!.toLowerCase()).toContain(WORDS);
   });

@@ -3,19 +3,18 @@
  * (reports, pages, spreadsheets). List only — opening one is the parent's job
  * (`onOpen`), so the chat's artifact card can open the same viewer.
  *
- * Each row is a `FileTile` row: an icon square (the slot a thumbnail will
+ * Each row is a `FileTile` row in a `List`: an icon square (the slot a thumbnail will
  * fill later), the title, and "Type · EXT" underneath.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
-import { AsyncState, EmptyState, FileTile, Notice } from '@project-ax/ui';
+import { AsyncState, EmptyState, FileTile, List, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { artifactTypeLine } from '@/lib/artifact-labels';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveFromUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { useAgentArtifacts } from '@/lib/use-agent-artifacts';
 import { ArtifactsDownloadRefused, workspaceApi } from '@/lib/workspace-api';
-import type { ArtifactSummary } from '@/lib/workspace-types';
 
 const FAILED_NOTE = 'That download didn’t start, so nothing was saved. Try again in a moment.';
 const BUSY_NOTE = 'One download at a time, please — try again in a moment.';
@@ -29,22 +28,6 @@ function downloadNote(e: unknown): string {
     if (e.status === 413) return TOO_BIG_NOTE;
   }
   return FAILED_NOTE;
-}
-
-/**
- * One artifact: the row opens it. The row renders its own `li`. Its icon comes
- * from the extension, as on the chat's artifact card and published mark.
- */
-function ArtifactRow({ artifact, onOpen }: { artifact: ArtifactSummary; onOpen: () => void }) {
-  return (
-    <FileTile
-      variant="row"
-      name={artifact.title}
-      kind={artifact.extension}
-      detail={artifactTypeLine(artifact)}
-      onOpen={onOpen}
-    />
-  );
 }
 
 export function AgentArtifacts({
@@ -149,11 +132,18 @@ export function AgentArtifacts({
           <Notice tone={note === DOWNLOAD_STARTED_NOTE ? 'success' : 'danger'}>{note}</Notice>
         </div>
       )}
-      <ul className="flex flex-col">
+      <List label={`${agentName}’s artifacts`}>
         {artifacts.map((a) => (
-          <ArtifactRow key={a.artifactId} artifact={a} onOpen={() => onOpen(a.artifactId)} />
+          <FileTile
+            key={a.artifactId}
+            variant="row"
+            name={a.title}
+            kind={a.extension}
+            detail={artifactTypeLine(a)}
+            onOpen={() => onOpen(a.artifactId)}
+          />
         ))}
-      </ul>
+      </List>
     </div>
   );
 }

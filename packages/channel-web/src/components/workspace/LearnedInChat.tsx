@@ -16,10 +16,9 @@ import { ChevronRight } from 'lucide-react';
  * `useConversationMemory`, owned by `AgentView` (see that hook for why).
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Text, StatusBadge, Timestamp } from '@project-ax/ui';
+import { List, ListRow, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Separator } from '@/components/ui/separator';
 import type { FactMemoryStatement } from '@/lib/workspace-api';
 import type { ConversationMemory, LearnedRow } from '@/lib/use-conversation-memory';
 import { previewSource, type TurnSource } from '@/lib/thread-jump';
@@ -252,14 +251,17 @@ export function LearnedInChat({
                 (current.kind === 'forgotten' || current.kind === 'undo-failed') &&
                 current.row.id === statement.id
               ) {
-                return (
-                  <MemoryReceipt
-                    receipt={current}
-                    now={receipt.now}
-                    onUndo={(row) => void receipt.undo(row)}
-                    onUndoFix={(fix) => void receipt.undoFix(fix)}
-                  />
-                );
+                // The row is gone: its receipt stands in its place, outside the list's rows.
+                return {
+                  receipt: (
+                    <MemoryReceipt
+                      receipt={current}
+                      now={receipt.now}
+                      onUndo={(row) => void receipt.undo(row)}
+                      onUndoFix={(fix) => void receipt.undoFix(fix)}
+                    />
+                  ),
+                };
               }
               const mine = current !== null && receiptRowId === statement.id;
               const note =
@@ -268,36 +270,35 @@ export function LearnedInChat({
                     ? MEMORY_RESTORED
                     : MEMORY_FIX_UNDONE
                   : null;
-              const line = (
-                <LearnedLine
-                  learned={r}
-                  now={now}
-                  note={note}
-                  source={
-                    statement.sourceTurnId === undefined
-                      ? undefined
-                      : sourceOf(statement.sourceTurnId)
-                  }
-                  onJump={onJumpToSource}
-                  onFix={() => setFixTarget(statement)}
-                  onForget={() => setForgetTarget(statement)}
-                />
-              );
               // A fix keeps its row (in its new form) and offers Undo under it.
-              if (mine && (current.kind === 'updated' || current.kind === 'fix-undo-failed')) {
-                return (
-                  <div className="flex flex-col gap-1.5">
-                    {line}
-                    <MemoryReceipt
-                      receipt={current}
-                      now={receipt.now}
-                      onUndo={(row) => void receipt.undo(row)}
-                      onUndoFix={(fix) => void receipt.undoFix(fix)}
-                      />
-                  </div>
-                );
-              }
-              return line;
+              const below =
+                mine && (current.kind === 'updated' || current.kind === 'fix-undo-failed') ? (
+                  <MemoryReceipt
+                    receipt={current}
+                    now={receipt.now}
+                    onUndo={(row) => void receipt.undo(row)}
+                    onUndoFix={(fix) => void receipt.undoFix(fix)}
+                  />
+                ) : null;
+              return {
+                row: (
+                  <LearnedLine
+                    key={statement.id}
+                    learned={r}
+                    now={now}
+                    note={note}
+                    below={below}
+                    source={
+                      statement.sourceTurnId === undefined
+                        ? undefined
+                        : sourceOf(statement.sourceTurnId)
+                    }
+                    onJump={onJumpToSource}
+                    onFix={() => setFixTarget(statement)}
+                    onForget={() => setForgetTarget(statement)}
+                  />
+                ),
+              };
             }}
           />
           {onSeeAll && (
@@ -360,7 +361,7 @@ function Body({
   expanded: boolean;
   onExpand: () => void;
   onOpenModelKeys: (() => void) | undefined;
-  renderRow: (r: LearnedRow) => React.ReactNode;
+  renderRow: (r: LearnedRow) => { row: React.ReactElement } | { receipt: React.ReactNode };
 }) {
   if (memory.status === 'not-enabled') return <Text role="meta">{LEARNED_NOT_ENABLED}</Text>;
   if (memory.status === 'loading') return <Text role="meta">{LEARNED_LOADING}</Text>;
@@ -410,28 +411,20 @@ function Body({
         <Text role="meta">{LEARNED_NOTHING_NEW}</Text>
       )}
       {visible.length > 0 && (
-        <ul className="flex flex-col gap-2.5">
-          {visible.map((r, i) => {
-            const prev = visible[i - 1];
-            const newBatch = prev !== undefined && prev.batch !== r.batch;
+        <Stack gap="md">
+          {segments(visible, renderRow).map((seg) => {
+            if ('receipt' in seg) return <Fragment key={seg.key}>{seg.receipt}</Fragment>;
             return (
-              <Fragment key={r.row.id}>
-                {newBatch && (
-                  <li aria-hidden="true">
-                    <Separator />
-                  </li>
+              <Fragment key={seg.key}>
+                {seg.batch === 0 && hasLive && (
+                  // A group label: it names the list under it and is not one of its items.
+                  <Text role="meta">{LEARNED_EARLIER}</Text>
                 )}
-                {r.batch === 0 && hasLive && (prev === undefined || prev.batch !== 0) && (
-                  // A group label, not an item: kept out of the list's count.
-                  <li role="presentation" className="text-[11.5px] font-medium text-muted-foreground">
-                    {LEARNED_EARLIER}
-                  </li>
-                )}
-                <li>{renderRow(r)}</li>
+                <List label={seg.batch === 0 && hasLive ? LEARNED_EARLIER : LEARNED_TITLE}>{seg.rows}</List>
               </Fragment>
             );
           })}
-        </ul>
+        </Stack>
       )}
       {hidden > 0 && (
         <Button
@@ -448,18 +441,47 @@ function Body({
   );
 }
 
+/**
+ * The visible rows as drawn: runs of memories from one batch are one `List` (a new batch starts a new list, so the
+ * batches stay apart), and a row replaced by its receipt is drawn on its own between them.
+ */
+type Segment =
+  | { key: string; batch: number; rows: React.ReactElement[] }
+  | { key: string; receipt: React.ReactNode };
+
+function segments(
+  visible: LearnedRow[],
+  renderRow: (r: LearnedRow) => { row: React.ReactElement } | { receipt: React.ReactNode },
+): Segment[] {
+  const out: Segment[] = [];
+  for (const r of visible) {
+    const drawn = renderRow(r);
+    if ('receipt' in drawn) {
+      out.push({ key: `receipt:${r.row.id}`, receipt: drawn.receipt });
+      continue;
+    }
+    const last = out[out.length - 1];
+    if (last !== undefined && 'rows' in last && last.batch === r.batch) last.rows.push(drawn.row);
+    else out.push({ key: `rows:${r.row.id}`, batch: r.batch, rows: [drawn.row] });
+  }
+  return out;
+}
+
 function LearnedLine({
   learned,
   now,
   note,
   source,
   onJump,
+  below,
   onFix,
   onForget,
 }: {
   learned: LearnedRow;
   now: number;
   note: string | null;
+  /** A receipt that belongs under the row (a fix's Undo). */
+  below: React.ReactNode;
   /** The row's source turn, when that turn is in the thread on screen. */
   source: TurnSource | undefined;
   onJump: (turnId: string) => void;
@@ -471,37 +493,43 @@ function LearnedLine({
   // A link only to a turn that is on screen (`source`): one that is not would jump nowhere.
   const turnId = row.sourceTurnId;
   return (
-    <div className="flex flex-col gap-0.5">
-      <p {...memoryRowLanding(row.id, 'text-[13px] leading-snug')}>{text}</p>
-      <div className="flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-muted-foreground">
-        {turnId !== undefined && source !== undefined && (
-          <Button
-            type="button"
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[11.5px] font-normal text-muted-foreground underline"
-            aria-label={learnedSourceLabel(source.speaker, source.excerpt)}
-            onMouseEnter={() => previewSource(turnId, true)}
-            onMouseLeave={() => previewSource(turnId, false)}
-            onFocus={() => previewSource(turnId, true)}
-            onBlur={() => previewSource(turnId, false)}
-            onClick={() => {
-              previewSource(turnId, false);
-              onJump(turnId);
-            }}
-          >
-            {learnedSourceText(source.speaker)}
-          </Button>
-        )}
-        {turnId !== undefined && source !== undefined && arrivedAt !== null && <span aria-hidden="true">·</span>}
-        {arrivedAt !== null && (
-          <span>
-            <Timestamp value={arrivedAt} now={new Date(now)} />
-          </span>
-        )}
-        {/* Said out loud by the receipt's announcer, not here (TASK-651). */}
-        {note !== null && <span>{note}</span>}
-        <span className="ml-auto flex gap-0.5">
+    <ListRow
+      title={text}
+      // The memory's own line is where focus lands after an Undo (TASK-651): script-focusable and named by the
+      // statement, so landing on it reads the memory back.
+      meta={
+        <span role="group" aria-label={text} {...memoryRowLanding(row.id)}>
+          {turnId !== undefined && source !== undefined && (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[11.5px] font-normal text-muted-foreground underline"
+              aria-label={learnedSourceLabel(source.speaker, source.excerpt)}
+              onMouseEnter={() => previewSource(turnId, true)}
+              onMouseLeave={() => previewSource(turnId, false)}
+              onFocus={() => previewSource(turnId, true)}
+              onBlur={() => previewSource(turnId, false)}
+              onClick={() => {
+                previewSource(turnId, false);
+                onJump(turnId);
+              }}
+            >
+              {learnedSourceText(source.speaker)}
+            </Button>
+          )}
+          {turnId !== undefined && source !== undefined && arrivedAt !== null && <span aria-hidden="true"> · </span>}
+          {arrivedAt !== null && (
+            <span>
+              <Timestamp value={arrivedAt} now={new Date(now)} />
+            </span>
+          )}
+          {/* Said out loud by the receipt's announcer, not here (TASK-651). */}
+          {note !== null && <span> {note}</span>}
+        </span>
+      }
+      trailing={
+        <>
           {/* Styled like GrantLine's Revoke, and never behind a ⋯ menu. */}
           <Button
             type="button"
@@ -523,9 +551,10 @@ function LearnedLine({
           >
             {MEMORY_FORGET}
           </Button>
-        </span>
-      </div>
-    </div>
+        </>
+      }
+      {...(below !== null ? { below } : {})}
+    />
   );
 }
 

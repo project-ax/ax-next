@@ -107,9 +107,14 @@ function groupHeadings(): string[] {
   return screen.queryAllByRole('heading', { level: 2 }).map((h) => h.textContent ?? '');
 }
 
-/** The task's row link, found by the task's name. */
+/** The task's row link (the row's title), found by the task's name. */
 function rowLink(name: string): HTMLElement {
-  return screen.getByText(name, { selector: 'a span' }).closest('a') as HTMLElement;
+  return screen.getByRole('link', { name });
+}
+
+/** The task's whole row (list item): its link, its latest line, its fact and its trailing controls. */
+function rowItem(name: string): HTMLElement {
+  return rowLink(name).closest('li') as HTMLElement;
 }
 
 function ready(tasks: TaskRow[]): TasksState {
@@ -146,11 +151,12 @@ describe('TasksPage (TASK-909)', () => {
       repeat: { lastRunAt: new Date(2026, 9, 26, 12, 0).toISOString(), status: 'error', error: 'Delivery failed.', warning: null, active: 0, waiting: 2, sharedThread: false, appUpdates: true } })]));
     renderPage();
     const line = 'Last run failed. Delivery failed. · 2 app updates waiting';
-    expect(await screen.findByText(line)).toHaveAttribute('title', line);
+    // The whole line is the row's description (clamped to two lines by the row, never cut in the page).
+    expect((await screen.findByText(line)).getAttribute('data-part')).toBe('description');
     expect(groupHeadings()).toEqual(['Repeat jobs 1']);
     expect(screen.queryByText('No update yet')).not.toBeInTheDocument();
     // Its right-hand fact is when it last ran: the weekday and clock within the week, spoken in full.
-    expect(within(rowLink('Daily digest')).getByText('Last run Mon 12:00 PM')).toBeInTheDocument();
+    expect(within(rowItem('Daily digest')).getByText('Last run Mon 12:00 PM')).toBeInTheDocument();
   });
   it('draws the state it is handed, without reading anything (TASK-933)', () => {
     render(<TasksPage onTaskWriteSucceeded={vi.fn()} state={ready([row('Sweep', { task: report('on-track') })])} retry={vi.fn()} onNavigate={vi.fn()} onReply={vi.fn()} />);
@@ -191,16 +197,16 @@ describe('TasksPage (TASK-909)', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Morning inbox');
+    await screen.findByRole('link', { name: 'Morning inbox' });
     expect(groupHeadings()).toEqual(['Needs you 2', 'On track 1', 'No update yet 1']);
 
     // Each count is the rows under its own heading.
     const needsYou = screen.getByRole('region', { name: 'Needs you 2' });
     expect(within(needsYou).getAllByRole('listitem')).toHaveLength(2);
-    expect(within(needsYou).getByText('Morning inbox')).toBeInTheDocument();
-    expect(within(needsYou).getByText('Overdue invoices')).toBeInTheDocument();
+    expect(within(needsYou).getByRole('link', { name: 'Morning inbox' })).toBeInTheDocument();
+    expect(within(needsYou).getByRole('link', { name: 'Overdue invoices' })).toBeInTheDocument();
     const noUpdate = screen.getByRole('region', { name: 'No update yet 1' });
-    expect(within(noUpdate).getByText('Weekly digest')).toBeInTheDocument();
+    expect(within(noUpdate).getByRole('link', { name: 'Weekly digest' })).toBeInTheDocument();
     // No summary strip: the headings are the only counts.
     expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
   });
@@ -214,7 +220,7 @@ describe('TasksPage (TASK-909)', () => {
       ]),
     );
     const first = renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     expect(groupHeadings()).toEqual(['Needs you 1']);
     expect(screen.queryByText('Old inbox')).not.toBeInTheDocument();
 
@@ -257,7 +263,7 @@ describe('TasksPage (TASK-909)', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Morning inbox');
+    await screen.findByRole('link', { name: 'Morning inbox' });
     expect(groupHeadings()).toEqual([
       'Needs you 1',
       'Off track 1',
@@ -265,9 +271,9 @@ describe('TasksPage (TASK-909)', () => {
       'On track 1',
     ]);
     const needsYou = screen.getByRole('region', { name: 'Needs you 1' });
-    expect(within(needsYou).getByText('Weekly digest')).toBeInTheDocument();
+    expect(within(needsYou).getByRole('link', { name: 'Weekly digest' })).toBeInTheDocument();
     const quiet = screen.getByRole('region', { name: 'No recent update 1' });
-    expect(within(quiet).getByText('Morning inbox')).toBeInTheDocument();
+    expect(within(quiet).getByRole('link', { name: 'Morning inbox' })).toBeInTheDocument();
   });
 
   it('a row with no recent update shows why instead of its stale update', async () => {
@@ -285,16 +291,16 @@ describe('TasksPage (TASK-909)', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Morning inbox');
+    await screen.findByRole('link', { name: 'Morning inbox' });
     expect(screen.queryByText('Stale: all quiet.')).not.toBeInTheDocument();
     expect(screen.queryByText('Also stale.')).not.toBeInTheDocument();
     expect(screen.getByText('Its instructions are too long to load.')).toBeInTheDocument();
     const line =
       'Its last 3 check-ins didn’t leave an update. It checked in but didn’t say how it went.';
-    expect(screen.getByText(line)).toHaveAttribute('title', line);
+    expect(screen.getByText(line).getAttribute('data-part')).toBe('description');
     // "checked" dates the miss; the three-miss row needs you, and keeps its fact beside its Reply.
-    expect(within(rowLink('Morning inbox')).getByText(/^Checked /)).toBeInTheDocument();
-    expect(within(rowLink('Weekly digest')).getByText(/^Checked /)).toBeInTheDocument();
+    expect(within(rowItem('Morning inbox')).getByText(/^Checked /)).toBeInTheDocument();
+    expect(within(rowItem('Weekly digest')).getByText(/^Checked /)).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
   });
 
@@ -316,7 +322,7 @@ describe('TasksPage (TASK-909)', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     const line = 'Paused after 5 check-ins in a row didn’t leave an update.';
     expect(screen.queryByText(line)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '2 paused tasks' }));
@@ -361,7 +367,7 @@ describe('TasksPage (TASK-909)', () => {
     const note = await screen.findByText(
       'We couldn’t load tasks from Juniper and Quill just now, so some may be missing.',
     );
-    expect(screen.getByText('Support queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Support queue' })).toBeInTheDocument();
     // Red, and no title: it sits over rows the page can still show (lib/read-register.ts).
     const alert = note.closest('[role="alert"]') as HTMLElement;
     expect(alert).not.toBeNull();
@@ -374,11 +380,11 @@ describe('TasksPage (TASK-909)', () => {
     // Busy, not disabled: it keeps its place and its label while the re-read runs.
     expect(retry).toHaveAttribute('aria-busy', 'true');
     expect(retry).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByText('Support queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Support queue' })).toBeInTheDocument();
 
     await act(async () => refresh.resolve(page([row('Support queue', { task: report('on-track') })])));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByText('Support queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Support queue' })).toBeInTheDocument();
   });
 
   it('keeps the rows when Try again fails, and says the list may be out of date', async () => {
@@ -398,7 +404,7 @@ describe('TasksPage (TASK-909)', () => {
         'We couldn’t refresh your tasks just now, so this list may be out of date.',
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText('Support queue')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Support queue' })).toBeInTheDocument();
     expect(screen.getByText(partial)).toBeInTheDocument();
     expect(
       screen.queryByText('We couldn’t load your tasks just now. Nothing was lost.'),
@@ -415,8 +421,9 @@ describe('TasksPage (TASK-909)', () => {
       page([row(NAME, { task: report('on-track', { update: UPDATE }) })]),
     );
     const { container } = renderPage();
-    const update = await screen.findByTitle(UPDATE);
+    const update = await screen.findByText(UPDATE);
     expect(update.textContent).toBe(UPDATE);
+    expect(update.getAttribute('data-part')).toBe('description');
     expect(screen.getByTitle(NAME).textContent).toBe(NAME);
     expect(container.querySelector('ul strong, ul b, ul img')).toBeNull();
     // The one link is the row's own (TASK-910), never one the update wrote.
@@ -427,8 +434,8 @@ describe('TasksPage (TASK-909)', () => {
     const ASK = '<img src=x onerror=alert(1)> **Keep checking**, or pause?';
     tasksMock.mockResolvedValue(page([row('Inbox', { task: report('needs-you', { ask: ASK }) })]));
     const { container } = renderPage();
-    const ask = await screen.findByTitle(ASK);
-    expect(ask.textContent).toBe(`“${ASK}”`);
+    const ask = await screen.findByText(`“${ASK}”`);
+    expect(ask.getAttribute('data-part')).toBe('description');
     expect(container.querySelector('ul img, ul strong')).toBeNull();
   });
 
@@ -438,8 +445,9 @@ describe('TasksPage (TASK-909)', () => {
     const UPDATE = `${'Two invoices are three days old and one is waiting on Acme. '.repeat(8)}End.`;
     tasksMock.mockResolvedValue(page([row(NAME, { task: report('needs-you', { update: UPDATE }) })]));
     renderPage();
-    expect(await screen.findByText(NAME)).toHaveAttribute('title', NAME);
-    expect(screen.getByText(UPDATE)).toHaveAttribute('title', UPDATE);
+    expect(await screen.findByRole('link', { name: NAME })).toHaveAttribute('title', NAME);
+    // The update is the row's description: clamped to two lines by the row, whole in the page.
+    expect(screen.getByText(UPDATE).getAttribute('data-part')).toBe('description');
   });
 
   it('dates a report from when it was written, and a never-reported task not at all', async () => {
@@ -458,8 +466,8 @@ describe('TasksPage (TASK-909)', () => {
     );
     renderPage();
     expect(await screen.findByText('Checked 4 min ago')).toBeInTheDocument();
-    expect(within(rowLink('Support queue')).getByText('4 min ago')).toBeInTheDocument();
-    const digest = rowLink('Weekly digest');
+    expect(within(rowItem('Support queue')).getByText('4 min ago')).toBeInTheDocument();
+    const digest = rowItem('Weekly digest');
     expect(within(digest).getByText('Juniper').textContent).toBe('Juniper');
     expect(within(digest).queryByText(/^Checked /)).toBeNull();
 
@@ -533,7 +541,7 @@ describe('TasksPage (TASK-909)', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('We couldn’t load your tasks just now.');
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByText('Support queue')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Support queue' })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(tasksMock).toHaveBeenCalledTimes(2);
   });
@@ -555,8 +563,9 @@ describe('TasksPage (TASK-909)', () => {
     const { onNavigate } = renderPage();
     const link = await screen.findByRole('link', { name: /Support queue/ });
     expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1');
-    // The name leads, then what the icons stand for, then whose task it is.
-    expect(link).toHaveAccessibleName(/^Support queue .*Stay on top.*Caveman/);
+    // The link is named for the task alone; what the icon stands for and whose task it is sit in its row, after it.
+    expect(link).toHaveAccessibleName('Support queue');
+    expect(link.closest('li')).toHaveTextContent(/Caveman.*Stay on top|Stay on top.*Caveman/);
 
     fireEvent.click(link, { ctrlKey: true });
     expect(onNavigate).not.toHaveBeenCalled();
@@ -579,11 +588,11 @@ describe('TasksPage (TASK-909)', () => {
     );
     const { onNavigate, onReply } = renderPage();
     // A needs-you row keeps its right-hand fact, and Reply comes after it.
-    await screen.findByText('Support queue');
-    expect(within(rowLink('Support queue')).getByText(/^Checked /)).toBeInTheDocument();
-    expect(within(rowLink('Weekly digest')).getByText(/^Checked /)).toBeInTheDocument();
+    await screen.findByRole('link', { name: 'Support queue' });
+    expect(within(rowItem('Support queue')).getByText(/^Checked /)).toBeInTheDocument();
+    expect(within(rowItem('Weekly digest')).getByText(/^Checked /)).toBeInTheDocument();
     const reply = await screen.findByRole('button', { name: 'Reply' });
-    const fact = within(rowLink('Support queue')).getByText(/^Checked /);
+    const fact = within(rowItem('Support queue')).getByText(/^Checked /);
     expect(fact.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(reply).toHaveAccessibleDescription('Support queue');
     const link = rowLink('Support queue');
@@ -591,10 +600,10 @@ describe('TasksPage (TASK-909)', () => {
     expect(link.querySelector('button')).toBeNull();
     expect(reply.closest('li')).toBe(link.closest('li'));
     // The ask is the row's line, quoted, in the foreground.
-    const ask = within(link).getByText('“Keep checking, or pause?”');
-    expect(ask).toHaveClass('text-foreground');
-    expect(ask).toHaveAttribute('title', 'Keep checking, or pause?');
-    expect(within(link).queryByText('Nothing new since this morning.')).toBeNull();
+    const item = rowItem('Support queue');
+    const ask = within(item).getByText('“Keep checking, or pause?”');
+    expect(ask.getAttribute('data-part')).toBe('description');
+    expect(within(item).queryByText('Nothing new since this morning.')).toBeNull();
 
     // Reply opens the task with its reply box focused: the shell's own Reply, not a plain visit.
     fireEvent.click(reply);
@@ -602,8 +611,8 @@ describe('TasksPage (TASK-909)', () => {
     expect(onNavigate).not.toHaveBeenCalled();
     // Only the row that needs you gets one.
     expect(screen.getAllByRole('button', { name: 'Reply' })).toHaveLength(1);
-    expect(within(rowLink('Weekly digest')).getByText('Nothing new since this morning.')).toHaveClass(
-      'text-muted-foreground',
+    expect(within(rowItem('Weekly digest')).getByText('Nothing new since this morning.')).toHaveClass(
+      'ax-text-fg-muted',
     );
   });
 
@@ -626,7 +635,7 @@ describe('TasksPage (TASK-909)', () => {
     expect(await screen.findByText('2 of 5 steps')).toBeInTheDocument();
     expect(screen.getByText('2/5')).toBeInTheDocument();
     expect(screen.queryByText(/checked/i)).toBeNull();
-    expect(screen.getByRole('link', { name: /Get something done/ })).toBeInTheDocument();
+    expect(within(rowItem('Move the help docs')).getByText('Get something done')).toBeInTheDocument();
   });
 
   it('a get-done task with no steps yet reads as any other row (TASK-948)', async () => {
@@ -677,16 +686,16 @@ describe('TasksPage (TASK-909)', () => {
     );
     renderPage();
     expect(await screen.findAllByText('2 of 5 steps · 9 days left')).toHaveLength(1);
-    expect(within(rowLink('Nine')).getByText('2/5 · Oct 31')).toBeInTheDocument();
+    expect(within(rowItem('Nine')).getByText('2/5 · Oct 31')).toBeInTheDocument();
     expect(screen.getByText('2 of 5 steps · Due today')).toBeInTheDocument();
     const late = screen.getByText('2 of 5 steps · 3 days past its finish date');
     // Past its date is the one fact drawn in the error colour (with its words, never colour alone).
-    expect(late.parentElement).toHaveClass('text-destructive');
-    expect(within(rowLink('No steps, never reported')).getByText('9 days left')).toBeInTheDocument();
+    expect(late.closest('[class*="ax-text-status-danger"]')).not.toBeNull();
+    expect(within(rowItem('No steps, never reported')).getByText('9 days left')).toBeInTheDocument();
     expect(screen.getByText('Checked 4 min ago · 9 days left')).toBeInTheDocument();
-    expect(within(rowLink('Undated')).getByText('2 of 5 steps')).toBeInTheDocument();
+    expect(within(rowItem('Undated')).getByText('2 of 5 steps')).toBeInTheDocument();
     // The stay-on-top row has no fact at all: just its agent's name.
-    const stay = rowLink('Stay on top');
+    const stay = rowItem('Stay on top');
     expect(within(stay).getByText('Caveman')).toBeInTheDocument();
     expect(within(stay).queryByText(/left|Due|Checked/)).toBeNull();
   });
@@ -706,10 +715,11 @@ describe('TasksPage: a needs-you row keeps its fact', () => {
     );
     renderPage();
     const late = await screen.findByText('2 of 5 steps · 3 days past its finish date');
-    expect(late.parentElement).toHaveClass('text-destructive');
+    expect(late.closest('[class*="ax-text-status-danger"]')).not.toBeNull();
     const reply = screen.getByRole('button', { name: 'Reply' });
     expect(late.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(rowLink('Late and asking').contains(reply)).toBe(false);
+    expect(reply.closest('li')).toBe(rowItem('Late and asking'));
   });
 });
 
@@ -727,9 +737,9 @@ describe('TasksPage: the latest line', () => {
   it('a row whose update fenced to nothing shows no line', async () => {
     tasksMock.mockResolvedValue(page([row('Support queue', { task: report('on-track', { update: null }) })]));
     renderPage();
-    await screen.findByText('Support queue');
-    // The name is the one clamped line left.
-    expect(rowLink('Support queue').querySelectorAll('span.truncate')).toHaveLength(1);
+    await screen.findByRole('link', { name: 'Support queue' });
+    // The name is the one line left: the row draws no description.
+    expect(rowItem('Support queue').querySelector('[data-part="description"]')).toBeNull();
   });
 });
 
@@ -737,7 +747,7 @@ describe('TasksPage: agent filter', () => {
   it('is hidden while every row is one agent’s', async () => {
     tasksMock.mockResolvedValue(page([row('Support queue'), row('Weekly digest')]));
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     expect(screen.queryByRole('button', { name: 'Filter by agent' })).not.toBeInTheDocument();
   });
 
@@ -750,7 +760,7 @@ describe('TasksPage: agent filter', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     const filter = screen.getByRole('button', { name: 'Filter by agent' });
     expect(filter.querySelector('svg.lucide-bot')).not.toBeNull();
     fireEvent.pointerDown(filter, { button: 0, ctrlKey: false });
@@ -826,7 +836,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     expect(groupHeadings()).toEqual(['On track 1']);
     expect(screen.queryByText('Tidy the garage')).not.toBeInTheDocument();
 
@@ -870,7 +880,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
   it('the done toggle shows only when a task is done, and counts them', async () => {
     tasksMock.mockResolvedValueOnce(page([row('Support queue', { task: report('on-track') })]));
     const first = renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     expect(screen.queryByRole('button', { name: /done/ })).not.toBeInTheDocument();
     first.unmount();
 
@@ -878,7 +888,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
       page([done('One', ago(HOUR)), done('Two', ago(9 * DAY)), row('Support queue')]),
     );
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     const toggle = screen.getByRole('button', { name: '2 done tasks' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('One')).not.toBeInTheDocument();
@@ -895,7 +905,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
       ]),
     );
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     openDone(3);
 
     const list = screen.getByRole('list', { name: 'Done tasks' });
@@ -918,7 +928,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
       page([done('Last week', ago(8 * DAY)), row('Support queue', { task: report('on-track') })]),
     );
     renderPage();
-    await screen.findByText('Support queue');
+    await screen.findByRole('link', { name: 'Support queue' });
     expect(screen.queryByText('Last week')).not.toBeInTheDocument();
     expect(groupHeadings()).toEqual(['On track 1']);
     openDone(1);
@@ -971,7 +981,7 @@ describe('TasksPage: Done tasks (TASK-950)', () => {
       page([row('Daily digest', { kind: 'repeat', repeat: { lastRunAt: null, status: null, error: null, warning: null, active: 0, waiting: 0, sharedThread: false, appUpdates: false } })]),
     );
     renderPage();
-    await screen.findByText('Daily digest');
+    await screen.findByRole('link', { name: 'Daily digest' });
     expect(screen.queryByText(CALM)).not.toBeInTheDocument();
   });
 
@@ -1034,14 +1044,14 @@ describe('TasksPage: claimed completion wording (TASK-959)', () => {
       row('Finished', { enabled: false, kind: 'get-done', doneAt: new Date().toISOString(), task: report('needs-you', { doneClaimed: true }) }),
     ]));
     renderPage();
-    await screen.findByText('Claimed');
-    const claim = rowLink('Claimed');
+    await screen.findByRole('link', { name: 'Claimed' });
+    const claim = rowItem('Claimed');
     expect(within(claim).getByText('Thinks it’s done')).toBeVisible();
     // At most one latest line: the claim wins over the update.
     expect(within(claim).queryByText('All articles moved.')).toBeNull();
-    expect(within(rowLink('Ordinary')).queryByText('Thinks it’s done')).toBeNull();
+    expect(within(rowItem('Ordinary')).queryByText('Thinks it’s done')).toBeNull();
     openFinished();
-    expect(within(rowLink('Finished')).queryByText('Thinks it’s done')).toBeNull();
+    expect(within(rowItem('Finished')).queryByText('Thinks it’s done')).toBeNull();
   });
 
   it('keeps missed-check-in wording ahead of an old claim', async () => {
@@ -1051,8 +1061,8 @@ describe('TasksPage: claimed completion wording (TASK-959)', () => {
       noRecentUpdate: { inARow: 3, reason: 'no-report', at: new Date().toISOString(), autoPaused: false },
     })]));
     renderPage();
-    await screen.findByText('Missed');
-    const link = rowLink('Missed');
+    await screen.findByRole('link', { name: 'Missed' });
+    const link = rowItem('Missed');
     expect(link).toHaveTextContent('Its last 3 check-ins didn’t leave an update.');
     expect(within(link).queryByText('Thinks it’s done')).toBeNull();
     expect(within(link).queryByText('Old update.')).toBeNull();

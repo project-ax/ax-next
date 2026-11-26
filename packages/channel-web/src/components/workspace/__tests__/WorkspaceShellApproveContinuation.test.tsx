@@ -260,7 +260,7 @@ describe('approve in the agent thread → the continuation streams live (TASK-54
     try {
       renderAt('/workspace');
       // Today's rows start collapsed; the question itself is the toggle.
-      fireEvent.click(await screen.findByRole('button', { name: new RegExp(open.summary.slice(0, 20)) }));
+      fireEvent.click(await screen.findByRole('button', { name: /, waiting on you$/ }));
       const yes = await screen.findByRole('button', { name: open.primaryLabel });
 
       answerApprove('req-cont-1');
