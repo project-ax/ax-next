@@ -1,6 +1,6 @@
 /**
  * TASK-1101 — one listing in Admin › Connectors › Find in directory: a
- * settings row (its title, who published it, its description and chips)
+ * list row (its title, who published it, its description and chips)
  * whose sheet holds the details and "Set it up".
  *
  * Registry text is untrusted: text nodes only, the URL shown only as its
@@ -18,9 +18,9 @@
  * declares no key, not that nobody signs in, so it gets no chip and never
  * "No sign-in".
  *
- * shadcn primitives and semantic tokens only (invariant 6). The chips are
- * `StatusBadge`s, which render a `span`, so they are valid inside the row's
- * `button`.
+ * One design language (invariant 6): a `ListRow` through `SheetRow`. The chips
+ * are `StatusBadge`s in the row's trailing slot, so they sit beside the title
+ * button, not inside it.
  */
 import { ShieldCheck } from 'lucide-react';
 import { formatTimestamp, KeyValueList, Notice, Stack, StatusBadge } from '@project-ax/ui';

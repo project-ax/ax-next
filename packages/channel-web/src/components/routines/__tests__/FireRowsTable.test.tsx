@@ -125,7 +125,10 @@ describe('FireRowsTable warning', () => {
         fires={[{ ...firstFire, status: 'error', error: 'boom', warning: WARNING }]}
       />,
     );
-    expect(screen.getByText('boom').closest('.ax-text-status-danger')).not.toBeNull();
+    // The whole message wraps in a danger notice under the row (not a one-line badge); the warning stays out of it.
+    const error = screen.getByText('boom');
+    expect(error.closest('[class*="status-danger"]')).not.toBeNull();
+    expect(error.closest('li')).toBe(screen.getByTestId('routine-warning').closest('li'));
     expect(screen.getByTestId('routine-warning').className).not.toContain('destructive');
   });
 
@@ -146,7 +149,9 @@ describe('FireRowsTable list', () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent('first fire prompt');
     expect(rows[1]).toHaveTextContent('later prompt');
-    expect(within(rows[0]!).getByRole('button', { name: 'Run by tick' })).toBeInTheDocument();
+    // Prompt, warning and error sit under their row with no toggle: no two rows share a button name.
+    expect(within(rows[0]!).getByText('Run by tick')).toBeInTheDocument();
+    expect(within(list).queryAllByRole('button')).toEqual([]);
     expect(rows[0]!.querySelector('time')).not.toBeNull();
   });
 });

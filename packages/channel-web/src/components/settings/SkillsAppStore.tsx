@@ -469,7 +469,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                       key={key}
                       sheet={!fixedAgentId}
                       title={a.description || a.skillId}
-                      meta={fixedAgentId ? `${a.skillId} · ${a.agentId}` : `Authored by your agent · ${a.status === 'active' ? 'Active' : 'Pending review'}`}
+                      meta={fixedAgentId ? `${a.skillId} · ${a.agentId}` : `${a.skillId} · ${a.agentId} · ${a.status === 'active' ? 'Active' : 'Pending review'}`}
                       actions={<>
                         <StatusBadge tone={a.status === 'active' ? 'success' : 'neutral'} dot>
                           {a.status === 'active' ? 'active' : 'pending review'}

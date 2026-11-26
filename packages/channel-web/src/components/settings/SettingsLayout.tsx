@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from 'react';
+import { createContext, useContext, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
 import { ListRow } from '@project-ax/ui';
@@ -56,16 +56,28 @@ export function SheetRow({ title, meta, description, trailing, sheetDescription,
   children: ReactNode | ((close: () => void) => ReactNode);
 }) {
   const [open, setOpen] = useState(false);
+  // The row's own button, kept from the click: Safari does not focus a clicked button, so the sheet's "previously
+  // focused element" would be <body>. If the row is gone by the time the sheet closes, the sheet's default applies.
+  const opener = useRef<HTMLElement | null>(null);
   return <>
     <ListRow
       title={title}
       {...(meta ? { meta } : {})}
       {...(description ? { description } : {})}
       {...(trailing ? { trailing } : {})}
-      onOpen={() => setOpen(true)}
+      onOpen={(event) => { opener.current = event.currentTarget; setOpen(true); }}
     />
     <Sheet open={open} onOpenChange={setOpen}>
-      <SheetContent className="w-full overflow-y-auto sm:max-w-[424px]">
+      <SheetContent
+        className="w-full overflow-y-auto sm:max-w-[424px]"
+        onCloseAutoFocus={(event) => {
+          const el = opener.current;
+          if (el?.isConnected) {
+            event.preventDefault();
+            el.focus();
+          }
+        }}
+      >
         <SheetHeader>
           <SheetTitle>{title}</SheetTitle>
           <SheetDescription asChild><div>{sheetDescription || description || meta || 'Manage this setting.'}</div></SheetDescription>

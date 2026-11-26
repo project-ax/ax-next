@@ -236,8 +236,9 @@ describe('AgentSelfImprovementSection list', () => {
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
     fireEvent.click(sw);
     const row = sw.closest('li') as HTMLElement;
-    await waitFor(() => expect(row.nextElementSibling).not.toBeNull());
-    expect(within(row.nextElementSibling as HTMLElement).getByRole('alert')).toHaveTextContent("Couldn't save: nope");
+    // The alert is inside the agent's own list item, and the list still has one item per agent.
+    expect(await within(row).findByRole('alert')).toHaveTextContent("Couldn't save: nope");
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
     await waitFor(() => expect(sw).toHaveAttribute('aria-checked', 'true'));
   });
 });

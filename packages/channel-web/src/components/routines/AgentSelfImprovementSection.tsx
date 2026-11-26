@@ -161,22 +161,20 @@ function AgentToggleRow({
     </div>
   );
 
-  return <>
+  return (
     <ListRow
       title={agentName}
       trailing={
         <Switch
-          id={switchId}
           aria-label={`Skill self-improvement for ${agentName}`}
           checked={state.enabled === true}
           disabled={state.enabled === undefined || state.saving}
           onCheckedChange={(v) => void onToggle(v)}
         />
       }
+      {...(hasErrors ? { below: errors } : {})}
     />
-    {/* A load or save problem is a row of its own: an li, so the list stays valid, with the alert intact. */}
-    {hasErrors && <li>{errors}</li>}
-  </>;
+  );
 }
 
 export function AgentSelfImprovementSection({
@@ -296,7 +294,6 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
             key={row.defaultRoutineId}
             title={row.name}
             trailing={<Switch
-              id={`default-${row.defaultRoutineId}`}
               aria-label={row.name}
               checked={row.enabled}
               disabled={busy !== null}

@@ -43,4 +43,14 @@ describe('ProvidersPanel list', () => {
     expect(within(rows[0]!).getByRole('button', { name: 'Anthropic' })).toBeInTheDocument();
     await waitFor(() => expect(rows[0]).toHaveTextContent('Not set'));
   });
+
+  it('a failed key check is announced inside its own provider row, and the list keeps one item per provider', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('nope', { status: 500 }));
+    render(<ProvidersPanel />);
+    const alerts = await screen.findAllByRole('alert');
+    const rows = within(screen.getByRole('list', { name: 'Model providers' })).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByRole('alert')).toHaveTextContent('Could not check this key.');
+    expect(alerts).toHaveLength(2);
+  });
 });

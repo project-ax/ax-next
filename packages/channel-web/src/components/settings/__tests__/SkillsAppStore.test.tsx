@@ -333,6 +333,16 @@ describe('SkillsAppStore', () => {
     authoredTitle = 'An agent-authored draft.';
   });
 
+  it('an authored draft says which skill and which agent wrote it, on both pages', async () => {
+    mockListAuthored.mockResolvedValue(AUTHORED);
+    const { unmount } = render(<SkillsAppStore isAdmin={false} />);
+    expect(await findRow('authored-drafted')).toHaveTextContent('drafted · a1');
+    unmount();
+    render(<SkillsAppStore isAdmin={false} agentId="a1" />);
+    const list = await screen.findByRole('list', { name: 'Authored by your agents' });
+    expect(within(list).getByRole('listitem')).toHaveTextContent('drafted · a1');
+  });
+
   it('an authored draft shows an Edit (adopt-&-edit) button', async () => {
     mockListAuthored.mockResolvedValue(AUTHORED);
     render(<SkillsAppStore isAdmin={false} />);

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ACTIVE_HOURS_REPAIR_MESSAGE } from '@ax/routines-contract';
 import { Pencil, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -274,8 +274,8 @@ export function RoutinesList({
       ) : (
         <List label="Routines">
         {list?.map((row) => (
-          <Fragment key={rowKey(row)}>
             <ListRow
+              key={rowKey(row)}
               title={row.name}
               meta={<>
                 <TriggerChip schedule={row.schedule} webhook={row.webhook} />
@@ -325,10 +325,7 @@ export function RoutinesList({
                   </Button>
                 )}
               </>}
-            />
-            {/* The recent-runs panel is a row of its own (an li), so the list stays valid and List draws its divider. */}
-            {expanded === rowKey(row) && (
-              <li>
+              {...(expanded === rowKey(row) ? { below: (
                 <div className="flex flex-col gap-3 pb-4">
                   {row.description && (
                     <p className="text-sm text-muted-foreground">
@@ -384,10 +381,8 @@ export function RoutinesList({
                     <p className="text-sm text-muted-foreground">No runs yet.</p>
                   )}
                 </div>
-  
-              </li>
-            )}
-          </Fragment>
+              ) } : {})}
+            />
         ))}
         {unreadable.map((row) => (
           <ListRow

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AsyncState, Card, ConfirmAction, EmptyState, List, ListRow } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, List, ListRow, Text } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Button } from '@/components/ui/button';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
@@ -163,7 +163,8 @@ export function AllowedSitesPanel() {
                 <ListRow
                   key={host}
                   title={host}
-                  description={isAllAgents(ids) ? 'All agents' : ids.slice().sort().map(agentName).join(', ')}
+                  // Under the row, wrapping: a description would clamp at two lines and hide the later agents.
+                  below={<Text role="meta">{isAllAgents(ids) ? 'All agents' : ids.slice().sort().map(agentName).join(', ')}</Text>}
                   trailing={<>
                     <Button variant="outline" size="sm" onClick={() => setEditingHost(host)}>
                       Edit

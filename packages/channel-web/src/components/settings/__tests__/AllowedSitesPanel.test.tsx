@@ -33,6 +33,17 @@ describe('AllowedSitesPanel', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it('names every agent a site applies to, in the row, with nothing clamped away', async () => {
+    vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([
+      { host: 'two.example.com', agentId: 'a1', grantedAt: 't' },
+    ]);
+    vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([...AGENTS, { agentId: 'a3', displayName: 'Third', visibility: 'personal' as const }]);
+    render(<AllowedSitesPanel />);
+    const row = await findRow('two.example.com');
+    expect(within(row).getByText('Research')).toBeInTheDocument();
+    expect(row.querySelector('[data-part="description"]')).toBeNull();
+  });
+
   it('lists each host once; "All agents" when it covers every agent, else per-agent badges', async () => {
     render(<AllowedSitesPanel />);
     const allRow = await findRow('all.example.com');

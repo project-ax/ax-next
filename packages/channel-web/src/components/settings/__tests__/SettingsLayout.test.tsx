@@ -31,3 +31,16 @@ describe('Settings interactions', () => {
     await waitFor(() => expect(row).toHaveFocus());
   });
 });
+
+describe('SheetRow focus return', () => {
+  it('returns focus to the row title after a click-only open (no prior .focus(), as in Safari)', async () => {
+    render(<List label="Skills"><SheetRow title="Research brief" meta="Scout"><Button>Remove skill</Button></SheetRow></List>);
+    const row = within(screen.getByRole('list', { name: 'Skills' })).getByRole('button', { name: 'Research brief' });
+    expect(row).not.toHaveFocus();
+    fireEvent.click(row);
+    expect(screen.getByRole('dialog', { name: 'Research brief' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(row).toHaveFocus());
+  });
+});

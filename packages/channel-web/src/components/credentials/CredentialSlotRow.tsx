@@ -87,15 +87,15 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
     {destination.kind === 'routine-hmac' ? 'Could not check the signing secret.' : 'Could not check this key.'}
   </Notice>;
 
-  // With a displayName the caller owns the surrounding `List` (several providers share one), so this is a bare row,
-  // and a failed check is a row of its own (an li) so the list stays valid.
+  // With a displayName the caller owns the surrounding `List` (several providers share one), so this is a bare row.
+  // A failed check sits under its own row (`below`), so the row and its notice stay one list item.
   if (displayName) return <>
     <ListRow
       title={displayName}
       meta={status === 'ready' && isSet ? 'Key saved' : statusLabel}
       {...(canManage ? { onOpen: () => setOpen(true) } : {})}
+      {...(problem ? { below: problem } : {})}
     />
-    {problem && <li>{problem}</li>}
     {sheet}
   </>;
 
@@ -105,9 +105,9 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
         title={humanLabel}
         meta={<StatusBadge tone={status === 'ready' && isSet ? 'success' : 'neutral'} dot>{statusLabel}</StatusBadge>}
         trailing={<Button size="sm" variant="outline" className="shrink-0" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>}
+        {...(problem ? { below: problem } : {})}
       />
     </List>
-    {problem}
     {sheet}
   </>;
 }

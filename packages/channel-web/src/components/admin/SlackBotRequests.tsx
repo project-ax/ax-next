@@ -21,7 +21,7 @@
  * Card titles carry `role="heading"` (level 2) to keep the h1 -> h2 outline
  * (see TASK-446).
  */
-import { Fragment, useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Button as AxButton, Card, formatTimestamp, Heading, List, ListRow, Notice, Stack, Text } from '@project-ax/ui';
 import {
@@ -146,8 +146,8 @@ export function SlackBotRequests() {
           )}
           <List label={COPY['title'] ?? 'Slack bot requests'}>
             {requests.map((request) => (
-              <Fragment key={request.requestId}>
               <ListRow
+                key={request.requestId}
                 title={`${request.botName} for ${request.agentName}${request.teamName !== null ? ` · ${request.teamName}` : ''}`}
                 meta={`Asked by ${request.requestedBy} ${formatTimestamp(request.requestedAt) ?? request.requestedAt}.`}
                 trailing={<>
@@ -171,10 +171,8 @@ export function SlackBotRequests() {
                     Decline
                   </AxButton>
                 </>}
+                {...(declineFailed === request.requestId ? { below: <Notice tone="danger">{COPY['declineFailed']}</Notice> } : {})}
               />
-              {/* The failure belongs to this request: an li of its own, so the list stays valid and the alert intact. */}
-              {declineFailed === request.requestId && <li><Notice tone="danger">{COPY['declineFailed']}</Notice></li>}
-              </Fragment>
             ))}
           </List>
           {truncated && <p className="text-[12.5px] text-muted-foreground">{COPY['more']}</p>}

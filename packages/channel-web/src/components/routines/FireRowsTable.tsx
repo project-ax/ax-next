@@ -30,7 +30,7 @@
  * wasn't.
  */
 import { useState } from 'react';
-import { List, ListRow, Stack, StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
+import { List, ListRow, Notice, Stack, StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
 import type { Fire, FireStatus } from '../../lib/routines';
 import { RunWarning } from './RunWarning';
 
@@ -71,16 +71,15 @@ export function FireRowsTable({ fires }: { fires: Fire[] }) {
               <StatusBadge tone={FIRE_TONE[f.status]} dot>{f.status}</StatusBadge>
               {' '}<Timestamp value={f.firedAt} />
             </>}
-            {...(hasDetail ? { expandable: {
-              defaultOpen: true,
-              content: (
-                <Stack gap="xs">
-                  {f.renderedPrompt !== null && <PromptCell prompt={f.renderedPrompt} />}
-                  {f.warning !== null && <RunWarning text={f.warning} />}
-                  {f.error !== null && <StatusBadge tone="danger">{f.error}</StatusBadge>}
-                </Stack>
-              ),
-            } } : {})}
+            {...(hasDetail ? { below: (
+              <Stack gap="xs">
+                {f.renderedPrompt !== null && <PromptCell prompt={f.renderedPrompt} />}
+                {f.warning !== null && <RunWarning text={f.warning} />}
+                {/* The whole message, wrapping: the run's status badge above is the short form. announce off, so a
+                    page of old failures doesn't read itself out when the list opens. */}
+                {f.error !== null && <Notice tone="danger" announce={false}>{f.error}</Notice>}
+              </Stack>
+            ) } : {})}
           />
         );
       })}
