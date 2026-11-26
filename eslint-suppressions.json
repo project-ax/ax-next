@@ -15,17 +15,6 @@
       "count": 4
     }
   },
-  "packages/channel-web/src/components/AttachmentChip.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 8
-    },
-    "ax-ui/no-classname": {
-      "count": 13
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 11
-    }
-  },
   "packages/channel-web/src/components/AxDesignMark.tsx": {
     "ax-ui/no-classname": {
       "count": 1
@@ -858,13 +847,13 @@
   },
   "packages/channel-web/src/components/workspace/AgentArtifacts.tsx": {
     "ax-ui/no-arbitrary-values": {
-      "count": 4
+      "count": 2
     },
     "ax-ui/no-classname": {
-      "count": 9
+      "count": 4
     },
     "ax-ui/no-raw-elements": {
-      "count": 8
+      "count": 4
     }
   },
   "packages/channel-web/src/components/workspace/AgentConnectors.tsx": {
@@ -1040,14 +1029,6 @@
       "count": 17
     }
   },
-  "packages/channel-web/src/components/workspace/ArtifactCard.tsx": {
-    "ax-ui/no-classname": {
-      "count": 5
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 4
-    }
-  },
   "packages/channel-web/src/components/workspace/ArtifactOwnerMenu.tsx": {
     "ax-ui/no-classname": {
       "count": 1
@@ -1166,14 +1147,6 @@
     },
     "ax-ui/no-raw-elements": {
       "count": 14
-    }
-  },
-  "packages/channel-web/src/components/workspace/GeneratedFileChip.tsx": {
-    "ax-ui/no-classname": {
-      "count": 6
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 6
     }
   },
   "packages/channel-web/src/components/workspace/GrantRow.tsx": {
@@ -1436,17 +1409,6 @@
     },
     "ax-ui/no-raw-elements": {
       "count": 19
-    }
-  },
-  "packages/channel-web/src/components/workspace/WorkspaceAttachmentChip.tsx": {
-    "ax-ui/no-arbitrary-values": {
-      "count": 2
-    },
-    "ax-ui/no-classname": {
-      "count": 9
-    },
-    "ax-ui/no-raw-elements": {
-      "count": 9
     }
   },
   "packages/channel-web/src/components/workspace/WorkspaceHeader.tsx": {

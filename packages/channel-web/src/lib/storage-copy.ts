@@ -12,6 +12,7 @@
  * true: the agent can tidy up files it no longer needs (ask it, in chat; chat
  * keeps working when storage is full), and an admin can raise the limit.
  */
+import { formatFileSize } from '@project-ax/ui';
 import {
   STORAGE_LIMIT_BOUNDS,
   StorageHttpError,
@@ -26,37 +27,18 @@ import {
 // Sizes
 // ---------------------------------------------------------------------------
 
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
-
-/**
- * "2.3 GB", "512 MB", "0 B". Counts in 1024s (the way the limit is set), shows
- * one decimal only when there is one to show, and rolls up a unit rather than
- * print "1024 KB". Anything that is not a size (negative, NaN, infinite) reads
- * as "0 B": a screen that says "NaN GB" is worse than one that says nothing
- * is used.
- */
-export function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return '0 B';
-  let unit = 0;
-  let value = n;
-  while (unit < UNITS.length - 1) {
-    const rounded = unit === 0 ? Math.round(value) : Math.round(value * 10) / 10;
-    if (rounded < 1024) break;
-    value /= 1024;
-    unit += 1;
-  }
-  const text = unit === 0 ? String(Math.round(value)) : (Math.round(value * 10) / 10).toFixed(1);
-  return `${text.replace(/\.0$/, '')} ${UNITS[unit]}`;
-}
+// "2.3 GB", "512 MB", "0 B": sizes read through the UI package's one size
+// formatter (`formatFileSize`), the same one the file chips use, so a size
+// reads the same wherever it turns up.
 
 /** A limit set in MB, said the way a person would: 1024 -> "1 GB". */
 export function formatMb(mb: number): string {
-  return formatBytes(mb * BYTES_PER_MB);
+  return formatFileSize(mb * BYTES_PER_MB);
 }
 
 /** "2.3 GB of 5 GB used". */
 export function usageLine(usedBytes: number, limitBytes: number): string {
-  return `${formatBytes(usedBytes)} of ${formatBytes(limitBytes)} used`;
+  return `${formatFileSize(usedBytes)} of ${formatFileSize(limitBytes)} used`;
 }
 
 /**
@@ -75,8 +57,8 @@ export function breakdownRows(
   s: Pick<MyStorage, 'workspaceBytes' | 'fileBytes'>,
 ): Array<{ label: string; value: string }> {
   return [
-    { label: 'Agent files', value: formatBytes(s.workspaceBytes) },
-    { label: 'Uploads and published files', value: formatBytes(s.fileBytes) },
+    { label: 'Agent files', value: formatFileSize(s.workspaceBytes) },
+    { label: 'Uploads and published files', value: formatFileSize(s.fileBytes) },
   ];
 }
 
@@ -84,7 +66,7 @@ export function breakdownRows(
 export function ownerBreakdown(
   o: Pick<StorageOwner, 'workspaceBytes' | 'fileBytes'>,
 ): string {
-  return `${formatBytes(o.workspaceBytes)} agent files, ${formatBytes(o.fileBytes)} uploads`;
+  return `${formatFileSize(o.workspaceBytes)} agent files, ${formatFileSize(o.fileBytes)} uploads`;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +95,7 @@ export function ownerSubline(o: OwnerName): string | null {
 /** "12 people and teams, 3.4 GB in total". */
 export function ownersSummary(t: { ownerCount: number; totalBytes: number }): string {
   const who = t.ownerCount === 1 ? 'person or team' : 'people and teams';
-  return `${t.ownerCount.toLocaleString('en-US')} ${who}, ${formatBytes(t.totalBytes)} in total`;
+  return `${t.ownerCount.toLocaleString('en-US')} ${who}, ${formatFileSize(t.totalBytes)} in total`;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +130,7 @@ export function unusedFilesLine(
   report: Pick<UnusedFilesReport, 'wouldRetire' | 'wouldRetireBytes'> | null,
 ): string {
   if (report === null) return UNUSED_FILES_NOT_CHECKED;
-  return `Files no longer used by anyone: ${report.wouldRetire.toLocaleString('en-US')} (${formatBytes(report.wouldRetireBytes)}). Not removed yet.`;
+  return `Files no longer used by anyone: ${report.wouldRetire.toLocaleString('en-US')} (${formatFileSize(report.wouldRetireBytes)}). Not removed yet.`;
 }
 
 /**

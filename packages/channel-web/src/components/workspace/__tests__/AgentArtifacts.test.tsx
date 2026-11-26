@@ -62,9 +62,15 @@ describe('AgentArtifacts', () => {
     ]);
     renderPanel();
     const rows = await screen.findAllByRole('button', { name: /one/ });
-    expect(rows.map((r) => r.getAttribute('title'))).toEqual(['New one', 'Old one']);
-    expect(within(rows[0]!).getByText('Spreadsheet · XLSX')).toBeTruthy();
-    expect(within(rows[1]!).getByText('Document · PDF')).toBeTruthy();
+    expect(rows.map((r) => r.getAttribute('aria-label'))).toEqual(['Open New one', 'Open Old one']);
+    // The full title rides in the title attribute, for when the row truncates it.
+    expect(screen.getAllByTitle(/one$/).map((n) => n.textContent)).toEqual(['New one', 'Old one']);
+    // Each row's type line describes that row's button, and sits in that row.
+    expect(rows[0]).toHaveAccessibleDescription('Spreadsheet · XLSX');
+    expect(rows[1]).toHaveAccessibleDescription('Document · PDF');
+    const items = screen.getAllByRole('listitem');
+    expect(within(items[0]!).getByText('Spreadsheet · XLSX')).toBeVisible();
+    expect(within(items[1]!).getByText('Document · PDF')).toBeVisible();
   });
 
   it('the empty state speaks plainly, and Download all is hidden', async () => {
@@ -153,7 +159,7 @@ describe('AgentArtifacts', () => {
   it('clicking a row calls onOpen with its artifactId', async () => {
     listMock.mockResolvedValue([art({ artifactId: 'art-42' })]);
     const onOpen = renderPanel();
-    fireEvent.click(await screen.findByRole('button', { name: /Q3 report/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Q3 report' }));
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith('art-42'));
   });
   it('a moved re-check key reloads the list quietly, showing the new artifact', async () => {

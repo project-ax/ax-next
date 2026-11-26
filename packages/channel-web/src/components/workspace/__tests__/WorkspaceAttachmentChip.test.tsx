@@ -1,11 +1,12 @@
 /**
  * The workspace composer's attachment chip (TASK-353).
  *
- * Three states have to be told apart by looking — and, here, by
- * `data-status`, so the assertions below pin behaviour rather than a class
- * string. The one that did not exist on chat's chip is `failed`: chat's
- * version can only be uploading or done, so a file that bounced off the
- * server had nowhere to say so. Here the sentence is real, readable DOM text
+ * Three states have to be told apart by looking — and, here, by what a
+ * person can see and reach (a progress bar, "Ready to send", a Try again),
+ * so the assertions below pin behaviour rather than a class string. The one
+ * that did not exist on chat's chip is `failed`: chat's version can only be
+ * uploading or done, so a file that bounced off the server had nowhere to say
+ * so. Here the sentence is real, readable DOM text
  * with a Retry next to it.
  *
  * The filename is untrusted input (it is whatever the person's disk says), so
@@ -15,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { WorkspaceAttachmentChip } from '../WorkspaceAttachmentChip';
 import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
+import { clampAttachmentName } from '@/lib/attachment-name';
 
 function attachment(
   over: Partial<WorkspaceAttachment> = {},
@@ -41,47 +43,52 @@ function chip(over: Partial<WorkspaceAttachment> = {}) {
       onRetry={onRetry}
     />,
   );
-  const root = container.querySelector('[data-status]');
-  if (!root) throw new Error('chip rendered without a data-status root');
-  return { root, onRemove, onRetry };
+  return { container, onRemove, onRetry };
+}
+
+/** What a person can see and reach in each state: the bar, the ready line, the retry. */
+function stateSignature(): string {
+  return [
+    screen.queryByRole('progressbar') ? 'progress' : '',
+    screen.queryByText('Ready to send') ? 'ready' : '',
+    screen.queryByRole('button', { name: 'Try again' }) ? 'retry' : '',
+  ].join('|');
 }
 
 const FAILURE = 'That file is too big to send. The limit is 25 MB.';
 
 describe('WorkspaceAttachmentChip — the three states', () => {
   it('uploading shows a progress bar and a way out', () => {
-    const { root, onRemove } = chip({ status: 'uploading', progress: 0.4 });
-    expect(root.getAttribute('data-status')).toBe('uploading');
-    expect(screen.getByText('notes.txt')).toBeInTheDocument();
+    const { onRemove } = chip({ status: 'uploading', progress: 0.4 });
+    expect(stateSignature()).toBe('progress||');
+    expect(screen.getByTitle('notes.txt').textContent).toBe('notes.txt');
 
-    // Radix's Progress renders role="progressbar". Its absence means the
-    // person is watching a chip that never says anything is happening.
-    const bar = screen.getByRole('progressbar');
+    // A progress bar, named by the file. Its absence means the person is
+    // watching a chip that never says anything is happening.
+    const bar = screen.getByRole('progressbar', { name: 'notes.txt' });
     expect(bar).toBeInTheDocument();
     /*
-      The bar has to reflect THIS chip's progress, not merely exist. We read
-      the indicator's transform rather than `aria-valuenow`, because the local
-      `ui/progress.tsx` wrapper destructures `value` out and never forwards it
-      to the Radix Root — so `aria-valuenow` is null for every Progress in this
-      app. (A real a11y gap, but in a shared file this task does not own.)
-      The transform is the signal that survives: a chip that forwarded the raw
-      0..1 fraction would render translateX(-99.6%) here.
+      The bar has to reflect THIS chip's progress, not merely exist: a chip
+      that forwarded the raw 0..1 fraction would show 0 of 100 here. It is a
+      native <progress>, so its value is what assistive tech reads too (the
+      old shadcn wrapper never forwarded `aria-valuenow`, so no screen reader
+      ever heard a number; this pins that it now does).
     */
-    const indicator = bar.firstElementChild as HTMLElement | null;
-    expect(indicator).not.toBeNull();
-    expect(indicator!.style.transform).toBe('translateX(-60%)');
+    expect(bar).toHaveAttribute('max', '100');
+    expect(bar).toHaveAttribute('value', '40');
+    expect((bar as HTMLProgressElement).value).toBe(40);
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove notes.txt' }));
     expect(onRemove).toHaveBeenCalledTimes(1);
   });
 
   it('uploaded says so in words, and stops the progress bar', () => {
-    const { root, onRemove } = chip({
+    const { onRemove } = chip({
       status: 'uploaded',
       progress: 1,
       attachmentId: 'att-1',
     });
-    expect(root.getAttribute('data-status')).toBe('uploaded');
+    expect(stateSignature()).toBe('|ready|');
     expect(screen.getByText('Ready to send')).toBeInTheDocument();
     // A bar still spinning on a finished upload reads as stuck.
     expect(screen.queryByRole('progressbar')).toBeNull();
@@ -93,17 +100,18 @@ describe('WorkspaceAttachmentChip — the three states', () => {
   });
 
   it('failed prints the sentence as readable text with both ways forward', () => {
-    const { root, onRemove, onRetry } = chip({
+    const { container, onRemove, onRetry } = chip({
       status: 'failed',
       message: FAILURE,
     });
-    expect(root.getAttribute('data-status')).toBe('failed');
+    expect(stateSignature()).toBe('||retry');
 
     // Real DOM text, not a tooltip and not a `title=`. A title attribute is
     // invisible on touch, invisible to a person who does not hover, and
-    // unreadable by half of assistive tech.
-    expect(screen.getByText(FAILURE)).toBeInTheDocument();
-    expect(root.querySelector('[title]')).toBeNull();
+    // unreadable by half of assistive tech. The only title in the chip is
+    // the filename's own (the full name behind a truncated one).
+    expect(screen.getByText(FAILURE)).toBeVisible();
+    expect(Array.from(container.querySelectorAll('[title]')).map((n) => n.getAttribute('title'))).toEqual(['notes.txt']);
 
     const retry = screen.getByRole('button', { name: 'Try again' });
     const remove = screen.getByRole('button', { name: 'Remove' });
@@ -113,56 +121,53 @@ describe('WorkspaceAttachmentChip — the three states', () => {
     fireEvent.click(remove);
     expect(onRemove).toHaveBeenCalledTimes(1);
 
-    // Destructive border, via the semantic token — not a raw colour.
-    expect(root.className).toContain('border-destructive');
+    // Destructive sentence and border, via the semantic danger token — not a raw colour.
+    expect(screen.getByText(FAILURE).className).toContain('ax-text-status-danger');
+    expect(screen.getByTitle('notes.txt').closest('.ax-isolate')?.className).toContain('ax-border-status-danger');
   });
 
   it('the three states are distinguishable from each other', () => {
-    const statuses = (['uploading', 'uploaded', 'failed'] as const).map((s) => {
-      const { container, unmount } = render(
+    const signatures = (['uploading', 'uploaded', 'failed'] as const).map((s) => {
+      const { unmount } = render(
         <WorkspaceAttachmentChip
-          attachment={attachment({ status: s, message: s === 'failed' ? FAILURE : null })}
+          attachment={attachment({ status: s, progress: 0.5, message: s === 'failed' ? FAILURE : null })}
           onRemove={vi.fn()}
           onRetry={vi.fn()}
         />,
       );
-      const value = container
-        .querySelector('[data-status]')
-        ?.getAttribute('data-status');
+      const value = stateSignature();
       unmount();
       return value;
     });
-    expect(statuses).toEqual(['uploading', 'uploaded', 'failed']);
+    expect(signatures).toEqual(['progress||', '|ready|', '||retry']);
   });
 });
 
 describe('WorkspaceAttachmentChip — the filename is untrusted', () => {
   it('clamps a pathological name before it reaches the DOM', () => {
     const name = `${'a'.repeat(400)}TAIL.txt`;
-    const { root } = chip({ name });
-    const rendered = root.querySelector('[data-slot="attachment-name"]');
-    expect(rendered).not.toBeNull();
-    const text = rendered!.textContent ?? '';
+    const { container } = chip({ name });
+    const rendered = screen.getByTitle(clampAttachmentName(name));
+    const text = rendered.textContent ?? '';
     expect(text).toHaveLength(120);
     // The far end of a 400-character name must not be in the document at all
     // — `truncate` only hides it visually, it stays in the accessibility tree
     // and in the layout budget.
-    expect(root.textContent).not.toContain('TAIL');
+    expect(container.textContent).not.toContain('TAIL');
+    expect(container.innerHTML).not.toContain('TAIL');
   });
 
   it('leaves a normal-length name exactly as it is', () => {
-    const { root } = chip({ name: 'quarterly-report-final-v3.pdf' });
-    expect(
-      root.querySelector('[data-slot="attachment-name"]')?.textContent,
-    ).toBe('quarterly-report-final-v3.pdf');
+    chip({ name: 'quarterly-report-final-v3.pdf' });
+    expect(screen.getByTitle('quarterly-report-final-v3.pdf').textContent).toBe('quarterly-report-final-v3.pdf');
   });
 
   it('renders markup in a name as text, never as markup', () => {
-    const { root } = chip({ name: '<img src=x onerror=alert(1)>.png' });
-    expect(root.querySelector('img')).toBeNull();
+    const { container } = chip({ name: '<img src=x onerror=alert(1)>.png' });
+    expect(container.querySelector('img')).toBeNull();
     expect(
-      screen.getByText('<img src=x onerror=alert(1)>.png'),
-    ).toBeInTheDocument();
+      screen.getByTitle('<img src=x onerror=alert(1)>.png').textContent,
+    ).toBe('<img src=x onerror=alert(1)>.png');
   });
 
   it('labels the remove control with the clamped name too', () => {

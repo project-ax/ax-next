@@ -482,8 +482,10 @@ describe('a message the person attached a file to', () => {
     /*
       A filename comes off the person's own disk and has no length limit. The
       chip's CSS `truncate` hides the overflow on screen while leaving the whole
-      string in `alt` and in the `aria-label` — so the clamp has to happen in
-      the data, not in the styling. Same function the composer's chips use.
+      string in the title and in the `aria-label` — so the clamp has to happen
+      in the data, not in the styling. Same function the composer's chips use.
+      The thumbnail's `alt` is empty: the button's name already says what the
+      image is, so the alt cannot carry the name at all.
     */
     const long = `${'z'.repeat(400)}.png`;
     const detail = await reloadDetail([{ ...attachmentBlock, filename: long }]);
@@ -492,9 +494,11 @@ describe('a message the person attached a file to', () => {
     );
     const img = container.querySelector('img');
     expect(img).not.toBeNull();
-    const alt = img?.getAttribute('alt') ?? '';
-    expect(alt.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
-    expect(alt.startsWith('zzz')).toBe(true);
+    expect(img?.getAttribute('alt')).toBe('');
+    const label = screen.getByRole('button', { name: /^Download zzz/ }).getAttribute('aria-label') ?? '';
+    const name = label.slice('Download '.length);
+    expect(name.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
+    expect(name.startsWith('zzz')).toBe(true);
     unmount();
   });
 

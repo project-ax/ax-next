@@ -27,12 +27,19 @@ import {
 import {
   AlertTriangle,
   ChevronRight,
+  Code2,
+  File as FileIcon,
+  FileText,
+  Globe,
   Hand,
+  Image as ImageIcon,
   Layers,
   Plus,
+  Sheet as SheetIcon,
   Square,
   type LucideIcon,
 } from 'lucide-react';
+import type { ArtifactKind } from '@ax/ipc-protocol/content-blocks';
 import { Avatar, AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
@@ -84,7 +91,6 @@ import {
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
 import { ArtifactCard } from './ArtifactCard';
-import { KIND_ICONS } from './AgentArtifacts';
 import { Markdown } from '@/components/Markdown';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
@@ -1838,6 +1844,20 @@ function StillWorking({ text }: { text: string }) {
     </div>
   );
 }
+
+/**
+ * An artifact kind's picture, for the finished title's mark. The same six
+ * pictures `FileTile` draws on the cards themselves, so the mark matches the
+ * card it points at.
+ */
+const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
+  document: FileText,
+  web: Globe,
+  spreadsheet: SheetIcon,
+  image: ImageIcon,
+  code: Code2,
+  file: FileIcon,
+};
 
 /** The finished title's file icon: the kind of the last card the reply published. */
 function PublishedMark({ artifacts }: { artifacts: readonly ThreadArtifact[] }) {

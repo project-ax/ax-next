@@ -26,8 +26,10 @@ describe('AttachmentChip', () => {
         conversationId="c & 1"
       />,
     );
-    expect(screen.getByText('Q4 Report.pdf')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /download/i }));
+    expect(screen.getByTitle('Q4 Report.pdf').textContent).toBe('Q4 Report.pdf');
+    // The whole chip is the one download control.
+    expect(screen.getAllByRole('button')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Download Q4 Report.pdf' }));
     // By id, never by a path, and every value encoded.
     expect(openSpy).toHaveBeenCalledWith(
       '/api/files?conversationId=c%20%26%201&id=3f1c2b9e-0d4a-4e7b-9c51-2a8f6e1d7b40',
@@ -48,6 +50,27 @@ describe('AttachmentChip', () => {
     const img = container.querySelector('img');
     expect(img).toBeTruthy();
     expect(img?.getAttribute('src')).toBe('/api/files?conversationId=c1&id=att-1');
+    expect(screen.getByRole('button', { name: 'Download cat.png' })).toBeTruthy();
+  });
+
+  it('shows the size, through the one size formatter', () => {
+    render(
+      <AttachmentChip
+        attachmentId="att-1"
+        displayName="Q4 Report.pdf"
+        mediaType="application/pdf"
+        conversationId="c1"
+        sizeBytes={2048}
+      />,
+    );
+    expect(screen.getByText('2 KB')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Download Q4 Report.pdf' })).toHaveAccessibleDescription('2 KB');
+  });
+
+  it('a pending chip shows the name and offers nothing to press', () => {
+    render(<AttachmentChip variant="pending" displayName="Q4 Report.pdf" mediaType="application/pdf" />);
+    expect(screen.getByTitle('Q4 Report.pdf')).toBeVisible();
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
   /*
@@ -60,7 +83,7 @@ describe('AttachmentChip', () => {
   describe('clamps displayName at the sink', () => {
     const LONG = `${'z'.repeat(400)}.png`;
 
-    it('bounds alt and the image variant aria-label', () => {
+    it('bounds the image variant aria-label, and leaves the thumbnail alt empty', () => {
       const { container } = render(
         <AttachmentChip
           attachmentId="att-1"
@@ -69,13 +92,15 @@ describe('AttachmentChip', () => {
           conversationId="c1"
         />,
       );
-      const alt = container.querySelector('img')?.getAttribute('alt') ?? '';
-      expect(alt.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
-      expect(alt.length).toBeLessThan(LONG.length);
-      expect(alt.endsWith('…')).toBe(true);
-      expect(
-        container.querySelector('button')?.getAttribute('aria-label'),
-      ).toBe(`Download ${alt}`);
+      // The thumbnail is decorative (the button's name already says what it
+      // is), so its alt is empty and cannot carry the long name at all.
+      expect(container.querySelector('img')?.getAttribute('alt')).toBe('');
+      const label = container.querySelector('button')?.getAttribute('aria-label') ?? '';
+      const name = label.slice('Download '.length);
+      expect(name.length).toBeLessThanOrEqual(ATTACHMENT_NAME_MAX_CHARS);
+      expect(name.length).toBeLessThan(LONG.length);
+      expect(name.endsWith('…')).toBe(true);
+      expect(label).toBe(`Download ${clampAttachmentName(LONG)}`);
     });
 
     it('bounds the download-button aria-label on the non-image variant', () => {
@@ -114,7 +139,7 @@ describe('AttachmentChip', () => {
         />,
       );
       // No ellipsis, no truncation, no "…" creeping into a short filename.
-      expect(screen.getByText('Q4 Report.pdf')).toBeTruthy();
+      expect(screen.getByTitle('Q4 Report.pdf').textContent).toBe('Q4 Report.pdf');
       expect(
         screen.getByRole('button').getAttribute('aria-label'),
       ).toBe('Download Q4 Report.pdf');

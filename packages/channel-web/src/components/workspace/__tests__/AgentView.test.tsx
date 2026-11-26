@@ -1458,7 +1458,10 @@ describe('a first message whose committed turn is already in the re-read (TASK-6
     });
 
     await screen.findByText('On it.');
-    expect(screen.getAllByText('notes')).toHaveLength(2);
+    // Two bubbles that say "notes". The file chip's name splits into "notes"
+    // and ".pdf" (so the extension never truncates); that stem is not a bubble.
+    expect(screen.getAllByText('notes', { ignore: 'script, style, [title="notes.pdf"] *' })).toHaveLength(2);
+    expect(screen.getByTitle('notes.pdf')).toBeVisible();
   });
 });
 

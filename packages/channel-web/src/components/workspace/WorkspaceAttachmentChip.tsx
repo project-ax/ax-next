@@ -1,13 +1,6 @@
 import type { FC } from 'react';
-import {
-  File as FileIcon,
-  FileText,
-  Image as ImageIcon,
-  X,
-} from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
-import { cn } from '@/lib/utils';
+import { RotateCcw, X } from 'lucide-react';
+import { FileTile, IconButton } from '@project-ax/ui';
 import { clampAttachmentName } from '@/lib/attachment-name';
 import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
 
@@ -19,15 +12,14 @@ import type { WorkspaceAttachment } from '@/lib/workspace-attachments';
  * a third state the deleted chat UI's equivalent chip never needed: chat's
  * adapter could only be running or done, so a file the server refused had
  * nowhere to say so. Here it says so, in a sentence, with a Try again next to it.
+ *
+ * Drawn as a `FileTile` chip: uploading shows a progress bar, uploaded says
+ * "Ready to send", failed prints the reason as real (danger) text — never a
+ * tooltip or a `title=`, which are invisible on touch and to anyone who does
+ * not hover. The chip's second line is a polite live region, so the change
+ * to "Ready to send" or to the reason is announced. Remove (and Try again)
+ * sit in the chip's trailing slot, beside the file, never on top of it.
  */
-
-function pickIcon(mediaType: string) {
-  if (mediaType.startsWith('image/')) return ImageIcon;
-  if (mediaType.startsWith('text/') || mediaType === 'application/json') {
-    return FileText;
-  }
-  return FileIcon;
-}
 
 interface WorkspaceAttachmentChipProps {
   attachment: WorkspaceAttachment;
@@ -35,97 +27,37 @@ interface WorkspaceAttachmentChipProps {
   onRetry: () => void;
 }
 
+const STATUS = { uploading: 'working', uploaded: 'ready', failed: 'failed' } as const;
+
 export const WorkspaceAttachmentChip: FC<WorkspaceAttachmentChipProps> = ({
   attachment,
   onRemove,
   onRetry,
 }) => {
+  // Untrusted text, rendered as a React child so it is escaped.
   const name = clampAttachmentName(attachment.name);
-  const Icon = pickIcon(attachment.contentType);
   const isUploading = attachment.status === 'uploading';
-  const isUploaded = attachment.status === 'uploaded';
   const isFailed = attachment.status === 'failed';
+  const detail = isFailed ? attachment.message : attachment.status === 'uploaded' ? 'Ready to send' : null;
 
   return (
-    <div
-      data-status={attachment.status}
-      className={cn(
-        'flex w-full max-w-[280px] flex-col gap-1.5 rounded-md border bg-card px-2 py-1.5',
-        'text-[12px] leading-tight text-foreground',
-        isFailed ? 'border-destructive' : 'border-border',
-      )}
-    >
-      <div className="flex items-center gap-2">
-        <div
-          className={cn(
-            'flex size-7 shrink-0 items-center justify-center rounded-sm bg-muted',
-            isFailed ? 'text-destructive' : 'text-muted-foreground',
-          )}
-        >
-          <Icon className="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          {/* Untrusted text, rendered as a React child so it is escaped. */}
-          <div
-            data-slot="attachment-name"
-            className="truncate font-medium text-foreground"
-          >
-            {name}
-          </div>
-          {isUploading && (
-            <Progress
-              value={Math.round(attachment.progress * 100)}
-              className="h-1 w-full"
-            />
-          )}
-          {isUploaded && (
-            <div className="truncate text-muted-foreground">Ready to send</div>
-          )}
-        </div>
-        {!isFailed && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={`Remove ${name}`}
-            className="size-5 shrink-0 opacity-60 hover:opacity-100"
-            onClick={onRemove}
-          >
-            <X className="size-3" strokeWidth={1.5} aria-hidden="true" />
-          </Button>
-        )}
-      </div>
-      {isFailed && (
-        <div className="flex flex-col gap-1.5">
-          {/*
-            Real text, not a tooltip and not a `title=`. A title attribute is
-            invisible on touch, invisible to anyone who does not hover, and
-            this sentence is the only thing telling the person their file is
-            not going anywhere.
-          */}
-          <p className="text-destructive">{attachment.message}</p>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 px-2"
-              onClick={onRetry}
-            >
-              Try again
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2"
-              onClick={onRemove}
-            >
-              Remove
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
+    <FileTile
+      variant="chip"
+      name={name}
+      kind={attachment.contentType}
+      status={STATUS[attachment.status]}
+      {...(detail !== null ? { detail } : {})}
+      {...(isUploading ? { progress: Math.round(attachment.progress * 100) } : {})}
+      trailing={
+        isFailed ? (
+          <>
+            <IconButton label="Try again" icon={RotateCcw} size="sm" onClick={onRetry} />
+            <IconButton label="Remove" icon={X} size="sm" onClick={onRemove} />
+          </>
+        ) : (
+          <IconButton label={`Remove ${name}`} icon={X} size="sm" onClick={onRemove} />
+        )
+      }
+    />
   );
 };

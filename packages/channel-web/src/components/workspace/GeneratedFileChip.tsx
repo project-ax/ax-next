@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, FileText } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
-import { Button } from '@/components/ui/button';
-import { Notice } from '@project-ax/ui';
+import { FileTile, Notice, Stack } from '@project-ax/ui';
 import { clampAttachmentName } from '@/lib/attachment-name';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveBlob, saveFromUrl } from '@/lib/file-download';
 import { httpFetch, HttpError, logRequestFailure } from '@/lib/http';
@@ -30,6 +27,12 @@ import type { ThreadAttachment } from '@/lib/workspace-types';
  * ended session) leaves it downloadable, because "we could not tell" is never
  * "it is gone". A 200 makes it downloadable again: the chip names a key, and
  * a download serves whatever is there now.
+ *
+ * Drawn as a `FileTile` chip: the whole chip is the Download button. While a
+ * download is being fetched it is busy (it keeps focus and ignores clicks);
+ * in the started window it stays a button and the click is ignored here.
+ * Its second line is one polite live region, so "Downloading…", "Download
+ * started" and "No longer available" are announced as they change.
  */
 export function GeneratedFileChip({ file, conversationId, recheckKey }: {
   file: ThreadAttachment;
@@ -46,8 +49,8 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
   const [gone, setGone] = useState(false);
   const [started, setStarted] = useState(false);
   // Held from the click until the started window closes; a refusal releases
-  // it at once. Belt and braces: the disabled button already swallows clicks
-  // in the window, since `started` and `!busy` land in the same render.
+  // it at once. It is what ignores a click in the started window: the chip
+  // stays a focusable button there, so nothing else stops one.
   const inFlight = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const mounted = useRef(false);
@@ -59,11 +62,7 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
       timer.current = undefined;
     };
   }, []);
-  const size = typeof file.sizeBytes === 'number' && file.sizeBytes >= 0
-    ? file.sizeBytes < 1024 ? `${file.sizeBytes} B`
-      : file.sizeBytes < 1024 * 1024 ? `${(file.sizeBytes / 1024).toFixed(1)} KB`
-        : `${(file.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-    : null;
+  const size = typeof file.sizeBytes === 'number' && file.sizeBytes >= 0 ? file.sizeBytes : undefined;
 
   const agentFilePath = file.agentFilePath;
   useEffect(() => {
@@ -159,29 +158,27 @@ export function GeneratedFileChip({ file, conversationId, recheckKey }: {
     }
   }
 
+  // The size shows beside "Download" only; a passing state says just itself.
+  // A file with no address to download by has no action and no "Download".
+  const idle = !busy && !gone && !started;
+  const detail = busy ? 'Downloading…'
+    : gone ? 'No longer available'
+      : started ? DOWNLOAD_STARTED_NOTE
+        : downloadable ? 'Download' : undefined;
+
   return (
-    <div className="flex w-full max-w-xs flex-col gap-2">
-      <Button type="button" variant="outline" disabled={busy || started || !downloadable}
-        aria-label={busy ? `Downloading ${name}` : gone ? `${name} is no longer available` : `Download ${name}`}
-        aria-busy={busy} onClick={() => void download()}
-        className="h-auto min-h-11 w-full justify-start gap-3 px-3 py-2 text-left">
-        <FileText data-icon="inline-start" aria-hidden="true" />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="flex min-w-0">
-            <span className="truncate">{stem}</span>
-            {extension.length > 0 && <span className="shrink-0">{extension}</span>}
-          </span>
-          <span className="text-xs font-normal text-muted-foreground" aria-live="polite">
-            {busy ? 'Downloading…'
-              : gone ? 'No longer available'
-                : started ? DOWNLOAD_STARTED_NOTE
-                  : [size, 'Download'].filter(Boolean).join(' · ')}
-          </span>
-        </span>
-        {busy ? <Spinner data-icon="inline-end" aria-hidden="true" />
-          : !gone && <Download data-icon="inline-end" aria-hidden="true" />}
-      </Button>
+    <Stack gap="sm" align="start">
+      <FileTile
+        variant="chip"
+        name={name}
+        kind={file.mediaType}
+        actionLabel="Download"
+        status={busy ? 'working' : 'ready'}
+        {...(idle && size !== undefined ? { size } : {})}
+        {...(detail !== undefined ? { detail } : {})}
+        {...(downloadable ? { onOpen: () => void download() } : {})}
+      />
       {error !== null && <Notice tone="danger">{error}</Notice>}
-    </div>
+    </Stack>
   );
 }

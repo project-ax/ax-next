@@ -5,26 +5,23 @@
  * The title is untrusted text and only ever a text child.
  */
 import { useState } from 'react';
-import { ChevronRight, Download } from 'lucide-react';
-import { Spinner } from '@/components/ui/spinner';
+import { FileTile, toast } from '@project-ax/ui';
 import { artifactTypeLine } from '@/lib/artifact-labels';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
-import { toast } from '@project-ax/ui';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { ThreadArtifact } from '@/lib/workspace-types';
-import { KIND_ICONS } from './AgentArtifacts';
 
 /**
  * `onOpen` is absent on surfaces with no viewer (the check-in page): a click
- * then downloads instead, so the deliverable is never hidden.
+ * then downloads instead, so the deliverable is never hidden. While the
+ * download link is minted the card is busy: it keeps focus and ignores clicks.
  */
 export function ArtifactCard({ artifact, onOpen }: {
   artifact: ThreadArtifact;
   onOpen?: ((artifactId: string) => void) | undefined;
 }) {
   const [downloading, setDownloading] = useState(false);
-  const Icon = KIND_ICONS[artifact.kind];
 
   async function download() {
     if (downloading) return;
@@ -40,29 +37,14 @@ export function ArtifactCard({ artifact, onOpen }: {
   }
 
   return (
-    <button
-      type="button"
-      disabled={downloading}
-      onClick={() => (onOpen !== undefined ? onOpen(artifact.artifactId) : void download())}
-      className="group flex w-full items-center gap-3 rounded-xl border border-border bg-card p-3 text-left text-card-foreground transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-70"
-    >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-        <Icon className="size-5" aria-hidden="true" />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-sm font-medium">{artifact.title}</span>
-        <span className="truncate text-xs text-muted-foreground">{artifactTypeLine(artifact)}</span>
-      </span>
-      {downloading ? (
-        <Spinner className="size-4 shrink-0 text-muted-foreground" />
-      ) : onOpen !== undefined ? (
-        <ChevronRight
-          className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
-          aria-hidden="true"
-        />
-      ) : (
-        <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      )}
-    </button>
+    <FileTile
+      variant="card"
+      name={artifact.title}
+      kind={artifact.extension}
+      detail={artifactTypeLine(artifact)}
+      actionLabel={onOpen !== undefined ? 'Open' : 'Download'}
+      onOpen={() => (onOpen !== undefined ? onOpen(artifact.artifactId) : void download())}
+      {...(downloading ? { status: 'working' as const } : {})}
+    />
   );
 }

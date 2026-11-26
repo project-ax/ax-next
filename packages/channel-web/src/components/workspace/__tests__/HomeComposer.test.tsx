@@ -448,7 +448,7 @@ describe('attaching a file', () => {
     expect(filePicker().accept).toBe(ATTACHMENT_ACCEPT);
 
     pickFile();
-    expect(await screen.findByText('notes.pdf')).toBeTruthy();
+    expect(await screen.findByTitle('notes.pdf')).toBeTruthy();
     await screen.findByText('Ready to send');
 
     openMenu(screen.getByRole('button', { name: /Auto/ }));
@@ -462,7 +462,7 @@ describe('attaching a file', () => {
     );
     // The chips go with the words once the send resolves — otherwise the same
     // file rides along on the next message too.
-    await waitFor(() => expect(screen.queryByText('notes.pdf')).toBeNull());
+    await waitFor(() => expect(screen.queryByTitle('notes.pdf')).toBeNull());
   });
 
   it('carries the file through the Auto confirmation step', async () => {
