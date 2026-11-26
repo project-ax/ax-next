@@ -895,7 +895,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'auth:get-user',
           degradation:
-            'a connector row says "Signed in by someone" instead of naming the person (and "you" is still said to the viewer who did)',
+            'a connector row says "Signed in by someone" instead of naming the person (and "you" is still said to the viewer who did); the "Shared by" line on a shared agent names nobody',
         },
         {
           hook: 'credentials:has',

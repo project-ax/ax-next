@@ -2542,12 +2542,14 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
     expect(list.map((a) => a.agentId)).toEqual(['agt_personal', 'agt_team']);
   });
 
-  // TASK-1246 — agents:list-for-user now also lists personal agents merely
-  // shared with the caller (`isOwner: false`). Every client reader of this
-  // list takes "listed and personal" as "mine" (the onboarding gate, Sites,
-  // Skills, Routines), so until the UI can tell them apart (card B) they stay
-  // off it. Team agents stay, owned ones stay, and so does a row with no
-  // `isOwner` at all. The wire shape is unchanged: no `isOwner` on it.
+  // TASK-1246 — agents:list-for-user also lists personal agents merely shared
+  // with the caller (`isOwner: false`). This route lists the agents the caller
+  // MANAGES, and that is the permanent rule (TASK-1247): every client reader
+  // takes "listed and personal" as "mine" (the onboarding gate, Sites, Skills,
+  // Routines, self-improvement), so they stay off it. Only the workspace
+  // roster (`GET /api/workspace/state`) lists them. Team agents stay, owned
+  // ones stay, and so does a row with no `isOwner` at all. The wire shape is
+  // unchanged: no `isOwner` on it.
   it('leaves out an agent shared with the caller, and keeps team agents, owned ones and rows without isOwner', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },

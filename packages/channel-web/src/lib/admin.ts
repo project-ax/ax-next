@@ -25,8 +25,9 @@
  * regardless of how `allowedOrigins` is configured. Same posture as
  * `lib/auth.ts`.
  */
+import type { SharingView } from '@ax/agents';
 import type { AdminTeamWire } from '@ax/teams';
-import { HttpError } from './http';
+import { HttpError, httpFetch } from './http';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -59,6 +60,16 @@ export interface AdminAgent {
   idleMinutes?: number | null;
   /** The runner's size. `null` = the host default. */
   runnerSize?: RunnerSize | null;
+  /** TASK-1246/1247 — does anyone but its owners use it? The one "is this
+   *  agent shared?" answer. Always sent by this server; optional so older
+   *  fixtures still type-check. */
+  shared?: boolean;
+  /** Is the signed-in person one of its owners? Only on answers asked for
+   *  the caller. */
+  isOwner?: boolean;
+  /** Who can use it and who owns it. Only on `GET /admin/agents/:id`, and
+   *  only for a personal agent's owners. */
+  sharing?: SharingView;
   createdAt: string;
   updatedAt: string;
 }
@@ -193,8 +204,11 @@ export async function listAdminAgents(): Promise<AdminAgent[]> {
 
 /** Read the agent as it will run, including a temporary model fallback. */
 export async function getAdminAgent(id: string): Promise<AdminAgent> {
-  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, { credentials: 'include' });
-  if (!res.ok) throw new Error(`read agent: ${res.status}`);
+  const path = `/admin/agents/${encodeURIComponent(id)}`;
+  // httpFetch, so a 401 ends the session like every other post-boot read.
+  const res = await httpFetch(path);
+  // An HttpError, so a caller can tell a deleted agent (404) from a failure worth retrying.
+  if (!res.ok) throw new HttpError(path, res.status);
   const body = (await res.json()) as { agent: AdminAgent };
   return body.agent;
 }

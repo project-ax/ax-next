@@ -274,6 +274,9 @@ describe('channel-web agent-workspace BFF', () => {
         counter: null,
         startedAt: null,
         stoppedReason: null,
+        // TASK-1247 — no `isOwner` and no `ownerId` (a producer from before
+        // sharing): read as the caller's own.
+        access: 'creator',
       },
       {
         id: 'a2',
@@ -283,16 +286,18 @@ describe('channel-web agent-workspace BFF', () => {
         counter: null,
         startedAt: null,
         stoppedReason: null,
+        access: 'creator',
       },
     ]);
   });
 
-  // TASK-1246 — agents:list-for-user now also lists personal agents merely
-  // shared with the caller (`isOwner: false`). Until the UI can tell the two
-  // apart (card B), every reader of this roster takes "listed and personal"
-  // as "mine", so those rows stay off it. Team agents stay, and so does a row
-  // that carries no `isOwner` at all (a producer from before sharing).
-  it('the roster leaves out an agent shared with the caller, and keeps team agents, owned ones and rows without isOwner', async () => {
+  // TASK-1246 — agents:list-for-user also lists personal agents merely shared
+  // with the caller (`isOwner: false`). TASK-1247 — the roster (the sidebar's
+  // agent list) now shows them, after the caller's own, co-owned and team
+  // agents, so the shell's first-agent fallback still lands on one of their
+  // own. Every list of agents the caller MANAGES still leaves them out:
+  // `/route` is one, and is pinned below.
+  it('the roster lists an agent shared with the caller after their own and team agents', async () => {
     bus = new HookBus();
     registerAuth({ id: 'u1', isAdmin: false });
     bus.registerService('agents:list-for-user', 'agents', async () => ({
@@ -309,11 +314,11 @@ describe('channel-web agent-workspace BFF', () => {
     await h.state(mkReq(), state.res);
     expect(state.captured.statusCode).toBe(200);
     const roster = (state.captured.body as { agents: Array<{ id: string }> }).agents;
-    expect(roster.map((a) => a.id)).toEqual(['a-mine', 't1', 'a-old']);
+    expect(roster.map((a) => a.id)).toEqual(['a-mine', 't1', 'a-old', 'a-shared']);
 
-    // `/route` reads the same roster: a shared agent is never the pick, and
-    // the caller's one agent is their only one. (Named to sort first, so a
-    // roster that kept it would pick it on the tie-break.)
+    // `/route` lists the agents the caller manages: a shared agent is never
+    // the pick, and the caller's one agent is their only one. (Named to sort
+    // first, so a list that kept it would pick it on the tie-break.)
     bus = new HookBus();
     registerAuth({ id: 'u1', isAdmin: false });
     bus.registerService('agents:list-for-user', 'agents', async () => ({
@@ -331,6 +336,398 @@ describe('channel-web agent-workspace BFF', () => {
       agentName: 'Inbox',
       why: "it's your only agent",
       confident: true,
+    });
+  });
+
+  /*
+    TASK-1247 — HOW THE CALLER STANDS WITH EACH AGENT, AND WHAT SOMEONE AN
+    AGENT IS ONLY SHARED WITH MAY SEE.
+
+    Every roster row and the agent view's `agent` say `access`: the agent's
+    creator, a co-owner, someone it is only shared with (`audience`), or a
+    member of its team. A shared agent's row also names whoever created it
+    (`sharedBy`), by display name and never by email. And an agent's activity
+    line is stored per AGENT, not per person: for someone the agent is only
+    shared with it would describe the owner's own conversations, so it is
+    never read for them.
+  */
+  describe('sharing: how the caller stands with each agent (TASK-1247)', () => {
+    /** u1's view of agents, as @ax/agents answers it: each row carries `ownerId` and `shared`. */
+    const MINE = {
+      id: 'a-mine', displayName: 'Inbox', visibility: 'personal', isOwner: true, ownerId: 'u1', shared: false,
+    };
+    const CO_OWNED = {
+      id: 'a-co', displayName: 'Planner', visibility: 'personal', isOwner: true, ownerId: 'vin', shared: true,
+    };
+    const SHARED = {
+      id: 'a-shared', displayName: 'Fern', visibility: 'personal', isOwner: false, ownerId: 'vin', shared: true,
+    };
+    const TEAM = {
+      id: 't1', displayName: 'Support', visibility: 'team', isOwner: false, ownerId: 'team-1', shared: true,
+    };
+    const VINAY = { id: 'vin', displayName: 'Vinay Pulim', email: 'v@example.com', isAdmin: false };
+
+    type Row = Record<string, unknown> & { id: string };
+
+    /** A fresh bus whose `agents:list-for-user` answers `agents` for u1. */
+    function rosterOf(agents: Array<Record<string, unknown>>): void {
+      bus = new HookBus();
+      registerAuth({ id: 'u1', isAdmin: false });
+      bus.registerService('agents:list-for-user', 'agents', async () => ({ agents }));
+    }
+
+    /**
+     * `auth:get-user`, answering from `people` (an `Error` is thrown). Every
+     * id it is asked about is recorded, so "asked once per person" and "never
+     * asked about the caller" are assertions, not assumptions.
+     */
+    function registerPeople(people: Record<string, unknown>): string[] {
+      const asked: string[] = [];
+      bus.registerService('auth:get-user', 'auth', async (_c, i: unknown) => {
+        const { userId } = i as { userId: string };
+        asked.push(userId);
+        const answer = people[userId];
+        if (answer instanceof Error) throw answer;
+        return answer ?? null;
+      });
+      return asked;
+    }
+
+    /**
+     * `agent-activity:get`, with something to say about EVERY agent, so a row
+     * that shows nothing shows nothing because it was never read.
+     */
+    function registerBusyActivity(): string[] {
+      const asked: string[] = [];
+      bus.registerService('agent-activity:get', 'activity', async (_c, i: unknown) => {
+        const { agentId } = i as { agentId: string };
+        asked.push(agentId);
+        return {
+          activity: {
+            phrase: agentId === 'a-mine' ? 'Reading email' : `Drafting the board memo for ${agentId}`,
+            counter: { done: 2, total: 5, unit: 'drafts' },
+            startedAt: '2026-09-20T11:54:00.000Z',
+            source: 'tool',
+            stale: false,
+          },
+        };
+      });
+      return asked;
+    }
+
+    async function readRoster(): Promise<{ rows: Row[]; body: unknown }> {
+      const { res, captured } = mkRes();
+      await makeWorkspaceHandlers({ bus, initCtx }).state(mkReq(), res);
+      expect(captured.statusCode).toBe(200);
+      return { rows: (captured.body as { agents: Row[] }).agents, body: captured.body };
+    }
+
+    function rowOf(rows: Row[], id: string): Row {
+      const row = rows.find((r) => r.id === id);
+      expect(row, id).toBeDefined();
+      return row!;
+    }
+
+    it('roster rows say how the caller stands with each agent', async () => {
+      // Interleaved on purpose: the agents the caller only uses go last, and
+      // each group keeps the hook's order.
+      const SHARED_TOO = { ...SHARED, id: 'a-shared-2', displayName: 'Juniper' };
+      rosterOf([SHARED, MINE, SHARED_TOO, TEAM, CO_OWNED]);
+      registerPeople({ vin: VINAY });
+
+      const { rows } = await readRoster();
+      expect(rows.map((r) => [r.id, r.access])).toEqual([
+        ['a-mine', 'creator'],
+        ['t1', 'team'],
+        ['a-co', 'co-owner'],
+        ['a-shared', 'audience'],
+        ['a-shared-2', 'audience'],
+      ]);
+      // The caller's own agent and a team agent name nobody.
+      expect('sharedBy' in rowOf(rows, 'a-mine')).toBe(false);
+      expect('sharedBy' in rowOf(rows, 't1')).toBe(false);
+    });
+
+    /** What @ax/agents knows about an agent that the workspace wire shape must never carry. */
+    const NEVER_ON_THE_WIRE = ['ownerId', 'isOwner', 'shared', 'audience', 'ownerType', 'visibility'] as const;
+
+    it('roster rows carry no ownership or sharing field beyond access and sharedBy, whatever the agent row holds', async () => {
+      rosterOf([
+        { ...SHARED, audience: { kind: 'everyone' } },
+        MINE,
+        TEAM,
+        { ...CO_OWNED, audience: { kind: 'list', userIds: ['u1'] } },
+      ]);
+      registerPeople({ vin: VINAY });
+
+      const { rows } = await readRoster();
+      expect(rows).toHaveLength(4);
+      for (const row of rows) {
+        for (const key of NEVER_ON_THE_WIRE) {
+          expect(key in row, `${row.id}.${key}`).toBe(false);
+        }
+      }
+    });
+
+    it('the roster names who shared an agent, asks once per person, and never sends an email', async () => {
+      const FROM_ADA = { ...CO_OWNED, id: 'a-ada', displayName: 'Scout', ownerId: 'ada' };
+      rosterOf([
+        MINE,
+        SHARED,
+        { ...SHARED, id: 'a-shared-2', displayName: 'Juniper' },
+        FROM_ADA,
+      ]);
+      const asked = registerPeople({
+        vin: VINAY,
+        ada: { id: 'ada', displayName: 'Ada Stone', email: 'ada@example.com', isAdmin: true },
+      });
+
+      const { rows, body } = await readRoster();
+      expect(rowOf(rows, 'a-shared').sharedBy).toBe('Vinay Pulim');
+      expect(rowOf(rows, 'a-shared-2').sharedBy).toBe('Vinay Pulim');
+      // A co-owner is told who created a shared agent too.
+      expect(rowOf(rows, 'a-ada').sharedBy).toBe('Ada Stone');
+      // Once per person, and never about the caller (their own agent names nobody).
+      expect([...asked].sort()).toEqual(['ada', 'vin']);
+      expect(JSON.stringify(body)).not.toContain('@');
+    });
+
+    it('the creator’s own shared agent says creator, names nobody, and never looks the caller up', async () => {
+      rosterOf([{ ...MINE, shared: true }]);
+      const asked = registerPeople({ u1: { id: 'u1', displayName: 'Me Myself', email: 'me@example.com' } });
+
+      const { rows } = await readRoster();
+      expect(rowOf(rows, 'a-mine').access).toBe('creator');
+      expect('sharedBy' in rowOf(rows, 'a-mine')).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
+    it('a row whose producer doesn’t say whether it is shared gets no Shared-by line', async () => {
+      const { shared: _unsaid, ...OLD_SHARED } = SHARED;
+      const { shared: _unsaidToo, ...OLD_CO_OWNED } = CO_OWNED;
+      rosterOf([OLD_SHARED, OLD_CO_OWNED]);
+      const asked = registerPeople({ vin: VINAY });
+
+      const { rows } = await readRoster();
+      expect(rowOf(rows, 'a-shared').access).toBe('audience');
+      expect(rowOf(rows, 'a-co').access).toBe('co-owner');
+      expect('sharedBy' in rowOf(rows, 'a-shared')).toBe(false);
+      expect('sharedBy' in rowOf(rows, 'a-co')).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
+    const unnamed: Array<[string, () => void]> = [
+      ['there is no auth:get-user', () => {}],
+      [
+        'it throws',
+        () => {
+          registerPeople({ vin: new Error('lookup for v@example.com failed'), ada: new Error('down') });
+        },
+      ],
+      [
+        'it answers null',
+        () => {
+          registerPeople({});
+        },
+      ],
+      [
+        'the name is blank once fenced',
+        () => {
+          registerPeople({
+            vin: { id: 'vin', displayName: ` ${String.fromCharCode(0x200b)}  `, email: 'v@example.com' },
+          });
+        },
+      ],
+      [
+        'there is only an email',
+        () => {
+          registerPeople({ vin: { id: 'vin', displayName: null, email: 'v@example.com' } });
+        },
+      ],
+    ];
+    it.each(unnamed)('a creator whose name can’t be looked up reads as null: %s', async (which, register) => {
+      rosterOf([SHARED, { ...CO_OWNED, ownerId: 'ada' }]);
+      register();
+      const warn = vi.spyOn(initCtx.logger, 'warn');
+      try {
+        const { rows, body } = await readRoster();
+        expect(rowOf(rows, 'a-shared')).toMatchObject({ access: 'audience', sharedBy: null });
+        expect(rowOf(rows, 'a-co')).toMatchObject({ access: 'co-owner', sharedBy: null });
+        // Never the email in its place.
+        expect(JSON.stringify(body)).not.toContain('@');
+        // At most one warning for the whole roster, by code only: an error's
+        // message can carry the address it was looking up.
+        const lookups = warn.mock.calls.filter(([event]) => event === 'workspace_shared_by_lookup_failed');
+        if (which === 'it throws') {
+          expect(lookups).toEqual([['workspace_shared_by_lookup_failed', { code: 'unknown' }]]);
+        } else {
+          expect(lookups).toEqual([]);
+        }
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('the Shared by name is fenced: bidi and zero-width characters go, and a long name stops at 80', async () => {
+      rosterOf([SHARED]);
+      const spoofed =
+        'Vin' + String.fromCharCode(0x202e) + 'ay' + String.fromCharCode(0x200b) + 'x'.repeat(10_000);
+      registerPeople({ vin: { id: 'vin', displayName: spoofed, email: null } });
+
+      const { rows } = await readRoster();
+      const sharedBy = rowOf(rows, 'a-shared').sharedBy as string;
+      expect([...sharedBy]).toHaveLength(80);
+      expect(sharedBy.startsWith('Vin ay x')).toBe(true);
+      expect(sharedBy.endsWith('…')).toBe(true);
+      expect(sharedBy).not.toContain(String.fromCharCode(0x202e));
+      expect(sharedBy).not.toContain(String.fromCharCode(0x200b));
+    });
+
+    it('a co-owned agent that isn’t shared has no Shared-by line', async () => {
+      rosterOf([{ ...CO_OWNED, shared: false }]);
+      const asked = registerPeople({ vin: VINAY });
+
+      const { rows } = await readRoster();
+      const row = rowOf(rows, 'a-co');
+      expect(row.access).toBe('co-owner');
+      expect('sharedBy' in row).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
+    it('the roster never reads what an agent the caller only uses is doing', async () => {
+      rosterOf([SHARED, MINE, CO_OWNED]);
+      registerPeople({ vin: VINAY });
+      const asked = registerBusyActivity();
+
+      const { rows, body } = await readRoster();
+      expect(asked).not.toContain('a-shared');
+      expect([...asked].sort()).toEqual(['a-co', 'a-mine']);
+      expect(rowOf(rows, 'a-shared')).toMatchObject({
+        state: 'resting',
+        now: null,
+        counter: null,
+        startedAt: null,
+      });
+      // The caller's own agent, and one they co-own, still say what they are doing.
+      expect(rowOf(rows, 'a-mine')).toMatchObject({ state: 'working', now: 'Reading email' });
+      expect(rowOf(rows, 'a-co')).toMatchObject({ state: 'working', now: 'Drafting the board memo for a-co' });
+      expect(JSON.stringify(body)).not.toContain('for a-shared');
+    });
+
+    it('tasks and tasks/agents still leave out an agent only shared with the caller', async () => {
+      rosterOf([SHARED, MINE]);
+      const listed: string[] = [];
+      bus.registerService('routines:list', 'routines', async (_c, i: unknown) => {
+        listed.push((i as { agentId: string }).agentId);
+        return { routines: [], unreadable: [] };
+      });
+      const managed: string[] = [];
+      bus.registerService('agents:can-manage-routines', 'agents', async (_c, i: unknown) => {
+        managed.push((i as { agentId: string }).agentId);
+        return { allowed: true };
+      });
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+
+      const tasks = mkRes();
+      await h.tasks(mkReq(), tasks.res);
+      expect(tasks.captured).toEqual({ statusCode: 200, body: { tasks: [], unavailableAgents: [] } });
+      expect(listed).toEqual(['a-mine']);
+
+      const taskAgents = mkRes();
+      await h.taskAgents(mkReq(), taskAgents.res);
+      expect(taskAgents.captured).toEqual({
+        statusCode: 200,
+        body: { agents: [{ agentId: 'a-mine', agentName: 'Inbox' }] },
+      });
+      expect(managed).toEqual(['a-mine']);
+    });
+
+    /** A fresh bus for the agent view, whose `agents:resolve` answers `agent`. */
+    function agentViewOf(agent: Record<string, unknown>): void {
+      bus = new HookBus();
+      registerAuth({ id: 'u1', isAdmin: false });
+      bus.registerService('agents:resolve', 'agents', async () => ({ agent }));
+      bus.registerService('conversations:list', 'conversations', async () => []);
+      bus.registerService('conversations:get', 'conversations', async () => {
+        throw notFound();
+      });
+    }
+
+    async function readAgentView(agentId: string): Promise<{ agent: Row; body: unknown }> {
+      const { res, captured } = mkRes();
+      await makeWorkspaceHandlers({ bus, initCtx }).agentDetail(mkReq({ agentId }), res);
+      expect(captured.statusCode).toBe(200);
+      return { agent: (captured.body as { agent: Row }).agent, body: captured.body };
+    }
+
+    it('the agent view tells someone an agent is shared with that they only use it, who shared it, and nothing about what it is doing', async () => {
+      agentViewOf(SHARED);
+      const people = registerPeople({ vin: VINAY });
+      const asked = registerBusyActivity();
+
+      const { agent, body } = await readAgentView('a-shared');
+      expect(agent).toMatchObject({
+        id: 'a-shared',
+        access: 'audience',
+        sharedBy: 'Vinay Pulim',
+        state: 'resting',
+        now: null,
+        counter: null,
+        startedAt: null,
+      });
+      expect(asked).toEqual([]);
+      expect(people).toEqual(['vin']);
+      expect(JSON.stringify(body)).not.toContain('@');
+    });
+
+    it('the agent view carries no ownership or sharing field beyond access and sharedBy, whatever the agent row holds', async () => {
+      for (const row of [SHARED, MINE, CO_OWNED, TEAM]) {
+        agentViewOf({ ...row, audience: { kind: 'everyone' } });
+        registerPeople({ vin: VINAY });
+        const { agent } = await readAgentView(row.id);
+        for (const key of NEVER_ON_THE_WIRE) {
+          expect(key in agent, `${row.id}.${key}`).toBe(false);
+        }
+      }
+    });
+
+    it('the agent view of the creator’s own shared agent says creator, names nobody, and never looks the caller up', async () => {
+      agentViewOf({ ...MINE, shared: true });
+      const asked = registerPeople({ u1: { id: 'u1', displayName: 'Me Myself', email: 'me@example.com' } });
+      registerBusyActivity();
+
+      const { agent } = await readAgentView('a-mine');
+      expect(agent).toMatchObject({ access: 'creator', state: 'working' });
+      expect('sharedBy' in agent).toBe(false);
+      expect(asked).toEqual([]);
+    });
+
+    it('the agent view still shows its owners what it is doing, and tells a co-owner who created it', async () => {
+      agentViewOf(CO_OWNED);
+      registerPeople({ vin: VINAY });
+      const asked = registerBusyActivity();
+      const coOwner = await readAgentView('a-co');
+      expect(coOwner.agent).toMatchObject({
+        access: 'co-owner',
+        sharedBy: 'Vinay Pulim',
+        state: 'working',
+        now: 'Drafting the board memo for a-co',
+      });
+      expect(asked).toEqual(['a-co']);
+
+      agentViewOf(MINE);
+      const nobody = registerPeople({ vin: VINAY });
+      registerBusyActivity();
+      const creator = await readAgentView('a-mine');
+      expect(creator.agent).toMatchObject({ access: 'creator', state: 'working', now: 'Reading email' });
+      expect('sharedBy' in creator.agent).toBe(false);
+      expect(nobody).toEqual([]);
+
+      agentViewOf(TEAM);
+      registerBusyActivity();
+      const member = await readAgentView('t1');
+      expect(member.agent).toMatchObject({ access: 'team', state: 'working' });
+      expect('sharedBy' in member.agent).toBe(false);
     });
   });
 

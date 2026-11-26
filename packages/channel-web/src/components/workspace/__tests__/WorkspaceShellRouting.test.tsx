@@ -630,6 +630,26 @@ describe('agent settings page (TASK-888)', () => {
 });
 
 
+describe('a settings address for an agent you only use (TASK-1247)', () => {
+  it('lands in the chat by REPLACING the history entry, so Back is not a trap', async () => {
+    agentMock.mockResolvedValue({
+      agent: { ...AGENTS[0]!, access: 'audience' as const },
+      conversationId: null,
+      thread: [],
+      decisions: { status: 'ok' },
+      past: [],
+      memory: { rules: { status: 'unavailable', doc: null } },
+    });
+    window.history.replaceState(null, '', '/workspace/agents/a-quill/settings/connectors');
+    const before = window.history.length;
+    renderAt('/workspace/agents/a-quill/settings/connectors');
+
+    await waitFor(() => expect(window.location.pathname).toBe('/workspace/agents/a-quill'));
+    expect(window.history.length).toBe(before);
+    expect(screen.queryByRole('heading', { level: 1, name: 'Quill settings' })).toBeNull();
+  });
+});
+
 describe('Connectors settings migration (TASK-889)', () => {
   it.each(['connectors', 'rules'])('replaces a legacy %s URL with the settings section', async (tab) => {
     window.history.replaceState(null, '', `/workspace/agents/a-quill/${tab}`);

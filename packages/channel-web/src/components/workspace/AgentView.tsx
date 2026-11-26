@@ -29,6 +29,8 @@ import {
   type MemoryFixes,
 } from '@/lib/use-conversation-memory';
 import { jumpToSource, turnSources } from '@/lib/thread-jump';
+import { canManageAgent } from '@/lib/agent-sharing';
+import { askOwnerInstead } from '@/lib/turn-error-labels';
 import { useUser } from '@/lib/user-context';
 import {
   NAV_TRIGGER_ATTR,
@@ -130,7 +132,8 @@ interface Props {
   onConversationScope?: (scope: {agentId:string;conversationId:string} | null) => void;
   agentId: string;
   tab: AgentTab;
-  onTab: (t: AgentTab) => void;
+  /** `replace`: swap the history entry rather than add one (a redirect, not a choice). */
+  onTab: (t: AgentTab, opts?: { replace?: boolean }) => void;
   /**
    * TASK-888 — the settings section on screen, or `null` for the chat. When
    * set, this view draws the agent's settings page in place of the
@@ -1654,6 +1657,19 @@ export function AgentView({
     [agentId, streamFrom, load, aimAt],
   );
 
+  /*
+    TASK-1247 — someone an agent is only shared with just chats. Until the agent
+    read lands there is nothing to decide, so it reads as "may manage" (and the
+    pane is the loading one anyway). A settings address for an agent they can't
+    manage — typed, bookmarked, or from before it was shared — lands in the
+    chat instead.
+  */
+  const canManage = detail === null || canManageAgent(detail.agent);
+  useEffect(() => {
+    // REPLACE: a push would leave the settings address one Back away, and Back would bounce straight here again.
+    if (!canManage && settingsSection !== null) onTab('chat', { replace: true });
+  }, [canManage, settingsSection, onTab]);
+
   if (loadError !== null) {
     /*
       The prose, then exactly one way out — and WHICH way out is the point.
@@ -1795,10 +1811,14 @@ export function AgentView({
         }
         jumpToSource(turnId);
       }}
-      onSeeAll={() => {
-        setSheetPanel(null);
-        openSettings('memory');
-      }}
+      onSeeAll={
+        canManage
+          ? () => {
+              setSheetPanel(null);
+              openSettings('memory');
+            }
+          : undefined
+      }
     />
   );
 
@@ -1969,6 +1989,8 @@ export function AgentView({
   const approvalRead: ApprovalRead = approvalReadFrom(detail.decisions.status, decisionsError);
 
   function openSettings(section?: AgentSettingsSection) {
+    // Someone the agent is only shared with just chats (TASK-1247).
+    if (!canManage) return;
     // Generic Settings opens the phone index; named links drill in directly.
     setSettingsListRequested(section === undefined);
     setSheetPanel(null);
@@ -2015,7 +2037,7 @@ export function AgentView({
     />
   );
 
-  const settingsPage = settingsSection !== null && onSettingsSection ? (
+  const settingsPage = canManage && settingsSection !== null && onSettingsSection ? (
         <AgentSettings
           agent={agent}
           section={settingsSection}
@@ -2073,7 +2095,7 @@ export function AgentView({
               <SkippedConnectorsNotice
                 agentId={agentId}
                 refreshKey={`${turnsEnded}:${tab}:${settingsSection ?? 'chat'}`}
-                onOpenConnectors={() => openSettings('connectors')}
+                onOpenConnectors={canManage ? () => openSettings('connectors') : undefined}
               />
               {turnError !== null && (
                 /*
@@ -2127,7 +2149,8 @@ export function AgentView({
                       */}
                       {turnError.sentence !== null && (
                         <span className="whitespace-pre-line text-muted-foreground">
-                          {turnError.sentence}
+                          {/* Someone who can't open Connectors is told who can. */}
+                          {canManage ? turnError.sentence : askOwnerInstead(turnError.sentence)}
                         </span>
                       )}
                       <Inline gap="sm">
@@ -2172,7 +2195,8 @@ export function AgentView({
                           connector's row carries Sign in / Reconnect. The strip stays up, so
                           Resend is still here after they come back signed in.
                         */}
-                        {turnError.opensConnectors === true &&
+                        {canManage &&
+                          turnError.opensConnectors === true &&
                           turnError.source === 'turn' && (
                           <Button
                             variant="outline"

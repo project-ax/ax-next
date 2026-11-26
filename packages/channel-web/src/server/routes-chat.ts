@@ -225,7 +225,9 @@ interface AgentsListForUserAgent {
   /**
    * TASK-1246 — is the user one of this agent's owners? `false` on a personal
    * agent merely shared with them (and on every team agent). Read only by
-   * `hideAgentsSharedWithMe`; never put on the wire.
+   * `hideAgentsSharedWithMe`, so `GET /api/chat/agents` lists the agents the
+   * user manages (their own and their teams') and never one only shared with
+   * them (TASK-1247); never put on the wire.
    */
   isOwner?: boolean;
 }
@@ -1452,7 +1454,12 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
     },
 
-    /** GET /api/chat/agents — list user's agents for the AgentMenu. */
+    /**
+     * GET /api/chat/agents — the agents the user MANAGES: their own (created
+     * or co-owned) and their teams'. Never one that is only shared with them
+     * (TASK-1247): the workspace roster, `GET /api/workspace/state`, is the
+     * one list that shows those.
+     */
     async listAgents(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
@@ -1469,9 +1476,10 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
 
       // TASK-1246 — the list also carries personal agents merely shared with
       // the user. Every client reader of this route takes "listed and
-      // personal" as "mine" (the onboarding gate, Sites, Skills, Routines), so
-      // they stay off it until the UI can tell the two apart (card B). The
-      // user's own agents and their teams' stay, as before.
+      // personal" as "mine" (the onboarding gate's count, Sites, Skills'
+      // install target, Routines, self-improvement), so they stay off it, and
+      // that is the permanent rule here (TASK-1247), not a stopgap. The user's
+      // own agents and their teams' stay, as before.
       //
       // Filter to display-relevant fields (I5 — capabilities minimized).
       // We deliberately drop systemPrompt / allowedTools / mcpConfigIds /

@@ -246,6 +246,16 @@ describe('AgentView — "What I learned in this chat"', () => {
     expect(onSettingsSection).toHaveBeenCalledWith('memory');
   });
 
+  it('leaves "See all memory" out for someone the agent is only shared with (TASK-1247)', async () => {
+    agentMock.mockResolvedValue(detail({ agent: { ...quill, access: 'audience' } }));
+    recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
+    renderView();
+    await expandLearned();
+    // The facts are there (a settings page they can't open is the only thing missing).
+    expect(await screen.findByText('v-a', { exact: false })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: LEARNED_SEE_ALL })).toBeNull();
+  });
+
   it('offers "Fix this" on paused memory with learned facts to an admin only', async () => {
     recall.mockResolvedValue({ statements: [st('a')], degraded: [] });
     const { onOpenModelKeys } = renderView({ role: 'admin' });

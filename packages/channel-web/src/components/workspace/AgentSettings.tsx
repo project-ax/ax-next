@@ -35,6 +35,7 @@ import {
   Plug,
   ScrollText,
   Sparkles,
+  Users,
 } from 'lucide-react';
 import { EmptyState } from '@project-ax/ui';
 import {
@@ -51,6 +52,7 @@ import { useUser } from '@/lib/user-context';
 import { SkillsAppStore } from '@/components/settings/SkillsAppStore';
 import { RoutinesTab } from '@/components/routines/RoutinesTab';
 import { useAgentRail } from '@/lib/workspace-rail';
+import { SHARING_COPY } from '@/lib/sharing-copy';
 import type { AgentDetail } from '@/lib/workspace-api';
 import {
   AGENT_SETTINGS_SECTIONS,
@@ -60,6 +62,7 @@ import { SidebarRow } from '../SidebarRow';
 import { useGrantRevoke } from './AgentRail';
 import { AgentAdvancedLimits } from './AgentAdvancedLimits';
 import { AgentApps } from './AgentApps';
+import { AgentSharing } from './AgentSharing';
 import { AgentSlack } from './AgentSlack';
 import { ConnectorsTab } from './ConnectorsTab';
 
@@ -81,6 +84,13 @@ export const SETTINGS_SECTIONS: Record<AgentSettingsSection, SectionCopy> = {
     Icon: ScrollText,
     description: (name) => `Kept word for word. ${name} reads them before every run.`,
     summary: (name) => `Rules ${name} follows every time`,
+  },
+  sharing: {
+    label: SHARING_COPY.nav.label,
+    Icon: Users,
+    // The section opens with "Who can use <agent>?", which says it.
+    description: () => null,
+    summary: SHARING_COPY.nav.summary,
   },
   model: {
     label: 'Model',
@@ -305,6 +315,8 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
   switch (section) {
     case 'instructions':
       return <>{instructions}</>;
+    case 'sharing':
+      return <AgentSharing key={agent.id} agent={agent} onSection={onSection} />;
     case 'connectors':
       return <ConnectorsSection agent={agent} busy={busy} />;
     case 'slack':

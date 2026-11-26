@@ -44,6 +44,7 @@ import {
   type ProviderRow,
 } from './handler.js';
 import { sessionTokenALS, type AuthRequestBox } from './session-bridge.js';
+import { createPeopleSearchHandler, findPeople } from './people-search.js';
 import { GATED_KINDS, isOnApprovedDomain, isPlainAscii, parseDomains } from './identity-gate.js';
 import {
   createProvidersStore,
@@ -137,6 +138,8 @@ export interface AuthBetterConfig {
 //   - auth:list-admins (TASK-1170): host-internal list of the admins with a
 //     verified email, for @ax/channel-slack's DMs; returns only
 //     `{ userId, email }`
+//   - GET /admin/people (TASK-1247): the sharing picker's search by name, for
+//     signed-in people; answers only `{ id, displayName }` (people-search.ts)
 //   - `/auth/*` splat route forwards to better-auth's WebStandards handler
 //   - auth:providers-changed subscriber rebuilds the handler in place
 //
@@ -460,6 +463,24 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
           'http:register-route',
           initCtx,
           { method: 'POST', path: '/admin/sign-out', handler: signOutHandler },
+        );
+        unregisterRoutes.push(unregister);
+      }
+
+      // 6.6) GET /admin/people?q= — the sharing picker finds a person by name
+      // (TASK-1247). Signed-in people only, `{ id, displayName }` only, 60 a
+      // minute per person. The rules live in people-search.ts.
+      {
+        const peopleHandler = createPeopleSearchHandler({
+          currentUserId: async (req) =>
+            (await requireUser(localDb, sessionCookieName, req)).user.id,
+          findPeople: (query) => findPeople(localDb, query),
+          ctx: initCtx,
+        });
+        const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
+          'http:register-route',
+          initCtx,
+          { method: 'GET', path: '/admin/people', handler: peopleHandler },
         );
         unregisterRoutes.push(unregister);
       }

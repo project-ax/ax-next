@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, ChevronsUpDown, EllipsisVertical, Plus, Settings, Trash2 } from 'lucide-react';
-import { ConfirmAction } from '@project-ax/ui';
+import { ConfirmAction, Stack, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -11,7 +11,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { deleteAgent } from '@/lib/admin';
+import { canDeleteAgent, canManageAgent } from '@/lib/agent-sharing';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
+import { personLabel, SHARING_COPY } from '@/lib/sharing-copy';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
@@ -95,6 +97,9 @@ export function AgentSwitcher({
   const othersWaiting = agents.some(
     (a) => a.id !== selected.id && a.state === 'waiting',
   );
+  // Someone an agent is only shared with just chats; a co-owner can't delete.
+  const canSettings = onOpenSettings !== undefined && canManageAgent(selected);
+  const canDelete = onDeleted !== undefined && canDeleteAgent(selected);
   const switcherLabel = `${selected.name}, ${stateWord(selected.state).toLowerCase()}. Switch agent`;
 
   const trigger = collapsed ? (
@@ -164,9 +169,22 @@ export function AgentSwitcher({
                   <StateDotSlot>
                     <StateDot state={a.state} />
                   </StateDotSlot>
-                  <span className="min-w-0 flex-1 truncate" title={a.name}>
-                    {a.name}
-                  </span>
+                  {/* A div, not a span: the shared-by row stacks block elements inside it. */}
+                  <div className="min-w-0 flex-1 truncate" title={a.name}>
+                    {a.sharedBy === undefined ? (
+                      a.name
+                    ) : (
+                      // Who shared it, so two agents with one name aren't a
+                      // guess. The name is fenced; `null` reads as "Shared
+                      // with you".
+                      <Stack gap="none">
+                        <Text truncate>{a.name}</Text>
+                        <Text role="caption" truncate>
+                          {SHARING_COPY.sharedBy(a.sharedBy === null ? null : personLabel(a.sharedBy))}
+                        </Text>
+                      </Stack>
+                    )}
+                  </div>
                   <span className="sr-only">, {stateWord(a.state).toLowerCase()}</span>
                   {a.id === selected.id && (
                     <Check aria-hidden="true" className="size-4 shrink-0 text-primary" />
@@ -188,7 +206,7 @@ export function AgentSwitcher({
             )}
           </DropdownMenuContent>
         </DropdownMenu>
-        {!collapsed && (onOpenSettings || onDeleted) && (
+        {!collapsed && (canSettings || canDelete) && (
           // Not modal: Delete opens a dialog, and a modal menu closing into a
           // modal dialog leaves <body> unclickable (same as the chat rows).
           <DropdownMenu modal={false}>
@@ -205,14 +223,14 @@ export function AgentSwitcher({
               </DropdownMenuTrigger>
             </IconTooltip>
             <DropdownMenuContent align="end" sideOffset={4} className="min-w-48 shadow-popover">
-              {onOpenSettings && (
+              {canSettings && (
                 <DropdownMenuItem onSelect={go(() => onOpenSettings(selected.id))}>
                   <Settings aria-hidden="true" />
                   Agent settings
                 </DropdownMenuItem>
               )}
-              {onOpenSettings && onDeleted && <DropdownMenuSeparator />}
-              {onDeleted && (
+              {canSettings && canDelete && <DropdownMenuSeparator />}
+              {canDelete && (
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
                   onSelect={() => {

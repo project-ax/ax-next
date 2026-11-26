@@ -51,7 +51,8 @@ import {
 } from '@/lib/workspace-steps';
 import { signInWithGoogle } from '@/lib/auth';
 import { readNoticeTone } from '@/lib/read-register';
-import { turnErrorText } from '@/lib/turn-error-labels';
+import { askOwnerInstead, turnErrorText } from '@/lib/turn-error-labels';
+import { canManageAgent } from '@/lib/agent-sharing';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
 import { localTime } from '@/lib/workspace-time';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
@@ -211,7 +212,7 @@ function threadGrowthKey(thread: readonly ThreadMessage[]): string {
 }
 
 interface Props {
-  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  agent: Pick<WorkspaceAgent, 'id' | 'name' | 'access'>;
   thread: ThreadMessage[];
   /**
    * The conversation `thread` was read from, or `null` when the agent has
@@ -1076,7 +1077,7 @@ function Message({
 }: {
   m: ThreadMessage;
   onOpenArtifact?: (artifactId: string) => void;
-  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  agent: Pick<WorkspaceAgent, 'id' | 'name' | 'access'>;
   /** See `Props.conversationId` — what turns an attachment id into a URL. */
   conversationId: string | null;
   /**
@@ -1315,7 +1316,11 @@ function Message({
       <div className="flex gap-3">
         <AgentTile agent={agent} size={24} />
         <div className="min-w-0 max-w-[600px] flex-1 whitespace-pre-line">
-          <Notice tone="danger">{turnErrorText(m.reason, m.detail)}</Notice>
+          <Notice tone="danger">
+            {canManageAgent(agent)
+              ? turnErrorText(m.reason, m.detail)
+              : askOwnerInstead(turnErrorText(m.reason, m.detail))}
+          </Notice>
           {failedAt !== null && (
             <div className="mt-1.5 text-[11.5px] text-muted-foreground">
               {failedAt}
@@ -1429,7 +1434,7 @@ function AgentReply({
   onOpenArtifact,
 }: {
   reply: ReplyGroup;
-  agent: Pick<WorkspaceAgent, 'id' | 'name'>;
+  agent: Pick<WorkspaceAgent, 'id' | 'name' | 'access'>;
   conversationId: string | null;
   fileRecheckKey: number;
   onOpenArtifact?: (artifactId: string) => void;

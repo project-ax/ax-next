@@ -138,7 +138,12 @@
  *     fan out over `agents:list-for-user` —
  *     there the roster IS the ACL, and it is a different predicate
  *     (server-derived teamIds vs. a live `teams:is-member` call), one that is
- *     strictly narrower in practice. `/tasks` is checked again per agent:
+ *     strictly narrower in practice. Only `/state` lists the personal agents
+ *     merely shared with the caller (TASK-1247, `listRoster`), each row saying
+ *     how the caller stands with it, and it never reads such an agent's
+ *     activity line (`activityFor`); `/route`, `/tasks` and `/tasks/agents`
+ *     list the agents the caller manages (`listAgents`). `/tasks` is checked
+ *     again per agent:
  *     `routines:list` runs `agents:resolve` for the caller itself and shows a
  *     task's state only to its owner (TASK-907). `/grants` filters the
  *     in-memory card-owner map on the authenticated userId. `/self-changes`
@@ -249,6 +254,7 @@ import type {
   AgentAbilities,
   AgentAbilitiesRead,
   AgentAbility,
+  AgentAccess,
   AgentConnectorHealth,
   AgentConnectorRemoved,
   AgentConnectorRow,
@@ -318,10 +324,13 @@ import { KICKOFF_TEXT } from '../lib/bootstrap-kickoff.js';
 // door channel-web reads and writes them through (shared with the admin
 // identity editor).
 import { readAgentIdentity, writeAgentIdentity } from './identity-write.js';
-// TASK-1246 — the one reading of `agents:resolve`'s `isOwner` for a write
-// (strict) and of `agents:list-for-user`'s for the roster (lenient).
+// TASK-1246 / TASK-1247 — the one reading of `agents:resolve`'s `isOwner` for
+// a write (strict), of `agents:list-for-user`'s for the lists of agents the
+// caller manages (lenient), and of either for how the caller stands with an
+// agent on the roster and the agent view (lenient).
 // TASK-1248 — and of its `shared`, for a shared personal agent (strict).
 import {
+  agentAccess,
   hideAgentsSharedWithMe,
   isSharedPersonalAgent,
   ownsPersonalAgent,
@@ -433,11 +442,18 @@ interface ResolvedAgent {
    */
   isOwner?: boolean;
   /**
+   * TASK-1247 — who created the agent: a person's id on a personal agent, the
+   * team's on a team agent. Read only by `agentAccess` (creator or co-owner)
+   * and the "Shared by" lookup, and never put on the wire itself.
+   */
+  ownerId?: string;
+  /**
    * TASK-1248 — does anyone but its owners use this agent? `@ax/agents` says
    * true for a team agent and for a personal agent shared with other people.
    * Read only through {@link isSharedPersonalAgent} (`personal` and exactly
    * `true`), so a personal answer without it keeps the "Just me" rules; a team
-   * agent keeps its own branch whatever this says.
+   * agent keeps its own branch whatever this says. TASK-1247's "Shared by"
+   * line reads it the same way.
    */
   shared?: boolean;
   /** Which runner the host spawns for this agent (an id, e.g. `claude-sdk`). */
@@ -673,10 +689,17 @@ interface AgentsListForUserOutput {
     displayName: string;
     connectorAttachments?: string[];
     connectorExclusions?: string[];
-    /** TASK-1246 — read only by `hideAgentsSharedWithMe` (`listAgents`). */
+    /**
+     * TASK-1246 — read only by `hideAgentsSharedWithMe` (`listAgents`) and
+     * `agentAccess` (`listRoster`, the roster's rows).
+     */
     visibility?: 'personal' | 'team';
     /** TASK-1246 — `false` on a personal agent merely shared with the user. */
     isOwner?: boolean;
+    /** TASK-1247 — who created it; see `ResolvedAgent.ownerId`. Never on the wire. */
+    ownerId?: string;
+    /** TASK-1247 — is it shared at all? See `ResolvedAgent.shared`. */
+    shared?: boolean;
   }>;
 }
 
@@ -2054,6 +2077,82 @@ interface SignerName {
 interface AuthUserLike {
   displayName?: string | null;
   email?: string | null;
+}
+
+/**
+ * TASK-1247 — the "Shared by" line's read of `auth:get-user`: the display name
+ * and nothing else. It has no email field on purpose, so the line can never
+ * fall back to one (unlike a connector's signer, whose email an admin may see).
+ */
+interface AuthUserNameLike {
+  displayName?: unknown;
+}
+
+/**
+ * TASK-1247 — the most a "Shared by" name may be, in code points. A display
+ * name is user-written, and this line is how someone tells whose agent they
+ * are using, so it is fenced like every other label here.
+ */
+const SHARED_BY_NAME_MAX_CHARS = 80;
+
+/**
+ * TASK-1247 — does this row get a "Shared by" line? Only for someone who
+ * didn't create the agent (a co-owner, or someone it is only shared with), and
+ * only on an agent that is shared: a co-owned agent nobody else uses has no
+ * sharer to name. Keyed on `shared`, @ax/agents' one "is it shared?" answer,
+ * read through TASK-1248's {@link isSharedPersonalAgent} (`personal` and
+ * exactly `true`); an answer that doesn't say so gets no line.
+ */
+function showsSharedBy(
+  agent: { visibility?: unknown; shared?: unknown },
+  access: AgentAccess,
+): boolean {
+  return (access === 'co-owner' || access === 'audience') && isSharedPersonalAgent(agent);
+}
+
+/** TASK-1247 — how the caller stands with one agent, as its wire row says it. */
+interface AgentStanding {
+  access: AgentAccess;
+  /** Set only when {@link showsSharedBy}: the creator's name, or `null` when it couldn't be looked up. */
+  sharedBy?: string | null;
+}
+
+/** TASK-1247 — what `standingOf` and the "Shared by" lookup read off an agent row. */
+interface StandingFields {
+  visibility?: unknown;
+  isOwner?: unknown;
+  ownerId?: unknown;
+  shared?: unknown;
+}
+
+/**
+ * TASK-1247 — the creators whose names these rows' "Shared by" lines need.
+ * Never the caller (their own agents name nobody) and never a team.
+ */
+function sharedByOwnerIds(agents: readonly StandingFields[], userId: string): string[] {
+  const ids: string[] = [];
+  for (const agent of agents) {
+    if (showsSharedBy(agent, agentAccess(agent, userId)) && typeof agent.ownerId === 'string') {
+      ids.push(agent.ownerId);
+    }
+  }
+  return ids;
+}
+
+/**
+ * TASK-1247 — one agent's `access`, plus `sharedBy` when it shows one: the
+ * name `names` holds for its creator, or `null` when there is none (a lookup
+ * that missed, failed or found a blank name, or an answer with no `ownerId`).
+ */
+function standingOf(
+  agent: StandingFields,
+  userId: string,
+  names: ReadonlyMap<string, string>,
+): AgentStanding {
+  const access = agentAccess(agent, userId);
+  if (!showsSharedBy(agent, access)) return { access };
+  const ownerId = agent.ownerId;
+  return { access, sharedBy: typeof ownerId === 'string' ? (names.get(ownerId) ?? null) : null };
 }
 
 function nonEmptyStringOrNull(v: unknown): string | null {
@@ -4500,7 +4599,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * THE LINE IS THE WHOLE TEST, and `status` is deliberately not re-checked
    * beside it: `readActivity` is the one producer of this value and carries a
    * null line on every branch that is not `ok` (its own tests pin that, and so
-   * does "reports resting when the activity read FAILS"). A second condition
+   * does "reports resting when the activity read FAILS"). `activityFor`'s one
+   * branch of its own, for someone the agent is only shared with (TASK-1247),
+   * is `ok` with a null line, so it reads `resting` too. A second condition
    * that no input can falsify reads as a guard and is really dead code — the
    * kind a mutant battery cannot kill, which is how it was found.
    *
@@ -4549,11 +4650,16 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * placeholder is indistinguishable from a claim.
    *
    * `stoppedReason` is still null: nothing stops an agent yet (AW-12).
+   *
+   * `who` (TASK-1247) is how the caller stands with the agent: `access` on
+   * every row, and `sharedBy` only when {@link showsSharedBy} set it. It is
+   * required, so no caller can forget to say it.
    */
   function toWorkspaceAgent(
     agent: { id: string; displayName: string },
     state: AgentRunState,
-    activity?: AgentRailData['activity'],
+    activity: AgentRailData['activity'] | undefined,
+    who: AgentStanding,
   ): WorkspaceAgent {
     const line = activity?.activity ?? null;
     return {
@@ -4564,6 +4670,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       counter: line?.counter ?? null,
       startedAt: line?.startedAt ?? null,
       stoppedReason: null,
+      access: who.access,
+      ...(who.sharedBy !== undefined ? { sharedBy: who.sharedBy } : {}),
     };
   }
 
@@ -5046,6 +5154,55 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         agentId,
         ...(typeof code === 'string' ? { code } : {}),
       });
+    }
+    return names;
+  }
+
+  /**
+   * TASK-1247 — the "Shared by" line: each creator's display name, asked ONCE
+   * per person however many of their agents the caller sees, and fenced to
+   * one plain line of {@link SHARED_BY_NAME_MAX_CHARS} code points (a bidi
+   * override or a zero-width run in a name must not let it pose as someone
+   * else's).
+   *
+   * Only the display name is read ({@link AuthUserNameLike}), never the
+   * email: everyone an agent is shared with sees this line, so there is no
+   * viewer here who may see an address. Fail-soft: no `auth:get-user`, a miss,
+   * a name that fences to nothing, or a throw leaves that person out, and the
+   * row says `sharedBy: null`. A failure is logged once for the whole read, by
+   * its stable error CODE only, since a message can quote what it looked up.
+   *
+   * `auth:get-user` is host-internal and checks nothing about the asker, so
+   * this is only ever asked about the creator of an agent the caller already
+   * reached through `agents:list-for-user` or `agents:resolve`.
+   */
+  async function sharedByNames(ownerIds: readonly string[]): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    const distinct = [...new Set(ownerIds)];
+    if (distinct.length === 0 || !bus.hasService('auth:get-user')) return names;
+    let failure: unknown;
+    await Promise.all(
+      distinct.map(async (userId) => {
+        try {
+          const u = await bus.call<{ userId: string }, AuthUserNameLike | null>(
+            'auth:get-user',
+            initCtx,
+            { userId },
+          );
+          const raw = u?.displayName;
+          const name = fenceLine(typeof raw === 'string' ? raw : null, SHARED_BY_NAME_MAX_CHARS);
+          if (name !== null) names.set(userId, name);
+        } catch (err) {
+          failure ??= err;
+        }
+      }),
+    );
+    if (failure !== undefined) {
+      const code = (failure as { code?: unknown } | null)?.code;
+      initCtx.logger.warn(
+        'workspace_shared_by_lookup_failed',
+        typeof code === 'string' ? { code } : {},
+      );
     }
     return names;
   }
@@ -5839,7 +5996,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     };
   }
 
-  async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {
+  /**
+   * Every agent `userId` can use: their own (created or co-owned), their
+   * teams', and (TASK-1246) the personal agents merely shared with them, in
+   * the hook's order. Read only through {@link listAgents} and
+   * {@link listRoster}, which decide what each list shows.
+   */
+  async function agentsForUser(userId: string): Promise<AgentsListForUserOutput['agents']> {
     // Team agents surface only when we pass the user's teamIds — same read the
     // chat agent picker does, so the workspace roster and the picker agree.
     const teamIds = await listTeamIdsForUser(bus, initCtx, userId);
@@ -5848,11 +6011,39 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       initCtx,
       { userId, teamIds },
     );
-    // TASK-1246 — the list also carries personal agents merely shared with
-    // the user. `/state`, `/route` and `/tasks` read this roster as "your
-    // agents", and the picker (`GET /api/chat/agents`) hides them the same
-    // way, so they stay off it until the UI can tell the two apart (card B).
-    return hideAgentsSharedWithMe(out.agents);
+    return out.agents;
+  }
+
+  /**
+   * The agents `userId` MANAGES: their own (created or co-owned) and their
+   * teams'. A personal agent that is only shared with them is left out
+   * (`hideAgentsSharedWithMe`), and that is the permanent rule here, not a
+   * stopgap (TASK-1247). Its readers: `/route`, whose structural pick must
+   * never spend someone else's agent and its connections; `/tasks` and
+   * `/tasks/agents`, because routines are their creator's, so an agent only
+   * shared with the caller holds none of theirs. `GET /api/chat/agents` keeps
+   * the same rule for its own readers. The workspace roster is the one list
+   * that shows shared agents: {@link listRoster}.
+   */
+  async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {
+    return hideAgentsSharedWithMe(await agentsForUser(userId));
+  }
+
+  /**
+   * TASK-1247 — the workspace roster (`GET /api/workspace/state`, the
+   * sidebar's agent list): every agent `userId` can use, unfiltered. The
+   * agents only shared with them (`agentAccess` says `audience`) come after
+   * the rest, and each group keeps the hook's order, so the shell's
+   * first-agent fallback still lands on one of their own.
+   */
+  async function listRoster(userId: string): Promise<AgentsListForUserOutput['agents']> {
+    const agents = await agentsForUser(userId);
+    const managed: AgentsListForUserOutput['agents'] = [];
+    const usedOnly: AgentsListForUserOutput['agents'] = [];
+    for (const agent of agents) {
+      (agentAccess(agent, userId) === 'audience' ? usedOnly : managed).push(agent);
+    }
+    return [...managed, ...usedOnly];
   }
 
   /**
@@ -6237,9 +6428,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * "Right now" — one short phrase, a real counter, and a start time.
    *
    * `agent-activity:get` HAS NO ACL: it answers for whatever `agentId` it is
-   * handed, and says so on its own registration. Every caller of this function
-   * has already been through `agents:resolve`, which is the check — see the
-   * two call sites.
+   * handed, and says so on its own registration. It is read only through
+   * {@link activityFor}, whose every caller has already been through
+   * `agents:resolve` or `agents:list-for-user`, which is the check — see the
+   * three call sites (`/state`, the agent view, the rail).
    *
    * The phrase is fenced again here even though @ax/agent-activity already
    * fences it. It is a duck-typed hook: an alternate impl (a runner-step
@@ -6264,6 +6456,30 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       });
       return { status: 'failed', activity: null };
     }
+  }
+
+  /**
+   * TASK-1247 — "Right now" for THIS caller. Someone a personal agent is only
+   * shared with (`agentAccess` says `audience`) gets `{ status: 'ok',
+   * activity: null }`, which reads as resting, and `agent-activity:get` is
+   * never asked. Everyone else gets {@link readActivity}.
+   *
+   * The activity record is the AGENT's, not a person's: it describes whatever
+   * the agent is doing for anyone, its owners' own conversations included,
+   * which the people it is shared with can't otherwise see. On an agent shared
+   * with Everyone it would put the owner's work in every colleague's Today
+   * strip. A team agent's members still see it, as before: the team owns it.
+   *
+   * `agent` must be an answer from `agents:resolve` or `agents:list-for-user`
+   * asked about `userId`: those are the ACL, and its `isOwner` is the only
+   * thing that says who the caller is to it.
+   */
+  async function activityFor(
+    agent: { id: string } & StandingFields,
+    userId: string,
+  ): Promise<AgentRailData['activity']> {
+    if (agentAccess(agent, userId) === 'audience') return { status: 'ok', activity: null };
+    return readActivity(agent.id);
   }
 
   /**
@@ -7034,28 +7250,37 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
 
-      const agents = await listAgents(userId);
-      const rows = await Promise.all(
-        agents.map(async (a) => {
-          // The roster is already inside `agents:list-for-user`, which is the
-          // ACL — `readActivity` is safe here for the same reason it is safe on
-          // the rail, and for no other.
-          //
-          // ONE READ ANSWERS BOTH HALVES since TASK-498: the state word and the
-          // "Right now" line come off the same activity record, so the roster
-          // can no longer say "Working" over a blank phrase. The N conversation
-          // listings this used to pay for — one per agent, to probe sandbox
-          // liveness — are gone with the probe.
-          const line = await readActivity(a.id);
-          return toWorkspaceAgent(a, deriveState(line), line);
-        }),
+      // TASK-1247 — the one list that also shows the agents merely shared
+      // with the caller (after their own), each row saying how they stand
+      // with it and, on a shared agent they didn't create, who created it.
+      const agents = await listRoster(userId);
+      const [names, rows] = await Promise.all([
+        sharedByNames(sharedByOwnerIds(agents, userId)),
+        Promise.all(
+          agents.map(async (a) => {
+            // The roster is already inside `agents:list-for-user`, which is the
+            // ACL — the activity read is safe here for the same reason it is
+            // safe on the rail, and for no other. `activityFor` never reads it
+            // for an agent only shared with the caller (TASK-1247).
+            //
+            // ONE READ ANSWERS BOTH HALVES since TASK-498: the state word and the
+            // "Right now" line come off the same activity record, so the roster
+            // can no longer say "Working" over a blank phrase. The N conversation
+            // listings this used to pay for — one per agent, to probe sandbox
+            // liveness — are gone with the probe.
+            return { agent: a, line: await activityFor(a, userId) };
+          }),
+        ),
+      ]);
+      const roster = rows.map(({ agent, line }) =>
+        toWorkspaceAgent(agent, deriveState(line), line, standingOf(agent, userId, names)),
       );
 
       // The roster and nothing else. Both of the collections that used to sit
       // beside it as empty arrays now have a producer of their own — the feed
       // at GET /api/workspace/activity, the queue at GET
       // /api/workspace/decisions — and one collection gets one producer.
-      res.status(200).json({ agents: rows } satisfies WorkspaceStateResponse);
+      res.status(200).json({ agents: roster } satisfies WorkspaceStateResponse);
     },
 
     /**
@@ -8389,11 +8614,21 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       // One read, both halves (TASK-498) — see `deriveState`. The state word
       // and the "Right now" line are two readings of the same record, and
       // taking them from two different sources is how the header came to say
-      // "Working" over a phrase that was not there.
-      const activityLine = await readActivity(agentId);
+      // "Working" over a phrase that was not there. Never read for someone the
+      // agent is only shared with (TASK-1247, `activityFor`), who is also told
+      // who shared it.
+      const [activityLine, names] = await Promise.all([
+        activityFor(agent, userId),
+        sharedByNames(sharedByOwnerIds([agent], userId)),
+      ]);
 
       res.status(200).json({
-        agent: toWorkspaceAgent(agent, deriveState(activityLine), activityLine),
+        agent: toWorkspaceAgent(
+          agent,
+          deriveState(activityLine),
+          activityLine,
+          standingOf(agent, userId, names),
+        ),
         // There is no `permissions` here any more. The rail's three blocks have
         // their own producer — `GET /api/workspace/agents/:agentId/rail` — for
         // the reason the feed and the queue got theirs: one collection, one
@@ -8665,7 +8900,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      * own — it answers for whatever agentId it is handed, and documents that
      * whoever mounts it owes the route a check. `resolveAgentOr404` is that
      * check: without it, any signed-in user could read any other user's agent's
-     * activity line by guessing an id.
+     * activity line by guessing an id. And since TASK-1247 resolving is not
+     * enough on its own: someone a personal agent is only shared with resolves
+     * it, and `activityFor` still never reads its line for them.
      *
      * Four independent reads, four independent statuses. A section that has no
      * producer in this deployment and a section whose producer we could not
@@ -8687,7 +8924,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       if (agent === null) return;
 
       const [activity, permissions, grants, counters] = await Promise.all([
-        readActivity(agentId),
+        // Never read for someone the agent is only shared with (TASK-1247).
+        activityFor(agent, userId),
         readPermissions(agent),
         readGrants(actor, agent),
         readCounters(userId, agentId),

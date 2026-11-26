@@ -350,6 +350,21 @@ export interface Decision {
  */
 export type AgentRunState = 'working' | 'waiting' | 'resting' | 'stopped';
 
+/**
+ * TASK-1247 — how the person reading an agent stands with it:
+ *
+ *   - `creator`  — they made this personal agent;
+ *   - `co-owner` — another of its owners, who can change it but not delete it
+ *                  or edit its routines (those stay the creator's);
+ *   - `audience` — it is only shared with them: they use it, they never
+ *                  change it, and they don't see what it is doing;
+ *   - `team`     — they are a member of the team that owns it.
+ *
+ * A label for the UI, never a permission: every write is still checked on the
+ * server, against the live sharing settings.
+ */
+export type AgentAccess = 'creator' | 'co-owner' | 'audience' | 'team';
+
 export interface WorkspaceAgent {
   id: string;
   /** The agent's `displayName`. */
@@ -360,6 +375,11 @@ export interface WorkspaceAgent {
    * line has a real producer (design §4.2, AW-8/AW-14). A null renders as the
    * state word alone; it is never filled with a placeholder phrase, because a
    * placeholder is indistinguishable from a claim.
+   *
+   * Always `null` for someone the agent is only shared with (`access:
+   * 'audience'`, TASK-1247), as are `counter` and `startedAt`, and `state` is
+   * `resting`: the line is the agent's, not theirs, and would describe its
+   * owners' own conversations. The server never reads it for them.
    */
   now: string | null;
   /**
@@ -373,6 +393,24 @@ export interface WorkspaceAgent {
   startedAt: string | null;
   /** Why it stopped. Only set when `state === 'stopped'`. */
   stoppedReason: string | null;
+  /**
+   * TASK-1247 — how the reader stands with this agent (see `AgentAccess`).
+   * Always sent by this server, on `GET /api/workspace/state`'s rows and on
+   * `GET /api/workspace/agents/:agentId`'s `agent`. Optional only so an older
+   * server's answer, and older fixtures, still type-check: read a missing one
+   * as the reader's own agent. The UI offers Settings unless it is
+   * `audience`, and Delete only for `creator` or `team`.
+   */
+  access?: AgentAccess;
+  /**
+   * TASK-1247 — who shared this agent with the reader: its creator's display
+   * name, fenced to one plain line of at most 80 code points. Present only
+   * when `access` is `co-owner` or `audience` AND the agent is shared; absent
+   * on the reader's own agents, on team agents, and on a co-owned agent that
+   * is shared with nobody else. `null` means the name couldn't be looked up
+   * (render a neutral "someone"). Never an email.
+   */
+  sharedBy?: string | null;
 }
 
 export type CapabilityVerdict = 'allow' | 'hold' | 'deny';

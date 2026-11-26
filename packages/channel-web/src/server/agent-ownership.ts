@@ -1,29 +1,36 @@
 /**
- * TASK-1246 — who may change a personal agent here, and which agents a list
- * shows. TASK-1248 — whether a personal agent is shared.
+ * TASK-1246 / TASK-1247 — who may change a personal agent here, which agents
+ * a list shows, and how the caller stands with each one. TASK-1248 — whether
+ * a personal agent is shared.
  *
  * `agents:resolve` used to admit a personal agent's owner and nobody else, so
  * channel-web read "resolved, and personal" as "owner". Since sharing it also
  * admits the people a personal agent is shared with (its audience), and its
- * answer says which one the caller is: `isOwner`. `agents:list-for-user` now
- * lists the agents shared with the caller too, with the same field. These two
- * helpers are how channel-web reads that answer.
+ * answer says which one the caller is: `isOwner`. `agents:list-for-user` lists
+ * the agents shared with the caller too, with the same field. These helpers
+ * are how channel-web reads that answer.
  *
  * TASK-1248 — and whether a personal agent is shared at all: the answer's
  * `shared`, read by {@link isSharedPersonalAgent}. A shared personal agent
  * follows the team-agent rules here (its memory line, its sites, "Always for
  * this agent"); changing its settings is still its owners'.
  *
- * All of them read `visibility`, `isOwner` and `shared` structurally, as
- * `unknown`: the answer crossed the bus from another plugin (I2, no
- * `@ax/agents` import), so its TypeScript type describes the wire, not a
- * guarantee.
+ * All of them read `visibility`, `isOwner`, `ownerId` and `shared`
+ * structurally, as `unknown`: the answer crossed the bus from another plugin
+ * (I2, no `@ax/agents` import), so its TypeScript type describes the wire, not
+ * a guarantee.
  */
+import type { AgentAccess } from '../lib/workspace-types.js';
 
 /** What these helpers read off an `agents:resolve` / `agents:list-for-user` answer. */
 interface OwnershipFields {
   visibility?: unknown;
   isOwner?: unknown;
+}
+
+/** `agentAccess` also reads who created the agent. */
+interface AccessFields extends OwnershipFields {
+  ownerId?: unknown;
 }
 
 /** What {@link isSharedPersonalAgent} reads off an `agents:resolve` answer. */
@@ -63,17 +70,53 @@ export function ownsPersonalAgent(agent: OwnershipFields): boolean {
 }
 
 /**
- * The agents a list shows until the UI can tell "mine" from "shared with me"
- * (card B): the caller's own and their teams'. A row goes only when it says
- * `isOwner: false` and isn't a team agent, which is a personal agent shared
- * with the caller. Order and rows are kept as given; the input is not changed.
+ * The rule for every list of agents the caller MANAGES: their own (created or
+ * co-owned) and their teams'. A personal agent that is only shared with them
+ * is not one of those, so it goes: a row goes only when it says
+ * `isOwner: false` and isn't a team agent. Order and rows are kept as given;
+ * the input is not changed.
+ *
+ * This is permanent, not a stopgap (TASK-1247). Its readers:
+ *   - `GET /api/chat/agents` (routes-chat.ts), whose client readers all take
+ *     "listed and personal" as "mine": the onboarding gate's count, Sites,
+ *     Skills' install target, Routines and self-improvement;
+ *   - `listAgents` in routes-workspace.ts, behind `POST /api/workspace/route`
+ *     (a structural pick must never spend someone else's agent),
+ *     `GET /api/workspace/tasks` and `GET /api/workspace/tasks/agents`
+ *     (routines are their creator's).
+ * The one list that shows agents shared with the caller is the workspace
+ * roster (`GET /api/workspace/state`), and each of its rows says how the
+ * caller stands with it ({@link agentAccess}). Its `audience` rows are exactly
+ * the rows this drops.
  *
  * Lenient, because it shapes lists: a row with no `isOwner` at all (a producer
- * from before sharing) reads as owned, as it always did. Every client reader
- * of these lists takes "listed and personal" as "mine" (the onboarding gate,
- * Sites, Skills, Routines), so a shared agent must not appear in them yet.
- * Nothing is unlocked by being listed: every write asks again, strictly.
+ * from before sharing) reads as owned, as it always did. Nothing is unlocked
+ * by being listed: every write asks again, strictly.
  */
 export function hideAgentsSharedWithMe<T extends OwnershipFields>(agents: readonly T[]): T[] {
   return agents.filter((agent) => agent.visibility === 'team' || agent.isOwner !== false);
+}
+
+/**
+ * How `userId` stands with an agent, from an `agents:resolve` or
+ * `agents:list-for-user` answer asked about them. In order:
+ *
+ *   1. `visibility: 'team'` → `team`, whatever else the answer says (a team
+ *      agent's `ownerId` is the team's, never a person's);
+ *   2. `isOwner: false` → `audience`: the agent is only shared with them;
+ *   3. otherwise they own it (`isOwner: true`, or no `isOwner` at all from a
+ *      producer older than sharing): `creator` when `ownerId` is theirs or
+ *      absent, `co-owner` when it names someone else.
+ *
+ * Lenient like {@link hideAgentsSharedWithMe}, and for the same reason: it
+ * labels rows, it never authorizes anything. The client uses it to decide what
+ * to offer (Settings unless `audience`; Delete only for `creator` or `team`),
+ * and the server checks every write again, strictly. Rule 2 is the same test
+ * that list filter drops a row on, so the two can never disagree about which
+ * agents are only shared with the caller.
+ */
+export function agentAccess(agent: AccessFields, userId: string): AgentAccess {
+  if (agent.visibility === 'team') return 'team';
+  if (agent.isOwner === false) return 'audience';
+  return agent.ownerId === undefined || agent.ownerId === userId ? 'creator' : 'co-owner';
 }

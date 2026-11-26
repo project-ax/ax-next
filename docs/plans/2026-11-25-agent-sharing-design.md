@@ -134,3 +134,16 @@ Each phase ships on its own and is reversible, up to the migration in phase 3.
 - `ConnectorsTab.tsx:217` ("Granted by you and your team")
 - `ConnectorsTab.tsx:557-558` ("A team admin can remove them")
 - `memory-copy.ts:55-56`, `:92-93`, `:192-193` ("for the team", "Team members can fix or forget them")
+
+## 11. Found while building phase 1B (TASK-1247)
+
+- **People search is `GET /admin/people?q=` in @ax/auth-better.** It returns names only (`{id, displayName}`), never email, and doesn't match on email. A query is 2–64 characters and at most 10 people come back. It is limited to 60 a minute per person. A query with control, bidi or zero-width characters gets a 400. It is a route, not a hook, so nothing else on the bus can search people.
+- **The roster lists shared agents. The "agents you manage" lists don't.** `GET /api/workspace/state` lists agents shared with you after your own. Each row carries `access` and `sharedBy`. `/route`, `/tasks`, `/tasks/agents`, `GET /api/chat/agents` and `GET /admin/agents` stay "agents you manage".
+- **People who only use an agent never see its activity line.** It is stored per agent, so it could describe the owner's private chats.
+- **They also just chat.** A settings URL for them redirects to the chat and replaces history, so Back doesn't bounce. A turn error tells them to ask the owner, not "Open Connectors".
+- **The option reads "Everyone".** The product is white-labeled, so the UI never says "Everyone at Canopy".
+- **"Just me" reads "Just its owners" when an agent has co-owners.** An empty list is the same as Just me.
+- **At the 50-person cap, Everyone stays choosable.** Only adding more people is refused.
+- **The confirmation names the attached connections only**, each with the account it is signed in to. It also says what the agent remembers, and that people can use and change its files and artifacts and read its Instructions. It fails closed: Share is disabled until the connections read succeeds.
+- **Remove owner exists. Self-removal doesn't.** Add owner asks first and says plainly what owners can do. Remove doesn't ask. Neither the creator nor you gets a Remove button.
+- **Follow-ups.** CLAUDE.md understates the UI lint rules. Co-owners still see routine switches and Delete in Settings › Agents, which the server refuses. A new person whose only agents are shared with them still creates their own first. The per-user rate limiter now has three copies. `AgentSlackDms` and `channel-slack`'s agent routes assume only the owner sees a personal agent. "Shared by" isn't on the home composer's agent menu or the agent header.

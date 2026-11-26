@@ -64,6 +64,7 @@ export { checkAccess, type AclResult } from './acl.js';
 export type {
   Actor,
   Agent,
+  AgentAudience,
   AgentInput,
   AgentsConfig,
   AgentsCreatedEvent,
@@ -71,6 +72,8 @@ export type {
   AgentsResolvedEvent,
   AttachConnectorInput,
   AttachConnectorOutput,
+  AudienceKind,
+  AudienceMember,
   CanManageRoutinesInput,
   CanManageRoutinesOutput,
   CanManageConnectorsInput,
@@ -87,9 +90,11 @@ export type {
   DeleteOutput,
   ListForUserInput,
   ListForUserOutput,
+  PersonView,
   ResolveInput,
   ResolveOutput,
   RunnerId,
+  SharingView,
   UpdateInput,
   UpdateOutput,
 } from './types.js';

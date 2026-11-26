@@ -44,10 +44,15 @@ export interface AgentConnectorsState {
   sharedCredentials: boolean;
   /**
    * Slice 3 — this person may choose the account the agent acts as: Sign in
-   * again and Add key. A personal agent's owner (a personal agent's list is
-   * only readable by its owner), or a team agent's team admin
-   * (`sharedCredentials`). False until the list is read, like the others;
-   * the server decides again on every write.
+   * again and Add key. A personal agent's owner, or a team agent's team admin
+   * (`sharedCredentials`). False until the list is read, like the others; the
+   * server decides again on every write.
+   *
+   * Since TASK-1246 a personal agent's list is readable by anyone it is shared
+   * with, not only its owner. People it is only shared with never reach this
+   * UI (the settings page is hidden from them, and a settings address lands
+   * in the chat), and the server refuses their sign-in and key writes too
+   * (mcp-oauth `begin`, `setupForCaller`).
    */
   canSetAccount: boolean;
   /**

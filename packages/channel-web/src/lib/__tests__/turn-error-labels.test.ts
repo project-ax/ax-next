@@ -4,6 +4,7 @@ import {
   DEFAULT_TURN_ERROR,
   ERROR_LABELS,
   MAX_DETAIL_CHARS,
+  askOwnerInstead,
   turnErrorMessageNotSaved,
   turnErrorOpensConnectors,
   turnErrorText,
@@ -280,5 +281,34 @@ describe('turnErrorMessageNotSaved — refusals that left the person’s message
   it('null and undefined -> false', () => {
     expect(turnErrorMessageNotSaved(null)).toBe(false);
     expect(turnErrorMessageNotSaved(undefined)).toBe(false);
+  });
+});
+
+/*
+  TASK-1247 — someone an agent is only shared with has no Open Connectors
+  button and can't reconnect anything, so the sentences that tell them to are
+  swapped for ones that name who can.
+*/
+describe('askOwnerInstead', () => {
+  const POINTS_AT_CONNECTORS = [
+    'connector-needs-reconnect',
+    'connectors-need-reconnect',
+    'connector-needs-sign-in',
+    'provider-key-missing-connector-needs-sign-in',
+  ];
+
+  it.each(POINTS_AT_CONNECTORS)('%s: no Open Connectors, names the owner, keeps the detail line', (reason) => {
+    expect(turnErrorText(reason)).toContain('Open Connectors');
+    const text = askOwnerInstead(turnErrorText(reason, 'Connector: Gmail'));
+    expect(text).not.toContain('Open Connectors');
+    expect(text).toMatch(/owner/i);
+    expect(text.endsWith('\nConnector: Gmail')).toBe(true);
+  });
+
+  it('leaves every other sentence alone', () => {
+    for (const reason of Object.keys(ERROR_LABELS).filter((r) => !POINTS_AT_CONNECTORS.includes(r))) {
+      expect(askOwnerInstead(turnErrorText(reason))).toBe(turnErrorText(reason));
+    }
+    expect(askOwnerInstead('some host sentence')).toBe('some host sentence');
   });
 });

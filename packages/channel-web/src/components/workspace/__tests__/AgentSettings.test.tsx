@@ -105,6 +105,7 @@ describe('AgentSettings — desktop', () => {
     const items = within(nav).getAllByRole('button');
     expect(items.map((b) => b.textContent)).toEqual([
       'Instructions',
+      'Sharing',
       'Model',
       'Connectors',
       'Slack',
@@ -127,7 +128,7 @@ describe('AgentSettings — desktop', () => {
   });
 
   it('settings sections include apps right after slack', () => {
-    expect(AGENT_SETTINGS_SECTIONS).toHaveLength(8);
+    expect(AGENT_SETTINGS_SECTIONS).toHaveLength(9);
     expect(AGENT_SETTINGS_SECTIONS.indexOf('apps')).toBe(AGENT_SETTINGS_SECTIONS.indexOf('slack') + 1);
   });
 

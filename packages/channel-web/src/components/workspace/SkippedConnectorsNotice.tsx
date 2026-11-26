@@ -96,8 +96,10 @@ interface Props {
    * The caller bumps it when a turn ends and when the person changes tab.
    */
   refreshKey: string | number;
-  /** "Open Connectors" — the tab where each of these has Sign in / Add key. */
-  onOpenConnectors: () => void;
+  /** "Open Connectors" — the tab where each of these has Sign in / Add key.
+   *  Left out for someone the agent is only shared with (TASK-1247): they have
+   *  no Connectors to open, so the notice says what is off and stops there. */
+  onOpenConnectors?: (() => void) | undefined;
 }
 
 export function SkippedConnectorsNotice({
@@ -151,7 +153,7 @@ export function SkippedConnectorsNotice({
     <div className="px-6 pt-4">
       <Notice
         tone="info"
-        action={{ label: 'Open Connectors', onClick: onOpenConnectors }}
+        {...(onOpenConnectors ? { action: { label: 'Open Connectors', onClick: onOpenConnectors } } : {})}
         onDismiss={() => setDismissedKey(key)}
       >
         {sentence}

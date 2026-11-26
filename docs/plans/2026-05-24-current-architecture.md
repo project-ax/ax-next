@@ -379,6 +379,7 @@ and consumer. Treat their *shape* as a contract; changing it is a boundary revie
   copy (I2 — no cross-plugin import; the drift is the documented boundary cost).
 - **Agents / tenancy:** `agents:resolve` (the ACL gate every conversation hook
   chains through). It admits a personal agent's owners and its audience, its answer carries `shared` and `isOwner`, and settings writes on a personal agent need an owner.
+  People search is `GET /admin/people` in @ax/auth-better (names only), and the workspace roster carries each agent's `access` and `sharedBy`.
 - **Conversations:** `conversations:get-metadata`,
   `conversations:store-runner-session` (and the `conversations:bind-session` /
   `:get` / `:list` family).

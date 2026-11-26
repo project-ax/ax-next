@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { deleteAgent } from '@/lib/admin';
+import { personLabel, SHARING_COPY } from '@/lib/sharing-copy';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import { AgentSwitcher } from '../AgentSwitcher';
@@ -86,6 +87,69 @@ describe('AgentSwitcher — picking an agent', () => {
     expect(create).toHaveAttribute(NEW_AGENT_OPENER_ATTR);
     fireEvent.click(create);
     expect(props.onCreateAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AgentSwitcher — who shared an agent (TASK-1247)', () => {
+  const shared = (over: Partial<WorkspaceAgent>): WorkspaceAgent => ({
+    ...agent('a2', 'Bo'),
+    access: 'audience',
+    ...over,
+  });
+
+  it('an agent shared with you says who shared it', async () => {
+    renderSwitcher({ agents: [ADA, shared({ sharedBy: 'Vinay Pulim' })] });
+    press(trigger());
+    const items = await screen.findAllByRole('menuitem');
+    expect(items[1]).toHaveTextContent(SHARING_COPY.sharedBy('Vinay Pulim'));
+    expect(items[0]).not.toHaveTextContent(/Shared/);
+  });
+
+  it('the two-line row is valid HTML: no block element inside a span', async () => {
+    renderSwitcher({ agents: [ADA, shared({ sharedBy: 'Vinay Pulim' })] });
+    press(trigger());
+    const items = await screen.findAllByRole('menuitem');
+    expect(items[1]!.querySelectorAll('span div, span p')).toHaveLength(0);
+  });
+
+  it('an unknown name reads as shared with you', async () => {
+    renderSwitcher({ agents: [ADA, shared({ sharedBy: null })] });
+    press(trigger());
+    const items = await screen.findAllByRole('menuitem');
+    expect(items[1]).toHaveTextContent(SHARING_COPY.sharedBy(null));
+  });
+
+  it('fences the name it shows', async () => {
+    const spoof = 'Vi' + String.fromCharCode(0x202e) + 'nay';
+    renderSwitcher({ agents: [ADA, shared({ sharedBy: spoof })] });
+    press(trigger());
+    const items = await screen.findAllByRole('menuitem');
+    expect(items[1]?.textContent).toContain(SHARING_COPY.sharedBy(personLabel(spoof)));
+  });
+
+  it('an agent you only use has no settings or delete', () => {
+    const only = shared({ id: 'a1', name: 'Ada' });
+    renderSwitcher({ agents: [only], selected: only });
+    expect(screen.queryByRole('button', { name: 'Options for Ada' })).toBeNull();
+  });
+
+  it('a co-owner gets settings but not delete', async () => {
+    const co = shared({ id: 'a1', name: 'Ada', access: 'co-owner' });
+    renderSwitcher({ agents: [co], selected: co });
+    press(screen.getByRole('button', { name: 'Options for Ada' }));
+    expect(await screen.findByRole('menuitem', { name: 'Agent settings' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Delete agent…' })).toBeNull();
+  });
+
+  it('your own and team agents keep settings and delete', async () => {
+    for (const access of ['creator', 'team', undefined] as const) {
+      const a = access === undefined ? ADA : { ...ADA, access };
+      const { unmount } = renderSwitcher({ agents: [a], selected: a });
+      press(screen.getByRole('button', { name: 'Options for Ada' }));
+      expect(await screen.findByRole('menuitem', { name: 'Agent settings' })).toBeTruthy();
+      expect(screen.getByRole('menuitem', { name: 'Delete agent…' })).toBeTruthy();
+      unmount();
+    }
   });
 });
 
