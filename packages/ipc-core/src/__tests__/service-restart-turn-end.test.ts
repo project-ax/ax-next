@@ -126,13 +126,13 @@ async function setup() {
     if (p.reqId !== undefined) activity.delete(p.reqId);
     return undefined;
   });
-  // A web stream for req-2, like @ax/channel-web's: it closes on the first
-  // turn-end naming it, as its own or as folded, and then stops listening.
-  let req2Closed = false;
+  // A web stream for req-2, like @ax/channel-web's: it closes on a turn-end
+  // naming it, as its own or as folded. No latch of its own: every turn-end
+  // that names req-2 is counted, so the count is what the emitter delivered.
+  let req2Carried = 0;
   h.bus.subscribe<{ reqId?: string; foldedReqIds?: unknown }>('chat:turn-end', 'test/web-req-2', async (_c, p) => {
-    if (req2Closed) return undefined;
     if (p.reqId === 'req-2' || (Array.isArray(p.foldedReqIds) && p.foldedReqIds.includes('req-2'))) {
-      req2Closed = true;
+      req2Carried += 1;
       events.push('closed:req-2');
     }
     return undefined;
@@ -170,7 +170,7 @@ async function setup() {
       }),
       { message: { role: 'user', content: 'run the e2e tests' } },
     );
-  return { h, row, opens, queued, events, activity, ipcCtx, turnEnd, invoke };
+  return { h, row, opens, queued, events, activity, ipcCtx, turnEnd, invoke, req2Carried: () => req2Carried };
 }
 
 describe('a services restart through the real turn-end emitter (R27)', () => {
@@ -233,7 +233,9 @@ describe('a services restart through the real turn-end emitter (R27)', () => {
     await t.turnEnd(newSession, 'req-1', 'assistant');
     expect(await p1).toEqual({ kind: 'complete', messages: [] });
     expect(await p2).toEqual({ kind: 'complete', messages: [] });
-    // Closed once, and nothing failed.
+    // Exactly one turn-end named req-2 (the hold's owner names it once), the
+    // second continuation turn-end did not, and nothing failed.
+    expect(t.req2Carried()).toBe(1);
     expect(t.events).toEqual([...ended, 'turn-end:req-1']);
   });
 

@@ -171,11 +171,12 @@ export const TURN_END_HOLD_SUBSCRIBER_TIMEOUT_MS = 2_000;
 
 /**
  * TASK-1224 — the bounds `EventTurnEndSchema.foldedReqIds` (@ax/ipc-protocol)
- * puts on a runner's folded ids, kept by the ids a hold's owner adds: each
- * 1–256 characters, and at most 64 added to one turn-end.
+ * puts on a turn-end's folded ids, kept by the merged list a hold's owner adds
+ * to: each id 1–256 characters, and at most 64 in all (the runner's own plus
+ * the host's).
  */
 const FOLDED_REQ_ID_MAX_LENGTH = 256;
-const HOST_FOLDED_REQ_IDS_MAX = 64;
+const FOLDED_REQ_IDS_MAX = 64;
 
 /**
  * Ask `chat:turn-end-hold` whether this turn-end ends a held segment. The
@@ -184,7 +185,7 @@ const HOST_FOLDED_REQ_IDS_MAX = 64;
  * host created. A turn-end naming no reqId can't belong to a held request.
  *
  * Not held, the answer may also name folded requests this turn-end ends
- * (TASK-1224). Only strings within the wire's length bounds that are not the
+ * (TASK-1224). Only strings within the wire's length bound that are not the
  * turn-end's own reqId are kept. A rejected, throwing or timed-out answer
  * names none.
  */
@@ -220,19 +221,19 @@ async function turnEndHeld(
 
 /**
  * TASK-1224 — the turn-end payload with the hold's folded ids appended to the
- * runner's own: the runner's first, then each host id not already listed, at
- * most 64 of them. Nothing to add: the payload itself, unchanged.
+ * runner's own: the runner's first, then each host id not already listed, the
+ * whole list capped at the wire's 64 (host ids past it are dropped). Nothing
+ * added: the payload itself, unchanged.
  */
 function withHostFoldedReqIds(payload: unknown, hostIds: readonly string[]): unknown {
   if (hostIds.length === 0) return payload;
   const p = payload as { foldedReqIds?: unknown };
   const merged: unknown[] = Array.isArray(p.foldedReqIds) ? [...p.foldedReqIds] : [];
-  let added = 0;
+  const runnerCount = merged.length;
   for (const id of hostIds) {
-    if (added === HOST_FOLDED_REQ_IDS_MAX) break;
+    if (merged.length >= FOLDED_REQ_IDS_MAX) break;
     if (merged.includes(id)) continue;
     merged.push(id);
-    added += 1;
   }
-  return added === 0 ? payload : { ...p, foldedReqIds: merged };
+  return merged.length === runnerCount ? payload : { ...p, foldedReqIds: merged };
 }

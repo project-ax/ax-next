@@ -3563,8 +3563,10 @@ export function createOrchestrator(
   // requests folded into the held segment, so callers end them with it. The
   // turn-end that ends the invoke always carries them (this is asked before
   // it is broadcast). One after it, such as the assistant's after the
-  // tool's, finds them gone, which no caller needs: each ends a request on
-  // the first turn-end naming it, whatever its role.
+  // tool's, may find them gone; in production the assistant turn-end may
+  // also arrive before the invoke's finally runs and carry them too. Either
+  // is harmless: each caller ends a request on the first turn-end naming it,
+  // whatever its role, and ending one twice is idempotent.
   function onTurnEndHold(
     _ctx: AgentContext,
     payload: ChatTurnEndHoldPayload,

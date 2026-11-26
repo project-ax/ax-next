@@ -156,7 +156,28 @@ describe('event.turn-end hold: folded requests named by the hold (TASK-1224)', (
       { hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: many.slice(0, 64) } },
     ]);
 
-    // Not a list at all: nothing is added, and the payload goes out as it came.
+  });
+
+  it('the merged list is capped at 64, the runner\'s ids kept first', async () => {
+    const runner = Array.from({ length: 63 }, (_, i) => `runner-${i}`);
+    const bus = new HookBus();
+    naming(bus, ['host-0', 'host-1', 'host-2', 'host-3', 'host-4']);
+    const seen = record(bus);
+    await fireEventTurnEnd(ctx(), bus, { ...TURN_END, foldedReqIds: runner });
+    expect(seen).toEqual([
+      { hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: [...runner, 'host-0'] } },
+    ]);
+
+    // A runner list already at the wire's limit takes nothing.
+    const full = Array.from({ length: 64 }, (_, i) => `runner-${i}`);
+    const bus2 = new HookBus();
+    naming(bus2, ['host-0']);
+    const seen2 = record(bus2);
+    await fireEventTurnEnd(ctx(), bus2, { ...TURN_END, foldedReqIds: full });
+    expect(seen2).toEqual([{ hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: full } }]);
+  });
+
+  it('(guard) a non-list answer adds nothing and the payload goes out as it came', async () => {
     const odd = new HookBus();
     naming(odd, 'req-2');
     const seenOdd = record(odd);
@@ -164,7 +185,7 @@ describe('event.turn-end hold: folded requests named by the hold (TASK-1224)', (
     expect(seenOdd).toEqual([{ hook: 'chat:turn-end', payload: TURN_END }]);
   });
 
-  it('a held answer\'s ids are ignored', async () => {
+  it('(guard) a held answer\'s ids are ignored', async () => {
     const bus = new HookBus();
     bus.subscribe<ChatTurnEndHoldPayload>(CHAT_TURN_END_HOLD_HOOK, 'test/hold', async (_c, p) =>
       ({ ...p, held: true, foldedReqIds: ['req-2'] }),

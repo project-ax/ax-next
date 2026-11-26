@@ -293,7 +293,9 @@ async function setup(opts: {
   // and clears active_req_id; none may arrive mid-restart.
   h.bus.subscribe<{ reqId?: string; foldedReqIds?: string[] }>('chat:turn-end', 'test/callers', async (c, p) => {
     turnEnds.push({
-      reqId: p.reqId, sessionId: c.sessionId, ...(p.foldedReqIds !== undefined ? { foldedReqIds: p.foldedReqIds } : {}),
+      ...(p.reqId !== undefined ? { reqId: p.reqId } : {}),
+      sessionId: c.sessionId,
+      ...(p.foldedReqIds !== undefined ? { foldedReqIds: p.foldedReqIds } : {}),
     });
     // @ax/conversations: compare-and-clear active_req_id on the turn's end.
     const r = c.conversationId !== undefined ? rows[c.conversationId] : undefined;
@@ -301,7 +303,7 @@ async function setup(opts: {
     return undefined;
   });
   h.bus.subscribe<{ reqId?: string }>(CHAT_TURN_SEGMENT_END_HOOK, 'test/segments', async (c, p) => {
-    segmentEnds.push({ reqId: p.reqId, sessionId: c.sessionId });
+    segmentEnds.push({ ...(p.reqId !== undefined ? { reqId: p.reqId } : {}), sessionId: c.sessionId });
     return undefined;
   });
   h.bus.subscribe<{ reqId: string; reason: string; detail?: string }>('chat:turn-error', 'test/callers', async (_c, p) => {
@@ -1106,7 +1108,7 @@ describe('restart_with_services (dev services on demand)', () => {
       expect(t.turnErrors).toEqual([]);
     });
 
-    it('a turn-end from another sandbox gets no ids', async () => {
+    it('(guard) a turn-end from another sandbox gets no ids', async () => {
       const t = await setup();
       const p1 = t.invoke('s-1', 'conv-1', 'req-1');
       await waitFor(() => t.queued.length === 1, 'turn 1');
