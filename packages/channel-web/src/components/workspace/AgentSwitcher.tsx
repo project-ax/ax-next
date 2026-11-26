@@ -100,7 +100,7 @@ export function AgentSwitcher({
   // Someone an agent is only shared with just chats; a co-owner can't delete.
   const canSettings = onOpenSettings !== undefined && canManageAgent(selected);
   const canDelete = onDeleted !== undefined && canDeleteAgent(selected);
-  const switcherLabel = `${selected.name}, ${stateWord(selected.state).toLowerCase()}. Switch agent`;
+  const switcherLabel = `${selected.name}, ${stateWord(selected.state).toLowerCase()}${othersWaiting ? `, another agent is ${stateWord('waiting').toLowerCase()}` : ''}. Switch agent`;
 
   const trigger = collapsed ? (
     <Button

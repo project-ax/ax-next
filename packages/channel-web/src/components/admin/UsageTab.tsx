@@ -51,9 +51,9 @@ type LoadState =
 /** Words carry the status; the tone only backs them up. */
 const STATUS_TONE: ReadonlyMap<UsageStatus, StatusTone> = new Map<UsageStatus, StatusTone>([
   ['ok', 'neutral'],
-  ['near-limit', 'neutral'],
+  ['near-limit', 'warning'],
   ['at-limit', 'danger'],
-  ['suspended', 'info'],
+  ['suspended', 'danger'],
 ]);
 
 /**

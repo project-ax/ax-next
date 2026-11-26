@@ -427,6 +427,13 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
       expect(within(rows[3]!).getByText('u-anon')).toBeInTheDocument();
     });
 
+    it('weights the status tones: close to limit warns, full is danger (rule 8)', async () => {
+      await renderAdmin();
+      const fill = (who: string, label: string) => within(rowOf(who)).getByText(label).parentElement!;
+      expect(fill('Riley Park', 'Close to limit')).toHaveClass('ax-bg-status-warning-soft');
+      expect(fill('jo@example.co', 'Full')).toHaveClass('ax-bg-status-danger-soft');
+    });
+
     it('names an owner by name, then email, then id — with the email under a name', async () => {
       await renderAdmin();
       const riley = rowOf('Riley Park');

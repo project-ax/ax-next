@@ -143,7 +143,7 @@ describe('the Tasks row (TASK-909)', () => {
       .getAllByRole('button')
       .slice(0, 3)
       .map((b) => b.getAttribute('aria-label') ?? b.textContent?.trim());
-    expect(names).toEqual(['Today', 'Tasks', 'Ada, working. Switch agent']);
+    expect(names).toEqual(['Today', 'Tasks', 'Ada, working, another agent is waiting on you. Switch agent']);
     expect(within(workspaceNav()).queryByRole('button', { name: /^Agents/ })).toBeNull();
 
     fireEvent.click(within(workspaceNav()).getByRole('button', { name: 'Tasks' }));
@@ -166,7 +166,7 @@ describe('the Tasks row (TASK-909)', () => {
     expect(labels).toEqual([
       'Today',
       'Tasks',
-      'Ada, working. Switch agent',
+      'Ada, working, another agent is waiting on you. Switch agent',
       'New chat',
       'Search chats',
     ]);

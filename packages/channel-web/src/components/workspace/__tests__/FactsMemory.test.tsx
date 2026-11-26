@@ -105,12 +105,12 @@ describe('MemorySurface', () => {
     </CompactSurfaceContext.Provider>);
     const badge = await screen.findByText('Shared');
     expect(screen.getAllByText('Shared')).toHaveLength(1);
-    // Hovering the badge shows the hint: who could see this memory.
-    const trigger = badge.parentElement!.parentElement!;
-    fireEvent.pointerMove(trigger);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Learned in a shared conversation. Anyone there could see it.');
+    // The hint is always in the accessibility tree (no hover needed), as the old `title` was.
+    const hint = screen.getByText('Learned in a shared conversation. Anyone there could see it.');
+    expect(hint).toHaveClass('sr-only');
     // Beside its kind: the same container as the shared row's Fact badge.
-    const badges = trigger.parentElement!;
+    const badges = badge.parentElement!.parentElement!;
+    expect(badges).toContainElement(hint);
     expect(badges).toContainElement(within(badges).getByText('Fact'));
   });
 

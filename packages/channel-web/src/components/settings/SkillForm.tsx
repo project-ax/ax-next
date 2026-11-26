@@ -32,7 +32,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
-import { AsyncState, Grid, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, Grid, Inline, Notice, StatusBadge } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -643,17 +643,17 @@ function FormFields({
         <Label className="text-xs font-medium text-muted-foreground">Connectors · optional</Label>
         <div className="flex flex-wrap items-center gap-1.5">
           {form.connectors.map((c) => (
-            <StatusBadge key={c} tone="neutral">
-              {c}
+            <Inline key={c} gap="xs">
+              <StatusBadge tone="neutral">{c}</StatusBadge>
               <button
                 type="button"
                 aria-label={`Remove connector ${c}`}
-                className="rounded-sm opacity-70 hover:opacity-100"
+                className="shrink-0 rounded-sm opacity-70 hover:opacity-100"
                 onClick={() => removeConnector(c)}
               >
                 <X className="h-3 w-3" />
               </button>
-            </StatusBadge>
+            </Inline>
           ))}
           <Popover open={connectorPickerOpen} onOpenChange={setConnectorPickerOpen}>
             <PopoverTrigger asChild>

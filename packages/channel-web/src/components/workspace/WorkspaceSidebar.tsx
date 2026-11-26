@@ -9,6 +9,7 @@ import { useRailPreference } from '@/lib/use-rail-preference';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import type { SidebarChatList } from '@/lib/sidebar-chats';
 import { AgentSwitcher } from './AgentSwitcher';
+import { stateWord } from './bits';
 import { IconTooltip } from './IconTooltip';
 import { SidebarChats } from './SidebarChats';
 
@@ -92,7 +93,7 @@ export function WorkspaceSidebarNav({
       <Button
         variant="ghost"
         size="icon"
-        aria-label={label}
+        aria-label={needsYou ? `${label}, ${stateWord('waiting').toLowerCase()}` : label}
         onClick={go(action)}
         className={cn(
           'relative rounded-sm',

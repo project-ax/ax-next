@@ -1,5 +1,5 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, Notice, Text, StatusBadge } from '@project-ax/ui';
+import { AsyncState, EmptyState, Notice, Inline, Text, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -18,7 +18,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 import { MoreHorizontal, Search } from 'lucide-react';
 import { MemoryFixesContext } from '@/lib/use-conversation-memory';
 import { Switch } from '@/components/ui/switch';
-import { IconTooltip } from './IconTooltip';
 import {
   Table,
   TableBody,
@@ -114,15 +113,17 @@ function KindBadge({ row }: { row: FactMemoryStatement }) {
 function SharedBadge({ row }: { row: FactMemoryStatement }) {
   if (row.audience !== 'shared') return null;
   return (
-    <IconTooltip label={MEMORY_SHARED_BADGE_HINT} side="top">
+    <>
       <StatusBadge tone="neutral" size="sm">{MEMORY_SHARED_BADGE}</StatusBadge>
-    </IconTooltip>
+      {/* Always in the accessibility tree (the old `title` was too): the privacy hint is not hover-only. */}
+      <span className="sr-only">{MEMORY_SHARED_BADGE_HINT}</span>
+    </>
   );
 }
 
 /** The kind badge, with the Shared badge beside it when the memory is shared. */
 function RowBadges({ row }: { row: FactMemoryStatement }) {
-  return <span className="inline-flex flex-wrap items-center gap-1"><KindBadge row={row} /><SharedBadge row={row} /></span>;
+  return <Inline gap="xs" wrap><KindBadge row={row} /><SharedBadge row={row} /></Inline>;
 }
 
 /**

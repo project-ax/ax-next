@@ -25,7 +25,10 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
     render(
       <AgentSwitcher agents={[OTHER, WAITING]} selected={OTHER} onSelect={vi.fn()} onCreateAgent={vi.fn()} />,
     );
-    expect(diamondIn(screen.getByRole('button', { name: /Switch agent$/ }))).not.toBeNull();
+    const trigger = screen.getByRole('button', { name: /Switch agent$/ });
+    expect(diamondIn(trigger)).not.toBeNull();
+    // The diamond is decorative; the control's name says it, in the same words as the menu item.
+    expect(trigger.getAttribute('aria-label')!.toLowerCase()).toContain(WORDS);
   });
 
   it('the switcher menu draws the diamond on the waiting agent and says the words', () => {
@@ -58,7 +61,9 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
         />
       </UserProvider>,
     );
-    expect(diamondIn(screen.getByRole('button', { name: 'Today' }))).not.toBeNull();
+    const today = screen.getByRole('button', { name: /^Today/ });
+    expect(diamondIn(today)).not.toBeNull();
+    expect(today).toHaveAccessibleName(`Today, ${WORDS}`);
   });
 
   it('the Today queue row for a held question draws the diamond and says the words', () => {

@@ -156,7 +156,7 @@ function useRead<T>(fetcher: () => Promise<T>, what: string): Read<T> {
 /** Words carry the status; the tone only backs them up. */
 const STATUS_TONE: ReadonlyMap<StorageStatus, StatusTone> = new Map<StorageStatus, StatusTone>([
   ['ok', 'neutral'],
-  ['near-limit', 'neutral'],
+  ['near-limit', 'warning'],
   ['full', 'danger'],
 ]);
 
