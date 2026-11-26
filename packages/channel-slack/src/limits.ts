@@ -222,6 +222,15 @@ export const TURN_HARD_CAP_MS = 1_800_000;
  * own that comes after the report (turn.ts `armGrace`).
  */
 export const TURN_END_GRACE_MS = 60_000;
+/**
+ * After `agent:invoke` reports a terminated turn other than
+ * `conversation:busy`, how long the reply waits for that turn's own
+ * `chat:turn-error`, which carries the reason's detail, before ending with
+ * the outcome's reason alone (turn.ts, TASK-1250). The orchestrator fires it
+ * before answering on every such exit but one, which races the answer and
+ * carries no detail, so this only bounds a turn-error that never comes.
+ */
+export const TURN_ERROR_WAIT_MS = 5_000;
 
 // ── Memory's speaker rule ───────────────────────────────────────────────────
 

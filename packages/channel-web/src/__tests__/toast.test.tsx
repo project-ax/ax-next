@@ -7,7 +7,7 @@
  *   2. A danger toast shows its description.
  *   3. Info toasts auto-dismiss; danger toasts stay put.
  *   4. The "Dismiss" button removes the toast.
- *   5. The region is one polite live region; toasts add no alert role of their own.
+ *   5. The stack is not a live region; a danger toast is announced assertively, others politely.
  */
 import { toast, ToastRegion } from '@project-ax/ui';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
@@ -47,11 +47,11 @@ describe('ToastRegion', () => {
     act(() => {
       toast.show({ title: 'Connecting…', duration: 100 });
     });
-    expect(screen.getByText('Connecting…')).toBeTruthy();
+    expect(within(region()).getByText('Connecting…')).toBeTruthy();
     act(() => {
       vi.advanceTimersByTime(100);
     });
-    expect(screen.queryByText('Connecting…')).toBeNull();
+    expect(within(region()).queryByText('Connecting…')).toBeNull();
   });
 
   it('a danger toast stays until dismissed', () => {
@@ -62,7 +62,7 @@ describe('ToastRegion', () => {
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
-    expect(screen.getByText('Disconnected')).toBeTruthy();
+    expect(within(region()).getByText('Disconnected')).toBeTruthy();
   });
 
   it('the Dismiss button removes the toast', () => {
@@ -71,15 +71,19 @@ describe('ToastRegion', () => {
       toast.show({ title: 'Disconnected', tone: 'danger' });
     });
     fireEvent.click(within(region()).getByRole('button', { name: 'Dismiss' }));
-    expect(screen.queryByText('Disconnected')).toBeNull();
+    expect(within(region()).queryByText('Disconnected')).toBeNull();
   });
 
-  it('is one polite live region; toasts do not add an alert role (no double announcement)', () => {
+  it('a failure toast interrupts (assertive) and an info toast is polite; the stack itself is not a live region', () => {
     render(<ToastRegion />);
     act(() => {
       toast.show({ title: 'Disconnected', tone: 'danger' });
     });
-    expect(region().getAttribute('aria-live')).toBe('polite');
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(region().getAttribute('aria-live')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toBe('Disconnected');
+    act(() => {
+      toast.show({ title: 'Link copied' });
+    });
+    expect(screen.getByRole('status').textContent).toBe('Link copied');
   });
 });

@@ -873,7 +873,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           /*
             A STABLE REASON CODE, never the thrown message. `err` here is host
             vocabulary — a hook name and a millisecond count — and the client
-            maps codes to authored copy (`lib/turn-error-labels.ts`); an
+            maps codes to authored copy (`@ax/core/turn-error-text`); an
             unmapped one falls back to the generic "The agent stopped
             unexpectedly. Retry to continue.", which is the right sentence for
             this and is why no new copy was invented for it.

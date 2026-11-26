@@ -22,6 +22,10 @@
       "types": "./dist/error-codes.d.ts",
       "default": "./dist/error-codes.js"
     },
+    "./turn-error-text": {
+      "types": "./dist/turn-error-text.d.ts",
+      "default": "./dist/turn-error-text.js"
+    },
     "./response-cap": {
       "types": "./dist/response-cap.d.ts",
       "default": "./dist/response-cap.js"

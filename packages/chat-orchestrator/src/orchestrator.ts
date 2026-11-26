@@ -3963,8 +3963,8 @@ export function createOrchestrator(
     // found no session bound at all, ctx.sessionId IS the bound placeholder, so
     // terminating it would clear the binding — pinned in
     // `route-by-conversation.test.ts`.)
-    // The reason is read by routines (`refusedBeforeAssembly`) and channel-web
-    // (`turn-error-labels.ts`); it carries no detail and no `error`, since a
+    // The reason is read by routines (`refusedBeforeAssembly`) and by the shared
+    // sentences in `@ax/core/turn-error-text` (channel-web, channel-slack); it carries no detail and no `error`, since a
     // `chat:end` subscriber could log either raw.
     if (restart === undefined && !(await persistUserDisplayTurn(bus, ctx, input.message))) {
       const outcome: AgentOutcome = {

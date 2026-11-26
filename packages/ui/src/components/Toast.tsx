@@ -71,23 +71,50 @@ function dismissAll(): void {
 
 export const toast = { show, dismiss, dismissAll };
 
-/** Mount once near the app root. One polite live region holds every toast, so each is announced once. */
+/** What a screen reader hears for a toast: the title, then the description. */
+const spoken = (t: ToastItem): string => {
+  if (t.description === undefined || t.description === '') return t.title;
+  return /[.!?]$/.test(t.title) ? `${t.title} ${t.description}` : `${t.title}. ${t.description}`;
+};
+
+/** The newest toast in `list` whose tone matches, spoken; '' when there is none. */
+const newest = (list: readonly ToastItem[], match: (tone: ToastTone) => boolean): string => {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const t = list[i]!;
+    if (match(t.tone)) return spoken(t);
+  }
+  return '';
+};
+
+/**
+ * Mount once near the app root. The visible stack is a named region but not a live region.
+ * Two always-mounted, visually hidden announcers carry what is read aloud: a danger toast goes to the
+ * assertive one (it interrupts, like a danger Notice), every other tone to the polite one. Because the
+ * announcers exist before their text changes, screen readers announce reliably, and each toast once.
+ */
 export function ToastRegion() {
   const list = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   return (
-    <div
-      role="region"
-      aria-label="Notifications"
-      aria-live="polite"
-      className="ax-pointer-events-none ax-fixed ax-right-lg ax-top-lg ax-z-50 ax-flex ax-w-full ax-max-w-narrow ax-flex-col ax-gap-md"
-    >
-      {list.map((t) => (
-        <div key={t.id} className="ax-pointer-events-auto ax-rounded-md ax-bg-canvas ax-shadow-overlay">
-          <NoticeView tone={t.tone} title={t.title} onDismiss={() => dismiss(t.id)}>
-            {t.description}
-          </NoticeView>
-        </div>
-      ))}
-    </div>
+    <>
+      <div
+        role="region"
+        aria-label="Notifications"
+        className="ax-pointer-events-none ax-fixed ax-right-lg ax-top-lg ax-z-50 ax-flex ax-w-full ax-max-w-narrow ax-flex-col ax-gap-md"
+      >
+        {list.map((t) => (
+          <div key={t.id} className="ax-pointer-events-auto ax-rounded-md ax-bg-canvas ax-shadow-overlay">
+            <NoticeView tone={t.tone} title={t.title} onDismiss={() => dismiss(t.id)}>
+              {t.description}
+            </NoticeView>
+          </div>
+        ))}
+      </div>
+      <div role="status" className="ax-sr-only">
+        {newest(list, (tone) => tone !== 'danger')}
+      </div>
+      <div role="alert" className="ax-sr-only">
+        {newest(list, (tone) => tone === 'danger')}
+      </div>
+    </>
   );
 }

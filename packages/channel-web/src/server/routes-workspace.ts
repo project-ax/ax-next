@@ -336,10 +336,9 @@ import {
   ownsPersonalAgent,
 } from './agent-ownership.js';
 // The renderer's own ceiling for the untrusted `detail` line. Imported rather
-// than restated so the host and the browser cannot drift about where that
-// sentence ends (invariant 4) — the module is pure constants and one pure
-// function, with no DOM or React in it.
-import { MAX_DETAIL_CHARS } from '../lib/turn-error-labels.js';
+// than restated, from the shared, import-free table, so the host, the browser
+// and Slack can't drift about where that line ends (invariant 4).
+import { MAX_DETAIL_CHARS } from '@ax/core/turn-error-text';
 // TASK-761 — the attach route's "signed in / keyed first" gate derives the
 // vault refs a connector spends with the SAME function the browser's connect
 // flow writes them with (pure, no DOM), so the two cannot disagree about
@@ -4105,7 +4104,7 @@ const TURN_ERROR_REASON_MAX_CHARS = 120;
  *
  * WHAT TRAVELS: the stable `reason` code and the optional bounded `detail`
  * line, exactly the two fields the live SSE `error` frame carries. NOT a
- * sentence — the wording is `lib/turn-error-labels.ts`' job on both paths, so
+ * sentence — the wording is `turnErrorText`'s job (`@ax/core/turn-error-text`) on both paths, so
  * a reloaded failure cannot word itself differently from the live one it
  * replaces, and a raw reason code can never reach a reader (TASK-296).
  *

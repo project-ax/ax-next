@@ -6,6 +6,7 @@ import {
   subscribeTurnEvents,
   type PermissionIn,
   type StreamChunkIn,
+  type TurnErrorIn,
   type TurnSink,
 } from '../turn-registry.js';
 
@@ -214,6 +215,16 @@ describe('createTurnRegistry', () => {
     expect(seen).toEqual([]);
     r.onTurnError({ reqId: REQ, reason: 'chat-run-timeout' });
     expect(seen).toEqual(['error']);
+  });
+
+  it('a turn-error hands its sink the reason and the detail, each only when a string, and nothing else', () => {
+    const r = createTurnRegistry({ logger: QUIET });
+    const got: TurnErrorIn[] = [];
+    r.register(recordingSink({ error: (e) => got.push(e) }).sink);
+    r.onTurnError({ reqId: REQ, reason: 'dev-service-failed', detail: 'Dev service x failed', error: 'raw', extra: 1 });
+    r.onTurnError({ reqId: REQ, reason: 42, detail: { x: 1 } });
+    // Strict: a field that isn't a string is absent, not present as undefined.
+    expect(got).toStrictEqual([{ reason: 'dev-service-failed', detail: 'Dev service x failed' }, {}]);
   });
 
   it('malformed payloads are ignored, never thrown on', () => {

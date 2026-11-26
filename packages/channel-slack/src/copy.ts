@@ -6,6 +6,13 @@ import type { SkillReach } from './turn-registry.js';
  * package may compose Slack-facing words: one place to read them all, and
  * model text never decides what the bot says for itself.
  *
+ * A failed turn's sentence for its reason is the one exception (TASK-1250).
+ * It is the web app's own sentence, from `@ax/core/turn-error-text`, so
+ * both surfaces say the same thing about the same failure, and
+ * `turn-error-line.ts` picks it. Only the `turnError*` lines here are
+ * Slack's words for a reason: the few whose web sentence points at a
+ * web-app screen.
+ *
  * No line names the product. A deployment is white-labeled through Branding
  * (the bot's own name defaults to the branding name), so the place people
  * sign in and make agents is "the web app", linked to the public origin.
@@ -101,6 +108,22 @@ export const COPY = {
     "I'm still working on your earlier messages in this thread. Send this one again after I reply.",
   busy: "I'm busy with something else in this conversation. Try again in a moment.",
   turnFailed: "Something went wrong and I couldn't finish. Try again in a moment.",
+  /*
+    A failed turn's own lines (turn-error-line.ts). A failed turn otherwise
+    says the web app's sentence for its reason; each of these replaces one
+    that points at a web-app screen ("in Settings", "Open Connectors"), for
+    the reasons a live Slack turn can fail with. Each keeps the web's first
+    sentence word for word (copy.test.ts). They end a turn's reply, which is
+    Markdown, so Open Connectors is a Markdown link, as Today is in
+    `heldForSender`: to the agent's Connectors settings, the page the web's
+    own button opens, built by the host.
+  */
+  turnErrorProvider:
+    'This agent can’t run right now — the AI service it uses isn’t set up on this server. An admin can fix this in the web app’s Settings.',
+  turnErrorReconnect: (connectorsLink: string) =>
+    `One of this agent’s connectors needs you to sign in again. [Open Connectors](${connectorsLink}) in the web app, reconnect it, then retry.`,
+  turnErrorReconnectMany: (connectorsLink: string) =>
+    `Some of this agent’s connectors need you to sign in again. [Open Connectors](${connectorsLink}) in the web app, reconnect each one, then retry.`,
   emptyReply: "I didn't have anything to add.",
   artifactLink: (link: string) => `I made something you can open in the web app: [Open it](${link})`,
   /*
