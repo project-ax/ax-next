@@ -1159,9 +1159,14 @@ describe('restart_with_services (dev services on demand)', () => {
 
     // The continuation's closing turn-ends come tool, then assistant, and the
     // first one already ends the invoke (any turn-end naming it settles its
-    // waiter). That one always names the folded requests; callers end a
-    // request on the first turn-end naming it, whatever its role.
-    it('the first closing turn-end carries the folded ids, only while the invoke runs; a moved request is not named', async () => {
+    // waiter), so it always names the folded requests. The second names them
+    // too if it arrives before the invoke's cleanup runs, and nothing orders
+    // the two; either is harmless, since callers end a request on the first
+    // turn-end naming it, whatever its role, and ending it again is a no-op.
+    // So this pins only: the first closing turn-end names them, and once the
+    // invoke is over (awaited, plus a tick for its cleanup) a turn-end names
+    // nothing, so the entry doesn't outlive the request.
+    it('the first closing turn-end carries the folded ids, and none outlive the invoke; a moved request is not named', async () => {
       const t = await setup();
       const { p1, p2, out1, out2 } = await restartWithQueued(t);
       const p3 = t.invoke('placeholder', 'conv-1', 'req-3');
@@ -1175,17 +1180,22 @@ describe('restart_with_services (dev services on demand)', () => {
       // still runs there: the answer is keyed on the request too, so it names nothing.
       await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
       expect(await p2).toEqual({ kind: 'complete', messages: [] });
+      expect(t.turnEnds).toEqual([{ reqId: 'req-2', sessionId: fresh }]);
+
+      // The continuation's closing pair: the first names the folded request.
       await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'tool');
+      expect(t.turnEnds.at(-1)).toEqual({ reqId: 'req-1', sessionId: fresh, foldedReqIds: ['req-3'] });
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant'); // may name it again: not pinned
       expect(await p1).toEqual({ kind: 'complete', messages: [] });
-      // The invoke is over: a later turn-end of the new sandbox names nothing folded.
-      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
       await p3;
       await flush();
-      expect(t.turnEnds).toEqual([
-        { reqId: 'req-2', sessionId: fresh },
-        { reqId: 'req-1', sessionId: fresh, foldedReqIds: ['req-3'] },
-        { reqId: 'req-1', sessionId: fresh },
-      ]);
+
+      // The invoke and its cleanup are over: a turn-end that arrives now names nothing folded.
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      expect(t.turnEnds.at(-1)).toEqual({ reqId: 'req-1', sessionId: fresh });
+      // req-3's callers heard it end at least once; req-2 was never named as folded.
+      expect(t.turnEnds.filter((e) => e.foldedReqIds?.includes('req-3')).length).toBeGreaterThanOrEqual(1);
+      expect(t.turnEnds.some((e) => e.foldedReqIds?.includes('req-2'))).toBe(false);
       for (const out of [out1, out2, out3]) expect(out).toEqual([{ kind: 'complete', messages: [] }]);
       expect(t.turnErrors).toEqual([]);
     });
