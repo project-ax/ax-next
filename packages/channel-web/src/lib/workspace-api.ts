@@ -73,7 +73,8 @@ import { readConversationReadOnly } from './conversation-read-only';
   It used to be read out of `./transport`, which owned it from Fault A until
   TASK-372. That was correct and did not survive: TASK-360 deleted
   `transport.ts` with the rest of chat, and this is now the surface that is
-  left. The table lives in `./turn-error-labels`, outside the tree that went.
+  left. The table lives in `@ax/core/turn-error-text` (shared with Slack since
+  TASK-1250); `./turn-error-labels` re-exports it beside the web-only helpers.
 */
 import {
   turnErrorMessageNotSaved,
@@ -2417,7 +2418,7 @@ async function streamReply(
         used to hand it to the caller verbatim, which put an internal
         identifier on screen in the same breath as the rest of this epic
         was taking them off. `lib/transport.ts` mapped these to authored
-        labels since Fault A (that table now lives in `./turn-error-labels`,
+        labels since Fault A (that table now lives in `@ax/core/turn-error-text`,
         see the import note above); reading it rather than growing a second
         one is the difference between one source of truth and two that drift
         (invariant 4). An unknown code falls back to `DEFAULT_TURN_ERROR`,

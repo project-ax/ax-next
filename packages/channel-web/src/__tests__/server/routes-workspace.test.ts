@@ -1569,7 +1569,7 @@ describe('channel-web agent-workspace BFF', () => {
 
     WHAT TRAVELS IS THE CODE, NOT A SENTENCE. `reason` is the same
     backend-agnostic vocabulary the live SSE `error` frame carries, and
-    `lib/turn-error-labels.ts` turns it into words on both paths — so the
+    `@ax/core/turn-error-text` turns it into words on both paths — so the
     reloaded row cannot word itself differently from the live alert it
     replaces, and `dev-service-failed` can never land in front of a reader.
   */

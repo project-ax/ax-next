@@ -29,6 +29,8 @@ const AGENT_LINK = 'https://ax.example/workspace/agents/agt_alice';
 /** Today: where a held call waits. */
 const TODAY_LINK = 'https://ax.example/workspace';
 const ZWSP = '\u200B';
+/** A failed turn's closing line as turn.ts hands it to `finish`: a reason's sentence, then its cleaned detail. */
+const FAIL_LINE = 'A dev service failed to start.\n\n\u200BDev service x failed.';
 
 type Method = 'addReaction' | 'removeReaction' | 'startStream' | 'appendStream' | 'stopStream' | 'postMessage';
 
@@ -194,8 +196,12 @@ const tick = async (ms = FLUSH_INTERVAL_MS): Promise<void> => {
   await vi.advanceTimersByTimeAsync(ms);
 };
 
-async function finishNow(s: ReplyStream, outcome: 'complete' | 'error' | 'busy' = 'complete'): Promise<void> {
-  const done = s.finish(outcome);
+async function finishNow(
+  s: ReplyStream,
+  outcome: 'complete' | 'error' | 'busy' = 'complete',
+  failLine?: string,
+): Promise<void> {
+  const done = s.finish(outcome, failLine);
   await vi.advanceTimersByTimeAsync(3 * 60_000);
   await done;
 }
@@ -493,6 +499,22 @@ describe('createReplyStream', () => {
     expect(markdownOf(calls[1]!)).toBe(`Hello world\n\n${COPY.artifactLink(AGENT_LINK)}\n\n${COPY.turnFailed}`);
   });
 
+  it('a posted reply ends with that line too', async () => {
+    const { api, calls } = fakeSlack({
+      fail: (method) => (method === 'startStream' ? new SlackApiError('chat.startStream', 'invalid_thread_ts') : undefined),
+    });
+    const s = make(api);
+    s.status('Reading');
+    s.text('Hello');
+    await tick();
+    s.text(' world');
+    await tick(5_000);
+    s.artifact();
+    await finishNow(s, 'error', FAIL_LINE);
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'postMessage']);
+    expect(markdownOf(calls[1]!)).toBe(`Hello world\n\n${COPY.artifactLink(AGENT_LINK)}\n\n${FAIL_LINE}`);
+  });
+
   it('a long reply that falls back to posting goes out in parts of at most 11,000', async () => {
     const { api, calls } = fakeSlack({
       fail: (method) => (method === 'startStream' ? new SlackApiError('chat.startStream', 'internal_error') : undefined),
@@ -566,6 +588,31 @@ describe('createReplyStream', () => {
       ts: calls[0]!.ts,
       chunks: [{ type: 'task_update', id: 'status', title: 'Reading your calendar', status: 'error' }],
     });
+  });
+
+  it("finish('error', line) ends the reply with that line, not the generic one", async () => {
+    const { api, calls } = fakeSlack();
+    const s = make(api);
+    s.status('Reading your calendar');
+    s.text('Let me look.');
+    await tick();
+    await finishNow(s, 'error', FAIL_LINE);
+    expect(calls.map((c) => c.method)).toEqual(['startStream', 'appendStream', 'stopStream']);
+    expect(delivered(calls)).toBe(`Let me look.\n\n${FAIL_LINE}`);
+    expect(calls[2]!.args).toEqual({
+      channel: TARGET.channel,
+      ts: calls[0]!.ts,
+      chunks: [{ type: 'task_update', id: 'status', title: 'Reading your calendar', status: 'error' }],
+    });
+  });
+
+  it('an empty line falls back to the generic one, and a line means nothing for busy', async () => {
+    const empty = fakeSlack();
+    await finishNow(make(empty.api), 'error', '');
+    expect(delivered(empty.calls)).toBe(COPY.turnFailed);
+    const busy = fakeSlack();
+    await finishNow(make(busy.api), 'busy', FAIL_LINE);
+    expect(delivered(busy.calls)).toBe(COPY.busy);
   });
 
   it("finish('busy') says the agent is busy, alone when nothing else was said", async () => {

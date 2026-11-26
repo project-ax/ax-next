@@ -17,6 +17,7 @@ import {
   DECISION_LOOKUP_TIMEOUT_MS,
   PERMISSION_PROMPTS_PER_TURN_MAX,
   TURN_END_GRACE_MS,
+  TURN_ERROR_WAIT_MS,
   TURN_HARD_CAP_MS,
 } from './limits.js';
 import { logCode } from './log-code.js';
@@ -26,8 +27,9 @@ import type { Prompt, PromptContext, PromptRegistry, PromptSubject } from './pro
 import { createReplyStream, type ReplyClock, type ReplyOutcome } from './reply-stream.js';
 import type { SlackApi } from './slack-api.js';
 import type { InstallRow } from './store.js';
+import { turnFailureLine } from './turn-error-line.js';
 import { SLACK_NOT_REMEMBERED_LINE } from './turn-note.js';
-import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.js';
+import type { PermissionIn, StreamChunkIn, TurnErrorIn, TurnRegistry } from './turn-registry.js';
 
 /**
  * One Slack turn: a person's message to an agent, the reply streamed back
@@ -98,14 +100,30 @@ import type { PermissionIn, StreamChunkIn, TurnRegistry } from './turn-registry.
  * for it). A woken turn's cards are asked about even when it said nothing
  * else, or never began: a card is all some continuations have to say.
  *
- * The reply ends at the first of: the turn's `chat:turn-end` (complete), its
- * `chat:turn-error` (error), a `terminated` invoke outcome
- * (`conversation:busy` → busy, never retried; anything else → error), a
- * thrown invoke (error), TURN_END_GRACE_MS after a complete invoke whose
- * turn-end never came (complete; counted from the turn's last chunk when
- * one came after the invoke answered, since an invoke can answer before its
- * turn has begun: `armGrace`), or TURN_HARD_CAP_MS (error). Failures are
- * logged as `slack_turn_failed` with a reason and a host code, never text.
+ * The reply ends at the first of:
+ *
+ *   - the turn's `chat:turn-end` (complete);
+ *   - its `chat:turn-error` (error), whose reason and detail word the
+ *     reply's last line (turn-error-line.ts, TASK-1250);
+ *   - a `terminated` invoke outcome: `conversation:busy` → busy at once,
+ *     never retried; any other waits up to TURN_ERROR_WAIT_MS for the
+ *     turn's own turn-error, which alone carries the reason's detail (the
+ *     orchestrator fires it before it answers, on every exit but one), then
+ *     → error with the outcome's reason; a turn-end meanwhile ends it the
+ *     same way, at once;
+ *   - a thrown invoke (error);
+ *   - TURN_END_GRACE_MS after a complete invoke whose turn-end never came
+ *     (complete; counted from the turn's last chunk when one came after the
+ *     invoke answered, since an invoke can answer before its turn has
+ *     begun: `armGrace`);
+ *   - or TURN_HARD_CAP_MS (error), unless it comes while the reply waits
+ *     after a terminated outcome: that turn has ended, so nothing is
+ *     stopped, and the reply ends as the outcome says.
+ *
+ * A failure with no reason (a thrown invoke) ends with the generic line.
+ * The cap is a timeout, so it ends with the sentence the web says for one
+ * (`chat-run-timeout`). Failures are logged as `slack_turn_failed` with a
+ * reason and a host code, never text.
  *
  * The cap ends the TURN too, not only its reply: the turn is asked to stop
  * (`agent:interrupt`, best-effort), so a turn nobody will see the end of
@@ -322,6 +340,8 @@ const HOST_CODE = /^[a-z0-9][a-z0-9:-]{0,63}$/;
 const BUSY = 'conversation:busy';
 /** chat-orchestrator's Stop (TASK-688): optional, so a preset without it still boots. */
 const INTERRUPT = 'agent:interrupt';
+/** The reason the cap's failure line words: a timeout, the shared table's `chat-run-timeout`. */
+const CAP_REASON = 'chat-run-timeout';
 
 type FailReason = 'busy' | 'terminated' | 'invoke-failed' | 'turn-error' | 'timeout';
 
@@ -349,6 +369,13 @@ type Ask =
 interface Decision {
   outcome: ReplyOutcome;
   fail?: { reason: FailReason; code?: string };
+  /**
+   * The reason, and any detail, the failure line words (turn-error-line.ts):
+   * the turn's own turn-error's, a terminated outcome's code when none
+   * came, or `chat-run-timeout` for the cap. Absent for a failure with no
+   * reason (a thrown invoke): the generic line.
+   */
+  turnError?: TurnErrorIn;
   /** A woken turn that never began: given up without a word. */
   notStarted?: true;
 }
@@ -558,6 +585,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
       : null;
   // Today: the web app's workspace root (channel-web `WORKSPACE_ROOT_PATH`).
   const todayLink = `${d.publicOrigin}/workspace`;
+  // The agent's Connectors settings: the page channel-web's "Open Connectors"
+  // button opens (`workspace-route.ts` AGENT_SETTINGS_SECTIONS), linked by a
+  // failed turn's line when a connector needs signing in again.
+  const connectorsLink = `${d.publicOrigin}/workspace/agents/${encodeURIComponent(s.agentId)}/settings/connectors`;
 
   const ctx = makeAgentContext({
     sessionId: makeReqId(),
@@ -602,6 +633,17 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     decided = true;
     settle(next);
   };
+  /*
+    The code of a terminated invoke outcome (not busy) that came before the
+    turn's own turn-error: the reply waits for that turn-error, which carries
+    the reason's detail (module header), and ends this way without it.
+  */
+  let terminated: string | null = null;
+  const endTerminated = (code: string): Decision => ({
+    outcome: 'error',
+    fail: { reason: 'terminated', code },
+    turnError: { reason: code },
+  });
 
   /** Every call's tool name by id: a result finds its artifact tool here, and a step summary its plumbing call. */
   const toolNames = new Map<string, string>();
@@ -789,8 +831,9 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     conversationId: s.conversationId,
     mode: s.mode,
     chunk: onChunk,
-    end: () => decide({ outcome: 'complete' }),
-    error: () => decide({ outcome: 'error', fail: { reason: 'turn-error' } }),
+    // Heard while the reply waits after a terminated outcome, the turn's end is that failure's.
+    end: () => decide(terminated === null ? { outcome: 'complete' } : endTerminated(terminated)),
+    error: (e) => decide({ outcome: 'error', fail: { reason: 'turn-error' }, turnError: e }),
     permission: onPermission,
   });
   // 👀 on the sender's message while a cold runner starts, not a blank thread
@@ -833,7 +876,15 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     cap = d.clock.setTimeout(() => {
       // A turn that already ended is not stopped again.
       if (decided) return;
-      decide({ outcome: 'error', fail: { reason: 'timeout' } });
+      // Nor is one whose invoke answered terminated while the reply waits for
+      // its turn-error: it has ended, and its reason is known, so the reply
+      // ends as that says, not as a timeout.
+      if (terminated !== null) {
+        decide(endTerminated(terminated));
+        return;
+      }
+      // A timeout, said as the web says the orchestrator's own (TASK-1250).
+      decide({ outcome: 'error', fail: { reason: 'timeout' }, turnError: { reason: CAP_REASON } });
       // Sent now, not after the reply: the turn is still burning until it lands.
       interrupting = interruptTurn();
     }, TURN_HARD_CAP_MS);
@@ -853,6 +904,8 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     if (grace !== null) d.clock.clearTimeout(grace);
     grace = d.clock.setTimeout(() => decide({ outcome: 'complete' }), TURN_END_GRACE_MS);
   };
+  /** The wait for a terminated turn's own turn-error (`terminated`). */
+  let errorWait: unknown = null;
   let startBy: unknown = null;
 
   if (start.kind === 'invoke') {
@@ -866,11 +919,16 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
           const code = typeof raw === 'string' && HOST_CODE.test(raw) ? raw : 'runner-error';
           // Busy: the conversation's session is running a turn of another
           // mode. Say so and back off; a retry would pay its costs again.
-          decide(
-            code === BUSY
-              ? { outcome: 'busy', fail: { reason: 'busy', code } }
-              : { outcome: 'error', fail: { reason: 'terminated', code } },
-          );
+          if (code === BUSY) {
+            decide({ outcome: 'busy', fail: { reason: 'busy', code } });
+            return;
+          }
+          // Any other: the turn's own turn-error words the reply's end, and
+          // only it carries the reason's detail. It has usually decided by
+          // now; when the orchestrator answered first, it is waited for, up
+          // to TURN_ERROR_WAIT_MS (module header).
+          terminated = code;
+          if (!decided) errorWait = d.clock.setTimeout(() => decide(endTerminated(code)), TURN_ERROR_WAIT_MS);
           return;
         }
         // Complete: the turn-end decides. Should it never come, finish anyway.
@@ -887,9 +945,10 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     }, start.withinMs);
   }
 
-  const { outcome, fail, notStarted } = await decision;
+  const { outcome, fail, turnError, notStarted } = await decision;
   if (cap !== null) d.clock.clearTimeout(cap);
   if (grace !== null) d.clock.clearTimeout(grace);
+  if (errorWait !== null) d.clock.clearTimeout(errorWait);
   if (startBy !== null) d.clock.clearTimeout(startBy);
   unregister();
   // Every card the turn will hear has come: what got no prompt, by reason and count only (never a host).
@@ -945,7 +1004,8 @@ async function followReply(d: TurnDeps, s: ReplySpec): Promise<void> {
     stream.held(found !== null ? 'asked' : 'sender');
   }
   try {
-    await stream.finish(outcome);
+    // The detail goes in raw: turnFailureLine cleans it, once, and puts it last.
+    await stream.finish(outcome, outcome === 'error' ? turnFailureLine(turnError, s.mode, connectorsLink) : undefined);
     // After the reply: for a turn, before its lane lets the conversation's next turn start.
     if (found !== null && asking !== null) {
       await askInThread(

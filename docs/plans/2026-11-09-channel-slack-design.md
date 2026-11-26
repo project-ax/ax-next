@@ -1268,11 +1268,17 @@ Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory ke
    - A DM turn (TASK-1093) ends at the first of: `chat:turn-end` for its
      conversation (matched the way channel-web matches it, except that a
      turn-end naming no turn ends only a turn that has begun: TASK-1095),
-     `chat:turn-error`, a `terminated` invoke outcome, 60 seconds after a
-     complete invoke outcome (or after the turn's last chunk, when one came
-     later) with no turn-end, or a 15-minute hard cap. At the cap the turn
-     itself is also stopped (`agent:interrupt`, best-effort), not only its
-     reply. Up to 3 turns per conversation run or wait in order; a fourth
+     `chat:turn-error`, a `terminated` invoke outcome (`conversation:busy`
+     at once; any other waits up to 5 seconds for the turn's own
+     `chat:turn-error`, which carries the reason's detail: TASK-1250), 60
+     seconds after a complete invoke outcome (or after the turn's last chunk,
+     when one came later) with no turn-end, or a 30-minute hard cap. At the
+     cap the turn itself is also stopped (`agent:interrupt`, best-effort), not
+     only its reply. A failed turn's last line is the web app's sentence for
+     its reason (`@ax/core/turn-error-text`), or Slack's own wording where the
+     web's points at a web app screen, with the host's detail line under it as
+     inert text; an outsider hears a reason's sentence only when it is true
+     for them. Up to 3 turns per conversation run or wait in order; a fourth
      message gets a "still working" reply.
 6. **Approvals.** What a person sees when a call needs an OK (TASK-1095, PR A):
    - **A held call in a DM or an attended channel turn.** After the reply, the
@@ -1300,7 +1306,7 @@ Superseded cards: TASK-1193, TASK-1194 and TASK-1197 close; TASK-1198 (memory ke
      the first words aren't missed. The Allow also binds the continuation's
      request to the conversation, as the web app's approve does (TASK-1150),
      so the host sees it running: a skill Allow during it marks the session
-     instead of ending it, the idle reaper holds off, and the 15-minute cap's
+     instead of ending it, the idle reaper holds off, and the 30-minute cap's
      stop reaches it. If the agent never carries on in the
      thread (its session ended inside the undo window, the wake-up was
      refused, or it woke and said nothing), nothing is posted there: the

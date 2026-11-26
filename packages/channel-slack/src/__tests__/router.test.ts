@@ -7,6 +7,7 @@ import {
   type AgentContext,
   type Logger,
 } from '@ax/core';
+import { ERROR_LABELS } from '@ax/core/turn-error-text';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CAPTURE_VETO_KEY, subscribeCaptureVeto } from '../capture-veto.js';
 import { createChannelCheck } from '../channel-check.js';
@@ -28,6 +29,7 @@ import {
   PROMPT_TTL_MS,
   STREAM_MAX_AGE_MS,
   TURN_END_GRACE_MS,
+  TURN_ERROR_WAIT_MS,
   TURN_HARD_CAP_MS,
 } from '../limits.js';
 import { DEDICATED_BOT_SCOPES } from '../manifest.js';
@@ -1820,7 +1822,7 @@ describe('createEventRouter: turns that fail', () => {
     ]);
   });
 
-  it('turn-error → turnFailed line', async () => {
+  it("turn-error → the reason's sentence", async () => {
     const w = world();
     w.scripts.push({
       chunks: [{ kind: 'text', text: 'Partial answer' }],
@@ -1829,7 +1831,7 @@ describe('createEventRouter: turns that fail', () => {
     });
     await w.dispatch(INSTALL, dm());
     await w.idle();
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Partial answer\n\n${COPY.turnFailed}`);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(`Partial answer\n\n${ERROR_LABELS['chat-run-timeout']}`);
     expect(w.lines.map((l) => [l.msg, l.fields?.['reason']])).toEqual([['slack_turn_failed', 'turn-error']]);
   });
 
@@ -1846,10 +1848,13 @@ describe('createEventRouter: turns that fail', () => {
   });
 
   it("a terminated outcome's reason is logged only as a host code", async () => {
+    vi.useFakeTimers();
     const w = world();
     w.scripts.push({ end: 'none', outcome: { kind: 'terminated', reason: 'Error: mcpServers entry gmail has invalid transport' } });
     await w.dispatch(INSTALL, dm());
-    await w.idle();
+    // No turn-error comes: the reply waits for one, then ends with the outcome's reason.
+    await vi.advanceTimersByTimeAsync(TURN_ERROR_WAIT_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
     expect(w.lines).toEqual([
       { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'terminated', code: 'runner-error' } },
@@ -1873,10 +1878,12 @@ describe('createEventRouter: turns that fail', () => {
     ['x'.repeat(65), 'runner-error'],
     ['', 'runner-error'],
   ])('a terminated reason %j is logged as %j', async (reason, code) => {
+    vi.useFakeTimers();
     const w = world();
     w.scripts.push({ end: 'none', outcome: { kind: 'terminated', reason } });
     await w.dispatch(INSTALL, dm());
-    await w.idle();
+    await vi.advanceTimersByTimeAsync(TURN_ERROR_WAIT_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(w.lines).toEqual([
       { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'terminated', code } },
     ]);
@@ -1892,7 +1899,8 @@ describe('createEventRouter: turns that fail', () => {
     expect(w.interrupts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['chat-run-timeout']);
+    // The cap is the timeout the web says in its words (TASK-1250), not the generic line.
 
     // The cap ends the turn too, not just its reply: the orchestrator is asked to
     // stop the conversation's turn, as the owner whose turn it is.
@@ -1920,6 +1928,35 @@ describe('createEventRouter: turns that fail', () => {
   });
 
   /*
+    The cap can fire while the reply waits for a terminated turn's own
+    turn-error (TURN_ERROR_WAIT_MS). That turn has already ended, so there is
+    nothing to stop, and its reason is known: the reply ends as the
+    terminated outcome says, never as a timeout.
+  */
+  it('the cap firing while a terminated turn waits for its turn-error: that reason, and no interrupt', async () => {
+    vi.useFakeTimers();
+    const answered = deferred();
+    const w = world();
+    w.scripts.push({ gate: answered.promise, end: 'none', outcome: { kind: 'terminated', reason: 'dev-service-failed' } });
+    await w.dispatch(INSTALL, dm());
+    await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS - 1000);
+    // The invoke answers terminated a second before the cap, inside the wait.
+    answered.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(1000).toBeLessThan(TURN_ERROR_WAIT_MS);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(w.interrupts).toEqual([]);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['dev-service-failed']);
+    expect(w.lines).toEqual([
+      { level: 'warn', msg: 'slack_turn_failed', fields: { installId: INSTALL_ID, reason: 'terminated', code: 'dev-service-failed' } },
+    ]);
+    expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  /*
     The lane is held until the stop has been answered. Released first, the
     next queued DM in the thread would start while the stop was still on its
     way, and the orchestrator — which stops "the conversation's in-flight
@@ -1938,7 +1975,7 @@ describe('createEventRouter: turns that fail', () => {
 
     // The stop is on its way, and the owner already has their reply.
     expect(w.interrupts).toHaveLength(1);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['chat-run-timeout']);
     expect(w.invokes).toHaveLength(1);
 
     answered.release();
@@ -1979,7 +2016,7 @@ describe('createEventRouter: turns that fail', () => {
     await w.dispatch(INSTALL, dm());
     await vi.advanceTimersByTimeAsync(TURN_HARD_CAP_MS);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(COPY.turnFailed);
+    expect(replyIn(w.slack.calls, DM_ALICE)).toBe(ERROR_LABELS['chat-run-timeout']);
     expect(w.lines).toHaveLength(1 + extra.length);
     expect(w.lines).toEqual(
       expect.arrayContaining([
@@ -2248,7 +2285,6 @@ describe('createEventRouter: nothing left behind', () => {
       { chunks: [{ kind: 'text', text: 'done' }], end: 'turn-end' },
       { chunks: [{ kind: 'text', text: 'partial' }], end: 'turn-error', outcome: { kind: 'terminated', reason: 'chat-run-timeout' } },
       { end: 'none', outcome: { kind: 'terminated', reason: 'conversation:busy' } },
-      { end: 'none', outcome: { kind: 'terminated', reason: 'Error: something the runner said' } },
       { end: 'none', fail: true },
     ];
     for (const [i, script] of endings.entries()) {
@@ -2276,6 +2312,20 @@ describe('createEventRouter: nothing left behind', () => {
     await w.idle();
     expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
     expect(w.invokes).toHaveLength(endings.length + 2);
+  });
+
+  it('a terminated outcome whose turn-error never comes releases its sink and lane once the wait ends', async () => {
+    vi.useFakeTimers();
+    const w = world();
+    w.scripts.push({ end: 'none', outcome: { kind: 'terminated', reason: 'Error: something the runner said' } });
+    await w.dispatch(INSTALL, dm());
+    // Held while the reply waits for the turn's own turn-error.
+    await vi.advanceTimersByTimeAsync(TURN_ERROR_WAIT_MS - 1);
+    expect([w.registry.size(), w.queue.size()]).toEqual([1, 1]);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect([w.registry.size(), w.queue.size()]).toEqual([0, 0]);
+    expect(w.invokes).toHaveLength(1);
   });
 });
 

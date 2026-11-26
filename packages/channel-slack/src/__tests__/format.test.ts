@@ -1,7 +1,9 @@
 import { toWellFormedText } from '@ax/core';
+import { MAX_DETAIL_CHARS } from '@ax/core/turn-error-text';
 import { describe, expect, it } from 'vitest';
 import {
   channelSenderLabel,
+  cleanDetailLine,
   cleanPromptSubject,
   cleanSenderName,
   cleanStatusTitle,
@@ -427,6 +429,68 @@ describe('cleanPromptSubject', () => {
   it('nothing printable left is the empty string', () => {
     expect(cleanPromptSubject(` \n${RLO}${ZWSP} `)).toBe('');
     expect(cleanPromptSubject('')).toBe('');
+  });
+});
+
+/*
+  A failed turn's detail line (TASK-1250): the host's one-line specifics under
+  the turn's failure sentence, in a Markdown reply. A dev service's path comes
+  from the service's own log output and a connector's name from whoever named
+  it, so either can be spelled like a link, a mention or a Markdown block.
+*/
+describe('cleanDetailLine: a failed turn’s detail, fit for a Markdown reply (TASK-1250)', () => {
+  const DIAG = "Dev service 'kafka' couldn't write /var/lib/kafka (read-only filesystem) — add /var/lib/kafka to the service's writablePaths.";
+
+  it('passes a host diagnosis through as written, behind one leading mark', () => {
+    expect(cleanDetailLine(DIAG)).toBe(ZWSP + DIAG);
+  });
+
+  it.each([
+    '<!channel> look here', 'Connector: <@U07BOB0001>', 'Connector: <#C07SUPPORT|general>',
+    'Connector: <http://evil.example|Sign in again>', 'Connector: <https://evil.example>',
+    'Connector: [Sign in again](https://evil.example)', 'Connector: ![x](https://evil.example/p.png)',
+    'Connector: <img src=x onerror=alert(1)>', 'Connector: @here @channel @everyone',
+    'Connector: &lt;!here&gt; &#64;channel',
+    "Dev service 'x' couldn't write /<!channel>/[a](//evil.example) (permission denied)",
+    // A logged path holds no `:`, so its angle link has no scheme: every `<` is marked, not only one before a letter.
+    "Dev service 'x' couldn't write /<//evil.example|Sign-in> (permission denied)",
+    // Several names on one line: every link on it is defused, not only the first.
+    'Connectors: [Gmail](https://evil.example), [Linear](https://evil.example), <http://evil.example|Notion> <https://evil.example> and 2 more',
+  ])('%j pings, links and tags nothing, and still reads as written', (raw) => {
+    const out = cleanDetailLine(raw);
+    expect(out).not.toMatch(/<(?!\u200B)/);
+    expect(out).not.toMatch(/\]\(/);
+    expect(spellsMention(out)).toBe(false);
+    expect(out.split(ZWSP).join('')).toBe(raw);
+  });
+
+  it('is one line: controls, bidi and invisible characters become single spaces', () => {
+    expect(cleanDetailLine('a\nb\r\n\tc\u2028d\u202Ee\u200Bf')).toBe(`${ZWSP}a b c d e f`);
+    expect(cleanDetailLine('  a \n\n  b  ')).toBe(`${ZWSP}a b`);
+  });
+
+  it('is clamped to the shared MAX_DETAIL_CHARS, never half an emoji', () => {
+    expect(cleanDetailLine('x'.repeat(MAX_DETAIL_CHARS + 50))).toBe(ZWSP + 'x'.repeat(MAX_DETAIL_CHARS));
+    expect(cleanDetailLine('x'.repeat(MAX_DETAIL_CHARS - 1) + '\u{1F600}')).toBe(ZWSP + 'x'.repeat(MAX_DETAIL_CHARS - 1));
+  });
+
+  it('marks a broadcast word the cap made', () => {
+    expect(cleanDetailLine('x'.repeat(MAX_DETAIL_CHARS - 5) + '@heres')).toBe(`${ZWSP}${'x'.repeat(MAX_DETAIL_CHARS - 5)}@${ZWSP}here`);
+  });
+
+  it('starts no Markdown block', () => {
+    for (const raw of ['# Heading', '> quoted', '---', '1. step']) expect(cleanDetailLine(raw)).toBe(ZWSP + raw);
+  });
+
+  it('is empty when nothing printable is left', () => {
+    expect(cleanDetailLine(' \u200B\n\u202E ')).toBe('');
+  });
+
+  it('the reply’s own neutralizing pass changes nothing in it', () => {
+    for (const raw of [DIAG, 'Connector: <!channel> [a](b) @here &lt;']) {
+      const out = cleanDetailLine(raw);
+      expect(neutralizeSlackControls(out)).toBe(out);
+    }
   });
 });
 

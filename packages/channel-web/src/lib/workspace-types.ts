@@ -774,9 +774,10 @@ export type ThreadMessage =
    * `reason` IS A STABLE CODE AND NEVER PROSE — the same backend-agnostic
    * vocabulary the SSE `error` frame carries (`chat-run-timeout`,
    * `dev-service-failed`, …), wired the way `phase` is: the wire says what
-   * happened, the client says it in words. `lib/turn-error-labels.ts` owns
-   * the wording for the live frame and this row alike, so a reloaded failure
-   * cannot word itself differently from the live one it replaces.
+   * happened, the client says it in words. `turnErrorText`
+   * (`@ax/core/turn-error-text`) owns the wording for the live frame and this
+   * row alike, so a reloaded failure cannot word itself differently from the
+   * live one it replaces.
    *
    * `detail` is the optional TASK-160 author-facing line underneath —
    * untrusted text, bounded and sanitized server-side, rendered as a plain
