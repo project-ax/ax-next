@@ -1,3 +1,4 @@
+import { CONNECTORS_TAB_REASONS } from '@ax/core/turn-error-text';
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_TURN_ERROR,
@@ -142,6 +143,14 @@ describe('turnErrorText — a connector nobody signed in to yet (TASK-796, repla
     for (const other of ['proxy-open-failed', 'chat-run-timeout', 'toString', '', null, undefined]) {
       expect(turnErrorOpensConnectors(other)).toBe(false);
     }
+  });
+
+  // TASK-1250: Slack links the Connectors settings for the same reasons, so
+  // which ones the tab fixes is written once, in core, and the web reads it.
+  it('offers the button for exactly the shared Connectors-tab reasons', () => {
+    expect(CONNECTORS_TAB_REASONS.size).toBeGreaterThan(0);
+    for (const reason of new Set([...Object.keys(ERROR_LABELS), ...CONNECTORS_TAB_REASONS]))
+      expect(turnErrorOpensConnectors(reason), reason).toBe(CONNECTORS_TAB_REASONS.has(reason));
   });
 
   it('no longer offers the live button for the two sign-in reasons the host cannot emit (TASK-806)', () => {

@@ -1,4 +1,4 @@
-import { ERROR_LABELS } from '@ax/core/turn-error-text';
+import { CONNECTORS_TAB_REASONS, ERROR_LABELS } from '@ax/core/turn-error-text';
 import { describe, expect, it } from 'vitest';
 import { COPY } from '../copy.js';
 import { cleanDetailLine } from '../format.js';
@@ -31,6 +31,19 @@ describe('turnFailureLine: what a failed Slack turn says (TASK-1250)', () => {
   it('Slack’s own wording and the outsider list name only reasons the table has', () => {
     for (const r of [...SLACK_TURN_ERRORS.keys(), ...OUTSIDER_TURN_ERRORS]) expect(Object.keys(ERROR_LABELS)).toContain(r);
     expect([...SLACK_TURN_ERRORS.keys()].sort()).toEqual(Object.keys(OWN).sort());
+  });
+
+  // Invariant 4: which reasons the Connectors tab fixes is the shared set's
+  // to say, not a second list here, so the web's button and Slack's link
+  // never disagree about a reason.
+  it('links the Connectors settings for every reason in the shared Connectors-tab set, and for no other', () => {
+    expect(CONNECTORS_TAB_REASONS.size).toBeGreaterThan(0);
+    const link = `[Open Connectors](${LINK})`;
+    for (const mode of ['dm', 'attended'] as const) {
+      for (const reason of CONNECTORS_TAB_REASONS) expect(turnFailureLine({ reason }, mode, LINK), `${mode} ${reason}`).toContain(link);
+      for (const reason of Object.keys(ERROR_LABELS).filter((r) => !CONNECTORS_TAB_REASONS.has(r)))
+        expect(turnFailureLine({ reason }, mode, LINK), `${mode} ${reason}`).not.toContain(link);
+    }
   });
 
   it.each([

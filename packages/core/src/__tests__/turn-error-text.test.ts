@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  CONNECTORS_TAB_REASONS,
   DEFAULT_TURN_ERROR,
   ERROR_LABELS,
   turnErrorLabel,
@@ -35,5 +36,20 @@ describe('@ax/core/turn-error-text', () => {
 
   it('the table can’t be changed by either plugin that shares it', () => {
     expect(Object.isFrozen(ERROR_LABELS)).toBe(true);
+  });
+
+  it('names the reasons fixed on the Connectors tab, each one a reason the table words', () => {
+    expect([...CONNECTORS_TAB_REASONS].sort()).toEqual(['connector-needs-reconnect', 'connectors-need-reconnect']);
+    for (const reason of CONNECTORS_TAB_REASONS) expect(turnErrorLabel(reason), reason).toBeDefined();
+  });
+
+  it('the Connectors-tab set can’t be changed by either plugin that shares it', () => {
+    const shared = CONNECTORS_TAB_REASONS as Set<string>;
+    expect(Object.isFrozen(shared)).toBe(true);
+    expect(() => shared.add('chat-run-timeout')).toThrow(TypeError);
+    expect(() => shared.delete('connector-needs-reconnect')).toThrow(TypeError);
+    expect(() => shared.clear()).toThrow(TypeError);
+    expect(CONNECTORS_TAB_REASONS.size).toBe(2);
+    expect(CONNECTORS_TAB_REASONS.has('chat-run-timeout')).toBe(false);
   });
 });

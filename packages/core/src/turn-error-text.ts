@@ -159,6 +159,42 @@ export const ERROR_LABELS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /**
+ * The reason codes a LIVE turn can fail with that a person fixes on the
+ * agent's Connectors tab (TASK-796; TASK-1250 moved it here). Each surface
+ * that sends the person there reads THIS set (invariant 4): channel-web's
+ * live failure strip offers its "Open Connectors" button for these
+ * (`turnErrorOpensConnectors`), and channel-slack's failed-turn line links
+ * the agent's Connectors settings for these and no others.
+ *
+ * Only `connector-needs-reconnect` (and, since TASK-828, its plural
+ * `connectors-need-reconnect`) is left (TASK-806): a connector never signed
+ * in to is skipped for the turn rather than failing it, so
+ * `connector-needs-sign-in` and `provider-key-missing-connector-needs-sign-in`
+ * can no longer arrive on a live turn. Their LABELS stay in `ERROR_LABELS`
+ * for persisted rows replayed on reload, but a replayed row has no button,
+ * so they have no business here, and a stale set would offer one for a
+ * failure this build never produces.
+ *
+ * Read-only for real, not just in its type: two plugins share this one
+ * object, so `add`, `delete` and `clear` throw rather than let one of them
+ * change what the other offers.
+ */
+export const CONNECTORS_TAB_REASONS: ReadonlySet<string> = readOnlySet([
+  'connector-needs-reconnect',
+  // TASK-828 — the plural of the line above; same fix, same tab.
+  'connectors-need-reconnect',
+]);
+
+function readOnlySet(items: readonly string[]): ReadonlySet<string> {
+  const set = new Set(items);
+  const refuse = (): never => {
+    throw new TypeError('CONNECTORS_TAB_REASONS is read-only');
+  };
+  Object.defineProperties(set, { add: { value: refuse }, delete: { value: refuse }, clear: { value: refuse } });
+  return Object.freeze(set);
+}
+
+/**
  * Max chars of the untrusted `detail` line any surface renders (defense in
  * depth: it is already bounded and sanitized server-side; this is the final
  * clamp, shared so the browser, the host and Slack agree where the line ends).
