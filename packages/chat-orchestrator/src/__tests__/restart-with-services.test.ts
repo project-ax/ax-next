@@ -1030,7 +1030,7 @@ describe('restart_with_services (dev services on demand)', () => {
       await Promise.all([p1, p2]);
     });
 
-    it('the swap\'s rebind takes an unbound row (guard: orUnbound retry)', async () => {
+    it('the swap\'s rebind takes an unbound row (guard: the unbound-row try)', async () => {
       // The old sandbox's row was cleared (its pod died) just before R19 lands.
       let acted = false;
       const t = await setup({
@@ -1149,6 +1149,49 @@ describe('restart_with_services (dev services on demand)', () => {
       expect(out1).toEqual([{ kind: 'complete', messages: [] }]);
       expect(out2).toEqual([{ kind: 'complete', messages: [] }]);
       expect(t.turnErrors).toEqual([]);
+    });
+
+    // The order matters: R19's write that commits WHILE N2 runs (its first
+    // compare-and-set conflicted on a just-cleared row, its unbound-row try
+    // timed out with the UPDATE in flight) is still taken, because N2 tries
+    // the new session last. Tried first, it would see the unbound row, and the
+    // old-session and unbound tries would then conflict with the late write.
+    it('(order) a failed rebind whose write commits during the moved-request bind is still taken', async () => {
+      let r19Calls = 0;
+      let lateWrite: Partial<Row> | undefined;
+      const t = await setup({
+        onBind: (i, r) => {
+          if (isRestartRebind(i)) {
+            r19Calls += 1;
+            if (r19Calls === 1) {
+              Object.assign(r, { activeSessionId: null, activeReqId: null });
+              return;
+            }
+            if (r19Calls === 2) {
+              lateWrite = { activeSessionId: i.sessionId, activeReqId: i.reqId };
+              throw new Error('timed out with the write still in flight');
+            }
+            return;
+          }
+          if (i.reqId === 'req-2' && i.sessionId !== 's-1' && i.expectedSessionId === null && lateWrite !== undefined) {
+            Object.assign(r, lateWrite);
+            lateWrite = undefined;
+          }
+        },
+      });
+      const { p1, p2 } = await restartWithQueued(t);
+      await t.endSegment('s-1', 'conv-1', 'req-1');
+      await waitFor(() => t.queued.length === 4, 'the note and the moved message');
+      const fresh = t.opens[1]!.sessionId;
+      await waitFor(() => t.binds.some((b) => b.reqId === 'req-2' && b.sessionId === fresh), 'the moved-request bind');
+      await flush();
+
+      expect(rebindFailureWarned(t)).toBe(true);
+      expect(t.row('conv-1')).toMatchObject({ activeSessionId: fresh, activeReqId: 'req-2' });
+      expect(keptNewer(t, 'restart-moved')).toBe(false);
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-1', 'assistant');
+      await t.emitTurnEnd(fresh, 'conv-1', 'req-2', 'assistant');
+      await Promise.all([p1, p2]);
     });
 
     it('(guard) after a failed rebind, the moved-request bind still keeps a newer binding', async () => {
@@ -1766,12 +1809,16 @@ describe('TASK-1226: a cold spawn keeps a newer binding', () => {
 
     expect(t.row('conv-1')).toMatchObject({ activeSessionId: 's-newer', activeReqId: 'req-9' });
     expect(keptNewer(t)).toBe(true);
+    // Routing saw an unbound row, so step 7 makes exactly one try, on unbound.
+    expect(
+      t.binds.filter((b) => b.reqId === 'req-1' && b.expectedSessionId !== undefined).map((b) => b.expectedSessionId),
+    ).toEqual([null]);
     await t.emitTurnEnd('s-1', 'conv-1', 'req-1', 'assistant');
     expect(await p1).toEqual({ kind: 'complete', messages: [] });
     expect(t.turnErrors).toEqual([]);
   });
 
-  it('a cold spawn whose stale row is cleared during its open still binds (guard: orUnbound retry)', async () => {
+  it('a cold spawn whose stale row is cleared during its open still binds (guard: the unbound-row try)', async () => {
     let release!: () => void;
     const t = await setup({
       rows: { 'conv-1': { activeSessionId: 's-stale', activeReqId: 'req-0' } }, // not alive
