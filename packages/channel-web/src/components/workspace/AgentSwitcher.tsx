@@ -169,7 +169,8 @@ export function AgentSwitcher({
                   <StateDotSlot>
                     <StateDot state={a.state} />
                   </StateDotSlot>
-                  <span className="min-w-0 flex-1 truncate" title={a.name}>
+                  {/* A div, not a span: the shared-by row stacks block elements inside it. */}
+                  <div className="min-w-0 flex-1 truncate" title={a.name}>
                     {a.sharedBy === undefined ? (
                       a.name
                     ) : (
@@ -183,7 +184,7 @@ export function AgentSwitcher({
                         </Text>
                       </Stack>
                     )}
-                  </span>
+                  </div>
                   <span className="sr-only">, {stateWord(a.state).toLowerCase()}</span>
                   {a.id === selected.id && (
                     <Check aria-hidden="true" className="size-4 shrink-0 text-primary" />

@@ -105,6 +105,13 @@ describe('AgentSwitcher — who shared an agent (TASK-1247)', () => {
     expect(items[0]).not.toHaveTextContent(/Shared/);
   });
 
+  it('the two-line row is valid HTML: no block element inside a span', async () => {
+    renderSwitcher({ agents: [ADA, shared({ sharedBy: 'Vinay Pulim' })] });
+    press(trigger());
+    const items = await screen.findAllByRole('menuitem');
+    expect(items[1]!.querySelectorAll('span div, span p')).toHaveLength(0);
+  });
+
   it('an unknown name reads as shared with you', async () => {
     renderSwitcher({ agents: [ADA, shared({ sharedBy: null })] });
     press(trigger());
