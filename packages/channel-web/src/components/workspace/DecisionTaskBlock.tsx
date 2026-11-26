@@ -21,8 +21,8 @@
  * them as plain React text: no markdown, no HTML, and no attribute built from
  * them. `**bold**` stays two asterisks either side, and `<img>` stays text.
  */
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
-import { cn } from '@/lib/utils';
+import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { InsetBlock, KeyValueList, Text } from '@project-ax/ui';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import type { DecisionTask } from '@/lib/workspace-types';
 import { DECISION_REQUEST_PROVENANCE } from './DecisionRequestBlock';
@@ -110,42 +110,31 @@ function useOverflows(box: RefObject<HTMLElement | null>, text: string): boolean
   return overflows;
 }
 
-const LABEL = 'text-[11.5px] text-muted-foreground break-words';
-const VALUE = 'text-[13px] leading-relaxed text-foreground';
 // The two prose fields keep the agent's own line breaks. The server sends every
 // valid brief whole, however long, because the person is approving all of it;
 // past a screenful they scroll here, the way the request block's input does,
 // so the buttons stay near the question they answer.
-const PROSE = 'max-h-64 overflow-auto whitespace-pre-wrap break-words';
+const PROSE = 'max-h-64 overflow-auto whitespace-pre-wrap break-words text-[13px] leading-relaxed';
 
 /**
- * One prose field: its label, the text, and what a person needs to know to
+ * One prose field's value: the text, and what a person needs to know to
  * read all of it. On systems that hide scrollbars nothing else says the box
  * scrolls, so a field the box can't show whole says so under it: when the
  * browser's layout says so, or the text's own estimate does. The contract
  * keeps a task's padding short (no more than two blank lines or 16 spaces in
  * a row, no marks without a character), so what fills the box is text.
  */
-function TaskProse({
-  label,
-  value,
-  testId,
-}: {
-  label: string;
-  value: { text: string; truncated: boolean };
-  testId: string;
-}) {
-  const box = useRef<HTMLElement>(null);
+function TaskProse({ value, testId }: { value: { text: string; truncated: boolean }; testId: string }) {
+  const box = useRef<HTMLDivElement>(null);
   const overflows = useOverflows(box, value.text);
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className={LABEL}>{label}</dt>
-      <dd ref={box} data-testid={testId} className={cn(VALUE, PROSE)}>
+    <>
+      <div ref={box} data-testid={testId} className={PROSE}>
         {value.text}
-      </dd>
-      {(overflows || estimatedTallerThanBox(value.text)) && <dd className={LABEL}>{DECISION_TASK_SCROLL_NOTE}</dd>}
-      {value.truncated && <dd className={LABEL}>{DECISION_TASK_TRUNCATED}</dd>}
-    </div>
+      </div>
+      {(overflows || estimatedTallerThanBox(value.text)) && <Text role="meta">{DECISION_TASK_SCROLL_NOTE}</Text>}
+      {value.truncated && <Text role="meta">{DECISION_TASK_TRUNCATED}</Text>}
+    </>
   );
 }
 
@@ -158,46 +147,34 @@ export function DecisionTaskBlock({
   agentName: string;
   className?: string;
 }) {
+  const items: { label: string; value: ReactNode }[] = [];
+  // Absent from an older host, or a kind this page has no words for: no row.
+  if (task.kind !== null && Object.hasOwn(TASK_KIND_LABELS, task.kind)) {
+    items.push({ label: DECISION_TASK_KIND_LABEL, value: TASK_KIND_LABELS[task.kind] });
+  }
+  if (task.name !== null) {
+    items.push({ label: DECISION_TASK_NAME_LABEL, value: <Text role="body-strong" inline>{task.name}</Text> });
+  }
+  if (task.instructions !== null) {
+    items.push({
+      label: decisionTaskInstructionsLabel(agentName),
+      value: <TaskProse value={task.instructions} testId="decision-task-instructions" />,
+    });
+  }
+  if (task.goodWhen !== null) {
+    items.push({
+      label: DECISION_TASK_GOOD_WHEN_LABEL,
+      value: <TaskProse value={task.goodWhen} testId="decision-task-good-when" />,
+    });
+  }
+  if (task.checksIn !== null) items.push({ label: DECISION_TASK_CHECKS_IN_LABEL, value: task.checksIn });
   return (
-    <div
-      data-testid="decision-task"
-      className={cn('rounded-md border border-border bg-muted px-3.5 py-2.5', className)}
-    >
-      <div className={LABEL}>
-        {task.action === 'start' ? DECISION_TASK_HEADING_START : DECISION_TASK_HEADING_CHANGE}
-      </div>
-      <dl className="mt-1.5 flex flex-col gap-2">
-        {/* Absent from an older host, or a kind this page has no words for: no row. */}
-        {task.kind !== null && Object.hasOwn(TASK_KIND_LABELS, task.kind) && (
-          <div className="flex flex-col gap-0.5">
-            <dt className={LABEL}>{DECISION_TASK_KIND_LABEL}</dt>
-            <dd className={cn(VALUE, 'break-words')}>{TASK_KIND_LABELS[task.kind]}</dd>
-          </div>
-        )}
-        {task.name !== null && (
-          <div className="flex flex-col gap-0.5">
-            <dt className={LABEL}>{DECISION_TASK_NAME_LABEL}</dt>
-            <dd className={cn(VALUE, 'break-words font-medium')}>{task.name}</dd>
-          </div>
-        )}
-        {task.instructions !== null && (
-          <TaskProse
-            label={decisionTaskInstructionsLabel(agentName)}
-            value={task.instructions}
-            testId="decision-task-instructions"
-          />
-        )}
-        {task.goodWhen !== null && (
-          <TaskProse label={DECISION_TASK_GOOD_WHEN_LABEL} value={task.goodWhen} testId="decision-task-good-when" />
-        )}
-        {task.checksIn !== null && (
-          <div className="flex flex-col gap-0.5">
-            <dt className={LABEL}>{DECISION_TASK_CHECKS_IN_LABEL}</dt>
-            <dd className={cn(VALUE, 'break-words')}>{task.checksIn}</dd>
-          </div>
-        )}
-      </dl>
-      <p className={cn(LABEL, 'mt-2')}>{DECISION_REQUEST_PROVENANCE}</p>
+    <div data-testid="decision-task" className={className}>
+      <InsetBlock>
+        <Text role="meta">{task.action === 'start' ? DECISION_TASK_HEADING_START : DECISION_TASK_HEADING_CHANGE}</Text>
+        <KeyValueList layout="stacked" items={items} />
+        <Text role="meta">{DECISION_REQUEST_PROVENANCE}</Text>
+      </InsetBlock>
     </div>
   );
 }

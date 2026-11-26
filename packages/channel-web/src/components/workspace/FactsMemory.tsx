@@ -1,13 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, formatTimestamp, Notice, Inline, Text, StatusBadge, Timestamp } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, formatTimestamp, Inline, Notice, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import {
   Field,
   FieldGroup,
@@ -424,19 +417,21 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
           <ul aria-label="Memories" className="flex flex-col gap-3">
             {rows.map((row) => <li key={row.id}>
               <Card>
-                <CardHeader className="flex flex-row items-start justify-between gap-3 p-4 pb-2">
-                  <CardTitle><RowBadges row={row} /></CardTitle>
+                <Stack gap="lg">
+                <Inline justify="between" align="start">
+                  <Text role="body-strong"><RowBadges row={row} /></Text>
                   {isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2 p-4 pt-0">
+                </Inline>
+                <Stack gap="xs">
                   {statement(row)}
-                  <CardDescription>Noted <NotedDate when={row.when} /></CardDescription>
-                </CardContent>
+                  <Text role="meta">Noted <NotedDate when={row.when} /></Text>
+                </Stack>
+              </Stack>
               </Card>
             </li>)}
           </ul>
         ) : (
-          <Card className="overflow-hidden border border-border shadow-none">
+          <Card flush>
             <Table className="min-w-[30rem] table-fixed">
               <TableHeader className="bg-muted">
                 <TableRow className="border-border">

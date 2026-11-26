@@ -1,11 +1,5 @@
 import type { ReactNode } from 'react';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, Stack, Text } from '@project-ax/ui';
 import { BrandMark } from '../BrandMark';
 
 /** How many numbered steps the setup wizard has: gate → admin → model. */
@@ -40,34 +34,34 @@ interface Props {
 export function SetupShell({ title, description, step, children }: Props) {
   return (
     <div className="flex items-center justify-center min-h-screen p-6 bg-canvas">
-      <Card className="w-full max-w-[460px]">
-        <CardHeader className="items-center text-center gap-3 pb-4">
-          <BrandMark size="xl" />
-          {/* The wizard never said how long it was. Three screens is short, but
-              a first-time user setting up a server has no way to know that, and
-              "how much more of this is there" is the question an unnumbered
-              wizard leaves hanging. */}
-          {step !== undefined && (
-            <p className="text-xs text-muted-foreground" data-testid="setup-step">
-              Step {step} of {SETUP_TOTAL_STEPS}
-            </p>
-          )}
-          {/* `CardTitle` is a <div>. Without the role this whole screen had no
-              heading, which the first-run name step (a dialog with an <h2>
-              until TASK-689) cannot afford: it is the first page anyone sees. */}
-          <CardTitle
-            role="heading"
-            aria-level={1}
-            className="text-xl font-semibold tracking-[-0.012em]"
-          >
-            {title}
-          </CardTitle>
-          {description !== undefined && (
-            <CardDescription>{description}</CardDescription>
-          )}
-        </CardHeader>
-        <CardContent className="pt-2">{children}</CardContent>
-      </Card>
+      <div className="w-full max-w-md">
+        <Card>
+          <Stack gap="lg">
+            <Stack gap="sm" align="center">
+              <BrandMark size="xl" />
+              {/* The wizard never said how long it was. Three screens is short, but
+                  a first-time user setting up a server has no way to know that, and
+                  "how much more of this is there" is the question an unnumbered
+                  wizard leaves hanging. */}
+              {step !== undefined && (
+                <Text role="caption">
+                  Step {step} of {SETUP_TOTAL_STEPS}
+                </Text>
+              )}
+              {/* Without a heading this whole screen had none, which the first-run
+                  name step (a dialog with an <h2> until TASK-689) cannot afford:
+                  it is the first page anyone sees. */}
+              <h1>
+                <Text role="body-strong" inline>
+                  {title}
+                </Text>
+              </h1>
+              {description !== undefined && <Text role="meta">{description}</Text>}
+            </Stack>
+            {children}
+          </Stack>
+        </Card>
+      </div>
     </div>
   );
 }

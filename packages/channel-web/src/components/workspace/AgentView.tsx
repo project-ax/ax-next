@@ -18,7 +18,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Menu } from 'lucide-react';
-import { AsyncState, Inline, Notice, Stack } from '@project-ax/ui';
+import { Avatar, AsyncState, Inline, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { usePanelPreference } from '@/lib/use-panel-preference';
@@ -95,7 +95,6 @@ import { ChatPanelToggles } from './ChatPanelToggles';
 import { LearnedAnnouncer, LearnedInChat } from './LearnedInChat';
 import { learnedAnnouncement, learnedToggleLabel, memorySharedWith } from './memory-copy';
 import { chatsFromDetail, type SidebarChatCommand, type SidebarChatList } from '@/lib/sidebar-chats';
-import { AgentTile } from './bits';
 import type {
   ThreadMessage,
   ThreadVisual,
@@ -2077,7 +2076,7 @@ export function AgentView({
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center gap-2.5 border-b border-border px-4">
             {compact && onOpenNav && <Button variant="ghost" size="icon" className="size-11 md:hidden" onClick={onOpenNav} aria-label="Open navigation" {...{ [NAV_TRIGGER_ATTR]: '' }}><Menu aria-hidden="true" /></Button>}
-            <AgentTile agent={agent} size={28} />
+            <Avatar name={agent.name} size="md" />
             <h1 className="min-w-0 truncate font-brand text-[15px] font-semibold" title={agent.name}>{agent.name}</h1>
             <div className="ml-auto">{panelToggles}</div>
           </header>

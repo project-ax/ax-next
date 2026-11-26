@@ -12,16 +12,9 @@
 import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { AsyncState, Notice, toast } from '@project-ax/ui';
+import { AsyncState, Card, Heading, Inline, Notice, Stack, toast } from '@project-ax/ui';
 import { USAGE_LIMIT_BOUNDS, putUsageLimits, type UsageLimits } from '@/lib/usage-admin';
 import { DAILY_LIMIT_INVALID, TURNS_LIMIT_INVALID, failureMessage } from '@/lib/usage-copy';
 
@@ -143,14 +136,13 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
 
   return (
     <form onSubmit={(e) => void save(e)} noValidate>
-      <Card variant="settings">
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2} className="text-lg">
-            Limits
-          </CardTitle>
+      <Card>
+        <Stack gap="lg">
+        <Stack gap="xs">
+          <Heading>Limits</Heading>
 
-        </CardHeader>
-        <CardContent className="flex flex-col gap-6">
+        </Stack>
+        <Stack gap="lg">
           {limits === null ? (
             <AsyncState status="loading" skeleton="rows" loadingLabel="Loading usage limits" />
           ) : (
@@ -279,13 +271,14 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
           {saveError !== null && (
             <Notice tone="danger">{saveError}</Notice>
           )}
-        </CardContent>
-        {(draft !== null || saving || saveError !== null) && <CardFooter className="gap-3">
+        </Stack>
+        {(draft !== null || saving || saveError !== null) && <Inline gap="sm">
           <Button type="submit" disabled={!changed || saving}>
             {saving ? 'Saving…' : 'Save limits'}
           </Button>
           <Button type="button" variant="ghost" disabled={saving} onClick={() => { setDraft(null); setSaveError(null); }}>Cancel</Button>
-        </CardFooter>}
+        </Inline>}
+      </Stack>
       </Card>
     </form>
   );

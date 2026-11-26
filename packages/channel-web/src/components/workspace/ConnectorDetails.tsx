@@ -35,9 +35,8 @@ import {
   LogIn,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, formatTimestamp, Notice, Stack, Timestamp } from '@project-ax/ui';
+import { AsyncState, Card, formatTimestamp, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
@@ -592,7 +591,7 @@ function ToolGroup({
           <span className="text-[11.5px] text-muted-foreground">{caption}</span>
         )}
       </div>
-      <Card className="shadow-none">
+      <Card flush>
         <ul>
           {tools.map((tool, i) => (
             <Fragment key={tool.toolKey}>

@@ -635,7 +635,7 @@ describe('TASK-906 — both renderers show a proposed task as text', () => {
         // Each note follows its own field.
         expect(screen.getByTestId('decision-task-instructions').nextElementSibling).toBe(notes[0]);
         expect(screen.getByTestId('decision-task-good-when').nextElementSibling).toBe(notes[1]);
-        for (const note of notes) expect(note).toHaveClass('text-muted-foreground');
+        for (const note of notes) expect(note).toHaveClass('ax-text-fg-muted');
         unmount();
       }
     });

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, ChevronsUpDown, EllipsisVertical, Plus, Settings, Trash2 } from 'lucide-react';
-import { ConfirmAction, Stack, StatusMark, Text } from '@project-ax/ui';
+import { Avatar, ConfirmAction, Stack, StatusMark, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -17,7 +17,7 @@ import { personLabel, SHARING_COPY } from '@/lib/sharing-copy';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
-import { AgentTile, STATE_TONE, stateWord } from './bits';
+import { STATE_TONE, stateWord } from './bits';
 import { IconTooltip } from './IconTooltip';
 
 interface Props {
@@ -110,7 +110,7 @@ export function AgentSwitcher({
       className="relative rounded-sm"
       {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
     >
-      <AgentTile agent={selected} size={24} />
+      <Avatar name={selected.name} size="md" />
       {othersWaiting && (
         <span className="absolute right-1 top-1">
           <StatusMark tone="warning" />
@@ -127,7 +127,7 @@ export function AgentSwitcher({
       // that leads back to it.
       {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
     >
-      <AgentTile agent={selected} size={24} />
+      <Avatar name={selected.name} size="md" />
       <span className="min-w-0 flex-1 truncate text-left text-[14px] font-medium" title={selected.name}>
         {selected.name}
       </span>

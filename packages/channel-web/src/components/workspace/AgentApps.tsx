@@ -17,8 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppWindow, Plus } from 'lucide-react';
 import type { AgentAppsRead, AppLink, LinkCodeResponse } from '@ax/apps-bridge-contract';
-import { AsyncState, Button as AxButton, EmptyState, Notice } from '@project-ax/ui';
-import { Card, CardContent } from '@/components/ui/card';
+import { AsyncState, Button as AxButton, Card, EmptyState, Notice } from '@project-ax/ui';
 import {
   agentAppsErrorCopy,
   agentAppsStale,
@@ -183,8 +182,7 @@ function AppsBody({
             {...(canManage ? { description: `Link one to let it use ${agentName}'s connectors.` } : {})}
           />
         ) : (
-          <Card className="overflow-hidden p-0 shadow-none">
-            <CardContent className="p-0">
+          <Card flush>
               <ul aria-labelledby="apps-linked" className="m-0 list-none divide-y divide-border p-0">
                 {links.map((link) => (
                   <LinkRow
@@ -203,7 +201,6 @@ function AppsBody({
                   />
                 ))}
               </ul>
-            </CardContent>
           </Card>
         )}
       </section>
@@ -218,8 +215,7 @@ function AppsBody({
               You said yes to these. Revoke one and it stops at once.
             </p>
           </div>
-          <Card className="overflow-hidden p-0 shadow-none">
-            <CardContent className="p-0">
+          <Card flush>
               <ul aria-labelledby="apps-approvals" className="m-0 list-none divide-y divide-border p-0">
                 {approvals.map((ap) => (
                   <ApprovalRow
@@ -234,7 +230,6 @@ function AppsBody({
                   />
                 ))}
               </ul>
-            </CardContent>
           </Card>
         </section>
       )}

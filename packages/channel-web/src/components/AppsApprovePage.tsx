@@ -35,9 +35,8 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApprovalPrompt, ApprovePageIds } from '@ax/apps-bridge-contract';
-import { AsyncState, Button as AxButton, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Card, EmptyState, Inline, Notice, Stack, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { WORKSPACE_ROOT_PATH } from '@/lib/workspace-route';
@@ -181,28 +180,30 @@ function Approve({
 
   const none = prompt.agents.length === 0;
   return (
-    <Card className="w-full max-w-md">
-      <CardHeader>
-        <CardTitle role="heading" aria-level={1} className="break-words text-xl leading-snug">
-          <strong>
-            <bdi>{prompt.appName}</bdi>
-          </strong>{' '}
-          wants to use <bdi>{prompt.connectorName}</bdi> as you
-        </CardTitle>
-        <CardDescription>{APP_NAMED_ITSELF}</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6">
+    <Card>
+      <Stack gap="lg">
+        <Stack gap="xs">
+          <h1>
+            <Text role="body-strong" inline>
+              <strong>
+                <bdi>{prompt.appName}</bdi>
+              </strong>{' '}
+              wants to use <bdi>{prompt.connectorName}</bdi> as you
+            </Text>
+          </h1>
+          <Text role="meta">{APP_NAMED_ITSELF}</Text>
+        </Stack>
         {none ? (
-          <p className="text-sm text-muted-foreground">
+          <Text role="meta">
             None of your agents has <bdi>{prompt.connectorName}</bdi> yet. Add it to one of your agents, then open
             this link again.
-          </p>
+          </Text>
         ) : (
           <>
-            <div className="flex flex-col gap-2">
-              <p id="apps-approve-tools" className="text-sm text-muted-foreground">
+            <Stack gap="sm">
+              <Text id="apps-approve-tools" role="meta">
                 {TOOLS_ASKED}
-              </p>
+              </Text>
               <ul aria-labelledby="apps-approve-tools" className="flex list-disc flex-col gap-1 pl-5 text-sm">
                 {prompt.tools.map((name) => (
                   <li key={name} className="break-all font-mono">
@@ -210,7 +211,7 @@ function Approve({
                   </li>
                 ))}
               </ul>
-            </div>
+            </Stack>
             <FieldSet disabled={sending || refreshing}>
               <FieldLegend variant="label">
                 Use <bdi>{prompt.connectorName}</bdi> from
@@ -232,23 +233,23 @@ function Approve({
         {message !== null && (
           <Notice tone="danger">{message}</Notice>
         )}
-      </CardContent>
-      <CardFooter className="justify-end gap-2">
-        {none ? (
-          <Button asChild variant="outline">
-            <a href={WORKSPACE_ROOT_PATH}>Go to your agents</a>
-          </Button>
-        ) : (
-          <>
-            <Button asChild variant="ghost">
-              <a href={WORKSPACE_ROOT_PATH}>Not now</a>
+        <Inline justify="end">
+          {none ? (
+            <Button asChild variant="outline">
+              <a href={WORKSPACE_ROOT_PATH}>Go to your agents</a>
             </Button>
-            <AxButton intent="primary" busy={sending} disabled={choice === null || sending || refreshing} onClick={allow}>
-              Allow
-            </AxButton>
-          </>
-        )}
-      </CardFooter>
+          ) : (
+            <>
+              <Button asChild variant="ghost">
+                <a href={WORKSPACE_ROOT_PATH}>Not now</a>
+              </Button>
+              <AxButton intent="primary" busy={sending} disabled={choice === null || sending || refreshing} onClick={allow}>
+                Allow
+              </AxButton>
+            </>
+          )}
+        </Inline>
+      </Stack>
     </Card>
   );
 }
@@ -315,16 +316,18 @@ export function AppsApprovePage({ platformId, appId, connectorId }: ApprovePageI
         </div>
       )}
       {state.status === 'ready' && (
-        <Approve
-          key={state.load}
-          ids={{ platformId, appId, connectorId }}
-          prompt={state.prompt}
-          message={state.message}
-          refreshing={state.refreshing}
-          onMessage={showMessage}
-          onDone={done}
-          onStale={refresh}
-        />
+        <div className="w-full max-w-md">
+          <Approve
+            key={state.load}
+            ids={{ platformId, appId, connectorId }}
+            prompt={state.prompt}
+            message={state.message}
+            refreshing={state.refreshing}
+            onMessage={showMessage}
+            onDone={done}
+            onStale={refresh}
+          />
+        </div>
       )}
       {state.status === 'done' && <Outcome title={APPROVE_DONE} />}
       {state.status === 'framed' && <Outcome title={FRAMED} />}

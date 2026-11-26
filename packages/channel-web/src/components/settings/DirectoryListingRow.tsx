@@ -22,9 +22,8 @@
  * `StatusBadge`s, which render a `span`, so they are valid inside the row's
  * `button`.
  */
-import type { ReactNode } from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { formatTimestamp, Notice, StatusBadge } from '@project-ax/ui';
+import { formatTimestamp, KeyValueList, Notice, Stack, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
 import { SettingsDetailRow } from './SettingsLayout';
@@ -82,16 +81,6 @@ function ProofLine({ entry }: { entry: DirectoryEntry }) {
   );
 }
 
-/** One `dt`/`dd` pair in the sheet. */
-function DetailItem({ term, children }: { term: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs text-muted-foreground">{term}</dt>
-      <dd className="flex flex-col gap-1 break-words">{children}</dd>
-    </div>
-  );
-}
-
 export function DirectoryListingRow({
   entry,
   added,
@@ -129,22 +118,30 @@ export function DirectoryListingRow({
     >
       {(close) => (
         <>
-          <dl className="flex flex-col gap-4 text-sm">
-            <DetailItem term="Published by">
-              <span className="flex items-center gap-1.5">
-                {domain && <ShieldCheck aria-hidden="true" className="size-4 shrink-0 text-primary" />}
-                <span className="min-w-0">{entry.publisher}</span>
-              </span>
-              <span className="text-muted-foreground">
-                {domain
-                  ? `The publisher proved they control ${entry.publisher}.`
-                  : 'A community listing. It isn’t checked against any company.'}
-              </span>
-            </DetailItem>
-            <DetailItem term="Connects to">{directoryHost(entry.url)}</DetailItem>
-            <DetailItem term="How people connect">{howPeopleConnect(entry)}</DetailItem>
-            <DetailItem term="Listing">{listingLine(entry)}</DetailItem>
-          </dl>
+          <KeyValueList
+            layout="stacked"
+            items={[
+              {
+                label: 'Published by',
+                value: (
+                  <Stack gap="xs">
+                    <span className="flex items-center gap-1.5">
+                      {domain && <ShieldCheck aria-hidden="true" className="size-4 shrink-0 text-primary" />}
+                      <span className="min-w-0">{entry.publisher}</span>
+                    </span>
+                    <span className="text-muted-foreground">
+                      {domain
+                        ? `The publisher proved they control ${entry.publisher}.`
+                        : 'A community listing. It isn’t checked against any company.'}
+                    </span>
+                  </Stack>
+                ),
+              },
+              { label: 'Connects to', value: directoryHost(entry.url) },
+              { label: 'How people connect', value: howPeopleConnect(entry) },
+              { label: 'Listing', value: listingLine(entry) },
+            ]}
+          />
           {entry.deprecated && <p className="text-sm text-muted-foreground">{DEPRECATED_NOTE}</p>}
           <Notice tone="info">{TRUST_NOTE}</Notice>
           <div className="flex flex-wrap items-center justify-end gap-2">

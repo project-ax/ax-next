@@ -770,7 +770,7 @@ describe('TasksPage: agent filter', () => {
     // The filter button says it is on, by name, and wears the agent's tile in place of the Bot.
     expect(screen.queryByRole('button', { name: 'Filter by agent' })).not.toBeInTheDocument();
     const on = screen.getByRole('button', { name: 'Showing Juniper’s tasks. Change filter' });
-    expect(on).toHaveTextContent('Ju');
+    expect(on).toHaveTextContent('J');
     expect(on.querySelector('svg.lucide-bot')).toBeNull();
     expect(screen.queryByText('Showing Juniper’s tasks.')).not.toBeInTheDocument();
 

@@ -195,10 +195,7 @@ function lastToast(): { title: string; description?: string; tone?: string } {
 
 /** The person's own card: everything between its title and the next card. */
 function myCard(): HTMLElement {
-  const title = screen.getByRole('heading', { name: 'Your storage' });
-  const card = title.closest('[data-slot="card"]');
-  if (!(card instanceof HTMLElement)) throw new Error('no card around "Your storage"');
-  return card;
+  return screen.getByRole('region', { name: 'Your storage' });
 }
 
 async function renderPerson() {
@@ -502,10 +499,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
 
     /** The "Everyone's storage" card: its title up to the next card. */
     function everyoneCard(): HTMLElement {
-      const title = screen.getByRole('heading', { name: "Everyone's storage" });
-      const card = title.closest('[data-slot="card"]');
-      if (!(card instanceof HTMLElement)) throw new Error('no card around "Everyone\'s storage"');
-      return card;
+      return screen.getByRole('region', { name: "Everyone's storage" });
     }
 
     it('says how many files and how much room, and that nothing is removed yet', async () => {
@@ -526,7 +520,7 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
       expect(table.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       // The last thing in the card's content, with nothing after it.
       expect(line.nextElementSibling).toBeNull();
-      expect(line.closest('[data-slot="card"]')).toBeNull();
+      expect(screen.queryAllByRole('region').filter((card) => card.contains(line))).toEqual([]);
     });
 
     it('reads the same when there is one file, and groups a big count', async () => {

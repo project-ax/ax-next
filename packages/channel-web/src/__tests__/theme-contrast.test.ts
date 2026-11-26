@@ -1021,8 +1021,28 @@ function parseTint(source: string): Tint {
   return { token: `--${name!}`, alpha: pct === undefined ? 1 : Number(pct) / 100, cls: cls! };
 }
 
+/**
+ * The card is now `@project-ax/ui`'s `Card` (one look: `ax-bg-surface-raised`), so its surface
+ * is read out of that component and ApprovalCard must still draw it. The surface class is an
+ * `ax-bg-*` token of the ui theme, not a channel-web one, so the row looks it up there.
+ */
+const UI_CARD = join(SRC_ROOT, '..', '..', 'ui', 'src', 'components', 'Card.tsx');
+
 function approvalCardTint(): Tint {
-  return parseTint(readFileSync(join(SRC_ROOT, APPROVAL_CARD), 'utf8'));
+  const approval = stripComments(readFileSync(join(SRC_ROOT, APPROVAL_CARD), 'utf8'));
+  if (!/import \{[^}]*\bCard\b[^}]*\} from '@project-ax\/ui'/.test(approval) || !/<Card[\s>]/.test(approval)) {
+    throw new Error(`${APPROVAL_CARD} no longer draws the @project-ax/ui Card; give its new surface its own rows.`);
+  }
+  const hits = [...stripComments(readFileSync(UI_CARD, 'utf8')).matchAll(/(?<![\w-])ax-bg-([a-z][\w-]*)(?![\w-])/g)];
+  if (hits.length !== 1) {
+    throw new Error(`ui Card paints ${hits.length} ax-bg-* surfaces; this section measures exactly one.`);
+  }
+  return { token: `--ax-bg-${hits[0]![1]!}`, alpha: 1, cls: hits[0]![0] };
+}
+
+/** A token from the ui theme (`--ax-*`) for one theme block. */
+function themeToken(selector: string, token: string): string | undefined {
+  return new Map([...declsAfter(THEME_CSS, ':root {'), ...declsAfter(THEME_CSS, selector)]).get(token);
 }
 
 /**
@@ -1044,10 +1064,10 @@ const tintCasesRegistered: string[] = [];
 describe("ApprovalCard's surface", () => {
   it('paints exactly one opaque card surface', () => {
     const tint = approvalCardTint();
-    expect(tint.token).toBe('--card');
+    expect(tint.token).toBe('--ax-bg-surface-raised');
     expect(tint.alpha).toBe(1);
     // The warning belongs to the badge; the card uses an opaque neutral surface.
-    expect(tint.cls).toBe('bg-card');
+    expect(tint.cls).toBe('ax-bg-surface-raised');
   });
 
   for (const [name, selector] of THEMES) {
@@ -1057,7 +1077,7 @@ describe("ApprovalCard's surface", () => {
         it(`${name}: ${text} on the card's warning tint over ${under} clears AA`, () => {
           const tokens = tokensAfter(selector);
           const tint = approvalCardTint();
-          const tintV = tokens.get(tint.token);
+          const tintV = tint.token.startsWith('--ax-') ? themeToken(selector, tint.token) : tokens.get(tint.token);
           const underV = tokens.get(under);
           const textV = tokens.get(text);
           expect(tintV, `${tint.token} missing from ${selector}`).toBeDefined();

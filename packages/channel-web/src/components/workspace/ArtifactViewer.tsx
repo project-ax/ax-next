@@ -16,7 +16,7 @@ import { artifactTypeLine, versionLabel } from '@/lib/artifact-labels';
 import { copyShareLink } from '@/lib/copy-share-link';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
-import { AsyncState, Button as AxButton, toast } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, InsetBlock, toast } from '@project-ax/ui';
 import { useResolvedTheme } from '@/lib/theme';
 import { useArtifact } from '@/lib/use-artifact';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -197,17 +197,19 @@ export function ArtifactViewer({
         {close}
       </div>
       {picked !== null && shownVersion !== undefined && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted px-3 py-2 text-[12px]">
-          <span className="text-muted-foreground">Viewing {versionLabel(shownVersion)}</span>
-          <div className="ml-auto flex items-center gap-1">
-            <Button type="button" size="sm" variant="ghost" onClick={() => setPicked(null)}>
-              Back to latest
-            </Button>
-            <AxButton intent="secondary" size="sm" busy={restoring} onClick={() => void restore()}>
-              Restore this version
-            </AxButton>
+        <InsetBlock>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+            <span className="text-muted-foreground">Viewing {versionLabel(shownVersion)}</span>
+            <div className="ml-auto flex items-center gap-1">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setPicked(null)}>
+                Back to latest
+              </Button>
+              <AxButton intent="secondary" size="sm" busy={restoring} onClick={() => void restore()}>
+                Restore this version
+              </AxButton>
+            </div>
           </div>
-        </div>
+        </InsetBlock>
       )}
       <div className="flex min-h-0 flex-1 flex-col">
         <ArtifactPreview

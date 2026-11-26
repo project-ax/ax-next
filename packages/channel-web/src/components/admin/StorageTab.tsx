@@ -28,14 +28,7 @@
  * to ask an admin for more room (the sentences live in `lib/storage-copy.ts`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, Notice, StatusBadge, type StatusTone } from '@project-ax/ui';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { AsyncState, Card, EmptyState, Heading, KeyValueList, Notice, Stack, StatusBadge, type StatusTone, Text } from '@project-ax/ui';
 import { Progress } from '@/components/ui/progress';
 import {
   Table,
@@ -178,14 +171,7 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
           max={storage.limitBytes > 0 ? storage.limitBytes : 1}
         />
       </div>
-      <dl className="mt-4 flex flex-col text-sm">
-        {breakdownRows(storage).map((row) => (
-          <div key={row.label} className="flex min-h-[72px] items-center justify-between gap-4 border-b border-border px-2">
-            <dt >{row.label}</dt>
-            <dd className="text-muted-foreground">{row.value}</dd>
-          </div>
-        ))}
-      </dl>
+      <KeyValueList items={breakdownRows(storage).map((row) => ({ label: row.label, value: row.value }))} />
       {storage.status === 'near-limit' && (
         <Notice tone="warning" title={NEAR_LIMIT_TITLE}>
           {NEAR_LIMIT_BODY}
@@ -203,16 +189,13 @@ function MyStorageBody({ storage }: { storage: MyStorage }) {
 function MyStorageCard({ read }: { read: Read<MyStorage> }) {
   const { state, load } = read;
   return (
-    <Card variant="settings">
-      <CardHeader>
-        <CardTitle role="heading" aria-level={2} className="text-lg">
-          Your storage
-        </CardTitle>
-        <CardDescription>
-          Your agents' files and everything you upload share the same room.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+    <Card label="Your storage">
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Heading>Your storage</Heading>
+        <Text role="meta">Your agents' files and everything you upload share the same room.</Text>
+      </Stack>
+      <Stack gap="md">
         {state.kind === 'loading' && (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading your storage…" />
         )}
@@ -225,7 +208,8 @@ function MyStorageCard({ read }: { read: Read<MyStorage> }) {
           />
         )}
         {state.kind === 'ready' && <MyStorageBody storage={state.data} />}
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }
@@ -289,16 +273,15 @@ function UnusedFilesLine() {
 function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
   const limitBytes = admin === null ? 0 : admin.limits.limitMb * BYTES_PER_MB;
   return (
-    <Card variant="settings">
-      <CardHeader>
-        <CardTitle role="heading" aria-level={2} className="text-lg">
-          Everyone's storage
-        </CardTitle>
+    <Card label="Everyone's storage">
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Heading>Everyone's storage</Heading>
         {admin !== null && admin.owners.length > 0 && (
-          <CardDescription>{ownersSummary(admin)}</CardDescription>
+          <Text role="meta">{ownersSummary(admin)}</Text>
         )}
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      </Stack>
+      <Stack gap="md">
         {admin === null ? (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading everyone's storage…" />
         ) : admin.owners.length === 0 ? (
@@ -332,7 +315,8 @@ function EveryoneCard({ admin }: { admin: AdminStorage | null }) {
             )}
           </>
         )}
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }
@@ -347,20 +331,20 @@ function AdminStorageSection({ onLimitsSaved }: { onLimitsSaved: () => void }) {
     // Nothing to edit or list when we cannot see the numbers. The card keeps
     // its title so the page outline does not change shape.
     return (
-      <Card variant="settings">
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2} className="text-lg">
-            Storage limits
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
+      <Card>
+        <Stack gap="lg">
+        <Stack gap="xs">
+          <Heading>Storage limits</Heading>
+        </Stack>
+        <Stack gap="md">
           <AsyncState
             status="error"
             skeleton="rows"
             loadingLabel="Loading storage…"
             error={{ message: state.message, onRetry: () => void load('first') }}
           />
-        </CardContent>
+        </Stack>
+      </Stack>
       </Card>
     );
   }

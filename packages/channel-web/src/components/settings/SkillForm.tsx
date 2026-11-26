@@ -32,7 +32,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
-import { AsyncState, Grid, Inline, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, Grid, Inline, InsetBlock, Notice, Stack, StatusBadge } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -493,10 +493,9 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
             {files.map((f, idx) => {
               const hint = fileHints[idx];
               return (
-                <div
-                  key={idx}
-                  className="rounded-md border border-border p-3 flex flex-col gap-2 bg-muted/30"
-                >
+                <div key={idx}>
+<InsetBlock>
+<Stack gap="sm">
                   <div className="flex items-center gap-2">
                     <Input
                       aria-label={`Bundle file path ${idx + 1}`}
@@ -526,7 +525,9 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
                     value={f.contents}
                     onChange={(e) => setFileContents(idx, e.target.value)}
                   />
-                </div>
+                </Stack>
+</InsetBlock>
+</div>
               );
             })}
           </div>
@@ -766,7 +767,8 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
       <div className="flex flex-col gap-2">
         <label className="text-xs font-medium text-muted-foreground">Parsed preview</label>
         {parsed.ok ? (
-          <div className="rounded-md border border-border p-3 flex flex-col gap-3 bg-muted/30">
+          <InsetBlock>
+<Stack gap="md">
             <div>
               <div className="text-xs text-muted-foreground">Name</div>
               <div className="text-sm font-mono">{parsed.value.id}</div>
@@ -787,7 +789,8 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
                 ))
               )}
             </div>
-          </div>
+          </Stack>
+</InsetBlock>
         ) : (
           <Notice tone="danger">{liveError}</Notice>
         )}

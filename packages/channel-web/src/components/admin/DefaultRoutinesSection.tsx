@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Pencil, Plus } from 'lucide-react';
-import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge, Timestamp } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, Inline, Notice, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -102,8 +101,9 @@ export function DefaultRoutinesSection() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Default Routines</CardTitle>
+      <Stack gap="lg">
+      <Inline justify="between" align="start">
+        <Text role="body-strong">Default Routines</Text>
         <Dialog
           open={showNew}
           onOpenChange={(open) => {
@@ -134,8 +134,8 @@ export function DefaultRoutinesSection() {
             />
           </DialogContent>
         </Dialog>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      </Inline>
+      <Stack gap="md">
         {error && (
           <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>{error}</Notice>
         )}
@@ -247,7 +247,8 @@ export function DefaultRoutinesSection() {
             </DialogContent>
           </Dialog>
         )}
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }

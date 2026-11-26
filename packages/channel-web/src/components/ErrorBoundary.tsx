@@ -23,7 +23,7 @@
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Card, Inline, Stack, Text } from '@project-ax/ui';
 
 interface ErrorBoundaryProps {
   /** Which surface this boundary guards — shown in the console log line. */
@@ -91,23 +91,23 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         role="alert"
         className="flex flex-1 items-center justify-center bg-background p-6"
       >
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>This part hit a snag</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <p className="text-sm text-muted-foreground">
+        <div className="w-full max-w-md">
+        <Card>
+          <Stack gap="md">
+            <Text role="body-strong">This part hit a snag</Text>
+            <Text role="meta">
               Something went wrong showing this panel. Your chats and work are
               safe — give it another try, or reload the page for a fresh start.
-            </p>
-            <div className="flex gap-2">
+            </Text>
+            <Inline>
               <Button onClick={this.handleRetry}>Try again</Button>
               <Button variant="outline" onClick={this.handleReload}>
                 Reload page
               </Button>
-            </div>
-          </CardContent>
+            </Inline>
+          </Stack>
         </Card>
+        </div>
       </div>
     );
   }

@@ -20,9 +20,8 @@
  */
 import { useEffect, useId, useState } from 'react';
 import { ArrowUpRight, History } from 'lucide-react';
-import { StatusMark } from '@project-ax/ui';
+import { Card, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { momentWords } from '@/lib/moment-words';
 import { routeLinkProps } from '@/lib/route-link';
 import { runFailureText } from '@/lib/task-updates';
@@ -87,7 +86,7 @@ export function RepeatTaskBody({
   );
   return (
     <Card>
-      <section aria-labelledby={headingId} className="flex flex-col gap-1 p-4">
+      <section aria-labelledby={headingId} className="flex flex-col gap-1">
         <h2 id={headingId} className="sr-only">
           Run history
         </h2>

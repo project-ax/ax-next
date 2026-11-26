@@ -93,14 +93,7 @@ import { Label } from '@/components/ui/label';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
-import { AsyncState, Notice, Stack } from '@project-ax/ui';
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-} from '@/components/ui/card';
+import { AsyncState, Card, Inline, InsetBlock, Notice, Stack, Text } from '@project-ax/ui';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { RequestLeftOutNotice } from './RequestLeftOutNotice';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -300,16 +293,15 @@ function ServicesSection({
     onChange(services.filter((_, idx) => idx !== i));
 
   return (
-    <Card className="border-border">
-      <CardHeader>
-        <CardTitle className="text-base">Services</CardTitle>
-        <CardDescription>
-          Make this a service bundle — declare a database, cache, or other service
+    <Card>
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Text role="body-strong">Services</Text>
+        <Text role="meta">Make this a service bundle — declare a database, cache, or other service
           your assistant gets running alongside its sandbox. Paste a Compose file
-          to start, or add one by hand.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+          to start, or add one by hand.</Text>
+      </Stack>
+      <Stack gap="md">
         {/* Compose paste → curated translate. */}
         <div className="flex flex-col gap-2">
           <Label htmlFor="connector-compose">
@@ -371,7 +363,8 @@ function ServicesSection({
           </div>
         )}
 
-        <div className="flex items-start justify-between gap-3 rounded-md border border-border p-3">
+        <InsetBlock>
+<Inline justify="between" align="start" gap="md">
           <div className="flex flex-col gap-0.5">
             <Label htmlFor="connector-services-on-demand" className="text-sm">
               Start only when needed
@@ -387,7 +380,8 @@ function ServicesSection({
               setForm((f) => ({ ...f, servicesMode: on ? 'on-demand' : 'always' }))
             }
           />
-        </div>
+        </Inline>
+</InsetBlock>
 
         {needsGroup && (
           <Notice tone="info" title="Pick a group to bring in services">
@@ -489,10 +483,9 @@ function ServicesSection({
           </p>
         ) : (
           services.map((svc, i) => (
-            <div
-              key={i}
-              className="flex flex-col gap-2 rounded-md border border-border p-3"
-            >
+            <div key={i}>
+<InsetBlock>
+<Stack gap="sm">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">
                   Service {i + 1}
@@ -580,7 +573,9 @@ function ServicesSection({
                   }
                 />
               </div>
-            </div>
+            </Stack>
+</InsetBlock>
+</div>
           ))
         )}
 
@@ -590,7 +585,8 @@ function ServicesSection({
             (read-only root filesystem), so it must declare a writable path for every
             dir the image scribbles into — data dir, /tmp, caches. Bring your own
             with the Compose paste above; these are just a running start. */}
-        <div className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3">
+        <InsetBlock>
+<Stack gap="sm">
           <div className="flex flex-col gap-0.5">
             <Label className="text-xs">Start from an example</Label>
             <p className="text-xs text-muted-foreground">
@@ -624,7 +620,8 @@ function ServicesSection({
               </Button>
             ))}
           </div>
-        </div>
+        </Stack>
+</InsetBlock>
 
         <div>
           <Button
@@ -636,7 +633,8 @@ function ServicesSection({
             Add service
           </Button>
         </div>
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }
@@ -1209,10 +1207,9 @@ export function LegacyConnectorEditDialog({
                     : existingServerNames;
 
                   return (
-                    <div
-                      key={i}
-                      className="flex flex-col gap-2 rounded-md border border-border p-3"
-                    >
+                    <div key={i}>
+<InsetBlock>
+<Stack gap="sm">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-muted-foreground">
                           Key {i + 1}
@@ -1405,7 +1402,9 @@ export function LegacyConnectorEditDialog({
                           </div>
                         </>
                       )}
-                    </div>
+                    </Stack>
+</InsetBlock>
+</div>
                   );
                 })
               )}

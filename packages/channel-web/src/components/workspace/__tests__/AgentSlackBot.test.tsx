@@ -857,8 +857,8 @@ describe('live', () => {
     renderIt(LIVE);
     const title = screen.getByRole('heading', { name: '@quill_bot is in Slack' });
     expect(title).toBeInTheDocument();
-    const card = title.closest('[data-slot="card"]')!;
-    expect(card.querySelector('[data-slot="card-description"]')).toHaveTextContent(HANDLE_LINE);
+    const card = screen.getByRole('region', { name: '@quill_bot is in Slack' });
+    expect(card.querySelector('code')!.parentElement).toHaveTextContent(HANDLE_LINE);
     expect(card.querySelector('code')).toHaveTextContent('/invite @quill_bot');
     expect(within(card as HTMLElement).getByText(LIVE_HELP_LINE)).toBeInTheDocument();
     // Nobody reads who set it up.
@@ -921,7 +921,7 @@ describe('live', () => {
       <AgentSlackBot agentId="a1" agentName="Quill" bot={LIVE} canManage channels={CHANNELS} {...QUIET} onChanged={vi.fn()} />,
     );
     const title = screen.getByRole('heading', { name: '@quill_bot is in Slack' });
-    const card = title.closest('[data-slot="card"]') as HTMLElement;
+    const card = screen.getByRole('region', { name: '@quill_bot is in Slack' });
     const invite = card.querySelector('code')!;
     const list = within(card).getByRole('list', { name: 'Channels @quill_bot has answered in' });
     const help = within(card).getByText(LIVE_HELP_LINE);

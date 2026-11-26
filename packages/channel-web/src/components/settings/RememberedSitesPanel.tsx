@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { AsyncState, EmptyState, formatTimestamp, StatusBadge, Timestamp } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, formatTimestamp, StatusBadge, Timestamp } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
@@ -151,7 +150,7 @@ export function RememberedSitesPanel() {
           }}
         />
       ) : (
-      <Card variant="settings" className="divide-y divide-border">
+      <Card flush>
         {list.status === 'loading' && (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading remembered sites" />
         )}

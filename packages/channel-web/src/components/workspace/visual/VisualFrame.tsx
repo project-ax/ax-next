@@ -15,7 +15,6 @@ import type React from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,7 +22,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { AsyncState } from '@project-ax/ui';
+import { AsyncState, Card, Inline, Stack, Text } from '@project-ax/ui';
 import { saveBlob } from '@/lib/file-download';
 import { useResolvedTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
@@ -224,9 +223,11 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
   };
 
   return (
-    <Card ref={cardRef} className="w-full max-w-[604px] overflow-hidden">
-      <CardHeader className="flex-row items-center justify-between gap-2 py-1 pl-4 pr-1">
-        <CardTitle className="truncate text-sm font-medium">{title}</CardTitle>
+    <div ref={cardRef} className="w-full max-w-xl">
+    <Card>
+      <Stack gap="sm">
+      <Inline justify="between">
+        <Text role="body-strong" truncate>{title}</Text>
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" aria-label="Download visual">
@@ -244,13 +245,12 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-      </CardHeader>
-      <CardContent className="p-0">
+      </Inline>
         {failed ? (
-          <div className="flex flex-col gap-1 px-4 pb-4">
-            <p className="text-sm text-muted-foreground">This visual couldn't be displayed.</p>
-            <p className="text-sm">{summary}</p>
-          </div>
+          <Stack gap="xs">
+            <Text role="meta">This visual couldn't be displayed.</Text>
+            <Text>{summary}</Text>
+          </Stack>
         ) : (
           <div className="relative" style={{ height }}>
             {/* In flow, with the (still loading, invisible) frame lifted out of it, so no overlay wrapper is needed. */}
@@ -281,12 +281,11 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
           </div>
         )}
         {exportFailed && (
-          <p className="px-4 pb-3 text-sm text-muted-foreground">
-            We couldn't make a picture of this visual. The HTML download still works.
-          </p>
+          <Text role="meta">We couldn't make a picture of this visual. The HTML download still works.</Text>
         )}
-      </CardContent>
+      </Stack>
     </Card>
+    </div>
   );
 }
 

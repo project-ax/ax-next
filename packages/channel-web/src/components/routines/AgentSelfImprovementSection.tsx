@@ -19,17 +19,10 @@
  * the user doesn't own would just surface a 403 — the gate isn't here.
  */
 import { useEffect, useRef, useState } from 'react';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
-import { AsyncState, Notice } from '@project-ax/ui';
+import { AsyncState, Card, Notice, Stack, Text } from '@project-ax/ui';
 import { useAgentStore } from '@/lib/agent-store';
 import { routineApi } from '@/lib/routines';
 
@@ -190,11 +183,12 @@ export function AgentSelfImprovementSection({
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="text-[15px]">Skill self-improvement</CardTitle>
-        <CardDescription>{HELP_COPY}</CardDescription>
-      </CardHeader>
-      <CardContent>
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Text role="body-strong">Skill self-improvement</Text>
+        <Text role="meta">{HELP_COPY}</Text>
+      </Stack>
+      <Stack gap="md">
         <AsyncState
           status={
             agentsStatus === 'loading'
@@ -219,7 +213,8 @@ export function AgentSelfImprovementSection({
             ))}
           </div>
         </AsyncState>
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }
@@ -257,13 +252,12 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
   }, [agentId, attempt]);
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Default routines</CardTitle>
-        <CardDescription>
-          Existing routines provided by the workspace.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Text role="body-strong">Default routines</Text>
+        <Text role="meta">Existing routines provided by the workspace.</Text>
+      </Stack>
+      <Stack gap="md">
         {readError !== null && (
           <AsyncState
             status="error"
@@ -326,7 +320,8 @@ export function AgentDefaultControls({ agentId, onChanged }: { agentId: string; 
             />
           </div>
         ))}
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }

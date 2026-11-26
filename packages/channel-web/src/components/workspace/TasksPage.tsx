@@ -28,9 +28,8 @@
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
-import { AsyncState, EmptyState, Notice, StatusMark } from '@project-ax/ui';
+import { AsyncState, Avatar, Card, EmptyState, Notice, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import {
   Collapsible,
   CollapsibleContent,
@@ -54,7 +53,7 @@ import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
-import { AgentTile, STATE_TONE } from './bits';
+import { STATE_TONE } from './bits';
 import { IconAction, TaskKindIcon } from './task-bits';
 import { TaskDialog } from './TaskDialog';
 
@@ -196,7 +195,7 @@ function AgentFilter({
           <IconAction
             icon={Bot}
             label={`Showing ${agent.agentName}’s tasks. Change filter`}
-            busy={<AgentTile agent={{ name: agent.agentName }} size={22} />}
+            busy={<Avatar name={agent.agentName} size="sm" />}
             className="bg-primary-soft ring-2 ring-primary-soft"
           />
         )}
@@ -480,7 +479,7 @@ function TaskList({
   // `overflow-hidden`: a row's hover fill must follow the card's rounded
   // corners, and its focus ring is drawn inside the row for the same reason.
   return (
-    <Card className="overflow-hidden">
+    <Card flush>
       <ul aria-label={label}>
         {rows.map((row, i) => (
           <li key={`${row.agentId}:${row.routineId}`}>
@@ -527,7 +526,7 @@ function TaskItem({
         className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <span className="shrink-0" title={row.agentName}>
-          <AgentTile agent={{ name: row.agentName }} size={22} />
+          <Avatar name={row.agentName} size="sm" />
         </span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
           <span id={nameId} className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0" title={row.name}>

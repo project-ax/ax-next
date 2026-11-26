@@ -8,8 +8,7 @@
  */
 import { useState } from 'react';
 import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
-import { Button as AxButton, ConfirmAction, formatTimestamp, StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
-import { AvatarTile } from '@/components/AvatarTile';
+import { Button as AxButton, ConfirmAction, formatTimestamp, InsetBlock, StatusBadge, type StatusTone, Timestamp } from '@project-ax/ui';
 import {
   Popover,
   PopoverContent,
@@ -30,43 +29,8 @@ import type {
   CapabilityVerdict,
   GrantRow,
   PermissionRow,
-  WorkspaceAgent,
   WorkspaceReadStatus,
 } from '@/lib/workspace-types';
-
-/**
- * Up to two initials from the agent's display name — the only identity mark
- * we actually have. The prototype keyed a lucide glyph off an `icon`
- * field the real agent record never carried: a picked-for-you icon is
- * decoration pretending to be information.
- */
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  const first = parts[0]?.[0] ?? '';
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? '') : '';
-  return parts.length === 1 ? `${first.toUpperCase()}${parts[0]?.[1]?.toLowerCase() ?? ''}` : (first + last).toUpperCase();
-}
-
-export function AgentTile({
-  agent,
-  size = 26,
-}: {
-  agent: Pick<WorkspaceAgent, 'name'>;
-  size?: number;
-}) {
-  return (
-    <AvatarTile size={size} shape="square" background="primary-soft">
-      <span
-        aria-hidden="true"
-        style={{ fontSize: Math.max(9, Math.round(size * 0.38)) }}
-        className="font-medium leading-none text-primary"
-      >
-        {initials(agent.name)}
-      </span>
-    </AvatarTile>
-  );
-}
 
 /**
  * The plain-English word for each state — one copy, shared by the badge below
@@ -178,9 +142,11 @@ function TheirDescription({ row }: { row: PermissionRow }) {
           This description was written by {who}, not by us, and we have not
           checked it.
         </p>
-        <blockquote className="mt-1.5 border-l-2 border-border pl-2.5 text-[12.5px] italic text-muted-foreground">
-          {row.theirDescription}
-        </blockquote>
+        <InsetBlock>
+          <blockquote className="m-0 text-[12.5px] italic text-muted-foreground">
+            {row.theirDescription}
+          </blockquote>
+        </InsetBlock>
         <p className="mt-2.5 text-[11.5px] text-muted-foreground">
           Those are their words, not ours. We haven&apos;t checked them — the
           only parts we can vouch for are the tool&apos;s name and whether{' '}

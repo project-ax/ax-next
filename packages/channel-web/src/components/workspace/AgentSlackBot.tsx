@@ -73,10 +73,9 @@
  */
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Button as AxButton, ConfirmAction, formatTimestamp, Inline, Notice } from '@project-ax/ui';
+import { Button as AxButton, Card, ConfirmAction, formatTimestamp, Inline, Notice, Stack, Text } from '@project-ax/ui';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { AgentSlackMenu } from './AgentSlackMenu';
 import { AgentSlackBotChannels } from './AgentSlackBotChannels';
@@ -178,17 +177,17 @@ function SlackCard({
   children?: ReactNode;
 }) {
   return (
-    <Card variant="settings">
-      <CardHeader className="flex flex-row items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-3">
-          <CardTitle role="heading" aria-level={3} className="text-base">
-            {title}
-          </CardTitle>
-          {description !== undefined && <CardDescription>{description}</CardDescription>}
-        </div>
+    <Card label={title}>
+      <Stack gap="lg">
+      <Inline justify="between" align="start">
+        <Stack gap="sm">
+          <h3><Text role="body-strong" inline>{title}</Text></h3>
+          {description !== undefined && <Text role="meta">{description}</Text>}
+        </Stack>
         {menu}
-      </CardHeader>
-      {children !== undefined && <CardContent className="flex flex-col gap-4">{children}</CardContent>}
+      </Inline>
+      {children !== undefined && <Stack gap="md">{children}</Stack>}
+    </Stack>
     </Card>
   );
 }

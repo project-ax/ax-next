@@ -43,8 +43,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
 import { Button } from '@/components/ui/button';
-import { AsyncState, ConfirmAction, Notice, StatusBadge, Timestamp } from '@project-ax/ui';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { AsyncState, Card, ConfirmAction, Heading, Notice, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import {
   Table,
   TableBody,
@@ -147,23 +146,22 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
       {load.kind === 'loading' && (
         // No title yet: the card may turn out to have nothing to show, and a heading that vanished would read as a glitch.
         // (The AsyncState announces this wait itself, as a polite status; the tab's own loading above is an earlier, separate wait.)
-        <Card variant="settings" aria-busy="true">
-          <CardContent>
+        <Card>
+          <Stack gap="lg">
+          <Stack gap="md">
             <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the team agents' own bots" />
-          </CardContent>
+          </Stack>
+        </Stack>
         </Card>
       )}
       {bots.length > 0 && (
-        <Card variant="settings">
-          <CardHeader>
-            <CardTitle role="heading" aria-level={2} className="text-lg">
-              Team agents&apos; own bots
-            </CardTitle>
-            <CardDescription>
-              A team admin can give a team agent its own bot. Only the person who set one up can change its Slack app.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
+        <Card>
+          <Stack gap="lg">
+          <Stack gap="xs">
+            <Heading>Team agents&apos; own bots</Heading>
+            <Text role="meta">A team admin can give a team agent its own bot. Only the person who set one up can change its Slack app.</Text>
+          </Stack>
+          <Stack gap="sm">
             <Table>
               <TableCaption className="sr-only">Team agents&apos; own bots</TableCaption>
               <TableHeader>
@@ -238,7 +236,8 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
                 rebuilding: disconnect it here, and a team admin of its agent can set up a new one.
               </p>
             )}
-          </CardContent>
+          </Stack>
+        </Stack>
         </Card>
       )}
       <BotTokenReplaceDialog

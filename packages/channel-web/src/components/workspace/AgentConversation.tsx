@@ -33,7 +33,7 @@ import {
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
+import { Avatar, AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -70,7 +70,6 @@ import type {
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
-import { AgentTile } from './bits';
 import {
   CONSENT_REGION_ATTR,
   RESOLUTION_FOCUS_RING,
@@ -1313,7 +1312,7 @@ function Message({
     const failedAt = formatTimestamp(m.at, { format: 'clock' });
     return (
       <div className="flex gap-3">
-        <AgentTile agent={agent} size={24} />
+        <Avatar name={agent.name} size="md" />
         <div className="min-w-0 max-w-[600px] flex-1 whitespace-pre-line">
           <Notice tone="danger">
             {canManageAgent(agent)
@@ -1366,7 +1365,7 @@ function Message({
     if (!d) return null;
     return (
       <ThreadApproval>
-        <AgentTile agent={agent} size={24} />
+        <Avatar name={agent.name} size="md" />
         <ApprovalCard
           agentName={agent.name}
           decision={d}
@@ -1460,7 +1459,7 @@ function AgentReply({
       {...{ [TURN_ID_ATTR]: r.id, [TURN_IDS_ATTR]: r.turnIds.join(' ') }}
       className={`-mx-2 -my-1 flex gap-3 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
     >
-      <AgentTile agent={agent} size={24} />
+      <Avatar name={agent.name} size="md" />
       <div className="min-w-0 flex-1">
         {/*
           A turn that only ran tools has no prose, and the step panel IS the

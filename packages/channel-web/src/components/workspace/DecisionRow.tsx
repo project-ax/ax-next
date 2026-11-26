@@ -33,7 +33,7 @@
  */
 import type { ReactNode } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
-import { Notice, Text, StatusMark, Timestamp } from '@project-ax/ui';
+import { InsetBlock, Notice, StatusMark, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   RESOLUTION_FOCUS_RING,
@@ -320,11 +320,13 @@ export function DecisionRow({
             </p>
 
             {d.preview && (
-              <div className="mt-3 max-w-[660px] rounded-md bg-muted px-4 py-3.5">
-                <div className="mb-1.5 text-[11.5px] text-muted-foreground">
-                  {d.preview.meta}
-                </div>
-                <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+              <div className="mt-3 max-w-[660px]">
+                <InsetBlock>
+                  <div className="mb-1.5 text-[11.5px] text-muted-foreground">
+                    {d.preview.meta}
+                  </div>
+                  <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+                </InsetBlock>
               </div>
             )}
 

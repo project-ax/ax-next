@@ -45,15 +45,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Button as AxButton, ConfirmAction, EmptyState, Notice, StatusBadge, Timestamp } from '@project-ax/ui';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { AsyncState, Button as AxButton, Card, ConfirmAction, EmptyState, Heading, Inline, KeyValueList, Notice, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -296,14 +288,13 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
 
   return (
     <form onSubmit={(e) => void submit(e)}>
-      <Card variant="settings">
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2} className="text-lg">
-            Connect a Slack workspace
-          </CardTitle>
-          <CardDescription>People can then DM the bot to talk to their own agent.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-6">
+      <Card>
+        <Stack gap="lg">
+        <Stack gap="xs">
+          <Heading>Connect a Slack workspace</Heading>
+          <Text role="meta">People can then DM the bot to talk to their own agent.</Text>
+        </Stack>
+        <Stack gap="lg">
           <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm">
             <li>
               Open <SlackAppsLink />. Under <strong>Your App Configuration Tokens</strong>, click{' '}
@@ -352,12 +343,13 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
           {error !== null && error.field === null && (
             <Notice tone="danger">{error.message}</Notice>
           )}
-        </CardContent>
-        <CardFooter>
+        </Stack>
+        <Inline gap="sm">
           <AxButton type="submit" intent="primary" busy={busy}>
             Connect
           </AxButton>
-        </CardFooter>
+        </Inline>
+      </Stack>
       </Card>
     </form>
   );
@@ -709,33 +701,33 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
   }
 
   return (
-    <Card variant="settings">
-      <CardHeader>
+    <Card>
+      <Stack gap="lg">
+      <Stack gap="xs">
         <div className="flex flex-wrap items-center gap-2">
-          <CardTitle role="heading" aria-level={2} className="text-lg">
-            Finish in Slack
-          </CardTitle>
+          <Heading>Finish in Slack</Heading>
           <StatusBadge tone="warning" dot>Not finished</StatusBadge>
         </div>
-        <CardDescription>Almost there: finish installing the bot in Slack.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+        <Text role="meta">Almost there: finish installing the bot in Slack.</Text>
+      </Stack>
+      <Stack gap="md">
         <p className="text-sm text-muted-foreground">
           Started by {status.connectedBy} <Timestamp value={status.connectedAt} />. Bot name: {status.botName}.
         </p>
         {error !== null && (
           <Notice tone="danger">{error}</Notice>
         )}
-      </CardContent>
-      <CardFooter className="flex flex-wrap gap-2">
+      </Stack>
+      <Inline gap="xs">
         <AxButton intent="primary" busy={busy} onClick={() => void resume()}>
           Continue in Slack
         </AxButton>
         <AxButton intent="secondary" onClick={() => setConfirming(true)} disabled={busy}>
           Cancel
         </AxButton>
-      </CardFooter>
+      </Inline>
       <DisconnectDialog open={confirming} onOpenChange={setConfirming} kind="pending" {...actions} />
+    </Stack>
     </Card>
   );
 }
@@ -745,45 +737,50 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
   const [renaming, setRenaming] = useState(false);
   const [replacing, setReplacing] = useState(false);
   return (
-    <Card variant="settings">
-      <CardHeader>
+    <Card>
+      <Stack gap="lg">
+      <Stack gap="xs">
         <div className="flex flex-wrap items-center gap-2">
-          <CardTitle role="heading" aria-level={2} className="text-lg">
-            Connected to {status.workspaceName !== '' ? status.workspaceName : 'Slack'}
-          </CardTitle>
+          <Heading>Connected to {status.workspaceName !== '' ? status.workspaceName : 'Slack'}</Heading>
           <StatusBadge tone="success" dot>Connected</StatusBadge>
         </div>
-        <CardDescription>People can now DM the bot to talk to their own agent.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <dl className="flex flex-col text-sm">
-          <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
-            <dt>Bot name</dt>
-            <dd className="flex items-center gap-3">
-              <span className="text-muted-foreground">{status.botName}</span>
-              <Button variant="outline" size="sm" onClick={() => setRenaming(true)}>
-                Rename
-              </Button>
-            </dd>
-          </div>
-          <div className="flex min-h-12 items-center justify-between gap-4 border-b border-border">
-            <dt>Configuration token</dt>
-            <dd className="flex items-center gap-3">
-              <span className="text-muted-foreground">
-                Added by {status.connectedBy} <Timestamp value={status.connectedAt} />
-              </span>
-              <Button variant="outline" size="sm" onClick={() => setReplacing(true)}>
-                Replace
-              </Button>
-            </dd>
-          </div>
-        </dl>
-      </CardContent>
-      <CardFooter>
+        <Text role="meta">People can now DM the bot to talk to their own agent.</Text>
+      </Stack>
+      <Stack gap="md">
+        <KeyValueList
+          items={[
+            {
+              label: 'Bot name',
+              value: (
+                <Inline gap="md" justify="end">
+                  <Text role="meta" inline>{status.botName}</Text>
+                  <Button variant="outline" size="sm" onClick={() => setRenaming(true)}>
+                    Rename
+                  </Button>
+                </Inline>
+              ),
+            },
+            {
+              label: 'Configuration token',
+              value: (
+                <Inline gap="md" justify="end">
+                  <Text role="meta" inline>
+                    Added by {status.connectedBy} <Timestamp value={status.connectedAt} />
+                  </Text>
+                  <Button variant="outline" size="sm" onClick={() => setReplacing(true)}>
+                    Replace
+                  </Button>
+                </Inline>
+              ),
+            },
+          ]}
+        />
+      </Stack>
+      <Inline gap="sm">
         <Button variant="outline" onClick={() => setConfirming(true)}>
           Disconnect
         </Button>
-      </CardFooter>
+      </Inline>
       <RenameDialog
         open={renaming}
         onOpenChange={setRenaming}
@@ -798,6 +795,7 @@ function ConnectedCard({ status, ...actions }: { status: Extract<SlackStatus, { 
         onChanged={actions.onChanged}
       />
       <DisconnectDialog open={confirming} onOpenChange={setConfirming} kind="connected" {...actions} />
+    </Stack>
     </Card>
   );
 }

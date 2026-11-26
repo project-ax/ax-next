@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AsyncState, ConfirmAction, EmptyState, StatusBadge } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, StatusBadge } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
-import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import { listAllAllowedSites, setSiteAgents } from '@/lib/connections';
@@ -141,7 +140,7 @@ export function AllowedSitesPanel() {
         />
       )}
 
-      <Card variant="settings" className="divide-y divide-border">
+      <Card flush>
         {(grants === null || !agentsLoaded) && !error && (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading allowed sites" />
         )}

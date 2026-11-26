@@ -11,10 +11,9 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -308,8 +307,7 @@ export function AgentConnectors({
         <NoConnectors name={name} onAdd={addable} manageable={manageable} />
       )}
       {status === 'ok' && connectors !== null && connectors.length > 0 && (
-        <Card className="overflow-hidden p-0 shadow-none">
-          <CardContent className="p-0">
+        <Card flush>
           {connectors.map((row, i) => (
             <Fragment key={row.id}>
               {i > 0 && <Separator />}
@@ -356,7 +354,6 @@ export function AgentConnectors({
               </div>
             </Fragment>
           ))}
-          </CardContent>
         </Card>
       )}
       </Stack>

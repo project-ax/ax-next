@@ -26,7 +26,7 @@ import {
 } from '@/lib/connector-tool-permissions';
 import type { ToolPermissionsState } from '@/lib/use-tool-permissions';
 import { cn } from '@/lib/utils';
-import { AsyncState, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, InsetBlock, Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { FieldDescription, FieldSet, FieldLegend } from '@/components/ui/field';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -87,9 +87,11 @@ function TheirDescription({
         <p className="text-xs font-medium text-muted-foreground">
           What {connectorName} says it does
         </p>
-        <blockquote className="mt-1.5 whitespace-pre-line break-words border-l-2 border-border pl-2.5 text-sm italic text-muted-foreground">
-          {clampDescription(description)}
-        </blockquote>
+        <InsetBlock>
+          <blockquote className="m-0 whitespace-pre-line break-words text-sm italic text-muted-foreground">
+            {clampDescription(description)}
+          </blockquote>
+        </InsetBlock>
         <p className="mt-2.5 text-xs text-muted-foreground">
           Those are their words, not ours. We haven’t checked them.
         </p>

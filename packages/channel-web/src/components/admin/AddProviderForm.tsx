@@ -3,7 +3,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { upsertAuthProvider, type AuthProviderKind } from '@/lib/auth-providers';
-import { Notice } from '@project-ax/ui';
+import { InsetBlock, Notice, Stack } from '@project-ax/ui';
 
 export interface AddProviderFormProps {
   onSaved: () => void;
@@ -66,10 +66,9 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
   };
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="mt-3.5 p-3.5 bg-muted border border-rule-soft rounded-lg flex flex-col gap-3 animate-form-in"
-    >
+    <InsetBlock>
+<form onSubmit={handleSubmit}>
+<Stack gap="md">
       <div className="flex flex-col gap-2">
         <Label htmlFor="auth-provider-kind">Provider</Label>
         <select
@@ -153,6 +152,8 @@ export function AddProviderForm({ onSaved, onCancel }: AddProviderFormProps) {
           Cancel
         </Button>
       </div>
-    </form>
+    </Stack>
+</form>
+</InsetBlock>
   );
 }

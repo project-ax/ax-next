@@ -36,9 +36,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, Search } from 'lucide-react';
-import { AsyncState, Button as AxButton, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Card, EmptyState, Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import {
   InputGroup,
   InputGroupAddon,
@@ -362,40 +361,37 @@ export function AddConnector({ agentId, name, onBack, onAttached }: Props) {
           owns its in-flight sign-in, and unmounting it would quietly cancel
           one the person is still finishing in the popup. */}
       {load === 'ok' && available.length > 0 && (
-        <Card
-          className="divide-y divide-border overflow-hidden shadow-none"
-          hidden={shown.length === 0}
-        >
-          {available.map((c) => (
-            <AvailableRow
-              key={c.id}
-              hidden={!matchesQuery(c, query)}
-              connector={c}
-              agentId={agentId}
-              agentName={name}
-              action={actions[c.id] ?? 'checking'}
-              attaching={attaching.has(c.id)}
-              problem={problems[c.id] ?? null}
-              teamAgent={teamAgent}
-              canSetCredential={!teamAgent || sharedCredentials}
-              // The callback already added it: re-read, never attach here.
-              onSignedIn={onAttached}
-              onSignInSettled={() => void recheckAdded(c.id)}
-              onAddKey={() => {
-                const full = details[c.id];
-                if (full === undefined) return;
-                setProblem(c.id, null);
-                setKeying(full);
-              }}
-              onAdd={() => void attach(c)}
-            />
-          ))}
-        </Card>
+        <div hidden={shown.length === 0}>
+          <Card flush>
+            {available.map((c) => (
+              <AvailableRow
+                key={c.id}
+                hidden={!matchesQuery(c, query)}
+                connector={c}
+                agentId={agentId}
+                agentName={name}
+                action={actions[c.id] ?? 'checking'}
+                attaching={attaching.has(c.id)}
+                problem={problems[c.id] ?? null}
+                teamAgent={teamAgent}
+                canSetCredential={!teamAgent || sharedCredentials}
+                // The callback already added it: re-read, never attach here.
+                onSignedIn={onAttached}
+                onSignInSettled={() => void recheckAdded(c.id)}
+                onAddKey={() => {
+                  const full = details[c.id];
+                  if (full === undefined) return;
+                  setProblem(c.id, null);
+                  setKeying(full);
+                }}
+                onAdd={() => void attach(c)}
+              />
+            ))}
+          </Card>
+        </div>
       )}
       <ConnectorAccessNotice kind="attach" className="mt-4" />
-      <p className="mt-4 text-[12px] leading-relaxed text-muted-foreground">
-        Don’t see the one you need? Ask a workspace admin to set it up.
-      </p>
+      <Text role="caption">Don’t see the one you need? Ask a workspace admin to set it up.</Text>
       {keying !== null && (
         <AddKeyDialog
           connector={keying}

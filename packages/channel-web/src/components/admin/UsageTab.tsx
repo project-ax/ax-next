@@ -19,8 +19,7 @@ import { UsageOverrideEditor } from './UsageOverrideEditor';
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { AsyncState, EmptyState, Notice, StatusBadge, type StatusTone, toast } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, Heading, Inline, Notice, Stack, StatusBadge, type StatusTone, Text, toast } from '@project-ax/ui';
 import {
   fetchUsage,
   resumeUser,
@@ -245,14 +244,13 @@ export function UsageTab() {
           until usage frees up or an admin raises the limit.
         </Notice>
       )}
-      <Card variant="settings">
-        <CardHeader className="flex-row items-start justify-between gap-4 space-y-0">
+      <Card>
+        <Stack gap="lg">
+        <Inline justify="between" align="start">
           <div className="flex flex-col gap-1.5">
-            <CardTitle role="heading" aria-level={2} className="text-lg">
-              Last 24 hours
-            </CardTitle>
+            <Heading>Last 24 hours</Heading>
             {report !== null && report.users.length > 0 && (
-              <CardDescription>{summaryLine(report.totals)}</CardDescription>
+              <Text role="meta">{summaryLine(report.totals)}</Text>
             )}
           </div>
           <Button
@@ -266,8 +264,8 @@ export function UsageTab() {
           >
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </Button>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+        </Inline>
+        <Stack gap="md">
           {refreshError !== null && (
             <Notice tone="danger">{refreshError}</Notice>
           )}
@@ -298,7 +296,8 @@ export function UsageTab() {
               )}
             </>
           )}
-        </CardContent>
+        </Stack>
+      </Stack>
       </Card>
 
       <UsageLimitsCard

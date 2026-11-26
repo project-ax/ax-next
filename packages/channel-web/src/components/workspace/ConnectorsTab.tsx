@@ -6,9 +6,8 @@ import {
   Link as LinkIcon,
   Terminal,
 } from 'lucide-react';
-import { AsyncState, Notice, Text } from '@project-ax/ui';
+import { AsyncState, Card, Notice, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Field, FieldGroup, FieldLabel, FieldSet } from '@/components/ui/field';
 import { ConfirmAction } from '@project-ax/ui';
 import {
@@ -281,8 +280,7 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
   }
   return (
     <>
-      <Card className="overflow-hidden p-0 shadow-none">
-        <CardContent className="p-0">
+      <Card flush>
         <FieldGroup className="gap-0">
         {ABILITY_ROWS.map(({ ability, label, Icon, note }, i) => {
           const id = `ability-${ability}`;
@@ -341,7 +339,6 @@ function OtherAbilities({ agentId, name }: { agentId: string; name: string }) {
           );
         })}
         </FieldGroup>
-        </CardContent>
       </Card>
       {failed && (
         <div className="mt-3">

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { InsetBlock } from '@project-ax/ui';
 import { cn } from '@/lib/utils';
 
 export interface BundleFileViewProps {
@@ -44,9 +45,11 @@ export function BundleFileView({ files }: BundleFileViewProps) {
           </li>
         ))}
       </ul>
-      <pre className="font-mono text-xs whitespace-pre-wrap break-words max-h-[400px] overflow-auto rounded-md border border-border bg-muted/30 p-3 m-0">
-        {current?.contents}
-      </pre>
+      <InsetBlock>
+        <pre className="font-mono text-xs whitespace-pre-wrap break-words max-h-[400px] overflow-auto m-0">
+          {current?.contents}
+        </pre>
+      </InsetBlock>
     </div>
   );
 }

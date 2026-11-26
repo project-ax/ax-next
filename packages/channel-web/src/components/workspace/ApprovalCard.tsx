@@ -44,13 +44,12 @@
  * itself.
  */
 import { useState } from 'react';
-import { Notice, StatusBadge } from '@project-ax/ui';
+import { Card, InsetBlock, Notice, Stack, StatusBadge } from '@project-ax/ui';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import {
   RESOLUTION_FOCUS_RING,
   useResolutionFocus,
@@ -234,12 +233,8 @@ export function ApprovalCard({
   return (
     <>
       {announcement}
-      <Card
-        className="w-full max-w-[604px] rounded-md border-border bg-card shadow-sm"
-        data-testid={`approval-${d.id}`}
-        data-status={d.status}
-      >
-        <CardContent className="p-3.5">
+      <div data-testid={`approval-${d.id}`} data-status={d.status}>
+      <Card>
           <StatusBadge tone="warning" dot>Waiting on you</StatusBadge>
           {/*
             THE QUESTION, and therefore a focus target (TASK-427). Undo re-opens
@@ -302,18 +297,22 @@ export function ApprovalCard({
               {d.staleReason} {DECISION_STALE_ADVICE}
             </p>
           )}
-          {d.preview && (
-            <div className="mt-3 rounded-sm bg-muted px-3.5 py-2.5">
-              {d.preview.meta && <div className="mb-1.5 text-[11.5px] text-muted-foreground">
-                {d.preview.meta}
-              </div>}
-              <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
-            </div>
+          {(d.preview || d.task || d.request) && (
+            <Stack gap="sm">
+              {d.preview && (
+                <InsetBlock>
+                  {d.preview.meta && <div className="mb-1.5 text-[11.5px] text-muted-foreground">
+                    {d.preview.meta}
+                  </div>}
+                  <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+                </InsetBlock>
+              )}
+              {/* The brief it writes, in its own fields — agent-authored, server-fenced (TASK-906). */}
+              {d.task && <DecisionTaskBlock task={d.task} agentName={agentName} />}
+              {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
+              {d.request && <DecisionRequestBlock request={d.request} />}
+            </Stack>
           )}
-          {/* The brief it writes, in its own fields — agent-authored, server-fenced (TASK-906). */}
-          {d.task && <DecisionTaskBlock task={d.task} agentName={agentName} className="mt-3" />}
-          {/* The held call itself — agent-authored, server-fenced (TASK-699). */}
-          {d.request && <DecisionRequestBlock request={d.request} className="mt-3" />}
           {/*
             An unattended row says what the Today row says about where it came
             from, and when doing nothing runs out (TASK-911).
@@ -379,8 +378,8 @@ export function ApprovalCard({
                 ? `${DECISION_NOTHING_YET}.`
                 : 'Nothing is sent until you choose. I am holding here, so we can carry straight on.'}
           </p>
-        </CardContent>
       </Card>
+      </div>
       <Dialog open={editing} onOpenChange={open => { if (!editBusy) setEditing(open); }}>
         <DialogContent>
           <DialogHeader><DialogTitle>Edit the draft</DialogTitle><DialogDescription>We’ll cancel the current draft and ask the agent to prepare this version. It will ask again before sending.</DialogDescription></DialogHeader>

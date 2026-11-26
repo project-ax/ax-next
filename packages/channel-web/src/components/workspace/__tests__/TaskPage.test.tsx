@@ -268,6 +268,19 @@ describe('TaskPage (TASK-910)', () => {
     expect(screen.getByRole('menuitem', { name: 'Delete task…' })).toBeVisible();
     expect(screen.queryByRole('menuitem', { name: 'Duplicate' })).not.toBeInTheDocument();
   });
+  // Rule 10: a card inside a card is an error the shared Card and InsetBlock report in development. The
+  // busiest screen (latest update, ask, steps, check-ins, About) must draw none, for either kind of task.
+  it('draws no card inside a card, and no inset inside an inset', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    onTestFinished(() => error.mockRestore());
+    taskMock.mockResolvedValue(detail({ kind: 'get-done' }));
+    const first = await renderReady();
+    first.unmount();
+    taskMock.mockResolvedValue(detail({ kind: 'get-done', task: report({ doneClaimed: true, ask: null }) }));
+    await renderReady();
+    const nesting = error.mock.calls.filter(([message]) => /do not nest/.test(String(message)));
+    expect(nesting).toEqual([]);
+  });
   it('shows the latest update, when it checked and checks next, and the ask in the agent’s words', async () => {
     taskMock.mockResolvedValue(detail());
     await renderReady();

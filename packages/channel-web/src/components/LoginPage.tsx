@@ -18,9 +18,8 @@
  * dead end rather than an annoyance: there is nowhere else to go from here.
  */
 import { useState } from 'react';
-import { Notice } from '@project-ax/ui';
+import { Card, Notice, Stack, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { HTTP_SESSION_ENDED } from '../lib/http';
 import { signInWithGoogle } from '../lib/auth';
 import { BrandMark } from './BrandMark';
@@ -45,12 +44,11 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
 
   return (
     <div className="flex items-center justify-center min-h-screen p-6 bg-canvas">
-      <Card className="w-full max-w-[360px]">
-      <CardContent className="flex flex-col items-center gap-3.5 px-8 pb-7 pt-9 text-center">
+      <div className="w-full max-w-sm">
+      <Card>
+      <Stack gap="md" align="center">
         <BrandMark size="xl" />
-        <p className="text-[13px] tracking-[-0.005em] leading-[1.4] text-muted-foreground mb-1.5">
-          Sign in to start chatting
-        </p>
+        <Text role="meta">Sign in to start chatting</Text>
         {/* (B1) A session that ends mid-use swaps the whole app for this
             screen. Landing on a bare sign-in page with no explanation reads as
             "something broke and threw me out" — so say what happened. Not
@@ -65,7 +63,6 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
             brightness and shadow — invariant 6, on the first button anyone ever
             touches in this product. */}
         <Button
-          className="w-full"
           onClick={() => {
             // On success this navigates away, so nothing below it runs. On a
             // misconfigured provider or an unreachable host it throws, and the
@@ -84,8 +81,9 @@ export function LoginPage({ sessionExpired = false }: { sessionExpired?: boolean
         {failed && (
           <Notice tone="danger">{SIGN_IN_FAILED}</Notice>
         )}
-      </CardContent>
+      </Stack>
       </Card>
+      </div>
     </div>
   );
 }

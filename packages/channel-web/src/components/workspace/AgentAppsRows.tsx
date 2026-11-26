@@ -5,7 +5,7 @@
  */
 import { useState } from 'react';
 import { Plus } from 'lucide-react';
-import { Button as AxButton, ConfirmAction, StatusBadge } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, Inline, InsetBlock, StatusBadge } from '@project-ax/ui';
 import type { AppGrant, AppLink, ViewerApproval } from '@ax/apps-bridge-contract';
 import { Button } from '@/components/ui/button';
 import { APP_MODE_COPY } from './AppGrantEditor';
@@ -75,41 +75,45 @@ export function LinkRow({
           {link.grants.map((grant) => {
             const rowBusy = unlinking || busy.has(`${link.appId}:${grant.connectorId}`);
             return (
-              <li key={grant.connectorId} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted px-3 py-2">
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-medium">{grant.connectorName}</span>
-                    <StatusBadge tone="neutral" size="sm">
-                      {APP_MODE_COPY[grant.mode].badge}
-                    </StatusBadge>
-                  </div>
-                  <span className="break-all font-mono text-[12px] text-muted-foreground">
-                    {grant.tools.map((t) => t.name).join(', ')}
-                  </span>
-                </div>
-                {canManage && (
-                  <div className="flex gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={rowBusy}
-                      onClick={() => onEdit(grant)}
-                      aria-label={`Edit ${grant.connectorName} for ${link.appName}`}
-                    >
-                      Edit
-                    </Button>
-                    <AxButton
-                      intent="quiet"
-                      size="sm"
-                      busy={rowBusy}
-                      disabled={rowBusy}
-                      onClick={() => setRemoving(grant)}
-                      aria-label={`Remove ${grant.connectorName} from ${link.appName}`}
-                    >
-                      Remove
-                    </AxButton>
-                  </div>
-                )}
+              <li key={grant.connectorId}>
+                <InsetBlock>
+                  <Inline wrap gap="md">
+                    <div className="flex min-w-0 flex-1 flex-col gap-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[13px] font-medium">{grant.connectorName}</span>
+                        <StatusBadge tone="neutral" size="sm">
+                          {APP_MODE_COPY[grant.mode].badge}
+                        </StatusBadge>
+                      </div>
+                      <span className="break-all font-mono text-[12px] text-muted-foreground">
+                        {grant.tools.map((t) => t.name).join(', ')}
+                      </span>
+                    </div>
+                    {canManage && (
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={rowBusy}
+                          onClick={() => onEdit(grant)}
+                          aria-label={`Edit ${grant.connectorName} for ${link.appName}`}
+                        >
+                          Edit
+                        </Button>
+                        <AxButton
+                          intent="quiet"
+                          size="sm"
+                          busy={rowBusy}
+                          disabled={rowBusy}
+                          onClick={() => setRemoving(grant)}
+                          aria-label={`Remove ${grant.connectorName} from ${link.appName}`}
+                        >
+                          Remove
+                        </AxButton>
+                      </div>
+                    )}
+                  </Inline>
+                </InsetBlock>
               </li>
             );
           })}

@@ -10,13 +10,6 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -35,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, Notice, Stack, StatusBadge, Text } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthoredSkills,
@@ -223,10 +216,10 @@ function PromoteDialog({ agentId, skill, onClose, onPromoted }: PromoteDialogPro
           </div>
 
           {/* MCP servers — deferred */}
-          <p className="text-xs text-muted-foreground">
+          <Text role="caption">
             MCP server grants aren&apos;t editable here yet — promote, then add them
             via Admin &rarr; Skills if needed.
-          </p>
+          </Text>
 
           {error && (
             <Notice tone="danger">{error}</Notice>
@@ -277,15 +270,16 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
 
   return (
     <>
-      <Card className="p-5">
-        <CardHeader className="p-0 pb-4">
-          <CardTitle className="text-base" tabIndex={-1} data-return-focus="authored-skills">Authored Skills</CardTitle>
-          <CardDescription>
-            Skills this agent wrote in its workspace. Promote one to an installed
-            skill, choosing the capabilities to grant.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
+      <Card>
+        <Stack gap="lg">
+        <Stack gap="xs">
+          <span tabIndex={-1} data-return-focus="authored-skills">
+            <Text role="body-strong" inline>Authored Skills</Text>
+          </span>
+          <Text role="meta">Skills this agent wrote in its workspace. Promote one to an installed
+            skill, choosing the capabilities to grant.</Text>
+        </Stack>
+        <Stack gap="md">
           {loading && (
             <AsyncState status="loading" skeleton="rows" loadingLabel="Loading authored skills" />
           )}
@@ -349,7 +343,8 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
               ))}
             </ul>
           )}
-        </CardContent>
+        </Stack>
+      </Stack>
       </Card>
 
       {promoting && (
