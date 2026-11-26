@@ -3746,12 +3746,14 @@ export function createOrchestrator(
       // writer (a POST that read the old session) bound the old session after
       // R19, and the old session's terminate cleared it. That newer request is
       // opening its own sandbox and must own the row, so N2 leaves it.
-      // Unless R19 failed (not a conflict: a database error, say). Its write
-      // may have landed all the same (CompareAndBindOutcome), so N2 still
-      // tries the new session first: that row is R19's own write, not a newer
-      // binding. Then it binds as R19 would have, over the old session or an
-      // unbound row: if R19's write never landed, the row kept the old session
-      // until that session's terminate cleared it. Left alone, the row names
+      // Unless R19 failed (not a conflict: a database error, say). Then N2
+      // binds as R19 would have, over the old session or an unbound row: if
+      // R19's write never landed, the row kept the old session until that
+      // session's terminate cleared it. Its write may have landed all the
+      // same (CompareAndBindOutcome), so N2 also accepts the new session: that
+      // row is R19's own write, not a newer binding. The new session goes
+      // last, so a write of R19's that commits late (while N2 runs) is still
+      // caught by the final try. Left alone, the row names
       // the restarting request or nothing, so once that turn ends the moved
       // request runs off the row: the idle reaper (it reads only the row) can
       // reap it mid-turn, and Stop and a reconnect can't find it. After a
@@ -3763,7 +3765,7 @@ export function createOrchestrator(
           restartCtx,
           { conversationId, sessionId, reqId: lastMoved },
           {
-            expected: rebound === 'failed' ? [sessionId, pending.sessionId, null] : [sessionId],
+            expected: rebound === 'failed' ? [pending.sessionId, null, sessionId] : [sessionId],
             site: 'restart-moved',
             failLog: 'conversation_bind_failed_restart',
             failFields: { movedReqId: lastMoved },
