@@ -496,6 +496,42 @@ describe('@ax/session-postgres plugin', () => {
     expect(result).toEqual({ type: 'timeout', cursor: 0 });
   });
 
+  // TASK-1225 — the inbox keeps a terminated session's rows (a services
+  // restart moves the message to the new sandbox, leaving the old copy). A
+  // claim that reached the hook anyway gets none of them.
+  it('claim-work after session:terminate returns timeout even with an entry at the cursor', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-old', workspaceRoot: '/tmp/ws' },
+    );
+    await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      {
+        sessionId: 's-old',
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'moved elsewhere' },
+          reqId: 'r-moved',
+        },
+      },
+    );
+    await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
+      'session:terminate',
+      ctx,
+      { sessionId: 's-old' },
+    );
+    const claimed = await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>(
+      'session:claim-work',
+      ctx,
+      { sessionId: 's-old', cursor: 0, timeoutMs: 0 },
+    );
+    expect(claimed).toEqual({ type: 'timeout', cursor: 0 });
+  });
+
   it('cross-instance: claim on instance A wakes via NOTIFY when queue-work fires on instance B', async () => {
     const a = await makeHarness();
     const b = await makeHarness();

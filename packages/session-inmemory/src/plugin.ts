@@ -633,8 +633,9 @@ export function createSessionInmemoryPlugin(): Plugin {
           const record = store.get(sessionId);
           if (record === null) {
             // Unknown session — distinct from "terminated session". A claim on
-            // a terminated-but-known session is allowed; it resolves via the
-            // inbox's terminate-wake path as `timeout`.
+            // a terminated-but-known session is not an error: it resolves as
+            // `timeout`, and the inbox never hands it an entry, even one
+            // already queued (TASK-1225).
             throw new PluginError({
               code: UNKNOWN_SESSION,
               plugin: PLUGIN_NAME,
