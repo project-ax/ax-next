@@ -22,9 +22,17 @@
 //     with the turn-end payload unchanged. Consumed by the hold's owner (to
 //     settle that segment and swap the sandbox). Callers don't subscribe.
 //
+// A held segment's turn-ends never reach the callers, so a request the
+// runner folded into that segment (TASK-785) is never ended by them. On the
+// turn-end that does end the request (the continuation's), the hold's owner
+// answers NOT held and names those requests in `foldedReqIds` (TASK-1224).
+// The emitter appends them to the broadcast's own `foldedReqIds`, within the
+// wire's bounds, so callers see an ordinary fold. Ignored on a held answer.
+//
 // No subscriber, or none that answers held: `chat:turn-end` fires exactly as
 // before. A throwing or slow subscriber is skipped by the bus, which also
-// reads as "not held": the safe direction is the ordinary broadcast.
+// reads as "not held", and adds no ids: the safe direction is the ordinary
+// broadcast.
 //
 // Why a subscriber question and not a service hook: the emitter lives in the
 // IPC transports, and a service edge from them to the orchestrator closes a
@@ -49,4 +57,12 @@ export interface ChatTurnEndHoldPayload {
   reqId: string;
   /** False when fired; a subscriber holding this segment returns it true. */
   held: boolean;
+  /**
+   * TASK-1224 — set by the hold's owner on a turn-end it does NOT hold: other
+   * requests this turn-end also ends, because they were folded into an
+   * earlier, held segment of the same request. The emitter appends them to
+   * the broadcast's `foldedReqIds` (after the runner's own, none repeated,
+   * within the wire's bounds). Ignored when `held` is true.
+   */
+  foldedReqIds?: string[];
 }

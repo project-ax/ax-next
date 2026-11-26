@@ -107,3 +107,70 @@ describe('event.turn-end hold (R27)', () => {
     expect(seen).toEqual([{ hook: 'chat:turn-end', payload: dark }]);
   });
 });
+
+// TASK-1224 — a request the runner folded into a HELD segment never sees that
+// segment's turn-ends. The hold's owner names it on the turn-end that ends
+// the request after all (the continuation's), and the emitter, still the only
+// one, appends it to that broadcast's `foldedReqIds`, as if the runner had.
+describe('event.turn-end hold: folded requests named by the hold (TASK-1224)', () => {
+  /** A hold subscriber that does not hold, and names these ids. */
+  function naming(bus: HookBus, foldedReqIds: unknown) {
+    bus.subscribe<ChatTurnEndHoldPayload>(CHAT_TURN_END_HOLD_HOOK, 'test/hold', async (_c, p) =>
+      ({ ...p, foldedReqIds } as ChatTurnEndHoldPayload),
+    );
+  }
+
+  it('a non-held answer naming folded requests adds them to chat:turn-end', async () => {
+    const bus = new HookBus();
+    naming(bus, ['req-2']);
+    const seen = record(bus);
+    await fireEventTurnEnd(ctx(), bus, TURN_END);
+    expect(seen).toEqual([{ hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: ['req-2'] } }]);
+  });
+
+  it('host ids merge after the runner\'s own, without repeats', async () => {
+    const bus = new HookBus();
+    naming(bus, ['req-2', 'req-3', 'req-2']);
+    const seen = record(bus);
+    await fireEventTurnEnd(ctx(), bus, { ...TURN_END, foldedReqIds: ['req-3'] });
+    expect(seen).toEqual([
+      { hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: ['req-3', 'req-2'] } },
+    ]);
+  });
+
+  it('host ids that are not 1-256-char strings, or the turn\'s own id, are dropped; at most 64 are added', async () => {
+    const bus = new HookBus();
+    naming(bus, ['req-1', '', 7, 'x'.repeat(257), 'y'.repeat(256), 'req-2']);
+    const seen = record(bus);
+    await fireEventTurnEnd(ctx(), bus, TURN_END);
+    expect(seen).toEqual([
+      { hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: ['y'.repeat(256), 'req-2'] } },
+    ]);
+
+    const many = Array.from({ length: 70 }, (_, i) => `req-many-${i}`);
+    const capped = new HookBus();
+    naming(capped, many);
+    const seenCapped = record(capped);
+    await fireEventTurnEnd(ctx(), capped, TURN_END);
+    expect(seenCapped).toEqual([
+      { hook: 'chat:turn-end', payload: { ...TURN_END, foldedReqIds: many.slice(0, 64) } },
+    ]);
+
+    // Not a list at all: nothing is added, and the payload goes out as it came.
+    const odd = new HookBus();
+    naming(odd, 'req-2');
+    const seenOdd = record(odd);
+    await fireEventTurnEnd(ctx(), odd, TURN_END);
+    expect(seenOdd).toEqual([{ hook: 'chat:turn-end', payload: TURN_END }]);
+  });
+
+  it('a held answer\'s ids are ignored', async () => {
+    const bus = new HookBus();
+    bus.subscribe<ChatTurnEndHoldPayload>(CHAT_TURN_END_HOLD_HOOK, 'test/hold', async (_c, p) =>
+      ({ ...p, held: true, foldedReqIds: ['req-2'] }),
+    );
+    const seen = record(bus);
+    await fireEventTurnEnd(ctx(), bus, TURN_END);
+    expect(seen).toEqual([{ hook: CHAT_TURN_SEGMENT_END_HOOK, payload: TURN_END }]);
+  });
+});
