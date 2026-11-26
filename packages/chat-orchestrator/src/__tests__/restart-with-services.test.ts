@@ -1006,7 +1006,7 @@ describe('restart_with_services (dev services on demand)', () => {
       await Promise.all([p1, p2]);
     });
 
-    it('the swap\'s rebind takes an unbound row', async () => {
+    it('the swap\'s rebind takes an unbound row (guard: orUnbound retry)', async () => {
       // The old sandbox's row was cleared (its pod died) just before R19 lands.
       let acted = false;
       const t = await setup({
@@ -1513,7 +1513,7 @@ describe('TASK-1226: a cold spawn keeps a newer binding', () => {
     expect(t.turnErrors).toEqual([]);
   });
 
-  it('a cold spawn whose stale row is cleared during its open still binds', async () => {
+  it('a cold spawn whose stale row is cleared during its open still binds (guard: orUnbound retry)', async () => {
     let release!: () => void;
     const t = await setup({
       rows: { 'conv-1': { activeSessionId: 's-stale', activeReqId: 'req-0' } }, // not alive

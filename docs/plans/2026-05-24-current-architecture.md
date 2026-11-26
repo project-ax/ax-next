@@ -217,7 +217,9 @@ One `agent:invoke` call does roughly:
    after routing read the row, and a services restart's two rebinds) pass
    `expectedSessionId`, a compare-and-set on the bound session, so they never
    take the row back from a newer request that bound its own sandbox first
-   (TASK-1226).
+   (TASK-1226). The fresh-path bind does this only when routing managed to read
+   the row; if that read failed it binds unconditionally, as before. The routed
+   and retire binds stay unconditional.
 6. **`session:queue-work`** — enqueue the user message (stamped with `reqId` so
    the runner can tag stream chunks back to the right request).
 7. **Await `chat:end`.** The runner POSTs `/event.chat-end` over IPC; the IPC
