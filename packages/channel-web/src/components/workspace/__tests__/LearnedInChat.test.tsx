@@ -685,6 +685,27 @@ describe('LearnedInChat — where focus goes when a dialog closes (TASK-644)', (
     await waitFor(() => expect(document.activeElement).toBe(fix));
   });
 
+  it('a receipt in the middle of a batch splits it into two lists with distinct names', async () => {
+    recall.mockResolvedValueOnce({ statements: [st('a'), st('b', { value: 'Boston' }), st('c')], degraded: [] });
+    forget.mockResolvedValue({ forgotten: true });
+    renderExpanded(<Harness />);
+    press(await screen.findByRole('button', { name: memoryForgetLabel(memoryStatementText(st('b', { value: 'Boston' }))) }));
+    press(within(await screen.findByRole('dialog')).getByRole('button', { name: MEMORY_FORGET }));
+    await screen.findByText(MEMORY_FORGOTTEN);
+    const names = screen.getAllByRole('list').map((l) => l.getAttribute('aria-label'));
+    expect(names).toEqual([LEARNED_TITLE, `${LEARNED_TITLE}, continued`]);
+  });
+
+  it('shows a long memory in full, as wrapping text, not cut to one line', async () => {
+    const value = 'x'.repeat(40) + ' ' + 'a very long value that a person said '.repeat(4).trim();
+    recall.mockResolvedValueOnce({ statements: [st('a', { value })], degraded: [] });
+    renderExpanded(<Harness />);
+    const line = await screen.findByText(memoryStatementText(st('a', { value })));
+    expect(line.textContent).toBe(memoryStatementText(st('a', { value })));
+    expect(line.className).not.toContain('truncate');
+    expect(line.className).toContain('break-words');
+  });
+
   it('Forget → Cancel returns focus to the Forget button', async () => {
     recall.mockResolvedValueOnce({ statements: [st('a')], degraded: [] });
     renderExpanded(<Harness />);

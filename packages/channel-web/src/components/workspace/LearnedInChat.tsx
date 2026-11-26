@@ -412,7 +412,7 @@ function Body({
       )}
       {visible.length > 0 && (
         <Stack gap="md">
-          {segments(visible, renderRow).map((seg) => {
+          {segments(visible, renderRow).map((seg, at, all) => {
             if ('receipt' in seg) return <Fragment key={seg.key}>{seg.receipt}</Fragment>;
             return (
               <Fragment key={seg.key}>
@@ -420,7 +420,7 @@ function Body({
                   // A group label: it names the list under it and is not one of its items.
                   <Text role="meta">{LEARNED_EARLIER}</Text>
                 )}
-                <List label={seg.batch === 0 && hasLive ? LEARNED_EARLIER : LEARNED_TITLE}>{seg.rows}</List>
+                <List label={listLabel(seg, at, all, hasLive)}>{seg.rows}</List>
               </Fragment>
             );
           })}
@@ -448,6 +448,13 @@ function Body({
 type Segment =
   | { key: string; batch: number; rows: React.ReactElement[] }
   | { key: string; receipt: React.ReactNode };
+
+/** A list's name; a second list of the same batch (a receipt sits between them) says it continues. */
+function listLabel(seg: Extract<Segment, { rows: unknown }>, at: number, all: Segment[], hasLive: boolean): string {
+  const base = seg.batch === 0 && hasLive ? LEARNED_EARLIER : LEARNED_TITLE;
+  const before = all.slice(0, at).filter((s) => 'rows' in s && s.batch === seg.batch).length;
+  return before === 0 ? base : `${base}, continued`;
+}
 
 function segments(
   visible: LearnedRow[],

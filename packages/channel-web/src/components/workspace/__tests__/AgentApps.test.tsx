@@ -160,6 +160,9 @@ describe('AgentApps', () => {
     expect(within(app).getByText('GitHub')).toBeTruthy();
     expect(within(app).getByText("Each viewer's sign-in")).toBeTruthy();
     expect(within(app).getByText('list_prs, get_pr')).toBeTruthy();
+    // Tool ids wrap rather than overflow: they sit in an inset block, which breaks long unbroken words.
+    const tools = within(app).getByText('list_prs, get_pr');
+    expect(tools.closest('[class*="ax-break-words"]')).not.toBeNull();
   });
 
   it('renders an app name as text, never as markup', async () => {

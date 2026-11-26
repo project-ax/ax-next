@@ -31,7 +31,7 @@
  * a blind crawl away. The row also declares no consent region of its own —
  * `TodayView` owns that, because the node has to outlive the row.
  */
-import { useCallback, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { ArrowRight, RotateCcw } from 'lucide-react';
 import { InsetBlock, ListRow, Notice, StatusMark, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
@@ -139,17 +139,6 @@ export function DecisionRow({
             // both unmount and there is no resolution left to land on.
             `open:${d.status}:${d.resolvedAt ?? ''}`;
   const { answerRef, armForResolution } = useResolutionFocus(answerKey);
-  /*
-    The question's landing is its row's title button, and a `ListRow` hands out no ref to it. The mark in the row's
-    `leading` slot gets this ref instead and finds the button from there (the only button before the row's trailing
-    controls). It never lands on the mark itself.
-  */
-  const questionRef = useCallback(
-    (mark: HTMLElement | null) => {
-      answerRef(mark === null ? null : (mark.closest('li')?.querySelector<HTMLElement>('button') ?? null));
-    },
-    [answerRef],
-  );
   /*
     ANNOUNCED, not only focused (TASK-442). Hung ABOVE the branch split on
     purpose: resolving swaps one subtree for another, and a live region that
@@ -264,12 +253,13 @@ export function DecisionRow({
       onOpen={onToggle}
       /*
         THE QUESTION, and therefore where Undo puts you (TASK-427): undoing re-opens the row, unmounting the receipt
-        the person was standing on. The title button is a real control, so it is the landing: its name says whose
-        question this is and that it waits on a person, and the summary and age sit in the row beside it. The mark
-        carries the ref because the row has none of its own: it finds its row's title button.
+        the person was standing on. The title button is a real control, so it is the landing. Its name says whose
+        question this is and that it waits on a person; the row describes it by its age and the summary, so landing
+        on it reads the question back, and two waiting questions from one agent differ by that description.
       */
+      titleRef={answerRef}
       leading={
-        <span ref={questionRef} data-testid={`decision-${d.id}`} data-status={d.status}>
+        <span data-testid={`decision-${d.id}`} data-status={d.status}>
           <StatusMark tone={STATE_TONE[stale ? 'stopped' : 'held']} />
         </span>
       }

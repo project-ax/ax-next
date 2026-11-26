@@ -5,7 +5,7 @@
  */
 import { useState } from 'react';
 import { Plus } from 'lucide-react';
-import { Button as AxButton, ConfirmAction, List, ListRow, StatusBadge, Text } from '@project-ax/ui';
+import { Button as AxButton, ConfirmAction, InsetBlock, List, ListRow, StatusBadge, Text } from '@project-ax/ui';
 import type { AppGrant, AppLink, ViewerApproval } from '@ax/apps-bridge-contract';
 import { Button } from '@/components/ui/button';
 import { APP_MODE_COPY } from './AppGrantEditor';
@@ -82,7 +82,12 @@ export function LinkRow({
                         {APP_MODE_COPY[grant.mode].badge}
                       </StatusBadge>
                     }
-                    below={<Text role="meta">{grant.tools.map((t) => t.name).join(', ')}</Text>}
+                    below={
+                      // InsetBlock wraps long unbroken tool ids (overflow-wrap) instead of letting them overflow.
+                      <InsetBlock>
+                        <Text role="code">{grant.tools.map((t) => t.name).join(', ')}</Text>
+                      </InsetBlock>
+                    }
                     {...(canManage
                       ? {
                           trailing: (

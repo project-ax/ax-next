@@ -121,6 +121,16 @@ describe('MemoryUsedChip', () => {
     expect(within(rows[1]!).getByRole('button', { name: memoryFixLabel('tea') })).toBeTruthy();
   });
 
+  it('shows a long memory in full, as wrapping text, not cut to one line', () => {
+    const long = { ...boston, value: 'a very long value that a person said '.repeat(6).trim() };
+    render(<MemoryUsedChip used={used([long])} agentId="a1" />);
+    open();
+    const line = screen.getByText(memoryStatementText(long));
+    expect(line.textContent).toBe(memoryStatementText(long));
+    expect(line.className).not.toContain('truncate');
+    expect(line.className).toContain('break-words');
+  });
+
   it('counts several memories in the plural', () => {
     render(<MemoryUsedChip used={used([boston, tea])} agentId="a1" />);
     expect(trigger().textContent).toContain('Used 2 memories');

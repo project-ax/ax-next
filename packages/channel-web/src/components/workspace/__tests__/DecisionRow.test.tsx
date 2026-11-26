@@ -318,6 +318,36 @@ describe('DecisionRow — the held question says its state', () => {
     ).toBeTruthy();
   });
 
+  it('tells two waiting questions from one agent apart by what each asks', () => {
+    const first = decisionFixture({ id: 'q1', summary: 'Move the 1:1 with Marcus?' });
+    const second = decisionFixture({ id: 'q2', summary: 'Cancel Friday’s review?' });
+    render(
+      <ul>
+        {[first, second].map((d) => (
+          <DecisionRow
+            key={d.id}
+            decision={d}
+            agent={agent}
+            expanded={false}
+            onToggle={vi.fn()}
+            onOpenAgent={vi.fn()}
+            onApprove={vi.fn()}
+            onDismiss={vi.fn()}
+            onUndo={vi.fn()}
+          />
+        ))}
+      </ul>,
+    );
+    const [a, b] = screen.getAllByRole('button', { name: 'Scheduler, waiting on you' });
+    const said = (el: HTMLElement | undefined) =>
+      (el?.getAttribute('aria-describedby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent ?? '')
+        .join(' ');
+    expect(said(a)).toMatch(/Move the 1:1 with Marcus\?$/);
+    expect(said(b)).toMatch(/Cancel Friday’s review\?$/);
+  });
+
   it('says it in the row’s title, where everyone can read it', () => {
     renderRow(decisionFixture(), false);
     expect(screen.getByText('Scheduler, waiting on you')).toBeVisible();

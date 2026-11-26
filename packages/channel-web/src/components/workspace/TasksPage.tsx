@@ -20,15 +20,17 @@
  * (`server/routes-workspace.ts`). Here they are only ever React text
  * children: never `dangerouslySetInnerHTML`, never the markdown renderer, so
  * `**bold**` or `<img>` in an update shows as those characters. Each clamped
- * one keeps the whole fenced value in a `title` (TASK-436).
+ * one is the row's description, whole in the page and clamped to two lines by the row (TASK-436).
  *
  * Each row opens its task page (TASK-910) through a real link, so it can open
- * in a new tab too. A needs-you row's Reply button sits beside that link,
- * never inside it: a button nested in a link is two controls in one.
+ * in a new tab too. The link is named by the task and described by its row's
+ * meta (agent, kind, fact), so two agents' "Weekly digest" differ. A
+ * needs-you row's Reply button sits beside that link, never inside it: a
+ * button nested in a link is two controls in one.
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
-import { AsyncState, Avatar, Card, EmptyState, List, ListRow, Notice, StatusBadge, StatusMark } from '@project-ax/ui';
+import { AsyncState, Avatar, Card, EmptyState, List, ListRow, Notice, StatusBadge, StatusMark, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -53,7 +55,8 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
-import { IconAction, TaskKindIcon } from './task-bits';
+import { TASK_KIND_LABELS } from '@/lib/task-kinds';
+import { IconAction } from './task-bits';
 import { TaskDialog } from './TaskDialog';
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
@@ -488,12 +491,10 @@ function TaskList({
 
 /**
  * One task: its agent's tile, its name, at most one latest line
- * (`rowLatest`), its kind's icon and one short right-hand fact (`rowFact`),
- * whose whole sentence is in the link's name and a `title`; a needs-you row
- * keeps that fact, which may be the late finish-date warning, and has Reply
- * after it. Below `sm` the
- * name and the latest line stack. A needs-you row quotes its ask in the
- * foreground and gets a Reply button beside the link, which opens the task
+ * (`rowLatest`, the row's description), its kind's name and one short fact
+ * (`rowFact`, whose whole sentence a screen reader hears) in the meta line; a
+ * needs-you row keeps that fact, which may be the late finish-date warning,
+ * and has Reply after it. A needs-you row quotes its ask and gets a Reply button beside the link, which opens the task
  * page with its reply box focused (the shell's one-shot memory, `onReply`),
  * where the ask is the first thing.
  */
@@ -532,7 +533,9 @@ function TaskItem({
       // finish date in the danger tone.
       meta={
         <>
-          <span>{row.agentName}</span>
+          <Text role="meta" inline>{row.agentName}</Text>
+          {' · '}
+          <Text role="meta" inline>{TASK_KIND_LABELS[row.kind]}</Text>
           {fact !== null && (
             <>
               {' · '}
@@ -550,7 +553,6 @@ function TaskItem({
       {...(latest !== null ? { description: latest.ask ? `“${latest.text}”` : latest.text } : {})}
       trailing={
         <>
-          <TaskKindIcon kind={row.kind} />
           {needsYou && (
             <>
               <span id={nameId} hidden>

@@ -58,7 +58,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState, type ReactNode } from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AgentConversation } from '../AgentConversation';
 import { ApprovalCard } from '../ApprovalCard';
 import { DecisionRow } from '../DecisionRow';
@@ -649,9 +649,8 @@ describe('DecisionRow — the Today queue (site 3)', () => {
     expect(document.activeElement).not.toBe(document.body);
     const question = screen.getByRole('button', { name: /^Quill\s*, waiting on you$/ });
     expect(document.activeElement).toBe(question);
-    expect(
-      within(question.closest('li')!).getByText('Move your 1:1 with Marcus to Thursday 9:30?'),
-    ).toBeTruthy();
+    // Landing reads the question back: the summary is the control's description.
+    expect(question).toHaveAccessibleDescription(/Move your 1:1 with Marcus to Thursday 9:30\?$/);
     // The disclosure must stay reachable by Tab — `tabIndex={-1}` here would
     // buy the landing at the cost of the control.
     expect(

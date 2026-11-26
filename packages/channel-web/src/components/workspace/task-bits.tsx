@@ -62,19 +62,6 @@ function Tip({ label, reason, children }: { label: string; reason?: string | und
   );
 }
 
-/** The kind's icon alone, named for screen readers and in a tooltip. */
-export function TaskKindIcon({ kind, className }: { kind: Kind; className?: string }) {
-  const Icon = TASK_KIND_ICONS[kind];
-  return (
-    <Tip label={TASK_KIND_LABELS[kind]}>
-      <span className={cn('inline-flex shrink-0 text-muted-foreground', className)}>
-        <Icon aria-hidden="true" className="size-3.5" />
-        <span className="sr-only">{TASK_KIND_LABELS[kind]}</span>
-      </span>
-    </Tip>
-  );
-}
-
 /**
  * An icon and at most a couple of words (“20 min”, “Nov 3”), with the whole
  * sentence in a tooltip and in hidden text. The visible words are hidden from

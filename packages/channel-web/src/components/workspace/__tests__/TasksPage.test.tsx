@@ -563,9 +563,9 @@ describe('TasksPage (TASK-909)', () => {
     const { onNavigate } = renderPage();
     const link = await screen.findByRole('link', { name: /Support queue/ });
     expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1');
-    // The link is named for the task alone; what the icon stands for and whose task it is sit in its row, after it.
+    // The link is named for the task and described by its row's meta: whose task it is, its kind and its fact.
     expect(link).toHaveAccessibleName('Support queue');
-    expect(link.closest('li')).toHaveTextContent(/Caveman.*Stay on top|Stay on top.*Caveman/);
+    expect(link).toHaveAccessibleDescription(/^Caveman · Stay on top of something( · .+)?$/);
 
     fireEvent.click(link, { ctrlKey: true });
     expect(onNavigate).not.toHaveBeenCalled();
@@ -577,6 +577,19 @@ describe('TasksPage (TASK-909)', () => {
       agentId: 'a1',
       routineId: 't1',
     });
+  });
+
+  it('two agents’ tasks with one name are told apart by the link’s description', async () => {
+    tasksMock.mockResolvedValue(
+      page([
+        row('Weekly digest', { routineId: 'r1' }),
+        row('Weekly digest', { routineId: 'r2', agentId: 'a2', agentName: 'Juniper', kind: 'get-done', steps: { done: 1, total: 4 } }),
+      ]),
+    );
+    renderPage();
+    const [one, two] = await screen.findAllByRole('link', { name: 'Weekly digest' });
+    expect(one).toHaveAccessibleDescription('Caveman · Stay on top of something');
+    expect(two).toHaveAccessibleDescription('Juniper · Get something done · 1 of 4 steps');
   });
 
   it('a needs-you row has a Reply button beside its link, never inside it', async () => {

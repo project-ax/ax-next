@@ -309,12 +309,12 @@ export function AgentConnectors({
           <List label={`${name}’s connectors`}>
             {connectors.map((row) => {
               const account = row.signedIn?.account ?? null;
-              const status = row.health === 'ok' ? 'Ready to use' : healthReason(row, canSetAccount, isAdmin);
+              const statusLine = row.health === 'ok' ? 'Ready to use' : healthReason(row, canSetAccount, isAdmin);
               return (
                 <ListRow
                   key={row.id}
                   title={row.name}
-                  meta={status}
+                  meta={statusLine}
                   // U+2068/U+2069 isolate a provider-supplied account (it may be right-to-left) from the words around it.
                   {...(account !== null ? { description: `Signed in as \u2068${account}\u2069` } : {})}
                   leading={<Plug aria-hidden="true" />}
