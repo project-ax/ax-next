@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SharingView } from '@ax/agents';
 import { getAdminAgent, listAdminAgents, type AdminAgent } from '@/lib/admin';
 import { AUDIENCE_MEMBERS_MAX } from '@/lib/agent-sharing';
-import { searchPeople, setAudience } from '@/lib/agent-sharing-api';
+import { searchPeople, setAudience, SharingRequestError } from '@/lib/agent-sharing-api';
 import { workspaceApi } from '@/lib/workspace-api';
 import { SHARING_COPY } from '@/lib/sharing-copy';
 import { AudienceDialog } from '../AudienceDialog';
@@ -120,7 +120,8 @@ describe('AudienceDialog — Save reads what is saved now', () => {
     expect(within(confirm).getByRole('button', { name: SHARING_COPY.confirm.share })).toBeDisabled();
   });
 
-  it('if the fresh read fails, says so and saves nothing', async () => {
+  it('if the fresh read fails, says so, logs it and saves nothing', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getAgentMock.mockRejectedValue(new Error('read agent: 500'));
     const dialog = renderDialog({ kind: 'everyone' });
     await pickCarol(dialog);
@@ -134,6 +135,31 @@ describe('AudienceDialog — Save reads what is saved now', () => {
     expect(
       screen.queryByRole('dialog', { name: SHARING_COPY.confirm.title('Juniper', ['Carol']) }),
     ).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe('AudienceDialog — failures are logged', () => {
+  it('a list of agents that cannot be read hides Same people as, and is logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listAdminAgents).mockRejectedValue(new Error('list agents: 500'));
+    renderDialog({ kind: 'just-me' });
+    await waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(screen.queryByRole('button', { name: SHARING_COPY.picker.sameAs })).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('a refused save shows the words and is logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getAgentMock.mockResolvedValue(agentNow({ kind: 'everyone' }));
+    setAudienceMock.mockRejectedValue(new SharingRequestError('/admin/agents/a1/audience', 403, 'forbidden'));
+    const dialog = renderDialog({ kind: 'everyone' });
+    await pickCarol(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: SHARING_COPY.picker.save }));
+    expect(await within(dialog).findByText(SHARING_COPY.errors.forbidden('Juniper'))).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

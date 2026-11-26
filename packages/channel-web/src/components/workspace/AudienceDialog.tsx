@@ -53,6 +53,7 @@ import {
   type DraftAudience,
 } from '@/lib/agent-sharing';
 import { setAudience, sharingErrorMessage, type PersonMatch } from '@/lib/agent-sharing-api';
+import { logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import { PeoplePicker } from './PeoplePicker';
 import { ShareConfirmDialog, type ShareConfirmDialogProps } from './ShareConfirmDialog';
@@ -111,13 +112,14 @@ function OpenAudienceDialog({
     };
   }, []);
 
-  // "Same people as…" is a shortcut: if the list can't be read, it just isn't offered.
+  // "Same people as…" is a shortcut: if the list can't be read, it just isn't
+  // offered (and the failure is logged for an operator).
   useEffect(() => {
     listAdminAgents().then(
       (agents) => {
         if (live.current) setChoices(sharedAgentChoices(agents, agentId));
       },
-      () => undefined,
+      (e: unknown) => logRequestFailure(e, 'sharing: list agents for Same people as'),
     );
   }, [agentId]);
 
@@ -152,7 +154,8 @@ function OpenAudienceDialog({
       const audience = (await getAdminAgent(source.id)).sharing?.audience;
       if (audience === undefined) throw new Error('no sharing on the source agent');
       if (live.current) edit(withoutOwners(draftFrom(audience), ownerIds));
-    } catch {
+    } catch (e) {
+      logRequestFailure(e, 'sharing: read the agent to copy from');
       if (live.current) setCopyError(SHARING_COPY.picker.copyFailed(personLabel(source.displayName)));
     }
   };
@@ -166,6 +169,7 @@ function OpenAudienceDialog({
       onSaved(sharing);
       onClose();
     } catch (e) {
+      logRequestFailure(e, 'sharing: save audience');
       if (live.current) setError(sharingErrorMessage(e, agentName));
     } finally {
       if (live.current) setSaving(false);
@@ -187,7 +191,8 @@ function OpenAudienceDialog({
       if (audience === undefined) throw new Error('no sharing on the agent');
       current = draftFrom(audience);
       attached = fresh.connectorAttachments ?? [];
-    } catch {
+    } catch (e) {
+      logRequestFailure(e, 'sharing: read the audience as saved');
       if (live.current) {
         setError(SHARING_COPY.errors.generic);
         setSaving(false);

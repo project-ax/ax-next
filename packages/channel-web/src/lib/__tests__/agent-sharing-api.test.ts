@@ -141,6 +141,8 @@ describe('sharingErrorMessage', () => {
     ['400 unknown-person', refused(400, 'unknown-person'), SHARING_COPY.errors.unknownPerson],
     ['503', refused(503, 'accounts-unavailable'), SHARING_COPY.errors.accountsUnavailable],
     ['404', refused(404, 'not-found'), SHARING_COPY.errors.notFound('Fern')],
+    ['400 duplicate-person', refused(400, 'duplicate-person'), SHARING_COPY.errors.duplicatePerson],
+    ['400 creator-required', refused(400, 'creator-required'), SHARING_COPY.errors.creatorRequired('Fern')],
     ['another 400', refused(400, 'invalid-audience'), SHARING_COPY.errors.generic],
     ['a network failure', new Error('network'), SHARING_COPY.errors.generic],
   ])('turns %s into words', (_name, error, words) => {

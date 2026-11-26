@@ -93,13 +93,75 @@ describe('PeoplePicker', () => {
     expect((searchBox() as HTMLInputElement).value).toBe('');
   });
 
-  it('says there are no matches when everyone found is excluded', async () => {
-    searchMock.mockResolvedValue([ALICE]);
-    renderPicker({ excludeIds: new Set([ALICE.id]) });
+  it('says there are no matches when the search finds nobody', async () => {
+    searchMock.mockResolvedValue([]);
+    renderPicker();
     openPicker();
     type('ali');
     await pause();
     expect(screen.getByText(SHARING_COPY.picker.noMatches)).toBeTruthy();
+  });
+
+  it('says everyone found is already here when every match is excluded, not that nobody matched', async () => {
+    searchMock.mockResolvedValue([ALICE, ALICIA]);
+    renderPicker({ excludeIds: new Set([ALICE.id, ALICIA.id]) });
+    openPicker();
+    type('ali');
+    await pause();
+    expect(screen.getByText(SHARING_COPY.picker.allExcluded)).toBeTruthy();
+    expect(screen.queryByText(SHARING_COPY.picker.noMatches)).toBeNull();
+  });
+
+  it('counts characters, not UTF-16 units: one emoji is still one character', async () => {
+    renderPicker();
+    openPicker();
+    type(String.fromCodePoint(0x1f600));
+    await pause();
+    expect(searchMock).not.toHaveBeenCalled();
+    expect(screen.getByText(SHARING_COPY.picker.keepTyping)).toBeTruthy();
+  });
+
+  it('drops control, bidi and zero-width characters before searching (the server refuses them)', async () => {
+    searchMock.mockResolvedValue([]);
+    renderPicker();
+    openPicker();
+    const zwsp = String.fromCharCode(0x200b);
+    const rlo = String.fromCharCode(0x202e);
+    type(`al${zwsp}i${rlo}`);
+    await pause();
+    expect(searchMock).toHaveBeenCalledTimes(1);
+    expect(searchMock.mock.calls[0]?.[0]).toBe('ali');
+  });
+
+  it('a name that is only one letter once those characters are gone is not searched', async () => {
+    renderPicker();
+    openPicker();
+    type(`a${String.fromCharCode(0x200b)}`);
+    await pause();
+    expect(searchMock).not.toHaveBeenCalled();
+    expect(screen.getByText(SHARING_COPY.picker.keepTyping)).toBeTruthy();
+  });
+
+  it('sends at most 64 characters, counted as code points', async () => {
+    searchMock.mockResolvedValue([]);
+    renderPicker();
+    openPicker();
+    const smile = String.fromCodePoint(0x1f600);
+    type(`ab${smile.repeat(70)}`);
+    await pause();
+    const sent = searchMock.mock.calls[0]?.[0] ?? '';
+    expect([...sent]).toHaveLength(64);
+    expect(sent.startsWith('ab')).toBe(true);
+  });
+
+  it('a query the server refuses (400 invalid-query) gets guidance, not "couldn\'t search"', async () => {
+    searchMock.mockRejectedValue(new SharingRequestError('/admin/people', 400, 'invalid-query'));
+    renderPicker();
+    openPicker();
+    type('ali');
+    await pause();
+    expect(screen.getByText(SHARING_COPY.picker.searchInvalid)).toBeTruthy();
+    expect(screen.queryByText(SHARING_COPY.picker.searchFailed)).toBeNull();
   });
 
   it('fences a name before showing it', async () => {
@@ -142,7 +204,8 @@ describe('PeoplePicker', () => {
     expect(screen.getByText(SHARING_COPY.picker.searchRateLimited)).toBeTruthy();
   });
 
-  it("any other failure says search isn't working", async () => {
+  it("any other failure says search isn't working, and is logged", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     searchMock.mockRejectedValue(new Error('boom'));
     renderPicker();
     openPicker();
@@ -150,6 +213,8 @@ describe('PeoplePicker', () => {
     await pause();
     expect(screen.getByText(SHARING_COPY.picker.searchFailed)).toBeTruthy();
     expect(screen.queryByText(SHARING_COPY.picker.searchRateLimited)).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('a fixed option is listed first and reports its id', async () => {
@@ -194,6 +259,31 @@ describe('PeoplePicker', () => {
     });
     expect(screen.queryByText(SHARING_COPY.picker.searchFailed)).toBeNull();
     expect(screen.getByText(SHARING_COPY.picker.searching)).toBeTruthy();
+  });
+
+  it('an aborted search is not logged as a failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let rejectFirst: (e: unknown) => void = () => {};
+    searchMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<PersonMatch[]>((_r, rej) => {
+            rejectFirst = rej;
+          }),
+      )
+      .mockResolvedValue([]);
+    renderPicker();
+    openPicker();
+    type('ali');
+    await pause();
+    // The newer search runs and lands first; the old request then rejects as aborted.
+    type('alic');
+    await pause();
+    await act(async () => {
+      rejectFirst(new DOMException('aborted', 'AbortError'));
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('with people disabled, the fixed options still work and nobody is searched for', async () => {

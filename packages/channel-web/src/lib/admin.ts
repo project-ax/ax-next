@@ -204,8 +204,10 @@ export async function listAdminAgents(): Promise<AdminAgent[]> {
 
 /** Read the agent as it will run, including a temporary model fallback. */
 export async function getAdminAgent(id: string): Promise<AdminAgent> {
-  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, { credentials: 'include' });
-  if (!res.ok) throw new Error(`read agent: ${res.status}`);
+  const path = `/admin/agents/${encodeURIComponent(id)}`;
+  const res = await fetch(path, { credentials: 'include' });
+  // An HttpError, so a caller can tell a deleted agent (404) from a failure worth retrying.
+  if (!res.ok) throw new HttpError(path, res.status);
   const body = (await res.json()) as { agent: AdminAgent };
   return body.agent;
 }

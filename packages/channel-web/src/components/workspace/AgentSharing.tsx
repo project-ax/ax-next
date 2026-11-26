@@ -15,6 +15,7 @@ import { Inline, Notice, Stack, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
 import { Button } from '@/components/ui/button';
 import { getAdminAgent } from '@/lib/admin';
+import { HttpError, logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import type { AgentDetail } from '@/lib/workspace-api';
 import type { AgentSettingsSection } from '@/lib/workspace-route';
@@ -29,6 +30,7 @@ export interface AgentSharingProps {
 type Load =
   | { status: 'loading' }
   | { status: 'failed' }
+  | { status: 'not-found' }
   | { status: 'team' }
   | { status: 'not-owner' }
   | { status: 'ready'; sharing: SharingView };
@@ -58,8 +60,9 @@ export function AgentSharing({ agent, onSection }: AgentSharingProps) {
         if (a.visibility === 'team') next = { status: 'team' };
         else if (a.sharing === undefined) next = { status: 'not-owner' };
         else next = { status: 'ready', sharing: a.sharing };
-      } catch {
-        next = { status: 'failed' };
+      } catch (e) {
+        logRequestFailure(e, 'sharing: read agent');
+        next = e instanceof HttpError && e.status === 404 ? { status: 'not-found' } : { status: 'failed' };
       }
       if (live) setLoad(next);
     })();
@@ -77,6 +80,8 @@ export function AgentSharing({ agent, onSection }: AgentSharingProps) {
   if (load.status === 'loading') return <Text role="meta">{SHARING_COPY.loading}</Text>;
   if (load.status === 'team') return <Text>{SHARING_COPY.team(agent.name)}</Text>;
   if (load.status === 'not-owner') return <Text>{SHARING_COPY.errors.forbidden(agent.name)}</Text>;
+  // Gone: trying again can't bring it back.
+  if (load.status === 'not-found') return <Notice tone="danger">{SHARING_COPY.errors.notFound(agent.name)}</Notice>;
   if (load.status === 'failed') {
     return (
       <Notice

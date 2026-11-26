@@ -226,12 +226,15 @@ describe('ShareConfirmDialog', () => {
   it.each([
     ['refused', () => Promise.reject(new Error('connectors read failed'))],
     ['malformed', () => Promise.resolve({} as AgentConnectorsRead)],
-  ])("if the connections can't be read (%s), Share stays off and Try again reads them again", async (_, first) => {
+  ])("if the connections can't be read (%s), Share stays off, it is logged, and Try again reads them again", async (_, first) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     connectorsMock.mockImplementationOnce(first).mockResolvedValueOnce(answer([GMAIL]));
     const { props: p } = renderDialog();
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(SHARING_COPY.confirm.connectionsFailed(AGENT));
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
     expect(shareButton()).toBeDisabled();
     fireEvent.click(shareButton());
     expect(p.onShare).not.toHaveBeenCalled();

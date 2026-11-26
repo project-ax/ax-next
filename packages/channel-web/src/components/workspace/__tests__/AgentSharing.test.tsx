@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SharingView } from '@ax/agents';
 import { getAdminAgent, listAdminAgents, type AdminAgent } from '@/lib/admin';
 import { searchPeople, setAudience, setOwners, SharingRequestError } from '@/lib/agent-sharing-api';
+import { HttpError } from '@/lib/http';
 import { workspaceApi, type WorkspaceAgent } from '@/lib/workspace-api';
 import type { AgentConnectorRow, AgentConnectorsRead } from '@/lib/workspace-types';
 import { SHARING_COPY } from '@/lib/sharing-copy';
@@ -405,7 +406,8 @@ describe('AgentSharing — Same people as…', () => {
     expect(within(dialog).queryByText('Bob')).toBeNull();
   });
 
-  it('says so when the other list cannot be read', async () => {
+  it('says so when the other list cannot be read, and logs it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     serve({ audience: { kind: 'just-me' }, owners: [VINAY] }, [JUNIPER]);
     const base = getAgentMock.getMockImplementation();
     getAgentMock.mockImplementation(async (id) => {
@@ -416,6 +418,8 @@ describe('AgentSharing — Same people as…', () => {
     const dialog = await openChange();
     await chooseSameAs(dialog, 'Juniper');
     expect(await within(dialog).findByText(SHARING_COPY.picker.copyFailed('Juniper'))).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('is hidden when you have no other shared agent', async () => {
@@ -445,14 +449,28 @@ describe('AgentSharing — the section', () => {
     expect(screen.queryByRole('button', { name: SHARING_COPY.change })).toBeNull();
   });
 
-  it('a failed read says so, and Try again reads again', async () => {
-    getAgentMock.mockRejectedValueOnce(new Error('read agent: 500'));
+  it('a failed read says so, is logged, and Try again reads again', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getAgentMock.mockRejectedValueOnce(new HttpError('/admin/agents/agt_fern', 500));
     getAgentMock.mockResolvedValueOnce(adminAgent());
     renderSection();
     expect(await screen.findByText(SHARING_COPY.errors.loadFailed(FERN))).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
     fireEvent.click(screen.getByRole('button', { name: SHARING_COPY.tryAgain }));
     expect(await screen.findByRole('button', { name: SHARING_COPY.change })).toBeTruthy();
     expect(getAgentMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("an agent that isn't there (404) says so, with no Try again", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getAgentMock.mockRejectedValue(new HttpError('/admin/agents/agt_fern', 404));
+    renderSection();
+    expect(await screen.findByText(SHARING_COPY.errors.notFound(FERN))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: SHARING_COPY.tryAgain })).toBeNull();
+    expect(screen.queryByText(SHARING_COPY.errors.loadFailed(FERN))).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('heads the row with the question and lists up to two people, then a count', async () => {

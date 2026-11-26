@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
 import { setOwners, sharingErrorMessage, type PersonMatch } from '@/lib/agent-sharing-api';
+import { logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel, type RoutinesRunAs } from '@/lib/sharing-copy';
 import { useUser } from '@/lib/user-context';
 import { PeoplePicker } from './PeoplePicker';
@@ -81,6 +82,7 @@ function OpenAddOwnerDialog({ agentId, agentName, owners, onSaved, onClose }: Ad
       onSaved(sharing);
       onClose();
     } catch (e) {
+      logRequestFailure(e, 'sharing: add owner');
       if (live.current) setError(sharingErrorMessage(e, agentName));
     } finally {
       if (live.current) setSaving(false);

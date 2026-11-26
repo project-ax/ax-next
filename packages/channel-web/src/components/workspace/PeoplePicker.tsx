@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { ChevronsUpDown } from 'lucide-react';
+import { replaceSurfaceRewriters } from '@ax/core/surface-text';
 import { Stack, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
@@ -24,14 +25,30 @@ import {
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { searchPeople, SharingRequestError, type PersonMatch } from '@/lib/agent-sharing-api';
+import { logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 
 /** ConnectorDirectory's pause (settings/ConnectorDirectory.tsx). */
 export const PEOPLE_SEARCH_DEBOUNCE_MS = 300;
-/** Fewest characters the server will search for. */
+/** Fewest characters (code points) the server will search for. */
 const MIN_QUERY = 2;
-/** Most characters the server will search for. */
+/** Most characters (code points) the server will search for. */
 const MAX_QUERY = 64;
+/** The field's cap, in UTF-16 units (all `maxLength` counts): room for
+ *  MAX_QUERY code points of any kind. Anything past MAX_QUERY isn't sent. */
+const MAX_INPUT_UNITS = MAX_QUERY * 2;
+
+/**
+ * What the server is sent for `text`: whitespace runs to one space, then the
+ * control, bidi and zero-width characters it refuses (400 invalid-query)
+ * dropped, trimmed, and cut to MAX_QUERY code points. Dropped, not turned into
+ * spaces: a zero-width space pasted inside a name shouldn't split it.
+ */
+function searchQuery(text: string): string {
+  const cleaned = replaceSurfaceRewriters(text.replace(/\s+/g, ' '), '').trim();
+  const points = [...cleaned];
+  return points.length <= MAX_QUERY ? cleaned : points.slice(0, MAX_QUERY).join('').trimEnd();
+}
 
 export interface PeoplePickerProps {
   /** The field's accessible name. */
@@ -54,6 +71,7 @@ type SearchState =
   | { kind: 'searching' }
   | { kind: 'ready'; people: PersonMatch[] }
   | { kind: 'rate-limited' }
+  | { kind: 'invalid' }
   | { kind: 'failed' };
 
 export function PeoplePicker({
@@ -72,12 +90,13 @@ export function PeoplePicker({
   const inFlight = useRef<AbortController | null>(null);
   const latest = useRef(0);
 
-  const query = text.trim();
+  const query = searchQuery(text);
+  const queryChars = [...query].length;
 
   // Search once the typing pauses. Re-running (or leaving) aborts the request
   // in flight and moves the number on, so its answer never lands.
   useEffect(() => {
-    if (peopleDisabled || query.length < MIN_QUERY) {
+    if (peopleDisabled || [...query].length < MIN_QUERY) {
       setSearch({ kind: 'idle' });
       return;
     }
@@ -94,11 +113,14 @@ export function PeoplePicker({
         },
         (e: unknown) => {
           if (seq !== latest.current) return;
-          setSearch(
-            e instanceof SharingRequestError && e.code === 'rate-limited'
-              ? { kind: 'rate-limited' }
-              : { kind: 'failed' },
-          );
+          if (e instanceof SharingRequestError && e.code === 'rate-limited') {
+            setSearch({ kind: 'rate-limited' });
+          } else if (e instanceof SharingRequestError && e.code === 'invalid-query') {
+            setSearch({ kind: 'invalid' });
+          } else {
+            logRequestFailure(e, 'people search');
+            setSearch({ kind: 'failed' });
+          }
         },
       );
     }, PEOPLE_SEARCH_DEBOUNCE_MS);
@@ -115,15 +137,18 @@ export function PeoplePicker({
     setOpen(false);
   };
 
-  const people = !peopleDisabled && search.kind === 'ready' ? search.people.filter((p) => !excludeIds.has(p.id)) : [];
+  const found = !peopleDisabled && search.kind === 'ready' ? search.people : [];
+  const people = found.filter((p) => !excludeIds.has(p.id));
 
   let status: string | null = null;
   if (peopleDisabled) status = null;
-  else if (query.length > 0 && query.length < MIN_QUERY) status = SHARING_COPY.picker.keepTyping;
+  else if (text.trim().length > 0 && queryChars < MIN_QUERY) status = SHARING_COPY.picker.keepTyping;
   else if (search.kind === 'searching') status = SHARING_COPY.picker.searching;
   else if (search.kind === 'rate-limited') status = SHARING_COPY.picker.searchRateLimited;
+  else if (search.kind === 'invalid') status = SHARING_COPY.picker.searchInvalid;
   else if (search.kind === 'failed') status = SHARING_COPY.picker.searchFailed;
-  else if (search.kind === 'ready' && people.length === 0) status = SHARING_COPY.picker.noMatches;
+  else if (search.kind === 'ready' && found.length === 0) status = SHARING_COPY.picker.noMatches;
+  else if (search.kind === 'ready' && people.length === 0) status = SHARING_COPY.picker.allExcluded;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -147,7 +172,7 @@ export function PeoplePicker({
             placeholder={placeholder}
             value={text}
             onValueChange={setText}
-            maxLength={MAX_QUERY}
+            maxLength={MAX_INPUT_UNITS}
             disabled={peopleDisabled}
           />
           <CommandList>

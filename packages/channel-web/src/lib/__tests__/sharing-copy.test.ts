@@ -36,6 +36,7 @@ const ARGS: Record<string, unknown[][]> = {
   sharedBy: [['Vinay'], [null]],
   'errors.forbidden': [['Fern']],
   'errors.notFound': [['Fern']],
+  'errors.creatorRequired': [['Fern']],
   'errors.loadFailed': [['Fern']],
 };
 

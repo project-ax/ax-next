@@ -209,7 +209,8 @@ describe('AgentOwners — Add owner asks first', () => {
     expect(screen.getByText(SHARING_COPY.owners.cap)).toBeTruthy();
   });
 
-  it('a refused save shows the message and leaves the owners as they were', async () => {
+  it('a refused save shows the message, is logged, and leaves the owners as they were', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setOwnersMock.mockRejectedValue(
       new SharingRequestError('/admin/agents/agt_fern/owners', 400, 'unknown-person'),
     );
@@ -218,6 +219,8 @@ describe('AgentOwners — Add owner asks first', () => {
     fireEvent.click(within(confirm).getByRole('button', { name: SHARING_COPY.owners.confirm }));
 
     expect(await within(confirm).findByText(SHARING_COPY.errors.unknownPerson)).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
     // It stays on the confirmation, so Add owner can be tried again.
     expect(
       screen.getByRole('dialog', { name: SHARING_COPY.owners.confirmTitle('Carol', FERN) }),
@@ -280,7 +283,8 @@ describe('AgentOwners — Remove', () => {
     expect(setOwnersMock).toHaveBeenNthCalledWith(2, 'agt_fern', ['vinay']);
   });
 
-  it('a refused Remove says so and keeps the owner', async () => {
+  it('a refused Remove says so, is logged, and keeps the owner', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     setOwnersMock.mockRejectedValue(
       new SharingRequestError('/admin/agents/agt_fern/owners', 403, 'forbidden'),
     );
@@ -290,6 +294,8 @@ describe('AgentOwners — Remove', () => {
     expect(await screen.findByText(SHARING_COPY.errors.forbidden(FERN))).toBeTruthy();
     expect(rows()).toHaveLength(2);
     expect(removeButton('Bob')).toBeEnabled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('without a signed-in person, nobody has Remove (it could be you)', () => {

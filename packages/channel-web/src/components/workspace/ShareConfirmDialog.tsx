@@ -39,6 +39,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/spinner';
+import { logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { AgentConnectorRow, AgentConnectorsRead } from '@/lib/workspace-types';
@@ -183,7 +184,8 @@ function ShareConfirmBody({
         (connections) => {
           if (live) setRead({ status: 'ready', connections });
         },
-        () => {
+        (e: unknown) => {
+          logRequestFailure(e, 'sharing: read connections to confirm');
           if (live) setRead({ status: 'failed' });
         },
       );

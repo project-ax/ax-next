@@ -25,6 +25,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { OWNERS_MAX } from '@/lib/agent-sharing';
 import { setOwners, sharingErrorMessage } from '@/lib/agent-sharing-api';
+import { logRequestFailure } from '@/lib/http';
 import { SHARING_COPY, personLabel } from '@/lib/sharing-copy';
 import { useUser } from '@/lib/user-context';
 import { AddOwnerDialog } from './AddOwnerDialog';
@@ -62,6 +63,7 @@ export function AgentOwners({ agentId, agentName, owners, onSaved }: AgentOwners
       );
       if (live.current) onSaved(sharing);
     } catch (e) {
+      logRequestFailure(e, 'sharing: remove owner');
       if (live.current) setError(sharingErrorMessage(e, agentName));
     } finally {
       if (live.current) setRemoving(false);

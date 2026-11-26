@@ -75,6 +75,10 @@ export const SHARING_COPY = {
     keepTyping: 'Type at least two letters to search.',
     searching: 'Searching…',
     noMatches: "No one by that name. If they've never signed in here, ask them to sign in once.",
+    /** Everyone the search found is an owner or already chosen. */
+    allExcluded: 'Everyone by that name is already here.',
+    /** The server refused the text itself (400 invalid-query). */
+    searchInvalid: 'Search with just the letters of their name.',
     searchFailed: "We couldn't search just now. Try again in a moment.",
     searchRateLimited: 'That was a lot of searches. Wait a minute and try again.',
     save: 'Save',
@@ -156,6 +160,11 @@ export const SHARING_COPY = {
     forbidden: (agent: string): string =>
       `Only ${agent}'s owners can change who can use it. Ask one of them if you need a change.`,
     unknownPerson: "We couldn't find someone you picked. Search for them again, then save.",
+    /** Someone is on the list twice: usually another owner added them meanwhile. */
+    duplicatePerson: 'Someone you picked is already on the list. Reload the page to see the latest, then try again.',
+    /** The creator can't be taken off the owners; the page was out of date. */
+    creatorRequired: (agent: string): string =>
+      `${agent}'s creator always stays an owner. Reload the page to see the latest owners.`,
     accountsUnavailable: "We can't look people up right now. Try again in a moment.",
     notFound: (agent: string): string => `We can't find ${agent}. It may have been deleted.`,
     generic: "That didn't save. Try again in a moment.",
