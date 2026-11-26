@@ -42,6 +42,11 @@ import { HIDDEN_FORMAT_CHARS, REWRITES_THE_SURFACE } from '../../packages/core/s
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const OWNER = 'packages/core/src/surface-text.ts';
 const ROOTS = ['packages', 'presets'];
+// Files that USE a bidi isolate (wrap text in U+2068/U+2069) rather than copy the
+// class. ListRow's `description` is a plain string, so it cannot hold a <bdi>;
+// the isolate is the only way to keep a right-to-left account from reordering
+// the words around it.
+const ISOLATE_USERS = new Set(['packages/channel-web/src/components/workspace/AgentConnectors.tsx']);
 const SCRIPT = /\.(?:[cm]?[jt]sx?)$/;
 const TEST_PATH = /(?:^|\/)__tests__\/|\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
@@ -87,7 +92,7 @@ describe('surface-text class has one owner (TASK-562)', () => {
 
     const offenders = [];
     for (const path of files) {
-      if (path === OWNER) continue;
+      if (path === OWNER || ISOLATE_USERS.has(path)) continue;
       const lines = anchorLines(readFileSync(join(REPO_ROOT, path), 'utf8'));
       if (lines.length > 0) offenders.push(`${path}:${lines.join(',')}`);
     }
