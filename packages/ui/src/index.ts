@@ -16,3 +16,7 @@ export { StatusMark, type StatusMarkProps, type StatusTone } from './components/
 export { StatusBadge, type StatusBadgeProps } from './components/StatusBadge.js';
 export { Timestamp, type TimestampProps, type TimestampStyle } from './components/Timestamp.js';
 export { formatTimestamp, formatFullTimestamp } from './internal/time.js';
+export { Avatar, type AvatarProps } from './components/Avatar.js';
+export { KeyValueList, type KeyValueListProps } from './components/KeyValueList.js';
+export { Card, type CardProps } from './components/Card.js';
+export { InsetBlock, type InsetBlockProps } from './components/InsetBlock.js';

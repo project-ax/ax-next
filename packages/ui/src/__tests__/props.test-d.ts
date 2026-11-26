@@ -1,6 +1,6 @@
 import { describe, expectTypeOf, it } from 'vitest';
 import { Plus } from 'lucide-react';
-import { AsyncState, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
+import { AsyncState, Avatar, Card, InsetBlock, KeyValueList, Button, ConfirmAction, Divider, EmptyState, Notice, StatusBadge, StatusMark, Grid, Heading, IconButton, Inline, Stack, Text } from '../index.js';
 
 describe('props', () => {
   it('forbid className/style/as and off-scale values', () => {
@@ -84,6 +84,24 @@ describe('props', () => {
     const a1: P<typeof AsyncState> = { status: 'ready', skeleton: 'rows', loadingLabel: 'x', className: 'x' };
     // @ts-expect-error tone of an error is danger or info only
     const a2: P<typeof AsyncState> = { status: 'error', skeleton: 'rows', loadingLabel: 'x', error: { message: 'x', tone: 'warning' } };
+    // @ts-expect-error className is not a prop
+    const av1: P<typeof Avatar> = { name: 'x', className: 'x' };
+    // @ts-expect-error size is xs, sm, md or lg
+    const av2: P<typeof Avatar> = { name: 'x', size: 'xl' };
+    // @ts-expect-error name is required
+    const av3: P<typeof Avatar> = {};
+    // @ts-expect-error className is not a prop
+    const kv1: P<typeof KeyValueList> = { items: [], className: 'x' };
+    // @ts-expect-error layout is rows or stacked
+    const kv2: P<typeof KeyValueList> = { items: [], layout: 'grid' };
+    // @ts-expect-error className is not a prop
+    const cd1: P<typeof Card> = { children: 'x', className: 'x' };
+    // @ts-expect-error there is only one Card look, no variant
+    const cd2: P<typeof Card> = { children: 'x', variant: 'settings' };
+    // @ts-expect-error className is not a prop
+    const ib4: P<typeof InsetBlock> = { children: 'x', className: 'x' };
+    // @ts-expect-error style is not a prop
+    const ib5: P<typeof InsetBlock> = { children: 'x', style: {} };
     const confirm = { title: 'x', confirmLabel: 'Remove', onConfirm: () => {} };
     // @ts-expect-error trigger and open together
     const c1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove' }, open: true, onOpenChange: () => {} };
@@ -101,7 +119,7 @@ describe('props', () => {
     const c7: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'primary' } };
     const ok1: P<typeof ConfirmAction> = { ...confirm, trigger: { label: 'Remove', intent: 'quiet', size: 'sm', icon: Plus, iconOnly: true } };
     const ok2: P<typeof ConfirmAction> = { ...confirm, tone: 'neutral', open: false, onOpenChange: () => {} };
-    void [sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
+    void [av1, av2, av3, kv1, kv2, cd1, cd2, ib4, ib5, sm1, sm2, sb1, sb2, sb3, b1, b2, b3, ib1, ib2, ib3, n1, n2, e1, a1, a2, c1, c2, c3, c4, c5, c6, c7, ok1, ok2];
     void [bad, i1, i2, i3, i4, g1, g2, g3, g4, d1, d2, d3, t1, t2, t3, t4, h1, h2, h3];
   });
 });

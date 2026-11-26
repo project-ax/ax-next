@@ -58,6 +58,18 @@
 .ax-grid {
     display: grid
 }
+.ax-h-avatar-lg {
+    height: 36px
+}
+.ax-h-avatar-md {
+    height: 26px
+}
+.ax-h-avatar-sm {
+    height: 20px
+}
+.ax-h-avatar-xs {
+    height: 16px
+}
 .ax-h-control-md {
     height: 40px
 }
@@ -84,6 +96,18 @@
 }
 .ax-w-9\/10 {
     width: 90%
+}
+.ax-w-avatar-lg {
+    width: 36px
+}
+.ax-w-avatar-md {
+    width: 26px
+}
+.ax-w-avatar-sm {
+    width: 20px
+}
+.ax-w-avatar-xs {
+    width: 16px
 }
 .ax-w-control-md {
     width: 40px
@@ -136,6 +160,9 @@
 }
 .ax-animate-spin {
     animation: ax-spin 1s linear infinite
+}
+.ax-select-none {
+    user-select: none
 }
 .ax-grid-cols-1 {
     grid-template-columns: repeat(1, minmax(0, 1fr))
@@ -218,6 +245,9 @@
 .ax-self-stretch {
     align-self: stretch
 }
+.ax-overflow-hidden {
+    overflow: hidden
+}
 .ax-overflow-y-auto {
     overflow-y: auto
 }
@@ -260,8 +290,16 @@
     --tw-border-opacity: 1;
     border-color: hsl(var(--ax-line-border) / var(--tw-border-opacity, 1))
 }
+.ax-border-line-soft {
+    --tw-border-opacity: 1;
+    border-color: hsl(var(--ax-line-soft) / var(--tw-border-opacity, 1))
+}
 .ax-border-transparent {
     border-color: transparent
+}
+.ax-bg-accent-soft {
+    --tw-bg-opacity: 1;
+    background-color: hsl(var(--ax-accent-soft) / var(--tw-bg-opacity, 1))
 }
 .ax-bg-action {
     --tw-bg-opacity: 1;
@@ -334,6 +372,10 @@
     padding-top: var(--ax-space-none);
     padding-bottom: var(--ax-space-none)
 }
+.ax-py-sm {
+    padding-top: var(--ax-space-sm);
+    padding-bottom: var(--ax-space-sm)
+}
 .ax-py-xs {
     padding-top: var(--ax-space-xs);
     padding-bottom: var(--ax-space-xs)
@@ -347,11 +389,34 @@
 .ax-text-center {
     text-align: center
 }
+.ax-text-right {
+    text-align: right
+}
 .ax-font-mono {
     font-family: var(--ax-font-mono)
 }
 .ax-font-sans {
     font-family: var(--ax-font-sans)
+}
+.ax-text-avatar-lg {
+    font-size: 14px;
+    line-height: 1;
+    font-weight: 500
+}
+.ax-text-avatar-md {
+    font-size: 10px;
+    line-height: 1;
+    font-weight: 500
+}
+.ax-text-avatar-sm {
+    font-size: 9px;
+    line-height: 1;
+    font-weight: 500
+}
+.ax-text-avatar-xs {
+    font-size: 9px;
+    line-height: 1;
+    font-weight: 500
 }
 .ax-text-body {
     font-size: var(--ax-text-body-size);
@@ -398,6 +463,10 @@
     line-height: var(--ax-text-title-line);
     font-weight: var(--ax-text-title-weight)
 }
+.ax-text-accent {
+    --tw-text-opacity: 1;
+    color: hsl(var(--ax-accent) / var(--tw-text-opacity, 1))
+}
 .ax-text-fg {
     --tw-text-opacity: 1;
     color: hsl(var(--ax-fg-default) / var(--tw-text-opacity, 1))
@@ -440,7 +509,14 @@
 .ax-shadow-overlay {
     --tw-shadow: var(--ax-elevation-overlay);
     --tw-shadow-colored: var(--ax-elevation-overlay);
-    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)
+}
+.ax-shadow-raised {
+    --tw-shadow: var(--ax-elevation-raised);
+    --tw-shadow-colored: var(--ax-elevation-raised);
+    box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow)
+}
+.ax-shadow-overlay {
     --tw-shadow-color: hsl(var(--ax-bg-overlay) / 1);
     --tw-shadow: var(--tw-shadow-colored)
 }

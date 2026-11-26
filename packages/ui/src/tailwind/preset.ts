@@ -30,6 +30,9 @@ function colorEntries(): Record<string, string> {
 // Control sizes: not part of the spacing scale, so they get their own keys (md control 40px, sm 36px, touch target 44px).
 const CONTROL = { 'control-sm': '36px', 'control-md': '40px', touch: '44px' };
 
+// Avatar sizes (xs 16, sm 20, md 26, lg 36 px): square boxes, named tokens rather than arbitrary values.
+const AVATAR = { 'avatar-xs': '16px', 'avatar-sm': '20px', 'avatar-md': '26px', 'avatar-lg': '36px' };
+
 const keyed = <T extends Record<string, unknown>>(group: T, f: (k: string) => string): Record<string, string> =>
   Object.fromEntries(Object.keys(group).map((k) => [k, f(k)]));
 
@@ -41,12 +44,19 @@ export const axPreset: Config = {
     screens: { md: '768px', lg: '1024px' },
     spacing: keyed(space, (k) => v(`space-${k}`)),
     colors: { transparent: 'transparent', current: 'currentColor', ...colorEntries() },
-    fontSize: Object.fromEntries(
-      Object.keys(text).map((role) => [
-        role,
-        [v(`text-${role}-size`), { lineHeight: v(`text-${role}-line`), fontWeight: v(`text-${role}-weight`) }],
-      ]),
-    ),
+    fontSize: {
+      ...Object.fromEntries(
+        Object.keys(text).map((role) => [
+          role,
+          [v(`text-${role}-size`), { lineHeight: v(`text-${role}-line`), fontWeight: v(`text-${role}-weight`) }],
+        ]),
+      ),
+      // Avatar initials, about 38% of the tile (the old AgentTile ratio, floored at 9px).
+      'avatar-xs': ['9px', { lineHeight: '1', fontWeight: '500' }],
+      'avatar-sm': ['9px', { lineHeight: '1', fontWeight: '500' }],
+      'avatar-md': ['10px', { lineHeight: '1', fontWeight: '500' }],
+      'avatar-lg': ['14px', { lineHeight: '1', fontWeight: '500' }],
+    },
     fontFamily: { sans: v('font-sans'), mono: v('font-mono') },
     borderRadius: keyed(radius, (k) => v(`radius-${k}`)),
     boxShadow: { flat: v('elevation-flat'), raised: v('elevation-raised'), overlay: v('elevation-overlay') },
@@ -59,8 +69,8 @@ export const axPreset: Config = {
     },
     // Added on top of the token scales: control heights (Button, IconButton), the 44px touch target below md, and the skeleton block height / 90% line width.
     extend: {
-      height: { ...CONTROL, 'skeleton-block': '160px' },
-      width: { ...CONTROL, '9/10': '90%' },
+      height: { ...CONTROL, ...AVATAR, 'skeleton-block': '160px' },
+      width: { ...CONTROL, ...AVATAR, '9/10': '90%' },
       minHeight: CONTROL,
       minWidth: CONTROL,
       // A shrink-to-fit inline box (StatusBadge) caps at its container so its text can truncate.
