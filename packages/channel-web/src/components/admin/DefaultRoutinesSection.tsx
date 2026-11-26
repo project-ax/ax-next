@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2, Pencil, Plus } from 'lucide-react';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,7 +19,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   listDefaultRoutines,
@@ -47,6 +48,7 @@ export function DefaultRoutinesSection() {
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [editReadTick, setEditReadTick] = useState(0);
   const [editorPending, setEditorPending] = useState(false);
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -54,7 +56,6 @@ export function DefaultRoutinesSection() {
   const [editingInitial, setEditingInitial] =
     useState<RoutineDefinition | null>(null);
   const [editLoadError, setEditLoadError] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   async function refresh() {
     setError(null);
@@ -98,18 +99,7 @@ export function DefaultRoutinesSection() {
     return () => {
       cancelled = true;
     };
-  }, [editingId]);
-
-  async function handleDelete(id: string) {
-    try {
-      await deleteDefaultRoutine(id);
-      setPendingDelete(null);
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
-    }
-  }
+  }, [editingId, editReadTick]);
 
   return (
     <Card>
@@ -122,7 +112,7 @@ export function DefaultRoutinesSection() {
           }}
         >
           <DialogTrigger asChild>
-            <Button size="sm">
+            <Button size="sm" data-return-focus="default-routines">
               <Plus className="h-3.5 w-3.5 mr-1" />
               New default routine
             </Button>
@@ -148,16 +138,15 @@ export function DefaultRoutinesSection() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger" action={{ label: 'Try again', onClick: () => void refresh() }}>{error}</Notice>
         )}
         {defaults === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading default routines" />
         ) : defaults.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No default routines yet. Click "New default routine" to add one.
-          </p>
+          error ? null : <EmptyState
+            title="No default routines yet."
+            description={'Click "New default routine" to add one.'}
+          />
         ) : (
           <Table>
             <TableHeader>
@@ -200,14 +189,19 @@ export function DefaultRoutinesSection() {
                     >
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setPendingDelete(d.defaultRoutineId)}
-                      aria-label={`Delete ${d.name}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <ConfirmAction
+                      trigger={{ label: `Delete ${d.name}`, intent: 'quiet', size: 'sm', icon: Trash2, iconOnly: true }}
+                      title="Delete default routine?"
+                      description={`Delete ${d.defaultRoutineId}? This cascades to every agent that materialized this template. The next tick will not re-create them.`}
+                      confirmLabel="Delete"
+                      errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+                      onConfirm={async () => {
+                        await deleteDefaultRoutine(d.defaultRoutineId);
+                        await refresh();
+                        // The row that opened this is gone; park focus on the list's primary action.
+                        focusAfterRemoval('[data-return-focus="default-routines"]');
+                      }}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
@@ -227,11 +221,14 @@ export function DefaultRoutinesSection() {
                 <DialogTitle>Edit default routine: {editingId}</DialogTitle>
               </DialogHeader>
               {editLoadError !== null ? (
-                <Alert variant="destructive">
-                  <AlertDescription>{editLoadError}</AlertDescription>
-                </Alert>
+                <Notice
+                  tone="danger"
+                  action={{ label: 'Try again', onClick: () => setEditReadTick((n) => n + 1) }}
+                >
+                  {editLoadError}
+                </Notice>
               ) : editingInitial === null ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
+                <AsyncState status="loading" skeleton="lines" loadingLabel="Loading default routine" />
               ) : (
                 <DefaultRoutineEditor
                   onPendingChange={setEditorPending}
@@ -247,40 +244,6 @@ export function DefaultRoutinesSection() {
                   onCancel={() => setEditingId(null)}
                 />
               )}
-            </DialogContent>
-          </Dialog>
-        )}
-
-        {pendingDelete !== null && (
-          <Dialog
-            open={true}
-            onOpenChange={(o) => {
-              if (!o) setPendingDelete(null);
-            }}
-          >
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Delete default routine?</DialogTitle>
-              </DialogHeader>
-              <p className="text-sm text-muted-foreground">
-                Delete <code className="font-mono">{pendingDelete}</code>? This
-                cascades to every agent that materialized this template. The
-                next tick will not re-create them.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setPendingDelete(null)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => void handleDelete(pendingDelete)}
-                >
-                  Delete
-                </Button>
-              </div>
             </DialogContent>
           </Dialog>
         )}

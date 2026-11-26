@@ -72,20 +72,11 @@
  * is in `AgentSlack.test.tsx`).
  */
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Spinner } from '@/components/ui/spinner';
+import { Button as AxButton, ConfirmAction, Inline, Notice } from '@project-ax/ui';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { AgentSlackMenu } from './AgentSlackMenu';
 import { AgentSlackBotChannels } from './AgentSlackBotChannels';
@@ -107,11 +98,9 @@ import {
   type AgentSlackBot as Bot,
   type BotChannelRow,
 } from '@/lib/agent-slack';
-import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
-import { cn } from '@/lib/utils';
 import { BOT_TOKEN_COPY } from '@/lib/slack-token-copy';
 
 /**
@@ -173,16 +162,6 @@ export interface AgentSlackBotProps {
 /** Who adds the bot in Slack: an admin, asked for the person, or the person themselves (the install-it-myself path). */
 type Way = 'admin' | 'self';
 
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
-
 /**
  * The frame every state draws (TASK-1187). The title is where things stand, in
  * a sentence and as a heading, so a screen reader hears the state when it moves
@@ -215,11 +194,10 @@ function SlackCard({
   );
 }
 
-/** A cancel on its way: a quiet status line. The spinner is decoration, so its own status role stays hidden. */
+/** A cancel on its way: a quiet status line. */
 function Cancelling() {
   return (
-    <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Spinner aria-hidden="true" />
+    <p role="status" className="text-sm text-muted-foreground">
       {AGENT_SLACK_CARD_COPY.cancelling}
     </p>
   );
@@ -234,9 +212,8 @@ function Cancelling() {
  */
 export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
   return (
-    <Alert>
-      <AlertDescription>
-        {leftOver.how === 'disconnected' ? 'We removed the bot from Slack' : 'We cancelled the request'}, but we
+    <Notice tone="info">
+      {leftOver.how === 'disconnected' ? 'We removed the bot from Slack' : 'We cancelled the request'}, but we
         couldn&apos;t confirm its Slack app was deleted, so it may still be on Slack. An admin can find it in Admin › Slack, under the apps we couldn&apos;t delete.{' '}
         {/* Slack's app page lists only your own apps, so the link is only any use to the one who made it. */}
         {leftOver.approverIsViewer ? (
@@ -246,8 +223,7 @@ export function AppLeftOverNote({ leftOver }: { leftOver: BotCancelled }) {
         ) : leftOver.approverGone === true ? null : (
           `${leftOver.approver} set it up and can also delete it in Slack's app settings.`
         )}
-      </AlertDescription>
-    </Alert>
+    </Notice>
   );
 }
 
@@ -282,9 +258,7 @@ export function AgentSlackBot({
           notice={
             <>
               {rebuilding !== null && (
-                <Alert>
-                  <AlertDescription>{AGENT_SLACK_CARD_COPY.removedNotice(rebuildWho(rebuilding))}</AlertDescription>
-                </Alert>
+                <Notice tone="info">{AGENT_SLACK_CARD_COPY.removedNotice(rebuildWho(rebuilding))}</Notice>
               )}
               {leftOver !== null && !leftOver.appDeleted && <AppLeftOverNote leftOver={leftOver} />}
             </>
@@ -441,13 +415,13 @@ function RequestForm({
           {way === 'self' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.slackHasFinalSay}</p>}
         </FieldGroup>
         {formError !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{formError}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{formError}</Notice>
         )}
-        <Button type="submit" className="self-start" disabled={busy}>
-          {busy ? <Busy>{way === 'admin' ? 'Asking…' : 'Adding…'}</Busy> : 'Add to Slack'}
-        </Button>
+        <Inline>
+          <AxButton type="submit" intent="primary" busy={busy}>
+            Add to Slack
+          </AxButton>
+        </Inline>
         {way === 'admin' && <p className="text-sm text-muted-foreground">{AGENT_SLACK_CARD_COPY.adminWillApprove}</p>}
         {/* One link that flips the way, so focus stays on it when its words change. Not a submit: type="button". */}
         <Button
@@ -516,9 +490,7 @@ function Requested({
       }
     >
       {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
       {busy && <Cancelling />}
     </SlackCard>
@@ -584,14 +556,14 @@ function Pending({
       }
     >
       {bot.canContinue && (
-        <Button className="self-start" disabled={busy !== null} onClick={() => void run('continue')}>
-          {busy === 'continue' ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
-        </Button>
+        <Inline>
+          <AxButton intent="primary" busy={busy === 'continue'} disabled={busy === 'cancel'} onClick={() => void run('continue')}>
+            Continue in Slack
+          </AxButton>
+        </Inline>
       )}
       {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
       {busy === 'cancel' && <Cancelling />}
     </SlackCard>
@@ -690,7 +662,7 @@ function Live({
     setDialog(d);
   };
   // A reconnect unmounts the token row that held the Reconnect button the dialog would return focus to, so the notice takes it.
-  const savedNotice = useRef<HTMLDivElement>(null);
+  const savedNotice = useRef<HTMLElement>(null);
   const focusSavedNotice = (e: Event) => {
     if (savedNotice.current === null) return;
     e.preventDefault();
@@ -734,25 +706,22 @@ function Live({
       {rows.map((row) => {
         const action = row.action;
         return (
-          <Alert key={row.key}>
-            <AlertDescription className="flex flex-col items-start gap-3">
-              <p>{row.text}</p>
-              {action !== null && (
-                <Button variant="outline" size="sm" onClick={() => open(action.dialog)}>
-                  {action.label}
-                </Button>
-              )}
-            </AlertDescription>
-          </Alert>
+          <Notice
+            key={row.key}
+            tone="info"
+            {...(action !== null ? { action: { label: action.label, onClick: () => open(action.dialog) } } : {})}
+          >
+            {row.text}
+          </Notice>
         );
       })}
       {saved !== null && (
         // Where focus lands after a Reconnect: a visible ring for a keyboard user (the TASK-427 landing rule).
-        <Alert ref={savedNotice} tabIndex={-1} className={cn('rounded-sm', RESOLUTION_FOCUS_RING)}>
-          <AlertDescription>
+        <section ref={savedNotice} tabIndex={-1}>
+          <Notice tone="success">
             {saved === 'picture' ? AGENT_SLACK_BOT_CHANGE_COPY.pictureChanged : BOT_TOKEN_COPY.replaced(bot.botName)}
-          </AlertDescription>
-        </Alert>
+          </Notice>
+        </section>
       )}
       {channels.length > 0 && (
         <AgentSlackBotChannels invite={bot} channels={channels} />
@@ -849,20 +818,9 @@ function DisconnectBotDialog({
   onCancelled: (cancelled: BotCancelled) => void;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const who = botWho(bot);
 
-  const close = (next: boolean) => {
-    if (busy || next) return;
-    setError(null);
-    onClose();
-  };
-
   async function confirm() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
     try {
       const { appDeleted } = await disconnectSlackBot(agentId, installId);
       // The bot is gone: say how it went before the status is read again and this section goes with it.
@@ -876,41 +834,26 @@ function DisconnectBotDialog({
       onChanged();
     } catch (err) {
       logRequestFailure(err, 'agent-slack');
+      // The bot is already gone: closing and reading again is the whole answer, so return normally.
       if (agentSlackBotStale(err)) {
-        setError(null);
-        onClose();
         onChanged();
-      } else {
-        setError(agentSlackBotErrorCopy(err).message);
+        return;
       }
-    } finally {
-      setBusy(false);
+      throw err;
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{`Remove ${who} from Slack?`}</DialogTitle>
-          <DialogDescription>
-            {`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
-          </DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
-            Keep it
-          </Button>
-          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>Removing…</Busy> : 'Remove'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={`Remove ${who} from Slack?`}
+      description={`${bot.botName} leaves every Slack channel it's in, and ${bot.handle !== null ? `@${bot.handle}` : 'mentioning it'} stops working. We'll delete its Slack app.`}
+      confirmLabel="Remove"
+      errorMessage={(err) => agentSlackBotErrorCopy(err).message}
+      onConfirm={confirm}
+    />
   );
 }

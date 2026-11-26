@@ -168,9 +168,9 @@ describe('AgentSettings — desktop', () => {
     ],
   ] as const)('says the %s section is empty, honestly, with no controls', (section, title, body) => {
     render(<Harness initial={section} />);
-    const empty = document.querySelector('[data-slot="empty"]');
+    // The empty state is the title's own block: its description sits beside it.
+    const empty = screen.getByText(title).parentElement;
     expect(empty).not.toBeNull();
-    expect(within(empty as HTMLElement).getByText(title)).toBeTruthy();
     if (body !== null) expect(within(empty as HTMLElement).getByText(body)).toBeTruthy();
     // No fake controls: nothing to press, type in or toggle inside it.
     expect(within(empty as HTMLElement).queryAllByRole('button')).toHaveLength(0);
@@ -190,7 +190,7 @@ describe('AgentSettings — desktop', () => {
     expect(screen.getByRole('link', { name: 'Open Tasks' })).toHaveAttribute('href', '/workspace/tasks');
     expect(screen.queryByRole('button', { name: 'New routine' })).toBeNull();
     expect(screen.getByText(/built-in maintenance/)).toBeVisible();
-    expect(screen.getByLabelText('Loading task permissions')).toBeVisible();
+    expect(screen.getByText('Loading task permissions')).toBeVisible();
   });
 
   it('draws the memories list it is given under Memory', () => {

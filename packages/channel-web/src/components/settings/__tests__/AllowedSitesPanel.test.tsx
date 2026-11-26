@@ -80,6 +80,11 @@ describe('AllowedSitesPanel', () => {
     const allRow = await screen.findByTestId('allowed-site-all.example.com');
     fireEvent.click(within(allRow).getByRole('button', { name: 'Remove' }));
 
+    // Asks first: nothing is revoked until the dialog's "Remove site" is clicked.
+    const dialog = await screen.findByRole('dialog', { name: 'Remove all.example.com?' });
+    expect(connLib.setSiteAgents).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove site' }));
+
     await waitFor(() =>
       expect(connLib.setSiteAgents).toHaveBeenCalledWith(
         'all.example.com',
@@ -87,13 +92,25 @@ describe('AllowedSitesPanel', () => {
         expect.arrayContaining(['a1', 'a2']),
       ),
     );
+    expect(connLib.setSiteAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel on the remove dialog revokes nothing', async () => {
+    render(<AllowedSitesPanel />);
+    const allRow = await screen.findByTestId('allowed-site-all.example.com');
+    fireEvent.click(within(allRow).getByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove all.example.com?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(connLib.setSiteAgents).not.toHaveBeenCalled();
   });
 
   it('disables Add when the user has no agents', async () => {
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([]);
     vi.spyOn(connLib, 'listAllAllowedSites').mockResolvedValue([]);
     render(<AllowedSitesPanel />);
-    await screen.findByText('No allowed sites yet — add one above.');
+    await screen.findByText('No allowed sites yet');
+    expect(screen.getByText('Add one above.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
   });
 
@@ -131,6 +148,7 @@ describe('AllowedSitesPanel', () => {
       render(<AllowedSitesPanel />);
       const row = await screen.findByTestId('allowed-site-all.example.com');
       fireEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Remove site' }));
       await waitFor(() =>
         expect(connLib.setSiteAgents).toHaveBeenCalledWith('all.example.com', [], ['a1']),
       );
@@ -162,10 +180,9 @@ describe('AllowedSitesPanel', () => {
       ]);
       render(<AllowedSitesPanel />);
       // Not "add one above": there is nothing here to add one to.
-      await screen.findByText(
-        'Your agents are all team agents. Their sites are in each agent’s settings, under Connectors.',
-      );
-      expect(screen.queryByText('No allowed sites yet — add one above.')).toBeNull();
+      await screen.findByText('Your agents are all team agents');
+      expect(screen.getByText('Their sites are in each agent’s settings, under Connectors.')).toBeInTheDocument();
+      expect(screen.queryByText('No allowed sites yet')).toBeNull();
       expect(screen.queryByTestId('allowed-site-teamonly.example.com')).toBeNull();
       expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
     });
@@ -175,8 +192,28 @@ describe('AllowedSitesPanel', () => {
       render(<AllowedSitesPanel />);
       expect(await screen.findByRole('alert')).toBeInTheDocument();
       expect(screen.queryByTestId('allowed-site-all.example.com')).toBeNull();
-      expect(screen.queryByText('No allowed sites yet — add one above.')).toBeNull();
+      expect(screen.queryByText('No allowed sites yet')).toBeNull();
       expect(screen.getByRole('button', { name: 'Add a site' })).toBeDisabled();
+    });
+
+    it('Try again re-reads both lists, and the list appears once they come back', async () => {
+      const agents = vi
+        .spyOn(agentsLib, 'listChatAgents')
+        .mockRejectedValueOnce(new Error('nope'))
+        .mockResolvedValue([WITH_TEAM[0]!]);
+      const sites = vi
+        .spyOn(connLib, 'listAllAllowedSites')
+        .mockRejectedValueOnce(new Error('nope'))
+        .mockResolvedValue([{ host: 'back.example.com', agentId: WITH_TEAM[0]!.agentId, grantedAt: 't' }]);
+      render(<AllowedSitesPanel />);
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      // A failed read is not an empty list.
+      expect(screen.queryByText('No allowed sites yet')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+      expect(await screen.findByTestId('allowed-site-back.example.com')).toBeInTheDocument();
+      expect(agents).toHaveBeenCalledTimes(2);
+      expect(sites).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole('alert')).toBeNull();
     });
   });
 });

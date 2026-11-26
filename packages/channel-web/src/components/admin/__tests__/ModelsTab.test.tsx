@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { ModelsTab } from '../ModelsTab';
 
 const OPUS = 'anthropic/claude-opus-4-7';
@@ -72,8 +72,8 @@ beforeEach(() => {
       return handler(c);
     }),
   );
-  toastActions.reset();
-  showToast = vi.spyOn(toastActions, 'show');
+  toast.dismissAll();
+  showToast = vi.spyOn(toast, 'show');
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -244,7 +244,7 @@ describe('ModelsTab — saving', () => {
     expect(await screen.findByText('Someone else just changed this list. Reload to see their version.')).toBeInTheDocument();
     pol = policy({ version: 3, allowed: [KIMI], default: KIMI });
     handler = defaultHandler;
-    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reload and discard my changes' }));
     await screen.findByRole('tab', { name: 'Enabled' });
     enabledTab();
     await screen.findByRole('heading', { name: 'Available to users (1)' });

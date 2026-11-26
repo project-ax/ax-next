@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button } from '@/components/ui/button';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { fetchOwnUsage, type PersonalUsage } from '@/lib/usage-admin';
 import { formatUsd } from '@/lib/usage-copy';
 
@@ -29,23 +29,22 @@ export function PersonalUsageLine() {
     };
   }, [attempt]);
   return (
-    <div className="px-2.5 py-2 text-xs text-muted-foreground" role="status">
+    <div className="px-2.5 py-2 text-xs text-muted-foreground">
       {failed ? (
-        <div className="flex items-center justify-between gap-2">
-          <span>Usage unavailable</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
+        <Notice
+          tone="danger"
+          action={{
+            label: 'Try again',
+            onClick: () => {
               setFailed(false);
               setAttempt((n) => n + 1);
-            }}
-          >
-            Retry
-          </Button>
-        </div>
+            },
+          }}
+        >
+          Usage unavailable
+        </Notice>
       ) : usage ? (
-        <>
+        <div role="status">
           <p>
             {formatUsd(usage.spendUsd)} of {formatUsd(usage.limits.dailySpendUsd)} used in the last
             24 hours
@@ -53,9 +52,9 @@ export function PersonalUsageLine() {
           <p>
             {usage.turnsLastHour} of {usage.limits.turnsPerHour} messages in the last hour
           </p>
-        </>
+        </div>
       ) : (
-        'Loading your usage…'
+        <AsyncState status="loading" skeleton="lines" loadingLabel="Loading your usage" />
       )}
     </div>
   );

@@ -56,7 +56,7 @@ import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { logRequestFailure } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { grantResumedTitle } from '@/lib/grant-copy';
 import { chatsFromDetail, type SidebarChatCommand, type SidebarChatList } from '@/lib/sidebar-chats';
 import {
@@ -755,7 +755,7 @@ function Inner({
           that looks like nothing happened is the same silence in a smaller
           size.
         */
-        toastActions.show({
+        toast.show({
           title: grantResumedTitle(
             board?.agents.find((a) => a.id === grant.agentId)?.name ?? null,
           ),
@@ -810,10 +810,11 @@ function Inner({
         // The agent exists, it just has not been greeted — never silently. The
         // words below are the way forward, not a claim we said anything for
         // them: the person types, and the bootstrap script runs on that.
-        toastActions.error(
-          'Your agent is ready, but we could not say hello for you.',
-          'Send it a message to get started — it will introduce itself.',
-        );
+        toast.show({
+          title: 'Your agent is ready, but we could not say hello for you.',
+          description: 'Send it a message to get started — it will introduce itself.',
+          tone: 'danger',
+        });
         navigate({ kind: 'agent', id, tab: 'chat' });
       })
       // Both branches above have navigated by now (TASK-547).

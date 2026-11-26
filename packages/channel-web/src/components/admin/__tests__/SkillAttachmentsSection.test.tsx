@@ -170,6 +170,21 @@ describe('SkillAttachmentsSection', () => {
     });
   });
 
+  it('a failed skill-list read offers Try again, which reads it again (a save error has no such button)', async () => {
+    mockListSkills.mockReset();
+    mockListSkills.mockRejectedValueOnce(new Error('skills-list-down'));
+    mockListSkills.mockResolvedValueOnce([GITHUB_SKILL, SLACK_SKILL]);
+    render(<SkillAttachmentsSection isAdmin agentId={AGENT_ID} initialAttachments={[]} onSaved={vi.fn()} />);
+    await screen.findByText('skills-list-down');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(screen.queryByText('skills-list-down')).toBeNull());
+    expect(mockListSkills).toHaveBeenCalledTimes(2);
+    mockPatch.mockRejectedValueOnce(new Error('foreign key violation'));
+    fireEvent.click(screen.getByRole('button', { name: /save attachments/i }));
+    await screen.findByText('foreign key violation');
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
   it('server-side error surfaces inline', async () => {
     mockPatch.mockRejectedValueOnce(new Error('foreign key violation'));
     render(

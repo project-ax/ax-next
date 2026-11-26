@@ -12,13 +12,8 @@ import { SettingsActions } from '../settings/SettingsLayout';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { PaneStatus } from '../PaneStatus';
+import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthProviders,
   setAuthProviderEnabled,
@@ -64,6 +59,7 @@ export function AuthProvidersTab() {
   const [pendingDelete, setPendingDelete] = useState<AuthProviderEntry | null>(
     null,
   );
+
 
   const fetchProviders = async () => {
     setLoading(true);
@@ -123,60 +119,50 @@ export function AuthProvidersTab() {
 
   const confirmDisable = async () => {
     if (!pendingDisable) return;
-    const p = pendingDisable;
-    setPendingDisable(null);
-    await applyToggle(p);
+    // applyToggle reports its own failure on the page, so the dialog always closes.
+    await applyToggle(pendingDisable);
   };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     setActionError(null);
-    try {
-      await deleteAuthProvider(pendingDelete.kind);
-      await fetchProviders();
-      setPendingDelete(null);
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
-    }
+    await deleteAuthProvider(pendingDelete.kind);
+    await fetchProviders();
+    // The provider's row is gone with it; park focus on the page's primary action.
+    focusAfterRemoval('[data-return-focus="auth-providers"]');
   };
 
   return (
     <div className="font-sans">
-      <SettingsActions><Button type="button" onClick={() => setAdding(true)}>Add provider</Button></SettingsActions>
+      <SettingsActions><Button type="button" data-return-focus="auth-providers" onClick={() => setAdding(true)}>Add provider</Button></SettingsActions>
 
-      {loading && <PaneStatus variant="loading">Loading providers…</PaneStatus>}
+      {loading && <AsyncState status="loading" skeleton="rows" loadingLabel="Loading providers…" />}
 
+      {/* The raw message went to the console with TASK-342; the button says "Try again", the label the audit and
+          the track's copy spec settle on (TASK-341 introduced the same pair in ModelConfigTab). */}
       {loadError && (
-        <PaneStatus variant="error" className="mb-3 flex items-center justify-between gap-3">
-          {/* The raw message went to the console with TASK-342; and the button
-              says "Try again" now, which is the label the audit and the track's
-              copy spec settle on. TASK-341 introduced the same pair in
-              ModelConfigTab and flagged that this one still read "Retry" —
-              this is that alignment. */}
-          <span>We couldn’t load your sign-in methods.</span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchProviders()}
-          >
-            Try again
-          </Button>
-        </PaneStatus>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading providers…"
+          error={{ message: 'We couldn’t load your sign-in methods.', onRetry: () => void fetchProviders() }}
+        />
       )}
 
       {actionError && (
-        <PaneStatus variant="error" className="mb-3">
-          {actionError}
-        </PaneStatus>
+        <Notice tone="danger">{actionError}</Notice>
       )}
 
       {!loading && !loadError && providers.length === 0 && !adding && (
-        <PaneStatus variant="empty">
-          No identity providers configured. Add one to let users sign in with
-          Google or GitHub.
-        </PaneStatus>
+        <AsyncState
+          status="empty"
+          skeleton="rows"
+          loadingLabel="Loading providers…"
+          empty={{
+            title: 'No identity providers configured',
+            description: 'Add one to let users sign in with Google or GitHub.',
+          }}
+        />
       )}
 
       <ul className="flex flex-col list-none m-0 p-0">
@@ -246,67 +232,28 @@ export function AuthProvidersTab() {
 
       {/* (D5) The last sign-in method asks before it goes. Nothing else on this
           page can lock every user, including this admin, out of the product. */}
-      {pendingDisable !== null && (
-        <Dialog
-          open={true}
-          onOpenChange={(v) => {
-            if (!v) setPendingDisable(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Turn off the only way to sign in?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              <span className="font-medium text-foreground">
-                {labelFor(pendingDisable.kind)}
-              </span>{' '}
-              is the only sign-in method still switched on. Turning it off will
-              lock everyone out — including you, and including this page. Add
-              another method first if you can.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDisable(null)}>
-                Keep it on
-              </Button>
-              <Button variant="destructive" onClick={() => void confirmDisable()}>
-                Turn it off anyway
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDisable !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDisable(null);
+        }}
+        title="Turn off the only way to sign in?"
+        description={`${labelFor(pendingDisable?.kind ?? '')} is the only sign-in method still switched on. Turning it off will lock everyone out — including you, and including this page. Add another method first if you can.`}
+        confirmLabel="Turn it off anyway"
+        onConfirm={confirmDisable}
+      />
 
-      {/* Delete confirmation dialog (styled — no OS confirm). */}
-      {pendingDelete !== null && (
-        <Dialog
-          open={true}
-          onOpenChange={(v) => {
-            if (!v) setPendingDelete(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Remove provider?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Remove the{' '}
-              <span className="font-medium text-foreground">
-                {labelFor(pendingDelete.kind)}
-              </span>{' '}
-              identity provider? Users will no longer be able to sign in with it.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDelete(null)}>
-                Cancel
-              </Button>
-              <Button variant="destructive" onClick={() => void confirmDelete()}>
-                Remove
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDelete(null);
+        }}
+        title="Remove provider?"
+        description={`Remove the ${labelFor(pendingDelete?.kind ?? '')} identity provider? Users will no longer be able to sign in with it.`}
+        confirmLabel="Remove"
+        errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

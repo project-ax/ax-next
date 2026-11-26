@@ -15,7 +15,16 @@ import type { ConnectorSummary, Connector, ConnectorKeyMode } from '@/lib/connec
  * refused PATCH writes nothing.
  */
 
-const WARNING = 'endpoint-change-resets-tools';
+// The "what Save will cost" warning: a warning Notice (role="status"), found by its words.
+const WARNING_TEXT = /^Changing (where this connector points|this server’s address)/;
+const warning = (): HTMLElement | null =>
+  screen.queryAllByRole('status').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
+const findWarning = () =>
+  waitFor(() => {
+    const el = warning();
+    if (el === null) throw new Error('no warning');
+    return el;
+  });
 
 function summary(keyMode: ConnectorKeyMode): ConnectorSummary {
   return {
@@ -112,9 +121,9 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
 
   it('adding a site to a CLI connector says it signs everyone out', async () => {
     const { hosts } = await openEditor(cliConnector('personal'));
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
     fireEvent.change(hosts, { target: { value: 'login.salesforce.com, test.salesforce.com' } });
-    const alert = await screen.findByTestId(WARNING);
+    const alert = await findWarning();
     expect(alert).toHaveTextContent('Changing where this connector points signs everyone out of it.');
     expect(alert).toHaveTextContent('Each agent adds its key again from its Connectors tab.');
     expect(alert).not.toHaveTextContent(/clears the shared key/);
@@ -125,7 +134,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
   it('the workspace variant says the shared key is cleared', async () => {
     const { hosts } = await openEditor(cliConnector('workspace'));
     fireEvent.change(hosts, { target: { value: 'login.salesforce.com, test.salesforce.com' } });
-    const alert = await screen.findByTestId(WARNING);
+    const alert = await findWarning();
     expect(alert).toHaveTextContent('Changing where this connector points signs everyone out of it.');
     expect(alert).toHaveTextContent('It also clears the shared key, and you can’t enter it again from here yet.');
     expect(alert).not.toHaveTextContent('Each agent adds its key again');
@@ -135,7 +144,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector());
     const url = screen.getByLabelText(/^url$/i);
     fireEvent.change(url, { target: { value: 'https://mcp.example.com/gdrive-v2' } });
-    const alert = await screen.findByTestId(WARNING);
+    const alert = await findWarning();
     expect(alert).toHaveTextContent('Changing where this connector points signs everyone out of it.');
     expect(alert).toHaveTextContent('Each agent signs in again from its Connectors tab.');
     expect(alert).toHaveTextContent(/Changing this server’s address resets its tool permissions/);
@@ -146,9 +155,9 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     connector.capabilities.allowedHosts = ['login.salesforce.com', 'test.salesforce.com'];
     const { hosts } = await openEditor(connector);
     fireEvent.change(hosts, { target: { value: 'login.salesforce.com' } });
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/description/i), { target: { value: 'New words.' } });
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
   });
 
   it('a 503 connector-sign-out-failed shows its message and stays open', async () => {
@@ -283,7 +292,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector(), onSaved);
     const url = screen.getByLabelText(/^url$/i);
     fireEvent.change(url, { target: { value: MOVED } });
-    expect(await screen.findByTestId(WARNING)).toHaveTextContent(SIGNS_OUT);
+    expect(await findWarning()).toHaveTextContent(SIGNS_OUT);
     await typeClientSecret('typed-secret');
     await save();
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -291,13 +300,13 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     );
     // The server holds the new address now: keeping it points nowhere new and
     // changes no address, so nothing at all is said.
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
     // Putting the original address back is another move.
     fireEvent.change(url, { target: { value: URL_SAVED } });
-    await waitFor(() => expect(screen.getByTestId(WARNING)).toHaveTextContent(SIGNS_OUT));
+    await waitFor(() => expect(warning()).toHaveTextContent(SIGNS_OUT));
     // The retry that keeps the new address saves it and writes the secret.
     fireEvent.change(url, { target: { value: MOVED } });
-    await waitFor(() => expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument());
+    await waitFor(() => expect(warning()).not.toBeInTheDocument());
     await save();
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
     expect(credentialsLib.setDestinationCredential).toHaveBeenCalledTimes(2);
@@ -317,7 +326,7 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     await openEditor(oauthConnector());
     const url = screen.getByLabelText(/^url$/i);
     fireEvent.change(url, { target: { value: MOVED } });
-    expect(await screen.findByTestId(WARNING)).toHaveTextContent(TOOLS_RESET);
+    expect(await findWarning()).toHaveTextContent(TOOLS_RESET);
     await typeClientSecret('typed-secret');
     await save();
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -325,11 +334,11 @@ describe('LegacyConnectorEditDialog — a retarget signs everyone out (TASK-887)
     );
     // The server holds the new address: keeping it resets nothing.
     await waitFor(() =>
-      expect(screen.queryByTestId(WARNING)?.textContent ?? '').not.toMatch(TOOLS_RESET),
+      expect(warning()?.textContent ?? '').not.toMatch(TOOLS_RESET),
     );
     // Putting the original address back is a new address again.
     fireEvent.change(url, { target: { value: URL_SAVED } });
-    await waitFor(() => expect(screen.getByTestId(WARNING)).toHaveTextContent(TOOLS_RESET));
+    await waitFor(() => expect(warning()).toHaveTextContent(TOOLS_RESET));
   });
 
   it('closing after a partial save refreshes the list (the connector did change)', async () => {

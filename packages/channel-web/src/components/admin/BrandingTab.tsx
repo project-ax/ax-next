@@ -17,7 +17,6 @@ import { Input } from '@/components/ui/input';
 import { Field, FieldContent, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
 import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useBranding } from '@/lib/branding-context';
 import {
   putBranding,
@@ -25,6 +24,7 @@ import {
   ALLOWED_LOGO_TYPES,
   type PutBrandingInput,
 } from '@/lib/branding';
+import { Notice } from '@project-ax/ui';
 
 interface PendingLogo {
   contentType: string;
@@ -366,7 +366,7 @@ export function BrandingTab() {
 
         </SettingsDisclosure>
         {fileError !== null && (
-          <Alert variant="destructive"><AlertDescription>{fileError}</AlertDescription></Alert>
+          <Notice tone="danger">{fileError}</Notice>
         )}
 
         <SettingsDisclosure title="Preview">
@@ -408,7 +408,7 @@ export function BrandingTab() {
           </span>
         )}
         {saveError !== null && (
-          <Alert variant="destructive"><AlertDescription>{saveError}</AlertDescription></Alert>
+          <Notice tone="danger">{saveError}</Notice>
         )}
       </div>
     </div>

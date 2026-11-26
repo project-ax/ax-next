@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Check } from 'lucide-react';
+import { ConfirmAction, Notice } from '@project-ax/ui';
 import { FieldGroup } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ApiKeyField } from '@/components/credentials/ApiKeyField';
 import type { Destination } from '@ax/credentials';
 import { removeDestinationCredential, setDestinationCredential } from '@/lib/credentials';
@@ -29,17 +29,13 @@ export function CredentialSlotForm({
   const [error, setError] = useState<string | null>(null);
 
   async function remove() {
-    if (busy || destination.kind !== 'routine-hmac') return;
-    setBusy(true);
-    setError(null);
-    try {
-      if (!expectedRevision) throw new Error('Refresh the routine before removing its secret.');
-      await removeDestinationCredential({ destination, scope, expectedRevision });
-      setPayload('');
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not remove the signing secret.');
-    } finally { setBusy(false); }
+    if (destination.kind !== 'routine-hmac') return;
+    // A failure is shown inside the confirmation; the saved key and the draft stay as they were.
+    if (busy) throw new Error('Saving is still in progress. Try again in a moment.');
+    if (!expectedRevision) throw new Error('Refresh the routine before removing its secret.');
+    await removeDestinationCredential({ destination, scope, expectedRevision });
+    setPayload('');
+    onSaved();
   }
 
   async function submit(e: React.FormEvent) {
@@ -86,9 +82,7 @@ export function CredentialSlotForm({
           </p>
         )}
         {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{error}</Notice>
         )}
         {/* The same field the rail's Add key form draws (ApiKeyField). */}
         <ApiKeyField
@@ -98,7 +92,16 @@ export function CredentialSlotForm({
           onChange={setPayload}
         />
         <div className="flex justify-end gap-2">
-          {destination.kind === 'routine-hmac' && current.set && <Button type="button" variant="outline" disabled={busy || !expectedRevision} onClick={() => void remove()}>Remove key</Button>}
+          {destination.kind === 'routine-hmac' && current.set && (
+            <ConfirmAction
+              trigger={{ label: 'Remove key', intent: 'secondary' }}
+              title="Remove this key?"
+              description="Without a saved signing secret, updates to this routine aren’t checked."
+              confirmLabel="Remove key"
+              errorMessage={(err) => (err instanceof Error ? err.message : 'Could not remove the signing secret.')}
+              onConfirm={remove}
+            />
+          )}
           <Button type="submit" disabled={busy || payload.trim().length === 0}>
             {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}
           </Button>

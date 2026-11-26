@@ -101,7 +101,7 @@ async function leftoverNote(several = false): Promise<HTMLElement> {
       ? "We couldn't confirm these Slack apps were deleted, so they may still be on Slack:"
       : "We couldn't confirm this Slack app was deleted, so it may still be on Slack:",
   );
-  return first.closest('[role="alert"]') as HTMLElement;
+  return first.closest('[role="status"]') as HTMLElement;
 }
 
 beforeEach(() => {
@@ -172,10 +172,10 @@ describe('SlackTab states', () => {
     let resolve!: (s: SlackStatusRead) => void;
     status.mockReturnValueOnce(new Promise((r) => (resolve = r)));
     render(<SlackTab />);
-    expect(screen.getByRole('status')).toHaveTextContent('Loading Slack settings');
+    expect(screen.getByText('Loading Slack settings…')).toBeInTheDocument();
     resolve(CONNECTED);
     expect(await screen.findByText('Connected to Canopy Works')).toBeInTheDocument();
-    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByText('Loading Slack settings…')).toBeNull();
   });
 
   it('unavailable: says Slack is not set up here, and offers nothing', async () => {
@@ -187,7 +187,7 @@ describe('SlackTab states', () => {
 
   it('not connected, no public https address: says why, and where it is set; no form', async () => {
     renderTab(NO_HTTPS);
-    const alert = await screen.findByRole('alert');
+    const alert = (await screen.findByText(/Slack needs a public https address to reach this server/)).closest('[role="status"]') as HTMLElement;
     expect(alert).toHaveTextContent('Slack needs a public https address to reach this server');
     expect(alert).toHaveTextContent('onboarding.publicBaseUrl');
     expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull();
@@ -197,7 +197,7 @@ describe('SlackTab states', () => {
   it("not connected, with a Slack app we couldn't delete: names it, links to its own settings page, and still offers Connect", async () => {
     renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT] });
     const first = await screen.findByText("We couldn't confirm this Slack app was deleted, so it may still be on Slack:");
-    const alert = first.closest('[role="alert"]') as HTMLElement;
+    const alert = first.closest('[role="status"]') as HTMLElement;
     expect(alert).toHaveTextContent(
       "We'll try again the next time you connect. To delete it yourself, open it and click Delete App at the bottom of the page.",
     );
@@ -211,7 +211,7 @@ describe('SlackTab states', () => {
   it('several apps: each listed and linked to its own page, even with the same name', async () => {
     renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] });
     const first = await screen.findByText("We couldn't confirm these Slack apps were deleted, so they may still be on Slack:");
-    const alert = first.closest('[role="alert"]') as HTMLElement;
+    const alert = first.closest('[role="status"]') as HTMLElement;
     expect(alert).toHaveTextContent(
       "We'll try again the next time you connect. To delete one yourself, open it and click Delete App at the bottom of the page.",
     );
@@ -223,7 +223,8 @@ describe('SlackTab states', () => {
 
   it('no public https address: the note shows above the https explainer', async () => {
     renderTab({ ...NO_HTTPS, leftoverApps: [LEFT] });
-    const alerts = await screen.findAllByRole('alert');
+    await screen.findByText(/Slack needs a public https address to reach this server/);
+    const alerts = screen.getAllByRole('status').filter((n) => n.textContent !== '' && !n.hasAttribute('aria-busy'));
     expect(alerts).toHaveLength(2);
     expect(alerts[0]).toHaveTextContent("We couldn't confirm this Slack app was deleted");
     expect(alerts[1]).toHaveTextContent('Slack needs a public https address to reach this server');
@@ -392,7 +393,7 @@ describe('I deleted it', () => {
     renderTab({ ...NOT_CONNECTED, leftoverApps: [LEFT, LEFT_2] }, NOT_CONNECTED);
     const alert = await leftoverNote(true);
     fireEvent.click(button(alert, LEFT));
-    await waitFor(() => expect(button(alert, LEFT)).toBeDisabled());
+    await waitFor(() => expect(button(alert, LEFT)).toHaveAttribute('aria-busy', 'true'));
     expect(button(alert, LEFT_2)).toBeDisabled();
     fireEvent.click(button(alert, LEFT));
     fireEvent.click(button(alert, LEFT_2));
@@ -410,7 +411,7 @@ describe('I deleted it', () => {
     // The route never calls Slack, so the message mustn't blame it.
     const error = await screen.findByText("We couldn't update that list just now. Try again in a minute.");
     expect(error.textContent).not.toContain('Slack');
-    expect(error.closest('[role="alert"]')).not.toBe(alert);
+    expect(alert).not.toContainElement(error);
     expect(document.body.textContent).not.toContain('internal');
     expect(status).toHaveBeenCalledTimes(1);
     expect(button(alert, LEFT)).toBeEnabled();
@@ -463,8 +464,8 @@ describe('Connect', () => {
     connect.mockReturnValueOnce(new Promise((r) => (finish = r)));
     renderTab(NOT_CONNECTED);
     await fillAndConnect();
-    const busy = await screen.findByRole('button', { name: /Connecting/ });
-    expect(busy).toBeDisabled();
+    const busy = screen.getByRole('button', { name: 'Connect' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     expect(connect).toHaveBeenCalledTimes(1);
     finish({ installUrl: INSTALL_URL });
@@ -585,7 +586,7 @@ describe('Disconnect', () => {
     expect(dialog).toHaveTextContent(
       "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
     );
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep connected' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(disconnect).not.toHaveBeenCalled();
   });
@@ -597,7 +598,7 @@ describe('Disconnect', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
 
     const note = await screen.findByText(/One more step that Slack doesn't let us do/);
-    const alert = note.closest('[role="alert"]') as HTMLElement;
+    const alert = note.closest('[role="status"]') as HTMLElement;
     expect(alert).toHaveTextContent(
       "Slack is disconnected. One more step that Slack doesn't let us do: on Slack's app settings, under Your App Configuration Tokens, whoever generated the token clicks Revoke.",
     );
@@ -617,7 +618,7 @@ describe('Disconnect', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
 
     const note = await screen.findByText(/Don't revoke the configuration token/);
-    const alert = note.closest('[role="alert"]') as HTMLElement;
+    const alert = note.closest('[role="status"]') as HTMLElement;
     expect(alert).toHaveTextContent(
       "Slack is disconnected. Don't revoke the configuration token on Slack's app settings yet: other Slack apps made with it still use it, like a team agent's own bot.",
     );
@@ -635,9 +636,9 @@ describe('Disconnect', () => {
     const dialog = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
     const note = await screen.findByText(/One more step that Slack doesn't let us do/);
-    expect(note.closest('[role="alert"]')).not.toHaveTextContent("We couldn't remove the Slack app itself.");
+    expect(note.closest('[role="status"]')).not.toHaveTextContent("We couldn't remove the Slack app itself.");
     const left = await screen.findByText(/We couldn't confirm this Slack app was deleted/);
-    expect(left.closest('[role="alert"]')).toHaveTextContent('canopy');
+    expect(left.closest('[role="status"]')).toHaveTextContent('canopy');
     expect(screen.getByRole('link', { name: 'canopy' })).toHaveAttribute(
       'href',
       'https://api.slack.com/apps/A0CHZPVDJHX',
@@ -783,11 +784,11 @@ describe('Rename', () => {
     fireEvent.change(nameInput(dialog), { target: { value: 'Ada Helper' } });
     const go = within(dialog).getByRole('button', { name: 'Rename' });
     fireEvent.click(go);
-    const busy = await within(dialog).findByRole('button', { name: /Renaming/ });
+    const busy = within(dialog).getByRole('button', { name: 'Rename' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     fireEvent.click(busy);
     expect(rename).toHaveBeenCalledTimes(1);
-    expect(busy).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.getByRole('dialog', { name: 'Rename the bot' })).toBeInTheDocument();
@@ -872,7 +873,7 @@ describe('Replace the configuration token', () => {
     expect(document.body.innerHTML).not.toContain(REFRESH);
     finish();
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    const note = (await screen.findByText(/Token replaced\./)).closest('[role="alert"]') as HTMLElement;
+    const note = (await screen.findByText(/Token replaced\./)).closest('[role="status"]') as HTMLElement;
     expect(note).toHaveTextContent(
       "Token replaced. We now use it for this Slack app and for every other Slack app the same person made through AX. Don't revoke the token you just pasted: that's the one we use now.",
     );
@@ -963,11 +964,11 @@ describe('Replace the configuration token', () => {
     const dialog = await openDialog();
     fireEvent.change(tokenInput(dialog), { target: { value: REFRESH } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Replace token' }));
-    const busy = await within(dialog).findByRole('button', { name: /Replacing/ });
+    const busy = within(dialog).getByRole('button', { name: 'Replace token' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     fireEvent.click(busy);
     expect(replace).toHaveBeenCalledTimes(1);
-    expect(busy).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.getByRole('dialog', { name: 'Replace the configuration token' })).toBeInTheDocument();

@@ -42,11 +42,11 @@
  * Card titles carry `role="heading"` (level 2) so the outline stays h1 -> h2
  * without the `h5` that `AlertTitle` would add (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { MessageSquare } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { AsyncState, Button as AxButton, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -63,14 +63,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
 import { SlackBotRequests } from '@/components/admin/SlackBotRequests';
 import { SlackBotsCard } from './SlackBotsCard';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import {
   connectSlack,
   disconnectSlack,
@@ -97,7 +94,7 @@ const FORGET_FAILED = "We couldn't update that list just now. Try again in a min
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; status: SlackStatusRead };
 
 /** A note above the tab that outlives the re-read after it. */
-type Notice =
+type TabNotice =
   | { kind: 'disconnected'; tokenKept: boolean }
   | { kind: 'renamed'; botName: string }
   | { kind: 'replaced' }
@@ -119,60 +116,24 @@ function shortDate(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
 }
 
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
-
 // ── Around the states ──────────────────────────────────────────────────────
-
-function Loading() {
-  return (
-    <div role="status" className="flex flex-col gap-3">
-      <span className="sr-only">Loading Slack settings…</span>
-      {[0, 1, 2].map((i) => (
-        <Skeleton key={i} className="h-10 w-full" aria-hidden="true" />
-      ))}
-    </div>
-  );
-}
-
-function ReadError({ onRetry }: { onRetry: () => void }) {
-  return (
-    <Alert variant="destructive">
-      <AlertDescription className="flex flex-col items-start gap-3">
-        <p>We couldn&apos;t load your Slack settings.</p>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
-  );
-}
 
 /** `tokenKept`: a team agent's own bot still needs the configuration token, so the admin must not revoke it. */
 function DisconnectedNotice({ tokenKept }: { tokenKept: boolean }) {
   return (
-    <Alert>
-      <AlertDescription className="flex flex-col gap-2">
-        {tokenKept ? (
-          <p>
-            Slack is disconnected. Don&apos;t revoke the configuration token on <SlackAppsLink /> yet: other Slack apps
-            made with it still use it, like a team agent&apos;s own bot.
-          </p>
-        ) : (
-          <p>
-            Slack is disconnected. One more step that Slack doesn&apos;t let us do: on <SlackAppsLink />, under{' '}
-            <strong>Your App Configuration Tokens</strong>, whoever generated the token clicks <strong>Revoke</strong>.
-          </p>
-        )}
-      </AlertDescription>
-    </Alert>
+    <Notice tone="info">
+      {tokenKept ? (
+        <p>
+          Slack is disconnected. Don&apos;t revoke the configuration token on <SlackAppsLink /> yet: other Slack apps
+          made with it still use it, like a team agent&apos;s own bot.
+        </p>
+      ) : (
+        <p>
+          Slack is disconnected. One more step that Slack doesn&apos;t let us do: on <SlackAppsLink />, under{' '}
+          <strong>Your App Configuration Tokens</strong>, whoever generated the token clicks <strong>Revoke</strong>.
+        </p>
+      )}
+    </Notice>
   );
 }
 
@@ -228,8 +189,8 @@ function LeftoverAppsNote({
 
   return (
     <div className="flex flex-col gap-3">
-      <Alert>
-        <AlertDescription className="flex flex-col gap-2">
+      <Notice tone="info">
+        <div className="flex flex-col gap-2">
           <p>
             {one
               ? "We couldn't confirm this Slack app was deleted, so it may still be on Slack:"
@@ -248,26 +209,25 @@ function LeftoverAppsNote({
                     {app.botName}
                   </a>
                   {/* Named for its app: two leftovers often share a name. */}
-                  <Button
-                    variant="ghost"
+                  <AxButton
+                    intent="quiet"
                     size="sm"
                     aria-label={`I deleted it: ${app.botName} (${app.appId})`}
-                    disabled={busyAppId !== null}
+                    busy={busyAppId === app.appId}
+                    disabled={busyAppId !== null && busyAppId !== app.appId}
                     onClick={() => void forget(app.appId)}
                   >
-                    {busyAppId === app.appId ? <Busy>I deleted it</Busy> : 'I deleted it'}
-                  </Button>
+                    I deleted it
+                  </AxButton>
                 </span>
               </li>
             ))}
           </ul>
           <p>{LEFTOVER_LAST_SENTENCE[willRetry ? 'retry' : 'byHand'][one ? 'one' : 'several']}</p>
-        </AlertDescription>
-      </Alert>
+        </div>
+      </Notice>
       {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
     </div>
   );
@@ -277,27 +237,18 @@ function LeftoverAppsNote({
 
 function Unavailable() {
   return (
-    <Empty>
-      <EmptyHeader>
-        <EmptyMedia variant="icon">
-          <MessageSquare aria-hidden="true" />
-        </EmptyMedia>
-        <EmptyTitle>Slack isn&apos;t set up on this server.</EmptyTitle>
-      </EmptyHeader>
-    </Empty>
+    <EmptyState icon={MessageSquare} title="Slack isn't set up on this server." />
   );
 }
 
 function NeedsHttps() {
   return (
-    <Alert>
-      <AlertDescription>
-        Slack needs a public https address to reach this server, and the server doesn&apos;t have one yet.
-        Whoever runs it can add one with{' '}
-        <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-xs">onboarding.publicBaseUrl</code> in
-        the Helm values.
-      </AlertDescription>
-    </Alert>
+    <Notice tone="info">
+      Slack needs a public https address to reach this server, and the server doesn&apos;t have one yet.
+      Whoever runs it can add one with{' '}
+      <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-xs">onboarding.publicBaseUrl</code> in
+      the Helm values.
+    </Notice>
   );
 }
 
@@ -405,15 +356,13 @@ function ConnectForm({ defaultBotName, onChanged }: { defaultBotName: string; on
             Slack keeps a copy of everything the agent says there, under your workspace&apos;s retention rules.
           </p>
           {error !== null && error.field === null && (
-            <Alert variant="destructive">
-              <AlertDescription>{error.message}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error.message}</Notice>
           )}
         </CardContent>
         <CardFooter>
-          <Button type="submit" disabled={busy}>
-            {busy ? <Busy>Connecting…</Busy> : 'Connect'}
-          </Button>
+          <AxButton type="submit" intent="primary" busy={busy}>
+            Connect
+          </AxButton>
         </CardFooter>
       </Card>
     </form>
@@ -424,17 +373,13 @@ const DIALOG_COPY = {
   connected: {
     title: 'Disconnect Slack?',
     body: "The bot leaves Slack, and people can't message their own agents there anymore. Team agents' own bots stay in their channels. Conversations stay here.",
-    keep: 'Keep connected',
     confirm: 'Disconnect',
-    working: 'Disconnecting…',
   },
   // Nobody could reach an agent yet, so the words are about the app we started.
   pending: {
     title: 'Stop connecting Slack?',
     body: "We'll delete the Slack app we started. You can connect again any time.",
-    keep: 'Keep going',
     confirm: 'Stop connecting',
-    working: 'Stopping…',
   },
 } as const;
 
@@ -450,54 +395,31 @@ function DisconnectDialog({
   kind: keyof typeof DIALOG_COPY;
 } & Actions) {
   const copy = DIALOG_COPY[kind];
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const close = (next: boolean) => {
-    if (busy) return;
-    setError(null);
-    onOpenChange(next);
-  };
 
   async function confirm() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
     try {
       const { tokenKept } = await disconnectSlack();
       onDisconnected(tokenKept);
     } catch (err) {
-      setBusy(false);
+      // The state moved under us: re-read it and let the dialog close.
       if (slackStateChanged(err)) {
         onChanged();
         return;
       }
-      setError(slackErrorCopy(err).message);
+      throw err;
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={close}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{copy.title}</DialogTitle>
-          <DialogDescription>{copy.body}</DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
-            {copy.keep}
-          </Button>
-          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>{copy.working}</Busy> : copy.confirm}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={open}
+      onOpenChange={onOpenChange}
+      title={copy.title}
+      description={copy.body}
+      confirmLabel={copy.confirm}
+      errorMessage={(err) => slackErrorCopy(err).message}
+      onConfirm={confirm}
+    />
   );
 }
 
@@ -578,17 +500,15 @@ function RenameForm({
         </Field>
       </FieldGroup>
       {error !== null && error.field === null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error.message}</Notice>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
-        </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Renaming…</Busy> : 'Rename'}
-        </Button>
+        </AxButton>
+        <AxButton type="submit" intent="primary" busy={busy}>
+          Rename
+        </AxButton>
       </DialogFooter>
     </form>
   );
@@ -718,17 +638,15 @@ function ReplaceTokenForm({
         />
       </FieldGroup>
       {error !== null && error.field === null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error.message}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error.message}</Notice>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           Cancel
-        </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Replacing…</Busy> : 'Replace token'}
-        </Button>
+        </AxButton>
+        <AxButton type="submit" intent="primary" busy={busy}>
+          Replace token
+        </AxButton>
       </DialogFooter>
     </form>
   );
@@ -812,18 +730,16 @@ function PendingCard({ status, ...actions }: { status: Extract<SlackStatus, { st
           Started by {status.connectedBy} on {shortDate(status.connectedAt)}. Bot name: {status.botName}.
         </p>
         {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{error}</Notice>
         )}
       </CardContent>
       <CardFooter className="flex flex-wrap gap-2">
-        <Button onClick={() => void resume()} disabled={busy}>
-          {busy ? <Busy>Opening Slack…</Busy> : 'Continue in Slack'}
-        </Button>
-        <Button variant="outline" onClick={() => setConfirming(true)} disabled={busy}>
+        <AxButton intent="primary" busy={busy} onClick={() => void resume()}>
+          Continue in Slack
+        </AxButton>
+        <AxButton intent="secondary" onClick={() => setConfirming(true)} disabled={busy}>
           Cancel
-        </Button>
+        </AxButton>
       </CardFooter>
       <DisconnectDialog open={confirming} onOpenChange={setConfirming} kind="pending" {...actions} />
     </Card>
@@ -931,7 +847,7 @@ function StatusView({
 
 export function SlackTab() {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
-  const [notice, setNotice] = useState<Notice | null>(null);
+  const [notice, setNotice] = useState<TabNotice | null>(null);
   const seq = useRef(0);
 
   const read = useCallback(async () => {
@@ -984,25 +900,26 @@ export function SlackTab() {
     <div className="flex flex-col gap-6 font-sans">
       {notice?.kind === 'disconnected' && <DisconnectedNotice tokenKept={notice.tokenKept} />}
       {notice?.kind === 'renamed' && (
-        <Alert>
-          <AlertDescription>Renamed. People in Slack now see the bot as {notice.botName}.</AlertDescription>
-        </Alert>
+        <Notice tone="info">Renamed. People in Slack now see the bot as {notice.botName}.</Notice>
       )}
       {notice?.kind === 'replaced' && (
-        <Alert>
-          <AlertDescription>
-            Token replaced. We now use it for this Slack app and for every other Slack app the same person made
-            through AX. Don&apos;t revoke the token you just pasted: that&apos;s the one we use now.
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info">
+          Token replaced. We now use it for this Slack app and for every other Slack app the same person made
+          through AX. Don&apos;t revoke the token you just pasted: that&apos;s the one we use now.
+        </Notice>
       )}
       {notice?.kind === 'changed' && (
-        <Alert>
-          <AlertDescription>This changed while you were here, so we&apos;ve refreshed it.</AlertDescription>
-        </Alert>
+        <Notice tone="info">This changed while you were here, so we&apos;ve refreshed it.</Notice>
       )}
-      {load.kind === 'loading' && <Loading />}
-      {load.kind === 'error' && <ReadError onRetry={() => void read()} />}
+      {load.kind === 'loading' && <AsyncState status="loading" skeleton="rows" loadingLabel="Loading Slack settings…" />}
+      {load.kind === 'error' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading Slack settings…"
+          error={{ message: "We couldn't load your Slack settings.", onRetry: () => void read() }}
+        />
+      )}
       {load.kind === 'ready' && (
         <StatusView
           status={load.status}

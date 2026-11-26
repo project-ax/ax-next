@@ -11,14 +11,14 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -31,16 +31,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { Separator } from '@/components/ui/separator';
-import { Skeleton } from '@/components/ui/skeleton';
 import {
   Tooltip,
   TooltipContent,
@@ -138,7 +129,7 @@ interface Props {
    */
   grantsFailed?: boolean;
   revoking?: ReadonlySet<string>;
-  onRevoke?: (row: GrantRow) => void;
+  onRevoke?: (row: GrantRow) => void | Promise<void>;
   /** The ids currently listed, or null while unknown — so the tab can tell
    *  which approved access has a details view to live in. */
   onListed?: (ids: ReadonlySet<string> | null) => void;
@@ -201,16 +192,10 @@ export function AgentConnectors({
   }
 
   async function onRemove(row: AgentConnectorRow) {
-    setConfirming(null);
     setNotice(null);
     const outcome = await remove(row.id);
-    if (outcome === 'failed') {
-      setNotice({
-        tone: 'error',
-        text: `We couldn’t remove ${row.name} just now. Nothing changed.`,
-      });
-      return;
-    }
+    // Said inside the confirmation; the row stays.
+    if (outcome === 'failed') throw new Error(`couldn’t remove ${row.name}`);
     if (outcome === 'removed-partial') {
       setNotice({
         tone: 'note',
@@ -220,6 +205,11 @@ export function AgentConnectors({
       });
     }
     onChanged?.();
+    // The row's menu is gone with it; park focus on the tab's primary action.
+    focusAfterRemoval(
+      '[data-return-focus="agent-connectors"]',
+      '[data-return-focus-empty="agent-connectors"] button',
+    );
   }
 
   const count = status === 'ok' && connectors !== null ? connectors.length : null;
@@ -273,6 +263,7 @@ export function AgentConnectors({
             (g) => g.grantedFor?.kind === 'connection' && g.grantedFor.id === open.id,
           )}
           grantsFailed={grantsFailed}
+          {...(onChanged !== undefined ? { onRetryGrants: onChanged } : {})}
           revoking={revoking}
           onRevoke={(g) => onRevoke?.(g)}
           busy={removing.has(open.id)}
@@ -286,19 +277,32 @@ export function AgentConnectors({
       ) : (
       <>
       <ConnectorsHeader name={name} count={count} onAdd={addable} />
+      {/* The Stack spaces the unsupported notice from the list under it. */}
+      <Stack gap="md">
       {status === 'ok' && !connectorsSupported && <ConnectorsUnsupported name={name} />}
       {status === 'loading' && (
-        <div className="flex flex-col gap-3" aria-busy="true">
-          <Skeleton className="h-4 w-3/5" />
-          <Skeleton className="h-4 w-1/2" />
-        </div>
+        <AsyncState status="loading" skeleton="rows" loadingLabel="Loading connectors" />
       )}
-      {(status === 'failed' || status === 'unavailable') && (
-        <p className="text-[13px] leading-relaxed text-muted-foreground">
-          {status === 'unavailable'
-            ? 'This workspace can’t list connectors yet.'
-            : `We couldn’t read ${name}’s connectors just now. Treat them as unknown rather than none.`}
-        </p>
+      {status === 'failed' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading connectors"
+          error={{
+            message: `We couldn’t read ${name}’s connectors just now. Treat them as unknown rather than none.`,
+            onRetry: () => {
+              void refresh();
+            },
+          }}
+        />
+      )}
+      {status === 'unavailable' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading connectors"
+          error={{ message: 'This workspace can’t list connectors yet.', tone: 'info' }}
+        />
       )}
       {status === 'ok' && connectorsSupported && connectors !== null && connectors.length === 0 && (
         <NoConnectors name={name} onAdd={addable} manageable={manageable} />
@@ -355,51 +359,31 @@ export function AgentConnectors({
           </CardContent>
         </Card>
       )}
+      </Stack>
       </>
       )}
       {notice !== null && (
         notice.tone === 'error' ? (
-          <Alert variant="destructive" className="mt-3">
-            <AlertDescription>{notice.text}</AlertDescription>
-          </Alert>
+          <div className="mt-3">
+            <Notice tone="danger">{notice.text}</Notice>
+          </div>
         ) : (
           <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
             {notice.text}
           </p>
         )
       )}
-      <Dialog
+      <ConfirmAction
         open={confirming !== null}
         onOpenChange={(open) => {
           if (!open) setConfirming(null);
         }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              Remove {confirming?.name} from {name}?
-            </DialogTitle>
-            <DialogDescription>
-              This removes {confirming?.name} from {name}, including its sign-in
-              and keys, and anything you approved for it here. The connector
-              itself stays, and so do your other agents that use it.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirming(null)}>
-              Keep it
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                if (confirming !== null) void onRemove(confirming);
-              }}
-            >
-              Remove
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        title={`Remove ${confirming?.name ?? ''} from ${name}?`}
+        description={`This removes ${confirming?.name ?? ''} from ${name}, including its sign-in and keys, and anything you approved for it here. The connector itself stays, and so do your other agents that use it.`}
+        confirmLabel="Remove"
+        errorMessage={() => `We couldn’t remove ${confirming?.name ?? 'it'} just now. Nothing changed.`}
+        onConfirm={() => (confirming !== null ? onRemove(confirming) : undefined)}
+      />
       <Dialog
         open={signingIn !== null}
         onOpenChange={(open) => {
@@ -506,7 +490,7 @@ function ConnectorsHeader({
         Tools {name} can work in for you. Open one to choose which actions it can take on its own.
       </p>
       {onAdd !== undefined && count !== null && count > 0 && (
-        <Button type="button" size="sm" onClick={onAdd} className="min-h-11 shrink-0">
+        <Button type="button" size="sm" data-return-focus="agent-connectors" onClick={onAdd} className="min-h-11 shrink-0">
           <Plus data-icon="inline-start" aria-hidden="true" />
           Add connector
         </Button>
@@ -526,26 +510,19 @@ function NoConnectors({
   manageable: boolean;
 }) {
   return (
-    <Empty className="border border-dashed p-5 md:p-5">
-      <EmptyHeader>
-        <EmptyMedia variant="icon">
-          <Plug aria-hidden="true" />
-        </EmptyMedia>
-        <EmptyTitle className="text-[13px]">No connectors yet</EmptyTitle>
-        <EmptyDescription className="text-[12px]">
-          {manageable
+    // The wrapper lets focusAfterRemoval park on the Add button inside the empty state.
+    <div data-return-focus-empty="agent-connectors">
+      <EmptyState
+        icon={Plug}
+        title="No connectors yet"
+        description={
+          manageable
             ? `Connect a tool like Linear or Gmail and ${name} can work in it for you.`
-            : `Ask the agent’s owner to connect a tool like Linear or Gmail, and ${name} can work in it for you.`}
-        </EmptyDescription>
-      </EmptyHeader>
-      {onAdd !== undefined && (
-        <EmptyContent>
-          <Button type="button" size="sm" onClick={onAdd}>
-            Add connector
-          </Button>
-        </EmptyContent>
-      )}
-    </Empty>
+            : `Ask the agent’s owner to connect a tool like Linear or Gmail, and ${name} can work in it for you.`
+        }
+        {...(onAdd !== undefined ? { action: { label: 'Add connector', onClick: onAdd } } : {})}
+      />
+    </div>
   );
 }
 

@@ -93,8 +93,11 @@ describe('SidebarChats — the list', () => {
   });
 
   it('says so when the chats could not be read', () => {
-    renderChats({ chats: null, error: true });
-    expect(screen.getByText('We couldn’t load these chats just now.')).toBeTruthy();
+    const { props } = renderChats({ chats: null, error: true });
+    expect(screen.getByRole('alert')).toHaveTextContent('We couldn’t load these chats just now.');
+    // Try again is the shell's re-read (`onChanged` bumps the read the list is waiting on).
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(props.onChanged).toHaveBeenCalledTimes(1);
   });
 
   it('never holds chat switches: a reply carries on while another chat is open', () => {

@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { setSiteAgents } from '@/lib/connections';
 import type { ChatAgentSummary } from '@/lib/agents';
 
@@ -150,9 +150,7 @@ export function SiteAgentsDialog({
           </div>
 
           {error !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
 
           <div className="flex justify-end gap-2">

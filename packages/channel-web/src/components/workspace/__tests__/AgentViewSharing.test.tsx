@@ -191,7 +191,7 @@ describe('AgentView — the "signed out of a connection" notice', () => {
     connectorsMock.mockResolvedValue(GMAIL_NEEDS_SIGN_IN);
     const onSettingsSection = vi.fn();
     renderView({ onSettingsSection });
-    await screen.findByRole('note');
+    await screen.findByText(/isn’t signed in yet/);
     fireEvent.click(screen.getByRole('button', { name: 'Open Connectors' }));
     expect(onSettingsSection).toHaveBeenCalledWith('connectors');
   });
@@ -200,7 +200,7 @@ describe('AgentView — the "signed out of a connection" notice', () => {
     agentMock.mockResolvedValue(detail('audience'));
     connectorsMock.mockResolvedValue(GMAIL_NEEDS_SIGN_IN);
     renderView({ onSettingsSection: vi.fn() });
-    expect(await screen.findByRole('note')).toHaveTextContent('Gmail');
+    expect(await screen.findByText(/isn’t signed in yet/)).toHaveTextContent('Gmail');
     expect(screen.queryByRole('button', { name: 'Open Connectors' })).toBeNull();
   });
 });

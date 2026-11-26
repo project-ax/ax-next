@@ -275,7 +275,17 @@ describe('Add key (slice 3)', () => {
     getConnectorMock.mockRejectedValue(new Error('get connector: 500'));
     renderTab();
     const dialog = await openAddKey('Linear');
-    expect(await within(dialog).findByText('We couldn’t open Linear just now. Please try again.')).toBeTruthy();
+    expect(await within(dialog).findByText('We couldn’t open Linear just now.')).toBeTruthy();
     expect(within(dialog).queryByLabelText(/key/i, { selector: 'input' })).toBeNull();
+  });
+
+  it('Try again reads the connector again, and the key form appears once it loads', async () => {
+    list([row({})]);
+    getConnectorMock.mockRejectedValueOnce(new Error('get connector: 500'));
+    renderTab();
+    const dialog = await openAddKey('Linear');
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Try again' }));
+    expect((await within(dialog).findAllByLabelText(/key/i, { selector: 'input' })).length).toBeGreaterThan(0);
+    expect(getConnectorMock).toHaveBeenCalledTimes(2);
   });
 });

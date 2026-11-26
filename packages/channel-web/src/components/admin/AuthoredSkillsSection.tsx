@@ -19,7 +19,6 @@ import {
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -37,6 +36,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthoredSkills,
   promoteAuthoredSkill,
@@ -229,9 +230,7 @@ function PromoteDialog({ agentId, skill, onClose, onPromoted }: PromoteDialogPro
           </p>
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
         </div>
 
@@ -259,13 +258,6 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [promoting, setPromoting] = useState<AuthoredSkill | null>(null);
-  // The draft awaiting delete confirmation, the id whose delete is in flight, and
-  // a delete error shown INSIDE the confirm dialog (kept separate from the
-  // section `error`, which hides the list — a failed delete must leave the draft
-  // visible, mirroring the promote dialog's in-dialog error).
-  const [pendingDelete, setPendingDelete] = useState<AuthoredSkill | null>(null);
-  const [deleting, setDeleting] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -284,27 +276,11 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
     void load();
   }, [load]);
 
-  async function handleDelete(skill: AuthoredSkill): Promise<void> {
-    setDeleting(skill.id);
-    setDeleteError(null);
-    try {
-      await deleteAuthoredSkill(agentId, skill.id);
-      setPendingDelete(null);
-      await load();
-    } catch (err) {
-      // Keep the dialog open and surface the error inside it (the draft stays
-      // listed) — same posture as the promote dialog.
-      setDeleteError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setDeleting(null);
-    }
-  }
-
   return (
     <>
       <Card className="p-5">
         <CardHeader className="p-0 pb-4">
-          <CardTitle className="text-base">Authored Skills</CardTitle>
+          <CardTitle className="text-base" tabIndex={-1} data-return-focus="authored-skills">Authored Skills</CardTitle>
           <CardDescription>
             Skills this agent wrote in its workspace. Promote one to an installed
             skill, choosing the capabilities to grant.
@@ -312,17 +288,15 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
         </CardHeader>
         <CardContent className="p-0">
           {loading && (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading authored skills" />
           )}
 
           {!loading && error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger" action={{ label: 'Try again', onClick: () => void load() }}>{error}</Notice>
           )}
 
           {!loading && !error && skills.length === 0 && (
-            <p className="text-sm text-muted-foreground">No authored skills.</p>
+            <EmptyState title="No authored skills." />
           )}
 
           {!loading && !error && skills.length > 0 && (
@@ -357,15 +331,20 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
                     >
                       Promote
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={deleting !== null}
-                      onClick={() => { setDeleteError(null); setPendingDelete(skill); }}
-                      aria-label={`Delete ${skill.id}`}
-                    >
-                      {deleting === skill.id ? 'Deleting…' : <Trash2 />}
-                    </Button>
+                    <ConfirmAction
+                      trigger={{ label: `Delete ${skill.id}`, intent: 'quiet', size: 'sm', icon: Trash2, iconOnly: true }}
+                      title="Delete authored draft?"
+                      description={`Delete the draft ${skill.id} this agent authored? This removes the draft only — it doesn't touch any skill you've already promoted from it. If the agent authors it again later, it can re-appear here.`}
+                      confirmLabel="Delete"
+                      // A failed delete leaves the draft listed and says why inside the dialog.
+                      errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+                      onConfirm={async () => {
+                        await deleteAuthoredSkill(agentId, skill.id);
+                        await load();
+                        // The draft's row is gone; park focus on the section heading.
+                        focusAfterRemoval('[data-return-focus="authored-skills"]');
+                      }}
+                    />
                   </div>
                 </li>
               ))}
@@ -381,45 +360,6 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
           onClose={() => setPromoting(null)}
           onPromoted={() => void load()}
         />
-      )}
-
-      {pendingDelete && (
-        <Dialog open onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Delete authored draft?</DialogTitle>
-              <DialogDescription>
-                Delete the draft <span className="font-mono text-xs">{pendingDelete.id}</span>{' '}
-                this agent authored? This removes the draft only — it doesn&apos;t
-                touch any skill you&apos;ve already promoted from it. If the agent
-                authors it again later, it can re-appear here.
-              </DialogDescription>
-            </DialogHeader>
-            {deleteError && (
-              <Alert variant="destructive">
-                <AlertDescription>{deleteError}</AlertDescription>
-              </Alert>
-            )}
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setPendingDelete(null)}
-                disabled={deleting !== null}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => void handleDelete(pendingDelete)}
-                disabled={deleting !== null}
-              >
-                {deleting !== null ? 'Deleting…' : 'Delete'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       )}
     </>
   );

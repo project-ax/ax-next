@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { RoutinesList } from '../components/routines/RoutinesList';
 import { routineApi, RoutineApiError } from '@/lib/routines';
 import { routineFixture as row } from '../components/routines/__tests__/routine-fixture';
@@ -77,6 +77,33 @@ describe('routine list', () => {
       routineId: row.routineId,
       limit: 20,
     });
+  });
+  it('a failed recent-runs read offers Try again, which reads the runs again', async () => {
+    vi.mocked(routineApi.list).mockResolvedValue({ routines: [row], unreadable: [] });
+    vi.mocked(routineApi.recentFires).mockRejectedValueOnce(new Error('down'));
+    show();
+    await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('button', { name: `Recent runs for ${row.name}` }));
+    await screen.findByText('Recent runs are unavailable.');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No runs yet.')).toBeVisible();
+    expect(routineApi.recentFires).toHaveBeenCalledTimes(2);
+  });
+  it('keeps focus on the unconfirmed-change Try again while it is busy, and swallows a second click', async () => {
+    vi.mocked(routineApi.update)
+      .mockRejectedValueOnce(new RoutineApiError(0))
+      .mockReturnValue(new Promise(() => {}));
+    show();
+    await screen.findByText(row.name);
+    fireEvent.click(screen.getByRole('switch'));
+    const unconfirmed = (await screen.findByText(/We couldn’t confirm this change/)).closest('[role="status"]') as HTMLElement;
+    const retry = within(unconfirmed).getByRole('button', { name: 'Try again' });
+    retry.focus();
+    fireEvent.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute('aria-busy', 'true'));
+    expect(document.activeElement).toBe(retry);
+    fireEvent.click(retry);
+    expect(routineApi.update).toHaveBeenCalledTimes(2);
   });
   it('renders a stay-on-top task like any authored routine', async () => {
     vi.mocked(routineApi.list).mockResolvedValue({ routines: [
@@ -204,9 +231,11 @@ describe('routine list', () => {
     vi.mocked(routineApi.list).mockResolvedValue({ routines: [
       { ...row, revision: 'new-revision', enabled: !row.enabled },
     ], unreadable: [] });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    const readError = screen.getByText('Routine management is temporarily unavailable.').closest('[role="alert"]') as HTMLElement;
+    fireEvent.click(within(readError).getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(routineApi.list).toHaveBeenCalledTimes(2));
-    fireEvent.click(screen.getByRole('button', { name: 'Retry change' }));
+    const unconfirmed = screen.getByText(/We couldn’t confirm this change/).closest('[role="status"]') as HTMLElement;
+    fireEvent.click(within(unconfirmed).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(routineApi.update).toHaveBeenCalledTimes(2));
     expect(vi.mocked(routineApi.update).mock.calls[1]).toEqual(
       vi.mocked(routineApi.update).mock.calls[0],
@@ -319,7 +348,7 @@ describe('agent settings routine creation', () => {
     vi.mocked(routineApi.list).mockImplementation(() => new Promise(() => {}));
     const props = { agentId: 'a', agentName: 'Caveman', onFired: vi.fn(), hideCreateAction: true };
     const { rerender } = render(<RoutinesList {...props} createRequest={0} />);
-    expect(screen.getByLabelText('Loading routines')).toBeTruthy();
+    expect(screen.getByText('Loading routines')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'New routine' })).toBeNull();
     rerender(<RoutinesList {...props} createRequest={1} />);
     expect(await screen.findByRole('dialog', { name: 'New routine' })).toBeTruthy();

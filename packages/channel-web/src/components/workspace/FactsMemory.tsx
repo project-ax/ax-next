@@ -1,5 +1,5 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AsyncState, EmptyState, Notice, Text } from '@project-ax/ui';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -9,7 +9,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty';
 import {
   Field,
   FieldGroup,
@@ -19,7 +18,6 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { MoreHorizontal, Search } from 'lucide-react';
 import { MemoryFixesContext } from '@/lib/use-conversation-memory';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import {
   Table,
@@ -145,60 +143,18 @@ function RowValue({ row, children }: { row: FactMemoryStatement; children: strin
   );
 }
 
-function LoadingMemories() {
-  return (
-    <div role="status" aria-label="Loading memories" className="flex flex-col gap-2">
-      <Skeleton className="h-4 w-full" />
-      <Skeleton className="h-4 w-3/4" />
-      <Skeleton className="h-4 w-1/2" />
-    </div>
-  );
-}
-
-function FailedRead({ onRetry }: { onRetry: () => void }) {
-  return (
-    <Alert variant="destructive">
-      <AlertDescription className="flex flex-col items-start gap-2">
-        <span>We could not read these memories. Try again.</span>
-        <Button type="button" variant="secondary" size="sm" onClick={onRetry}>
-          Retry
-        </Button>
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 function DegradedNotice() {
-  return (
-    <Alert>
-      <AlertDescription>
-        Some search features are unavailable. Results may be incomplete.
-      </AlertDescription>
-    </Alert>
-  );
+  return <Notice tone="info">Some search features are unavailable. Results may be incomplete.</Notice>;
 }
 
 function ExtractionPausedNotice() {
   return (
-    <Alert>
-      <AlertTitle>{LEARNED_STATUS_PAUSED}</AlertTitle>
-      <AlertDescription>
-        We&apos;re not picking up anything new from your conversations right now, because
-        this workspace doesn&apos;t have an OpenRouter key yet. An admin can add one under
-        Admin → AI model keys, and memory starts again with the next conversation.
-        Anything already saved here still works.
-      </AlertDescription>
-    </Alert>
-  );
-}
-
-function EmptyMemories({ children }: { children: string }) {
-  return (
-    <Empty>
-      <EmptyHeader>
-        <EmptyDescription>{children}</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
+    <Notice tone="info" title={LEARNED_STATUS_PAUSED}>
+      We&apos;re not picking up anything new from your conversations right now, because
+      this workspace doesn&apos;t have an OpenRouter key yet. An admin can add one under
+      Admin → AI model keys, and memory starts again with the next conversation.
+      Anything already saved here still works.
+    </Notice>
   );
 }
 
@@ -273,14 +229,10 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
       {receipt.announcer}
       {extractionPaused && <ExtractionPausedNotice />}
       {visibility === 'team' && (
-        <Alert>
-          <AlertDescription>{MEMORY_TEAM_NOTICE}</AlertDescription>
-        </Alert>
+        <Notice tone="info">{MEMORY_TEAM_NOTICE}</Notice>
       )}
       {visibility === 'personal' && (
-        <Alert>
-          <AlertDescription>{MEMORY_PERSONAL_NOTICE}</AlertDescription>
-        </Alert>
+        <Notice tone="info">{MEMORY_PERSONAL_NOTICE}</Notice>
       )}
       <MemoriesManager
         agentId={agentId}
@@ -291,7 +243,7 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
         onForget={setForgetTarget}
         {...(onCount ? { onCount } : {})}
       />
-      {receipt.element}
+      {receipt.element !== null && <div className="sticky bottom-0">{receipt.element}</div>}
       <MemoryFixDialog
         target={fixTarget}
         agentId={agentId}
@@ -455,12 +407,28 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
           </Field>
         </FieldGroup>
       </form>
-      {state.status === 'loading' && <LoadingMemories />}
-      {state.status === 'failed' && <FailedRead onRetry={() => setTick((t) => t + 1)} />}
+      {state.status === 'loading' && <AsyncState status="loading" skeleton="rows" loadingLabel="Loading memories" />}
+      {state.status === 'failed' && (
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading memories"
+          error={{ message: 'We could not read these memories.', onRetry: () => setTick((t) => t + 1) }}
+        />
+      )}
       {state.status === 'ready' && <>
         {state.data.degraded.length > 0 && <DegradedNotice />}
         {rows.length === 0 ? (
-          <EmptyMemories>{query ? 'No memories match that. Try a different word or phrase.' : extractionPaused ? 'No memories yet.' : 'No memories yet. Notes we remember from your conversations will appear here.'}</EmptyMemories>
+          query ? (
+            <EmptyState title="No memories match that." description="Try a different word or phrase." />
+          ) : extractionPaused ? (
+            <EmptyState title="No memories yet." />
+          ) : (
+            <EmptyState
+              title="No memories yet."
+              description="Notes we remember from your conversations will appear here."
+            />
+          )
         ) : compact ? (
           <ul aria-label="Memories" className="flex flex-col gap-3">
             {rows.map((row) => <li key={row.id}>
@@ -496,7 +464,7 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
             </Table>
           </Card>
         )}
-        {query && rows.length > 0 && <p className="text-sm text-muted-foreground">Best matches first.</p>}
+        {query && rows.length > 0 && <Text role="meta">Best matches first.</Text>}
         {count !== null && <p className="text-xs text-muted-foreground">{memoryListFooter(count)}</p>}
         {rows.length === 40 && <p className="text-sm text-muted-foreground">Showing 40 memories. Use search to find more.</p>}
       </>}

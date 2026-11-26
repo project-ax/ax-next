@@ -48,10 +48,12 @@ try {
     if(name==='composer')continue;
     if(box.left<geometry.composer.left || box.right>geometry.composer.right || box.top<geometry.composer.top || box.bottom>geometry.composer.bottom)failures.push(`${label}: ${name} outside composer: ${JSON.stringify(geometry)}`);
   }
-  const welcome=await page.locator('.group\\/thread').evaluate(el=>{
+  const scrolled=await page.locator('.group\\/thread').evaluate(el=>{
     el.scrollTop=-10000;
-    return {scrollTop:el.scrollTop,titleTop:el.querySelector('[data-slot=empty-title]').getBoundingClientRect().top,top:el.getBoundingClientRect().top};
+    return {scrollTop:el.scrollTop,top:el.getBoundingClientRect().top};
   });
+  // The empty state's title is bold text, not a heading, so find it by its words.
+  const welcome={...scrolled,titleTop:(await page.getByText('Nothing here yet',{exact:true}).boundingBox()).y};
   if(welcome.titleTop<welcome.top) failures.push(`${label}: welcome title above scroll origin: ${JSON.stringify(welcome)}`);
   await composer.getByRole('textbox').fill('Retained draft');
   const send=composer.getByRole('button',{name:'Send',exact:true});

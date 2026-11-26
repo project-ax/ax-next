@@ -104,7 +104,7 @@ function read(over: Partial<Extract<AgentAppsRead, { enabled: true }>> = {}): Ag
 async function renderApps(answer: AgentAppsRead | 'unavailable' = read()) {
   api.fetchAgentApps.mockResolvedValue(answer);
   render(<AgentApps agentId="a1" agentName="Quill" />);
-  await waitFor(() => expect(screen.queryByText('Loading apps…')).toBeNull());
+  await waitFor(() => expect(screen.queryByText('Loading apps')).toBeNull());
 }
 
 beforeEach(() => {
@@ -374,13 +374,31 @@ describe('AgentApps', () => {
     await renderApps();
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove Linear from Sprint board' }));
+    const removeDialog = await screen.findByRole('dialog', { name: 'Remove Linear from Sprint board?' });
+    expect(api.removeGrant).not.toHaveBeenCalled();
+    fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove connector' }));
     await waitFor(() => expect(api.removeGrant).toHaveBeenCalledWith('a1', LINK.appId, 'linear'));
+    expect(api.removeGrant).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     fireEvent.click(screen.getByRole('button', { name: 'Unlink Sprint board' }));
     const dialog = await screen.findByRole('dialog');
     expect(api.unlinkApp).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Unlink' }));
     await waitFor(() => expect(api.unlinkApp).toHaveBeenCalledWith('a1', LINK.appId));
+  });
+
+  it('after an unlink whose re-read lands later, focus parks on "Link an app", not <body>', async () => {
+    api.unlinkApp.mockResolvedValue(undefined);
+    await renderApps();
+    // The re-read after the unlink answers a moment later, with the app gone.
+    api.fetchAgentApps.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(read({ links: [] })), 150)),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink Sprint board' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Unlink' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Unlink Sprint board' })).toBeNull(), { timeout: 3000 });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Link an app' })), { timeout: 3000 });
   });
 
   it("shows only the person's own approvals, each with Revoke", async () => {
@@ -400,7 +418,11 @@ describe('AgentApps', () => {
     expect(rows[0]).toHaveTextContent('Sprint board');
     expect(rows[0]).toHaveTextContent('Linear');
     fireEvent.click(within(rows[0]!).getByRole('button', { name: 'Revoke Sprint board using Linear' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this permission?' });
+    expect(api.revokeApproval).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
     await waitFor(() => expect(api.revokeApproval).toHaveBeenCalledWith('a1', LINK.appId, 'linear'));
+    expect(api.revokeApproval).toHaveBeenCalledTimes(1);
   });
 
   it('with no approvals, the approvals list is not drawn', async () => {

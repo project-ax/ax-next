@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { routineApi, RoutineApiError, type Routine } from '@/lib/routines';
+import { Notice } from '@project-ax/ui';
 export function FireNowControl({
   routine,
   onFired,
@@ -48,7 +48,7 @@ export function FireNowControl({
       setStatus(
         e instanceof RoutineApiError
           ? e.message
-          : 'We couldn’t confirm this run. Retry sends the same request.',
+          : 'We couldn’t confirm this run. Firing again sends the same request.',
       );
       if (e instanceof RoutineApiError && e.status > 0 && e.status < 500)
         operation.current = null;
@@ -70,9 +70,7 @@ export function FireNowControl({
       </Button>
       {status &&
         (failed ? (
-          <Alert variant="destructive">
-            <AlertDescription>{status}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{status}</Notice>
         ) : (
           <p role="status" className="text-xs text-muted-foreground">
             {status}

@@ -24,9 +24,7 @@
  * leaves it there with a sentence saying nothing changed.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
+import { AsyncState, EmptyState } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import { AgentSlackDms, AgentSlackDmsSwitched } from './AgentSlackDms';
 import { AgentSlackBot, AppLeftOverNote, type AgentSlackBotProps, type BotCancelled } from './AgentSlackBot';
@@ -95,26 +93,18 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   }, [read]);
 
   if (load.status === 'loading') {
-    return (
-      <div role="status" className="flex flex-col gap-3">
-        <span className="sr-only">Loading Slack settings…</span>
-        <Skeleton className="h-14 w-full" aria-hidden="true" />
-        <Skeleton className="h-14 w-full" aria-hidden="true" />
-      </div>
-    );
+    return <AsyncState status="loading" skeleton="rows" loadingLabel="Loading Slack settings" />;
   }
   if (load.status === 'failed') {
     return (
       <div className="flex flex-col gap-3">
         {switched !== null && <AgentSlackDmsSwitched botName={switched.botName} switched={switched} />}
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>We couldn&apos;t load the Slack settings.</p>
-            <Button variant="outline" size="sm" onClick={read}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading Slack settings"
+          error={{ message: "We couldn't load the Slack settings.", onRetry: read }}
+        />
       </div>
     );
   }
@@ -122,7 +112,7 @@ export function AgentSlack({ agentId, agentName }: AgentSlackProps) {
   const state = load.read;
   switch (state.state) {
     case 'unavailable':
-      return <p className="text-[13px] text-muted-foreground">Slack isn&apos;t available here.</p>;
+      return <EmptyState title="Slack isn't available here." />;
     case 'no-workspace':
       // A live bot outlives the shared install, and a pending or requested one still
       // has to be cancellable (only a manager is told of either); its managers can

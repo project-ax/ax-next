@@ -27,6 +27,9 @@ function colorEntries(): Record<string, string> {
   return out;
 }
 
+// Control sizes: not part of the spacing scale, so they get their own keys (md control 40px, sm 36px, touch target 44px).
+const CONTROL = { 'control-sm': '36px', 'control-md': '40px', touch: '44px' };
+
 const keyed = <T extends Record<string, unknown>>(group: T, f: (k: string) => string): Record<string, string> =>
   Object.fromEntries(Object.keys(group).map((k) => [k, f(k)]));
 
@@ -49,6 +52,18 @@ export const axPreset: Config = {
     boxShadow: { flat: v('elevation-flat'), raised: v('elevation-raised'), overlay: v('elevation-overlay') },
     maxWidth: keyed(width, (k) => v(`width-${k}`)),
     transitionDuration: keyed(motion, (k) => v(`motion-${k}`)),
+    animation: { none: 'none', spin: 'spin 1s linear infinite', pulse: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite' },
+    keyframes: {
+      spin: { to: { transform: 'rotate(360deg)' } },
+      pulse: { '50%': { opacity: '0.5' } },
+    },
+    // Added on top of the token scales: control heights (Button, IconButton), the 44px touch target below md, and the skeleton block height / 90% line width.
+    extend: {
+      height: { ...CONTROL, 'skeleton-block': '160px' },
+      width: { ...CONTROL, '9/10': '90%' },
+      minHeight: CONTROL,
+      minWidth: CONTROL,
+    },
   },
 };
 

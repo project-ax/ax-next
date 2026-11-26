@@ -36,6 +36,8 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   Trash2,
   Pencil,
@@ -56,7 +58,6 @@ import {
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   Select,
@@ -166,7 +167,11 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   // user-source row can expose Edit / Delete / Submit). Keyed by id.
   const [ownSkills, setOwnSkills] = useState<Map<string, SkillSummary>>(new Map());
   const [authored, setAuthored] = useState<AuthoredSkillListing[]>([]);
+  // A failed WRITE (install, delete, submit …) and a failed READ (agents,
+  // installed, catalog) are different things: the read has a Try again.
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [retryingReads, setRetryingReads] = useState(false);
   const [search, setSearch] = useState('');
 
   // Dialog / confirmation state.
@@ -193,7 +198,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
       if (currentAgent.current === id) setInstalled(r.skills);
     } catch (err) {
       if (currentAgent.current === id) {
-        setError(err instanceof Error ? err.message : String(err));
+        setReadError(err instanceof Error ? err.message : String(err));
         setInstalled([]);
       }
     }
@@ -203,7 +208,7 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
     try {
       setCatalog(await listCatalogSkills());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setReadError(err instanceof Error ? err.message : String(err));
       setCatalog([]);
     }
   }, []);
@@ -223,6 +228,23 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
     }
   }, []);
 
+  const loadAgents = useCallback((isCancelled: () => boolean) => {
+    return listChatAgents()
+      .then((a) => {
+        if (isCancelled()) return;
+        setAgents(a);
+        setAgentsLoaded(true);
+        // Keep a selection already made; a retry after a failed first read has none yet.
+        if (a[0]) setAgentId((prev) => prev || a[0]!.agentId);
+      })
+      .catch((e: unknown) => {
+        if (!isCancelled()) {
+          setAgentsLoaded(true);
+          setReadError(e instanceof Error ? e.message : String(e));
+        }
+      });
+  }, []);
+
   // Load the agent list once; default to the first agent.
   useEffect(() => {
     let cancelled = false;
@@ -231,25 +253,13 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
       void refreshCatalog(); void refreshOwn();
       return () => { cancelled = true; };
     }
-    listChatAgents()
-      .then((a) => {
-        if (cancelled) return;
-        setAgents(a);
-        setAgentsLoaded(true);
-        if (a[0]) setAgentId(a[0].agentId);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setAgentsLoaded(true);
-          setError(e instanceof Error ? e.message : String(e));
-        }
-      });
+    void loadAgents(() => cancelled);
     void refreshCatalog();
     void refreshOwn();
     return () => {
       cancelled = true;
     };
-  }, [fixedAgentId, refreshCatalog, refreshOwn]);
+  }, [fixedAgentId, loadAgents, refreshCatalog, refreshOwn]);
 
   // (Re)load installed whenever the selected agent changes.
   useEffect(() => {
@@ -262,6 +272,19 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   useEffect(() => {
     if (fixedAgentId) setAgentId(fixedAgentId);
   }, [fixedAgentId]);
+
+  /** Try again for a failed read: re-run every read the tab depends on. */
+  const retryReads = (): void => {
+    setReadError(null);
+    setRetryingReads(true);
+    setInstalled(null);
+    setCatalog(null);
+    // With no agent chosen yet (the first agent read failed) the installed read
+    // happens in the [agentId] effect once loadAgents picks one.
+    const reads: Array<Promise<unknown>> = [refreshCatalog(), refreshInstalled(agentId)];
+    if (!fixedAgentId) reads.push(loadAgents(() => false));
+    void Promise.all(reads).finally(() => setRetryingReads(false));
+  };
 
   // ---- derived ----------------------------------------------------------
 
@@ -308,18 +331,15 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   }
 
   async function handleDelete(skillId: string, scope: 'user' | 'workspace'): Promise<void> {
-    try {
-      if (scope === 'user') {
-        await deleteUserSkill(skillId);
-      } else {
-        await deleteCatalogSkill(skillId);
-      }
-      setPendingDelete(null);
-      await Promise.all([refreshInstalled(agentId), refreshCatalog(), refreshOwn()]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDelete(null);
+    // A failure is shown inside the confirmation and leaves the skill listed.
+    if (scope === 'user') {
+      await deleteUserSkill(skillId);
+    } else {
+      await deleteCatalogSkill(skillId);
     }
+    await Promise.all([refreshInstalled(agentId), refreshCatalog(), refreshOwn()]);
+    // The row that opened the confirmation is gone; park focus on the page's primary action.
+    focusAfterRemoval('[data-return-focus="skills-create"]');
   }
 
   async function handleShare(skillId: string): Promise<void> {
@@ -407,14 +427,11 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
   async function handleDismiss(a: AuthoredSkillListing): Promise<void> {
     const key = `${a.agentId}/${a.skillId}`;
     setDismissing(key);
-    setError(null);
     try {
       await deleteAuthoredSkill(a.agentId, a.skillId);
-      setPendingDismiss(null);
       await refreshOwn();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setPendingDismiss(null);
+      // The draft's row is gone; park focus on the page's primary action.
+      focusAfterRemoval('[data-return-focus="skills-create"]');
     } finally {
       setDismissing(null);
     }
@@ -533,11 +550,11 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
               <TabsTrigger variant="quiet" value="browse">Browse</TabsTrigger>
               <TabsTrigger variant="quiet" value="review">Review</TabsTrigger>
             </TabsList>
-            <Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button>
+            <Button data-return-focus="skills-create" onClick={() => setEditor({ mode: 'create-user' })}>Create</Button>
           </div>
         ) : (
           <>
-            <SettingsActions><Button onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
+            <SettingsActions><Button data-return-focus="skills-create" onClick={() => setEditor({ mode: 'create-user' })}>Create</Button></SettingsActions>
             {agents.length > 1 && (
               <div className="flex items-center justify-end gap-3">
                 <Select value={agentId} onValueChange={setAgentId}>
@@ -554,29 +571,29 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
           </>
         )}
 
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+        {readError && (
+          <Notice tone="danger" action={{ label: 'Try again', busy: retryingReads, onClick: retryReads }}>
+            {readError}
+          </Notice>
         )}
 
+        {error && <Notice tone="danger">{error}</Notice>}
+
         {shareResult && (
-          <Alert>
-            <AlertDescription>
-              {shareResult.kind === 'submitted' ? (
-                <>
-                  <code className="font-mono">{shareResult.skillId}</code> was
-                  submitted for admin review. Once admitted, it ships to everyone
-                  and your editable copy is retired.
-                </>
-              ) : (
-                <>
-                  <code className="font-mono">{shareResult.skillId}</code> is
-                  already submitted and pending admin review.
-                </>
-              )}
-            </AlertDescription>
-          </Alert>
+          <Notice tone="info">
+            {shareResult.kind === 'submitted' ? (
+              <>
+                <code className="font-mono">{shareResult.skillId}</code> was
+                submitted for admin review. Once admitted, it ships to everyone
+                and your editable copy is retired.
+              </>
+            ) : (
+              <>
+                <code className="font-mono">{shareResult.skillId}</code> is
+                already submitted and pending admin review.
+              </>
+            )}
+          </Notice>
         )}
 
         {/* ============================ INSTALLED =========================
@@ -588,23 +605,26 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
         <TabsContent value="installed" {...(!fixedAgentId ? { forceMount: true as const, hidden: tab !== 'installed' } : {})} className="flex flex-col gap-3">
           {!fixedAgentId && <h2 className="sr-only">Installed{installedCount > 0 ? ` (${installedCount})` : ''}</h2>}
 
-          {!fixedAgentId && agentsLoaded && agents.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              You don’t have an assistant yet. Create one on the Agents tab, then
-              come back here to install skills onto it.
-            </p>
+          {readError ? null : !fixedAgentId && agentsLoaded && agents.length === 0 ? (
+            <EmptyState
+              title="You don’t have an assistant yet"
+              description="Create one on the Agents tab, then come back here to install skills onto it."
+            />
           ) : installed === null ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading installed skills" />
           ) : installed.length === 0 && (fixedAgentId || ownNotInstalled.length === 0) ? (
-            <p className="text-sm text-muted-foreground">
-              {/* Don't send a first-run reader "below" to a shelf that is also
-                  empty — the other half of the walk finding at the catalog
-                  empty state. With nothing in the workspace, Create is the only
-                  door that opens. */}
-              {catalog !== null && catalog.length === 0
-                ? 'No skills installed yet. Create one to get started.'
-                : 'No skills installed yet. Install one from Browse, or create your own.'}
-            </p>
+            // Don't send a first-run reader "below" to a shelf that is also
+            // empty — the other half of the walk finding at the catalog
+            // empty state. With nothing in the workspace, Create is the only
+            // door that opens.
+            <EmptyState
+              title="No skills installed yet"
+              description={
+                catalog !== null && catalog.length === 0
+                  ? 'Create one to get started.'
+                  : 'Install one from Browse, or create your own.'
+              }
+            />
           ) : (
             <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {/* User-created or adopted skills that have no agent attachment yet.
@@ -836,17 +856,16 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
             />
           </div>
 
-          {catalog === null ||
+          {readError ? null : catalog === null ||
           !agentsLoaded ||
           ((fixedAgentId || agents.length > 0) && installed === null) ? (
             // Wait for the catalog, the agent list, and — when there's an agent —
             // the installed set, so we never flash an already-installed skill as
             // "installable" before the exclusion lands. With no agent, the catalog
             // is browsable (Install is disabled until an agent exists).
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the workspace catalog" />
           ) : notInstalled.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              {/*
+            /*
                 Three situations, not two. `notInstalled.length === 0` used to
                 collapse the first-run one into the congratulatory one, so a
                 brand-new workspace was told "everything in your workspace is
@@ -855,13 +874,24 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                 Installed section directly above says "install one from your
                 workspace below", pointing at this very line. A walk on a fresh
                 cluster hit both sentences stacked on one screen.
-              */}
-              {search.trim().length > 0
-                ? 'No matching skills in your workspace.'
-                : catalog.length === 0
-                  ? 'Your workspace catalog is empty. Add a skill to the workspace and it shows up here, ready to install.'
-                  : 'Nothing left to install — everything in your workspace is already on this assistant.'}
-            </p>
+              */
+            <EmptyState
+              title={
+                search.trim().length > 0
+                  ? 'No matching skills in your workspace'
+                  : catalog.length === 0
+                    ? 'Your workspace catalog is empty'
+                    : 'Nothing left to install'
+              }
+              {...(search.trim().length > 0
+                ? {}
+                : {
+                    description:
+                      catalog.length === 0
+                        ? 'Add a skill to the workspace and it shows up here, ready to install.'
+                        : 'Everything in your workspace is already on this assistant.',
+                  })}
+            />
           ) : (
             <div className={fixedAgentId ? 'flex flex-col divide-y divide-border' : 'flex min-w-0 flex-col'}>
               {notInstalled.map((c) => (
@@ -999,76 +1029,33 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
         </Dialog>
       )}
 
-      {pendingDelete !== null && (
-        <Dialog open onOpenChange={(o) => { if (!o) setPendingDelete(null); }}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {pendingDelete.scope === 'user'
-                  ? 'Delete skill?'
-                  : 'Remove from workspace?'}
-              </DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              {pendingDelete.scope === 'user' ? (
-                <>
-                  Delete <code className="font-mono">{pendingDelete.skillId}</code>?
-                  This cannot be undone. If it's attached to any agent, the delete
-                  will fail and you'll need to remove it first.
-                </>
-              ) : (
-                <>
-                  Remove <code className="font-mono">{pendingDelete.skillId}</code>{' '}
-                  from the workspace catalog? It will no longer be available for
-                  anyone to install.
-                </>
-              )}
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDelete(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={() =>
-                  void handleDelete(pendingDelete.skillId, pendingDelete.scope)
-                }
-              >
-                {pendingDelete.scope === 'user' ? 'Delete' : 'Remove'}
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        title={pendingDelete?.scope === 'workspace' ? 'Remove from workspace?' : 'Delete skill?'}
+        description={
+          pendingDelete?.scope === 'workspace'
+            ? `Remove ${pendingDelete.skillId} from the workspace catalog? It will no longer be available for anyone to install.`
+            : `Delete ${pendingDelete?.skillId ?? ''}? This cannot be undone. If it's attached to any agent, the delete will fail and you'll need to remove it first.`
+        }
+        confirmLabel={pendingDelete?.scope === 'workspace' ? 'Remove' : 'Delete'}
+        errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+        onConfirm={() => (pendingDelete ? handleDelete(pendingDelete.skillId, pendingDelete.scope) : undefined)}
+      />
 
-      {pendingDismiss !== null && (
-        <Dialog open onOpenChange={(o) => { if (!o) setPendingDismiss(null); }}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Delete authored draft?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Delete the draft{' '}
-              <code className="font-mono">{pendingDismiss.skillId}</code> authored
-              by your agent? This removes the draft only — it doesn't touch any
-              editable copy you've already adopted. If the agent authors it again
-              later, it can re-appear here.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDismiss(null)}>
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                disabled={dismissing !== null}
-                onClick={() => void handleDismiss(pendingDismiss)}
-              >
-                Delete
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={pendingDismiss !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDismiss(null);
+        }}
+        title="Delete authored draft?"
+        description={`Delete the draft ${pendingDismiss?.skillId ?? ''} authored by your agent? This removes the draft only — it doesn't touch any editable copy you've already adopted. If the agent authors it again later, it can re-appear here.`}
+        confirmLabel="Delete"
+        errorMessage={(err) => (err instanceof Error ? err.message : String(err))}
+        onConfirm={() => (pendingDismiss ? handleDismiss(pendingDismiss) : undefined)}
+      />
 
       {pendingShare !== null && (
         <Dialog

@@ -10,22 +10,16 @@
  * teach them to click through. The words are `lib/connector-access-copy.ts`,
  * shared, so five surfaces cannot drift into saying different things.
  *
- * `role="note"`, not the Alert default `role="alert"`. This is a disclosure that
- * is simply there; announcing it as an assertive live region every time a dialog
- * opens would overstate it, and it would make `getByRole('alert')` stop meaning
- * "something went wrong" on the surfaces it sits inside. The `props` spread on
- * `Alert` lands after its own `role`, so the override is the primitive's own
- * extension point, not a fork.
+ * A `Notice tone="info"` (role `status`), not a warning: this is a disclosure
+ * that is simply there. An assertive `alert` every time a dialog opens would
+ * overstate it, and would make `getByRole('alert')` stop meaning "something
+ * went wrong" on the surfaces it sits inside. The headline is the Notice title;
+ * the sentence about being tricked is its body.
  *
- * No `AlertTitle`: `ui/alert.tsx` hardcodes it to an `h5`, which jumps the heading
- * outline (TASK-446) in every host surface. The emphasised first sentence carries
- * the point instead — the same call `RememberedSitesPanel` makes.
- *
- * shadcn `Alert` + semantic tokens only (invariant #6). The `TriangleAlert` icon
- * and `size-4` are what `GrantRow` already uses for its authored-skill warning.
+ * The wrapper keeps `data-testid="connector-access-notice"`: the workspace/ and
+ * admin/ tests that mount this through their own surfaces still find it there.
  */
-import { TriangleAlert } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import {
   connectorAccessCopy,
   type ConnectorAccessNoticeKind,
@@ -41,15 +35,13 @@ export function ConnectorAccessNotice({
 }) {
   const { headline, details } = connectorAccessCopy(kind);
   return (
-    <Alert role="note" data-testid="connector-access-notice" className={className}>
-      <TriangleAlert className="size-4" aria-hidden="true" />
-      <AlertDescription className="flex flex-col gap-1.5">
-        <p className="font-medium">{headline}</p>
-        {/* Regular weight, NOT muted: the second paragraph carries the sentence
-            about being tricked, which is the one least worth skimming. Both
-            inherit the Alert's foreground token. */}
-        <p>{details}</p>
-      </AlertDescription>
-    </Alert>
+    <div data-testid="connector-access-notice" className={className}>
+      <Notice tone="info" title={headline}>
+        {/* The second paragraph carries the sentence about being tricked, which
+            is the one least worth skimming — so it is the Notice body, not a
+            footnote. */}
+        {details}
+      </Notice>
+    </div>
   );
 }

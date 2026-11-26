@@ -343,7 +343,7 @@ export const LEARNED_PAUSED_ACTION = 'Fix this';
 export const LEARNED_SAVE_FAILED =
   "I couldn't save anything from your last few messages. Nothing's lost — I'll try again on my own in a little while.";
 export const LEARNED_READ_FAILED =
-  "I can't show what I've learned here just now. That means unknown, not empty — try reloading.";
+  "I can't show what I've learned here just now. That means unknown, not empty.";
 export const LEARNED_READ_FAILED_ACTION = 'Try again';
 export const LEARNED_NOT_ENABLED =
   "This workspace doesn't keep memory yet. Ask your workspace admin about switching it on.";

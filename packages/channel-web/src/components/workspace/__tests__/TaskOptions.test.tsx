@@ -67,7 +67,7 @@ describe('the task delete confirm (⋯ › Delete task…)',()=>{
   let resolve!:()=>void;vi.mocked(routineApi.remove).mockImplementationOnce(()=>new Promise(r=>{resolve=()=>r({deleted:true,cleanupPending:false});}));
   const h=show();
   fireEvent.click(deleteButton());
-  expect(deleteButton()).toBeDisabled();
+  expect(deleteButton()).toHaveAttribute('aria-busy','true');
   expect(screen.getByRole('button',{name:'Cancel'})).toBeDisabled();
   expect(screen.getByRole('button',{name:'Pause instead'})).toBeDisabled();
   fireEvent.keyDown(screen.getByRole('dialog'),{key:'Escape'});
@@ -129,8 +129,9 @@ describe('the task delete confirm (⋯ › Delete task…)',()=>{
  ])('a %i says why in its own words',async(status,text,destructive)=>{
   show();vi.mocked(routineApi.remove).mockRejectedValueOnce(new RoutineApiError(status));
   fireEvent.click(deleteButton());
-  const alert=await screen.findByRole('alert');
-  expect(alert).toHaveTextContent(text);
-  expect(alert.className.includes('destructive')).toBe(destructive);
+  // A failure interrupts (alert); an ended session is neutral news (status).
+  const note=await screen.findByRole(destructive?'alert':'status');
+  expect(note).toHaveTextContent(text);
+  expect(screen.queryByRole(destructive?'status':'alert')).not.toBeInTheDocument();
  });
 });

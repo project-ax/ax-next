@@ -259,7 +259,8 @@ describe('ConnectorsTab', () => {
     const row = await screen.findByTestId('connector-request-linear');
     fireEvent.click(within(row).getByRole('button', { name: 'Set it up' }));
     const dialog = await screen.findByRole('dialog');
-    const note = await within(dialog).findByTestId('request-left-out');
+    const note = (await within(dialog).findByText('This request also asked for:')).closest('[role]') as HTMLElement;
+    expect(note).toHaveAttribute('role', 'status');
     expect(within(note).getByText('the npm package sneaky-extra')).toBeInTheDocument();
     expect(within(note).getByText('the PyPI package also-sneaky')).toBeInTheDocument();
     expect(
@@ -285,22 +286,22 @@ describe('ConnectorsTab', () => {
     expect(screen.queryByText(/Awaiting approval/i)).not.toBeInTheDocument();
   });
 
-  it('says so, with Retry, when the request list can’t load (and the tab keeps working)', async () => {
+  it('says so, with Try again, when the request list can’t load (and the tab keeps working)', async () => {
     const list = vi
       .spyOn(connectorsLib, 'listAuthoredProposals')
       .mockRejectedValueOnce(new Error('list connector requests: 500'))
       .mockResolvedValueOnce([REQUEST_LINEAR]);
     render(<ConnectorsTab />);
     expect(await screen.findByText('My Notion')).toBeInTheDocument();
-    const alert = await screen.findByTestId('connector-requests-failed');
-    expect(
-      within(alert).getByText('Couldn’t load requests waiting for approval.'),
-    ).toBeInTheDocument();
+    const alert = (await screen.findByText('Couldn’t load requests waiting for approval.')).closest(
+      '[role="alert"]',
+    ) as HTMLElement;
+    expect(alert).toBeInTheDocument();
     // The raw error text is not shown.
     expect(screen.queryByText(/500/)).not.toBeInTheDocument();
-    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
     expect(await screen.findByTestId('connector-request-linear')).toBeInTheDocument();
-    expect(screen.queryByTestId('connector-requests-failed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Couldn’t load requests waiting for approval.')).not.toBeInTheDocument();
     expect(list).toHaveBeenCalledTimes(2);
   });
 
@@ -318,7 +319,7 @@ describe('ConnectorsTab', () => {
       '/admin/connectors/authored', { credentials: 'include' },
     ));
     expect(screen.queryByText(/Awaiting approval/i)).not.toBeInTheDocument();
-    expect(screen.queryByTestId('connector-requests-failed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Couldn’t load requests waiting for approval.')).not.toBeInTheDocument();
   });
 
   it('Set it up opens the create editor prefilled, and Save creates a shared connector under the requested id', async () => {
@@ -469,6 +470,21 @@ describe('ConnectorsTab', () => {
     await waitFor(() => {
       expect(screen.getByText('connectors boom')).toBeInTheDocument();
     });
+    // A failed read is not an empty list.
+    expect(screen.queryByText('No connectors yet')).toBeNull();
+  });
+
+  it('Try again re-reads the connector list and shows it', async () => {
+    const list = vi
+      .spyOn(connectorsLib, 'listConnectors')
+      .mockRejectedValueOnce(new Error('connectors boom'))
+      .mockResolvedValue([SHARED_CONN]);
+    render(<ConnectorsTab />);
+    await screen.findByText('connectors boom');
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(SHARED_CONN.name)).toBeInTheDocument();
+    expect(screen.queryByText('connectors boom')).toBeNull();
+    expect(list).toHaveBeenCalledTimes(2);
   });
 
   it('an owner can edit a shared personal definition', async () => {

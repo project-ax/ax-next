@@ -7,12 +7,11 @@
  * chat (resolved at chat time on the server, never rewritten).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { FieldSet } from '@/components/ui/field';
 import { SettingsActions } from '../settings/SettingsLayout';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Skeleton } from '@/components/ui/skeleton';
+import { AsyncState, Notice } from '@project-ax/ui';
 import {
   fetchCatalog,
   fetchImpact,
@@ -41,7 +40,7 @@ import {
   toggleModel,
   type Draft,
 } from '@/lib/models-picker';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { ModelCatalogPane } from './ModelCatalogPane';
 import { SaveImpactDialog, type ImpactLine } from './SaveImpactDialog';
 import { SelectedModelsPane } from './SelectedModelsPane';
@@ -127,7 +126,7 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
       setLoad((prev) => (prev.kind === 'ready' ? { ...prev, policy: saved } : prev));
       setDraft(draftOf(saved));
       setConfirm(null);
-      toastActions.show({ title: SAVED_TITLE, detail: SAVED_DETAIL, kind: 'info' });
+      toast.show({ title: SAVED_TITLE, description: SAVED_DETAIL });
     } catch (err) {
       console.warn('models: save failed', err);
       setConfirm(null);
@@ -162,29 +161,15 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
     }
   }
 
-  if (load.kind === 'loading') {
-    return (
-      <div className="mx-auto max-w-[960px] font-sans" role="status">
-        <span className="sr-only">Loading models…</span>
-        <div className="grid gap-4 md:grid-cols-2" aria-hidden="true">
-          <Skeleton className="h-64 w-full" />
-          <Skeleton className="h-64 w-full" />
-        </div>
-      </div>
-    );
-  }
-
-  if (load.kind === 'error') {
+  if (load.kind === 'loading' || load.kind === 'error') {
     return (
       <div className="mx-auto max-w-[960px] font-sans">
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>{load.message}</p>
-            <Button type="button" variant="outline" size="sm" onClick={() => void loadAll()}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <AsyncState
+          status={load.kind}
+          skeleton="block"
+          loadingLabel="Loading models…"
+          error={{ message: load.kind === 'error' ? load.message : '', onRetry: () => void loadAll() }}
+        />
       </div>
     );
   }
@@ -198,25 +183,16 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
       <SettingsActions><Button type="button" onClick={() => setCategory('catalog')}>Add models</Button></SettingsActions>
 
       {load.policy.warning === 'saved-policy-unreadable' ? (
-        <Alert>
-          <AlertDescription>{UNREADABLE_NOTICE}</AlertDescription>
-        </Alert>
+        <Notice tone="info">{UNREADABLE_NOTICE}</Notice>
       ) : (
         load.policy.source === 'builtin' && (
-          <Alert>
-            <AlertDescription>{BUILTIN_NOTICE}</AlertDescription>
-          </Alert>
+          <Notice tone="info">{BUILTIN_NOTICE}</Notice>
         )
       )}
       {load.catalogFailed && (
-        <Alert>
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span>{CATALOG_LOAD_FAILED}</span>
-            <Button type="button" variant="outline" size="sm" disabled={retrying} onClick={() => void retryCatalog()}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info" action={{ label: 'Try again', busy: retrying, onClick: () => void retryCatalog() }}>
+          {CATALOG_LOAD_FAILED}
+        </Notice>
       )}
 
       <Tabs value={category} onValueChange={setCategory} className="settings-tabs">
@@ -249,16 +225,12 @@ export function ModelsTab({ onOpenKeys }: { onOpenKeys?: () => void }) {
       </Tabs>
 
       {saveError !== null && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span>{saveError.message}</span>
-            {saveError.stale && (
-              <Button type="button" variant="outline" size="sm" onClick={() => void loadAll()}>
-                Reload
-              </Button>
-            )}
-          </AlertDescription>
-        </Alert>
+        <Notice
+          tone="danger"
+          {...(saveError.stale ? { action: { label: 'Reload and discard my changes', onClick: () => void loadAll() } } : {})}
+        >
+          {saveError.message}
+        </Notice>
       )}
 
       {dirty && <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-border bg-background px-1 py-3">

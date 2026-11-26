@@ -34,8 +34,6 @@
  *     document. `lib/consent-focus.ts` carries the argument.
  */
 import { useRef, useState, type ReactElement } from 'react';
-import { TriangleAlert } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -87,7 +85,8 @@ import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-desti
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import { toastActions } from '@/lib/toast-store';
+import { Notice, toast } from '@project-ax/ui';
+import { cn } from '@/lib/utils';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
@@ -161,18 +160,18 @@ function blankSlots(slots: readonly GrantSlot[]): string[] {
 function hostAllowToast(
   persist: boolean,
   outcome: HostGrantOutcome,
-): { title: string; detail: string } {
-  const allowed = { title: HOST_ALLOWED_TITLE, detail: HOST_ALLOWED_DETAIL };
-  const ended = { title: HOST_ENDED_TITLE, detail: HOST_ENDED_DETAIL };
+): { title: string; description: string } {
+  const allowed = { title: HOST_ALLOWED_TITLE, description: HOST_ALLOWED_DETAIL };
+  const ended = { title: HOST_ENDED_TITLE, description: HOST_ENDED_DETAIL };
   if (!persist) return outcome.added ? allowed : ended;
   if (outcome.kept === true) return allowed;
   if (outcome.full === true) {
     return {
       title: outcome.added ? HOST_FOR_NOW_TITLE : HOST_ENDED_TITLE,
-      detail: HOST_LIST_FULL_DETAIL,
+      description: HOST_LIST_FULL_DETAIL,
     };
   }
-  return outcome.added ? { title: HOST_FOR_NOW_TITLE, detail: HOST_NOT_KEPT_DETAIL } : ended;
+  return outcome.added ? { title: HOST_FOR_NOW_TITLE, description: HOST_NOT_KEPT_DETAIL } : ended;
 }
 
 export function GrantRow({
@@ -398,7 +397,7 @@ export function GrantRow({
       });
       // The row goes either way; the toast says which it was. An answer we
       // could not read (`null`) says nothing rather than guess.
-      if (outcome !== null) toastActions.show(hostAllowToast(persist, outcome));
+      if (outcome !== null) toast.show(hostAllowToast(persist, outcome));
       resolveAndReturnFocus();
     } catch (err) {
       setError(userFacingMessage(err, 'grant-row'));
@@ -409,16 +408,9 @@ export function GrantRow({
 
   const failure =
     error === null ? null : (
-      <Alert
-        ref={answerRef}
-        tabIndex={-1}
-        variant="destructive"
-        className={`mt-3 max-w-[660px] ${RESOLUTION_FOCUS_RING}`}
-      >
-        <AlertDescription className="text-[13px] leading-relaxed">
-          {error}
-        </AlertDescription>
-      </Alert>
+      <section ref={answerRef} tabIndex={-1}>
+        <Notice tone="danger">{error}</Notice>
+      </section>
     );
 
   if (request.kind === 'host') {
@@ -434,7 +426,7 @@ export function GrantRow({
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           {HOST_WALL_EXPLANATION}
         </p>
-        <div className="mt-3 flex flex-wrap gap-1.5">
+        <div className={cn('mt-3 flex flex-wrap gap-1.5', error !== null && 'mb-3')}>
           <Badge variant="secondary">{request.host}</Badge>
         </div>
         {failure}
@@ -564,32 +556,37 @@ export function GrantRow({
     );
   }
 
+  const hasSetupHint = request.slots.some(
+    (s) => connectorServiceOf(s) !== undefined && s.haveExisting !== true,
+  );
+  const hasHosts = request.hosts.length > 0;
+  const textGap = request.authored === true || (hasSetupHint && !hasHosts);
+  const hostsGap = request.authored !== true && hasSetupHint && hasHosts;
   return (
     <div
       ref={rowRef}
       className="border-b border-rule-soft p-4 last:border-b-0"
       data-testid={`grant-${grant.key}`}
     >
-      <p className="text-[14px] font-medium">
+      {/*
+        A Notice has no margin of its own, so the element above it carries the gap: the last of
+        title / description (/ hosts) takes `mb-3` when a notice follows.
+      */}
+      <p className={cn('text-[14px] font-medium', description.length === 0 && textGap && 'mb-3')}>
         {title}
       </p>
       {description.length > 0 && (
-        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+        <p className={cn('mt-1 text-[13px] leading-relaxed text-muted-foreground', textGap && 'mb-3')}>
           {description}
         </p>
       )}
 
       {request.authored === true && (
-        <Alert className="mt-3 max-w-[660px]">
-          <TriangleAlert className="size-4" />
-          <AlertDescription className="text-[13px] leading-relaxed">
-            {AUTHORED_SKILL_WARNING}
-          </AlertDescription>
-        </Alert>
+        <Notice tone="warning">{AUTHORED_SKILL_WARNING}</Notice>
       )}
 
       {request.hosts.length > 0 && (
-        <div className="mt-3 flex flex-col gap-1.5">
+        <div className={cn('mt-3 flex flex-col gap-1.5', hostsGap && 'mb-3')}>
           <p className="text-xs text-muted-foreground">{REACH_LEAD_IN}</p>
           <div className="flex flex-wrap gap-1.5">
             {request.hosts.map((h) => (
@@ -619,14 +616,12 @@ export function GrantRow({
         const connectorService = connectorServiceOf(s);
         if (connectorService !== undefined && s.haveExisting !== true)
           // Slice 5 — not the person's to type: see `connectorSetupHint`.
-          // A note, not an interruption: the shared Alert defaults to
-          // role="alert", which belongs to a failed Connect alone.
+          // A note, not an interruption: only a danger Notice is role="alert",
+          // which belongs to a failed Connect alone.
           return (
-            <Alert key={s.slot} role="note" className="mt-3 max-w-[660px]">
-              <AlertDescription className="text-[13px] leading-relaxed">
-                {connectorSetupHint(connectorService)}
-              </AlertDescription>
-            </Alert>
+            <Notice key={s.slot} tone="info">
+              {connectorSetupHint(connectorService)}
+            </Notice>
           );
         return s.haveExisting === true ? (
           <div
@@ -697,7 +692,7 @@ export function GrantRow({
       )}
 
       {/* Not indexed — same reasoning as `description` above. */}
-      <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
+      <p className={cn('mt-3 text-[13px] leading-relaxed text-muted-foreground', error !== null && 'mb-3')}>
         {GRANT_REASSURANCE}
       </p>
 

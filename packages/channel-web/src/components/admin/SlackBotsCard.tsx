@@ -40,22 +40,12 @@
  * its token any more. Disconnecting it is how it gets rebuilt, and its
  * Disconnect dialog says so.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BotTokenReplaceDialog } from '@/components/slack/BotTokenReplaceDialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { AsyncState, ConfirmAction, Notice } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import {
   Table,
   TableBody,
@@ -84,16 +74,6 @@ const GENERIC_FAILURE = 'Something went wrong. Try again in a minute.';
 function shortDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
 }
 
 export interface SlackBotsCardProps {
@@ -158,35 +138,24 @@ export function SlackBotsCard({ onAppsChanged }: SlackBotsCardProps) {
   return (
     <>
       {leftOver !== null && (
-        <Alert>
-          <AlertDescription>
-            {`${leftOver} is disconnected, but we couldn't confirm its Slack app was deleted. It's listed above, with the Slack apps we couldn't delete.`}
-          </AlertDescription>
-        </Alert>
+        <Notice tone="info">
+          {`${leftOver} is disconnected, but we couldn't confirm its Slack app was deleted. It's listed above, with the Slack apps we couldn't delete.`}
+        </Notice>
       )}
       {replaced !== null && (
-        <Alert>
-          <AlertDescription>{BOT_TOKEN_COPY.replaced(replaced)}</AlertDescription>
-        </Alert>
+        <Notice tone="info">{BOT_TOKEN_COPY.replaced(replaced)}</Notice>
       )}
       {load.kind === 'error' && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>We couldn&apos;t load the team agents&apos; own bots.</p>
-            <Button variant="outline" size="sm" onClick={() => void read()}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger" action={{ label: 'Try again', onClick: () => void read() }}>
+          We couldn&apos;t load the team agents&apos; own bots.
+        </Notice>
       )}
       {load.kind === 'loading' && (
         // No title yet: the card may turn out to have nothing to show, and a heading that vanished would read as a glitch.
-        // (Not a live region: the tab above has its own `status` for the same wait.)
+        // (The AsyncState announces this wait itself, as a polite status; the tab's own loading above is an earlier, separate wait.)
         <Card variant="settings" aria-busy="true">
-          <CardContent className="flex flex-col gap-3">
-            <span className="sr-only">Loading the team agents&apos; own bots</span>
-            <Skeleton className="h-4 w-1/3" />
-            <Skeleton className="h-9 w-full" />
+          <CardContent>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading the team agents' own bots" />
           </CardContent>
         </Card>
       )}
@@ -316,9 +285,6 @@ function DisconnectBotDialog({
   /** Someone got there first: the row is out of date. */
   onStale: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
   // The last bot asked about, so the words stay put while the dialog closes.
   const shown = useRef<AdminSlackBot | null>(null);
   if (bot !== null) shown.current = bot;
@@ -327,60 +293,41 @@ function DisconnectBotDialog({
   const name = b?.botName ?? '';
   const needsRebuilding = b?.state === 'live' && b.approver === null;
 
-  const close = (open: boolean) => {
-    if (busy || open) return;
-    setError(null);
-    onClose();
-  };
-
   async function confirm() {
-    if (bot === null || busy) return;
-    setBusy(true);
-    setError(null);
+    if (bot === null) return;
     try {
       const { appDeleted } = await disconnectTeamBot(bot.installId);
       onGone(bot, appDeleted);
     } catch (err) {
       logRequestFailure(err, 'slack-bots-admin');
+      // Someone got there first: the row is out of date. Refresh it and let the dialog close.
       if (teamBotGone(err)) {
         onStale();
-      } else {
-        setError(GENERIC_FAILURE);
+        return;
       }
-    } finally {
-      setBusy(false);
+      throw err;
     }
   }
 
   return (
-    <Dialog open={bot !== null} onOpenChange={close}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{pending ? `Stop setting up ${name}?` : `Disconnect ${name}?`}</DialogTitle>
-          <DialogDescription>
-            {pending
-              ? "We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."
-              : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
-                  needsRebuilding
-                    ? " Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again."
-                    : ''
-                }`}
-          </DialogDescription>
-        </DialogHeader>
-        {error !== null && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => close(false)} disabled={busy}>
-            {pending ? 'Keep going' : 'Keep it'}
-          </Button>
-          <Button variant="destructive" onClick={() => void confirm()} disabled={busy}>
-            {busy ? <Busy>{pending ? 'Stopping…' : 'Disconnecting…'}</Busy> : pending ? 'Stop setting up' : 'Disconnect'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmAction
+      open={bot !== null}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={pending ? `Stop setting up ${name}?` : `Disconnect ${name}?`}
+      description={
+        pending
+          ? "We'll delete the Slack app that was started for it. A team admin can ask for a bot again any time."
+          : `${name} leaves every Slack channel it's in, and mentioning it stops working. We'll delete its Slack app.${
+              needsRebuilding
+                ? " Its approver has left, so this is how it gets rebuilt: once it's disconnected, a team admin of its agent sets up a new one from the agent's settings, and every channel needs /invite again."
+                : ''
+            }`
+      }
+      confirmLabel={pending ? 'Stop setting up' : 'Disconnect'}
+      errorMessage={() => GENERIC_FAILURE}
+      onConfirm={confirm}
+    />
   );
 }

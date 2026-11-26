@@ -41,6 +41,8 @@
  * only (invariant #6).
  */
 import { useCallback, useEffect, useState } from 'react';
+import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listConnectors,
   deleteConnector,
@@ -63,15 +65,6 @@ import { ConnectorDirectory } from './ConnectorDirectory';
 import { RoleCard } from '@/components/admin/RoleCard';
 import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 
 /**
  * Mechanism-free "what it needs" caption — keyMode only, no transport vocab.
@@ -164,9 +157,10 @@ export function ConnectorsTab() {
   // failure (the lib answers an empty list for its 404); anything else is, and
   // saying so beats an empty shelf that looks like "nobody asked".
   const [requestsFailed, setRequestsFailed] = useState(false);
+  const [retryingRequests, setRetryingRequests] = useState(false);
 
-  /** Reload the requests. A failure never blocks the tab: it shows an Alert
-   *  with Retry where the shelf would be. */
+  /** Reload the requests. A failure never blocks the tab: it shows a Notice
+   *  with Try again where the shelf would be. */
   const refreshRequests = useCallback(() => {
     return listAuthoredProposals()
       .then((drafts) => {
@@ -231,31 +225,24 @@ export function ConnectorsTab() {
     if (!pendingDelete) return;
     try {
       await deleteConnector(pendingDelete.id, base);
-      setPendingDelete(null);
-      await refreshConnectors();
     } catch (e: unknown) {
-      setPendingDelete(null);
-      if (isConnectorGone(e)) {
-        // Another admin got there first: drop it from the list, then say so
-        // (the reload clears any earlier error, so it goes first).
-        await refreshConnectors();
-        setError(CONNECTOR_GONE_MESSAGE);
-        return;
-      }
-      setError(e instanceof Error ? e.message : String(e));
+      if (!isConnectorGone(e)) throw e;
+      // Another admin got there first: drop it from the list, then say so
+      // (the reload clears any earlier error, so it goes first). The dialog closes.
+      await refreshConnectors();
+      setError(CONNECTOR_GONE_MESSAGE);
+      focusAfterRemoval('[data-return-focus="admin-connectors"]');
+      return;
     }
+    await refreshConnectors();
+    // The row that opened this is gone; park focus on the tab's primary action.
+    focusAfterRemoval('[data-return-focus="admin-connectors"]');
   };
-
   const confirmDismiss = async () => {
     if (!dismissing) return;
-    try {
-      await dismissAuthoredProposal(dismissing.connectorId);
-      setDismissing(null);
-      void refreshRequests();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-      setDismissing(null);
-    }
+    await dismissAuthoredProposal(dismissing.connectorId);
+    void refreshRequests();
+    focusAfterRemoval('[data-return-focus="admin-connectors"]');
   };
 
   const list = connectors ?? [];
@@ -314,39 +301,45 @@ export function ConnectorsTab() {
                 Find in directory
               </Button>
             )}
-            <Button onClick={() => { setPrefill(null); setEditing('new'); }}>New connector</Button>
+            <Button data-return-focus="admin-connectors" onClick={() => { setPrefill(null); setEditing('new'); }}>New connector</Button>
           </SettingsActions>
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice
+              tone="danger"
+              {...(error === CONNECTOR_GONE_MESSAGE
+                ? {}
+                : { action: { label: 'Try again', onClick: () => void refreshConnectors() } })}
+            >
+              {error}
+            </Notice>
           )}
 
           {connectors === null && !error && (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading connectors" />
           )}
 
           {connectors !== null && list.length === 0 && !error && (
-            <p className="text-sm text-muted-foreground">
-              No connectors yet. Add one to make it available to the workspace.
-            </p>
+            <EmptyState
+              title="No connectors yet"
+              description="Add one to make it available to the workspace."
+            />
           )}
 
           {requestsFailed && (
-            <Alert data-testid="connector-requests-failed">
-              <AlertDescription className="flex flex-col items-start gap-2">
-                <span>Couldn’t load requests waiting for approval.</span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void refreshRequests()}
-                >
-                  Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
+            <Notice
+              tone="danger"
+              action={{
+                label: 'Try again',
+                busy: retryingRequests,
+                onClick: () => {
+                  setRetryingRequests(true);
+                  void refreshRequests().finally(() => setRetryingRequests(false));
+                },
+              }}
+            >
+              Couldn’t load requests waiting for approval.
+            </Notice>
           )}
 
           {/* Awaiting approval — every person's connector requests. Rendered only
@@ -434,66 +427,36 @@ export function ConnectorsTab() {
         />
       )}
 
-      {/* Admin curation: styled delete confirmation (no OS confirm). */}
-      {pendingDelete !== null && (
-        <Dialog
-          open
-          onOpenChange={(v) => {
-            if (!v) setPendingDelete(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Delete connector?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              Delete{' '}
-              <span className="font-medium text-foreground">
-                {pendingDelete.name}
-              </span>
-              ? This cannot be undone. Agents that rely on it will lose access.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setPendingDelete(null)}>
-                Cancel
-              </Button>
-              <Button variant="destructive" onClick={() => void confirmDelete()}>
-                Delete
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      {/* Admin curation: delete confirmation. */}
+      <ConfirmAction
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+        title="Delete connector?"
+        description={`Delete ${pendingDelete?.name ?? ''}? This cannot be undone. Agents that rely on it will lose access.`}
+        confirmLabel="Delete"
+        errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
+        onConfirm={confirmDelete}
+      />
 
       {/* Dismiss a request: nothing is created, and the person isn't told.
           Their agent can ask again if it still needs it. */}
-      {dismissing !== null && (
-        <Dialog
-          open
-          onOpenChange={(v) => {
-            if (!v) setDismissing(null);
-          }}
-        >
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Dismiss this request?</DialogTitle>
-              <DialogDescription>
-                {dismissing.people.length === 1
-                  ? 'The person who asked won’t be notified.'
-                  : 'The people who asked won’t be notified.'}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setDismissing(null)}>
-                Keep
-              </Button>
-              <Button variant="destructive" onClick={() => void confirmDismiss()}>
-                Dismiss
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
+      <ConfirmAction
+        open={dismissing !== null}
+        onOpenChange={(open) => {
+          if (!open) setDismissing(null);
+        }}
+        title="Dismiss this request?"
+        description={
+          dismissing?.people.length === 1
+            ? 'The person who asked won’t be notified.'
+            : 'The people who asked won’t be notified.'
+        }
+        confirmLabel="Dismiss"
+        errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
+        onConfirm={confirmDismiss}
+      />
     </div>
   );
 }

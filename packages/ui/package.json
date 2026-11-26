@@ -32,6 +32,11 @@
     "stories:test": "pnpm build-storybook && playwright test",
     "stories:update": "docker run --rm --platform linux/amd64 -e CI=1 -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0 -e npm_config_store_dir=/tmp/pnpm-store -v \"$PWD/../..\":/w -v /w/node_modules -v /w/packages/ui/node_modules -w /w/packages/ui mcr.microsoft.com/playwright:v1.59.1-noble@sha256:b0ab6f3cb99aa7803adbc14d9027ec1785fc6e433b97e134e0f8fe61683b6b53 sh -c 'corepack enable && pnpm install --frozen-lockfile --filter @project-ax/ui... && pnpm build-storybook && pnpm exec playwright test --update-snapshots'"
   },
+  "dependencies": {
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-tooltip": "1.2.8",
+    "lucide-react": "0.474.0"
+  },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
     "@playwright/test": "1.59.1",

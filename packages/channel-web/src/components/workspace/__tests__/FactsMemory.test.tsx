@@ -164,7 +164,8 @@ describe('MemorySurface', () => {
     recallMock.mockResolvedValue({ statements: [], degraded: [] });
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'nothing' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    await screen.findByText('No memories match that. Try a different word or phrase.');
+    await screen.findByText('No memories match that.');
+    expect(screen.getByText('Try a different word or phrase.')).toBeInTheDocument();
     expect(screen.queryByText(/Fix and Forget live/)).toBeNull();
   });
 
@@ -250,11 +251,11 @@ describe('MemorySurface', () => {
   it('shows a failed read with retry, never an empty state', async () => {
     recallMock.mockRejectedValueOnce(new Error('down'));
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-    expect(await screen.findByText('We could not read these memories. Try again.')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('We could not read these memories.');
     expect(screen.queryByText(/No memories yet/)).toBeNull();
 
     recallMock.mockResolvedValue({ statements: [fact({ id: 'm1' })], degraded: [] });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Retry' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Boston')).toBeInTheDocument();
   });
 
@@ -600,9 +601,8 @@ describe('MemorySurface', () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
     fireEvent.change(screen.getByLabelText('Search memories'), { target: { value: 'zzz' } });
     fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-    expect(
-      await screen.findByText('No memories match that. Try a different word or phrase.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('No memories match that.')).toBeInTheDocument();
+    expect(screen.getByText('Try a different word or phrase.')).toBeInTheDocument();
   });
 
   it('never paints an older search over a newer one', async () => {
@@ -795,8 +795,9 @@ describe('MemorySurface', () => {
 
     fireEvent.click(await memoryAction('Forget: Boston'));
     expect(
+      // The dialog now names the memory first ("“Boston” — …"), so the disclosure is a substring of its description.
       await screen.findByText(
-        'This memory will be removed from active results for the team. It stays in History, and past conversations do not change.',
+        /This memory will be removed from active results for the team\. It stays in History, and past conversations do not change\./,
       ),
     ).toBeInTheDocument();
   });
@@ -862,10 +863,9 @@ describe('MemorySurface — extraction paused', () => {
 
   it('shows no notice and keeps the full empty-state sentence when not paused', async () => {
     render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
+    expect(await screen.findByText('No memories yet.')).toBeInTheDocument();
     expect(
-      await screen.findByText(
-        'No memories yet. Notes we remember from your conversations will appear here.',
-      ),
+      screen.getByText('Notes we remember from your conversations will appear here.'),
     ).toBeInTheDocument();
     expect(screen.queryByText('Memory is paused')).toBeNull();
     expect(screen.queryByText(/AI model keys/)).toBeNull();
@@ -1003,7 +1003,7 @@ describe('MemorySurface — where focus goes after Undo or when the receipt runs
     const heading = screen.getByRole('region', { name: 'Memories' });
     await waitFor(() => expect(document.activeElement).toBe(heading));
     await waitFor(() => expect(recallMock).toHaveBeenCalledTimes(readsBeforeUndo + 1));
-    expect(screen.getByRole('status', { name: 'Loading memories' })).toBeInTheDocument();
+    expect(screen.getByText('Loading memories').closest('[role="status"]')).not.toBeNull();
     expect(document.activeElement).toBe(heading);
     await act(async () => {
       finish();

@@ -11,7 +11,6 @@
  */
 import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { useState, type FormEvent } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -22,8 +21,7 @@ import {
 } from '@/components/ui/card';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Skeleton } from '@/components/ui/skeleton';
-import { toastActions } from '@/lib/toast-store';
+import { AsyncState, Notice, toast } from '@project-ax/ui';
 import { USAGE_LIMIT_BOUNDS, putUsageLimits, type UsageLimits } from '@/lib/usage-admin';
 import { DAILY_LIMIT_INVALID, TURNS_LIMIT_INVALID, failureMessage } from '@/lib/usage-copy';
 
@@ -128,10 +126,9 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
       });
       setDraft(null);
       onSaved(saved);
-      toastActions.show({
+      toast.show({
         title: 'Limits saved',
-        detail: 'Default limits updated. Individual overrides still apply.',
-        kind: 'info',
+        description: 'Default limits updated. Individual overrides still apply.',
       });
     } catch (err) {
       setSaveError(
@@ -155,10 +152,7 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
         </CardHeader>
         <CardContent className="flex flex-col gap-6">
           {limits === null ? (
-            <div className="flex flex-col gap-7" aria-hidden="true">
-              <Skeleton className="h-[72px] w-full max-w-sm" />
-              <Skeleton className="h-[72px] w-full max-w-sm" />
-            </div>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading usage limits" />
           ) : (
             <FieldGroup className="gap-0">
               <SettingsDisclosure title="Workspace per day" value={`$${fleetValue}`}>
@@ -283,9 +277,7 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
             </FieldGroup>
           )}
           {saveError !== null && (
-            <Alert variant="destructive">
-              <AlertDescription>{saveError}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{saveError}</Notice>
           )}
         </CardContent>
         {(draft !== null || saving || saveError !== null) && <CardFooter className="gap-3">

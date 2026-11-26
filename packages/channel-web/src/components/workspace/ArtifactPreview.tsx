@@ -25,12 +25,8 @@
  * never reuses an expired address.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download } from 'lucide-react';
+import { AsyncState, EmptyState } from '@project-ax/ui';
 import { Markdown } from '@/components/Markdown';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
 import { checkContentOriginUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { UNTRUSTED_FRAME_ALLOW } from './visual/visual-doc';
@@ -66,42 +62,11 @@ function useLoad<T>(load: () => Promise<T>, context: string): [Load<T>, () => vo
   return [result, useCallback(() => setAttempt((n) => n + 1), [])];
 }
 
-function Loading() {
-  return (
-    <div className="flex flex-1 flex-col gap-2 py-2" role="status">
-      <span className="sr-only">Loading…</span>
-      <Skeleton className="h-full min-h-[240px] w-full" />
-    </div>
-  );
-}
-
-function Failed({ retry }: { retry: () => void }) {
-  return (
-    <Alert className="mt-2">
-      <AlertDescription className="flex flex-col items-start gap-2">
-        <span>We couldn’t open this just now. Nothing was lost.</span>
-        <Button size="sm" variant="outline" type="button" onClick={retry}>
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 function DownloadOnly({ title, description, onDownload }: { title: string; description: string; onDownload(): void }) {
   return (
-    <Empty className="flex-1">
-      <EmptyHeader>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{description}</EmptyDescription>
-      </EmptyHeader>
-      <EmptyContent>
-        <Button type="button" variant="outline" onClick={onDownload}>
-          <Download data-icon="inline-start" aria-hidden />
-          Download
-        </Button>
-      </EmptyContent>
-    </Empty>
+    <div className="flex flex-1 items-center justify-center">
+      <EmptyState title={title} description={description} action={{ label: 'Download', onClick: onDownload }} />
+    </div>
   );
 }
 
@@ -122,8 +87,15 @@ function FromContentOrigin({
     return token;
   }, [loadToken]);
   const [token, retry] = useLoad(load, 'artifact-view-token');
-  if (token.state === 'loading') return <Loading />;
-  if (token.state === 'failed') return <Failed retry={retry} />;
+  if (token.state === 'loading') return <AsyncState status="loading" skeleton="block" loadingLabel="Loading preview" />;
+  if (token.state === 'failed') return (
+      <AsyncState
+        status="error"
+        skeleton="block"
+        loadingLabel="Loading preview"
+        error={{ message: 'We couldn’t open this just now. Nothing was lost.', onRetry: retry }}
+      />
+    );
   if (preview === 'image') {
     return (
       <div className="flex flex-1 items-start justify-center py-2">
@@ -151,8 +123,15 @@ function AsText({
   loadText(): Promise<{ text: string; truncated: boolean }>;
 }) {
   const [text, retry] = useLoad(loadText, 'artifact-text');
-  if (text.state === 'loading') return <Loading />;
-  if (text.state === 'failed') return <Failed retry={retry} />;
+  if (text.state === 'loading') return <AsyncState status="loading" skeleton="block" loadingLabel="Loading preview" />;
+  if (text.state === 'failed') return (
+      <AsyncState
+        status="error"
+        skeleton="block"
+        loadingLabel="Loading preview"
+        error={{ message: 'We couldn’t open this just now. Nothing was lost.', onRetry: retry }}
+      />
+    );
   return (
     <div className="flex flex-col gap-2 py-2">
       {text.value.truncated && (

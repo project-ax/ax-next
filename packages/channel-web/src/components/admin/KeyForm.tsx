@@ -1,8 +1,7 @@
 import { useState, type ReactNode } from 'react';
-import { AlertCircle } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import { Notice } from '@project-ax/ui';
 
 export interface KeyFormProps {
   /** Placeholder for the key input. */
@@ -43,17 +42,7 @@ export function KeyForm({
         className="font-mono text-[13px] tracking-[0.02em]"
       />
       {error && (
-        <div
-          role="alert"
-          className={cn(
-            'inline-flex items-center gap-2 px-2.5 py-2 self-start',
-            'bg-destructive-soft border border-destructive/25 rounded-md',
-            'text-[12.5px] text-destructive',
-          )}
-        >
-          <AlertCircle className="w-3 h-3 shrink-0" strokeWidth={2.5} />
-          <span>{error}</span>
-        </div>
+        <Notice tone="danger">{error}</Notice>
       )}
       <div className="flex gap-2 items-center">
         <Button
@@ -61,7 +50,7 @@ export function KeyForm({
           onClick={() => void onSave(trimmed)}
           disabled={!!saving || trimmed.length === 0}
         >
-          {saving ? 'Validating…' : error ? 'Retry' : 'Save'}
+          {saving ? 'Validating…' : error ? 'Try again' : 'Save'}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel} disabled={!!saving}>
           Cancel

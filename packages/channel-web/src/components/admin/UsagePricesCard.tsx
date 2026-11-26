@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -14,6 +13,7 @@ import {
 } from '@/components/ui/table';
 import { putModelPrices, type ModelPrice } from '@/lib/usage-admin';
 import { failureMessage } from '@/lib/usage-copy';
+import { Notice } from '@project-ax/ui';
 
 const rates = [
   ['inputUsdPerMillion', 'Input'],
@@ -130,9 +130,7 @@ export function UsagePricesCard({
           </Table>
         )}
         {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{error}</Notice>
         )}
         {draft === null ? (
           <Button

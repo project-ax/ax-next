@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Check, ChevronsUpDown, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -34,7 +33,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
-import { Grid } from '@project-ax/ui';
+import { AsyncState, Grid, Notice } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -383,7 +382,7 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
   }
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
+    return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading skill" />;
   }
 
   // (TASK-343 / audit D8) The parser's `code` was prefixed onto every live
@@ -539,9 +538,7 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
       </Collapsible>
 
       {serverError && (
-        <Alert variant="destructive">
-          <AlertDescription>{serverError}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{serverError}</Notice>
       )}
 
       <div className="flex justify-end gap-2 border-t border-border bg-background pt-4">
@@ -737,9 +734,7 @@ function FormFields({
       </Field>
 
       {liveError !== null && (
-        <Alert variant="destructive">
-          <AlertDescription className="text-xs">{liveError}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{liveError}</Notice>
       )}
     </FieldGroup>
   );
@@ -795,9 +790,7 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
             </div>
           </div>
         ) : (
-          <Alert variant="destructive">
-            <AlertDescription className="text-xs">{liveError}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{liveError}</Notice>
         )}
       </div>
     </Grid>

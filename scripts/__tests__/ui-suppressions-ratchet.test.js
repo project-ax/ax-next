@@ -472,6 +472,202 @@ describe('ui-suppressions-ratchet', () => {
     }
   });
 
+  describe('rule options (widening and narrowing)', () => {
+    const RAW = 'ax-ui/no-raw-elements';
+    const CN = 'ax-ui/no-classname';
+    const IMP = 'ax-ui/no-internal-imports';
+    const ON5 = `${ON4} --suppress-rule ${IMP}`;
+    const raw = (r) => ({ raw: r });
+    const rules = (extra) => ({ ...SEV2, ...extra });
+    const pair = (baseRules, headRules, baseCounts, headCounts, script = ON5) =>
+      repoWith(
+        { suppressions: { [A]: baseCounts }, script, rules: baseRules },
+        { suppressions: { [A]: headCounts }, script, rules: headRules },
+      );
+
+    it('widening elements with a total rise passes and says widened', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['button', 'div'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 9 },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(0);
+      expect(r.out).toContain(`${RAW}: widened in this range`);
+    });
+
+    it('the same elements (reordered, duplicated) with a total rise fails', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div', 'span'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['span', 'div', 'span'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 9 },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`${RAW}: total went up`);
+    });
+
+    it('narrowing elements with frozen entries fails even with no total change', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div', 'span'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 3 },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain(`${RAW}: its options got narrower`);
+    });
+
+    it('an incomparable elements change with frozen entries fails', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['span'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 3 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(1);
+    });
+
+    it('narrowing a rule with no frozen entries is fine', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div', 'span'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        { 'ax-ui/no-style-prop': 2 },
+        { 'ax-ui/no-style-prop': 2 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('plain error (every element) is wider than a list; list from plain is narrower', () => {
+      const wide = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: 'error' }),
+        { [RAW]: 3 },
+        { [RAW]: 9 },
+      );
+      expect(run(wide.repo, [wide.baseSha]).status).toBe(0);
+      const narrow = pair(
+        rules({ [RAW]: 'error' }),
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 3 },
+      );
+      expect(run(narrow.repo, [narrow.baseSha]).status).toBe(1);
+    });
+
+    it('intrinsicOnly true -> false with a rise passes', () => {
+      const { repo, baseSha } = pair(
+        rules({ [CN]: raw("['error', { intrinsicOnly: true }]") }),
+        rules({ [CN]: raw("['error', { intrinsicOnly: false }]") }),
+        { [CN]: 4 },
+        { [CN]: 40 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('intrinsicOnly false -> true with frozen entries fails', () => {
+      const { repo, baseSha } = pair(
+        rules({ [CN]: 'error' }),
+        rules({ [CN]: raw("['error', { intrinsicOnly: true }]") }),
+        { [CN]: 4 },
+        { [CN]: 4 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(1);
+    });
+
+    it("components [] -> ['Button'] with a rise passes", () => {
+      const { repo, baseSha } = pair(
+        rules({ [CN]: raw("['error', { intrinsicOnly: true, components: [] }]") }),
+        rules({ [CN]: raw("['error', { intrinsicOnly: true, components: ['Button'] }]") }),
+        { [CN]: 4 },
+        { [CN]: 9 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('components changes are ignored while intrinsicOnly is false', () => {
+      const { repo, baseSha } = pair(
+        rules({ [CN]: raw("['error', { components: ['Button'] }]") }),
+        rules({ [CN]: raw("['error', { components: [] }]") }),
+        { [CN]: 4 },
+        { [CN]: 4 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it("uiModules ['alert'] -> ['alert','skeleton'] with a rise passes", () => {
+      const { repo, baseSha } = pair(
+        rules({ [IMP]: raw("['error', { uiModules: ['alert'] }]") }),
+        rules({ [IMP]: raw("['error', { uiModules: ['alert', 'skeleton'] }]") }),
+        { [IMP]: 2 },
+        { [IMP]: 6 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+
+    it('an options object with an unknown key and a rise fails: cannot be read', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['div', 'span'], extra: true }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 9 },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('cannot be read');
+    });
+
+    it('options given as a variable (elements: LIST) and a rise fails', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: LIST }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 9 },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('cannot be read');
+    });
+
+    it('an options object on a rule that takes none is unreadable', () => {
+      const { repo, baseSha } = pair(
+        rules({}),
+        rules({ 'ax-ui/no-style-prop': raw("['error', { x: true }]") }),
+        { 'ax-ui/no-style-prop': 2 },
+        { 'ax-ui/no-style-prop': 2 },
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('cannot be read');
+    });
+
+    it('widened but the rule is missing from lint:ui:suppress fails', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['div', 'span'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 9 },
+        ON2,
+      );
+      const r = run(repo, [baseSha]);
+      expect(r.status).toBe(1);
+      expect(r.out).toContain('missing from the lint:ui:suppress script');
+    });
+
+    it('unchanged options with an unchanged total pass', () => {
+      const { repo, baseSha } = pair(
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        rules({ [RAW]: raw("['error', { elements: ['div'] }]") }),
+        { [RAW]: 3 },
+        { [RAW]: 3 },
+      );
+      expect(run(repo, [baseSha]).status).toBe(0);
+    });
+  });
+
   describe('eslint-disable directives naming ax-ui rules', () => {
     const SUPP = { [A]: { 'ax-ui/no-style-prop': 2 } };
     const DIS = '// eslint-disable-next-line ax-ui/no-classname -- legacy\n<div className="x" />\n';

@@ -17,21 +17,19 @@ import { HTTP_SESSION_ENDED } from '../lib/http';
 describe('LoginPage — session expiry (B1)', () => {
   it('explains why the user is suddenly looking at a sign-in page', () => {
     render(<LoginPage sessionExpired />);
-    const alert = screen.getByTestId('session-expired');
-    expect(alert.textContent).toContain(HTTP_SESSION_ENDED);
+    expect(screen.getByRole('status').textContent).toContain(HTTP_SESSION_ENDED);
   });
 
   it('does not colour a routine, protective event as a failure', () => {
     render(<LoginPage sessionExpired />);
-    // `destructive` would make being signed out for safety look like a bug.
-    expect(screen.getByTestId('session-expired').className).not.toContain(
-      'text-destructive',
-    );
+    // A danger Notice (role=alert) would make being signed out for safety look like a bug.
+    expect(screen.getByRole('status').textContent).toContain(HTTP_SESSION_ENDED);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('says nothing about a session on a plain first visit', () => {
     render(<LoginPage />);
-    expect(screen.queryByTestId('session-expired')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });
 

@@ -20,8 +20,7 @@
  * actually true, and the retry appears only where retrying can work.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { Button, Notice } from '@project-ax/ui';
 import { Field, FieldGroup } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { userFacingMessage } from '@/lib/http';
@@ -138,27 +137,14 @@ export function RulesWithoutEditor({
 }) {
   return (
     <section className="flex flex-col gap-2.5">
-      <Alert>
-        <AlertDescription className="flex flex-col items-start gap-2">
-          {status === 'unavailable' ? (
-            <span>
-              Instructions for {agentName} aren’t available because this server
-              isn’t set up to keep them.
-            </span>
-          ) : (
-            <span>
-              We could not read your rules just now. Rather than show you an
-              empty box you might save over the top of, we are leaving the
-              editor out. Your rules are still where you left them.
-            </span>
-          )}
-          {status === 'failed' && onRetry !== undefined && (
-            <Button type="button" variant="secondary" size="sm" onClick={onRetry}>
-              Try again
-            </Button>
-          )}
-        </AlertDescription>
-      </Alert>
+      <Notice
+        tone="info"
+        {...(status === 'failed' && onRetry !== undefined ? { action: { label: 'Try again', onClick: onRetry } } : {})}
+      >
+        {status === 'unavailable'
+          ? `Instructions for ${agentName} aren’t available because this server isn’t set up to keep them.`
+          : 'We could not read your rules just now. Rather than show you an empty box you might save over the top of, we are leaving the editor out. Your rules are still where you left them.'}
+      </Notice>
     </section>
   );
 }
@@ -244,20 +230,17 @@ export function RulesEditor({
         </Field>
       </FieldGroup>
 
-      {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      {error !== null && <Notice tone="danger">{error}</Notice>}
 
       <div className="flex items-center gap-3">
         <Button
-          type="button"
+          intent="primary"
           size="sm"
-          disabled={onSave === undefined || state === 'saving' || !dirty}
+          busy={state === 'saving'}
+          disabled={onSave === undefined || !dirty}
           onClick={() => void save()}
         >
-          {state === 'saving' ? 'Saving…' : 'Save'}
+          Save
         </Button>
         <span className="text-[12px] text-muted-foreground">
           {state === 'saved' && !dirty

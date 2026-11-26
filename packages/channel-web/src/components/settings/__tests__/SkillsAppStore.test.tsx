@@ -230,6 +230,33 @@ describe('SkillsAppStore', () => {
     expect(await screen.findByText(/Awaiting review \(1\)/i)).toBeInTheDocument();
   });
 
+  it('when the first agent list read fails, Try again picks the agent and the shelf fills in', async () => {
+    mockListAgents
+      .mockRejectedValueOnce(new Error('agents 503'))
+      .mockResolvedValue([{ agentId: 'a1', displayName: 'My Agent', visibility: 'personal' }]);
+    render(<SkillsAppStore isAdmin={false} />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('agents 503');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('My helper')).toBeInTheDocument();
+    expect(mockGetConnections).toHaveBeenCalledWith('a1');
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('a failed Awaiting review read says so, not "No pending requests", and Try again re-reads', async () => {
+    mockListRequests.mockRejectedValueOnce(new Error('requests 503')).mockResolvedValue([]);
+    render(<SkillsAppStore isAdmin={true} />);
+    await screen.findByTestId('catalog-pdf-tools');
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'Review' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Awaiting review/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('requests 503');
+    expect(screen.queryByText(/No pending requests/)).toBeNull();
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(/No pending requests/)).toBeInTheDocument();
+    expect(mockListRequests).toHaveBeenCalledTimes(2);
+  });
+
   // -------------------------------------------------------------------------
   // Adopt-&-edit authored skills (TASK-134)
   // -------------------------------------------------------------------------
@@ -617,5 +644,20 @@ describe('SkillsAppStore', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search the workspace catalog' }), { target: { value: 'pdf' } });
     expect(screen.queryByText('My helper')).toBeNull();
     expect(screen.getByTestId('catalog-pdf-tools')).toBeTruthy();
+  });
+
+  it('a failed read says so (not "no skills"), and Try again re-reads and shows the shelf', async () => {
+    mockGetConnections.mockRejectedValueOnce(new Error('connections 503'));
+    mockListCatalog.mockRejectedValueOnce(new Error('catalog 503'));
+    render(<SkillsAppStore isAdmin={false} agentId="a1" />);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/503/);
+    expect(screen.queryByText('No skills installed yet')).toBeNull();
+    expect(screen.queryByText('Your workspace catalog is empty')).toBeNull();
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('My helper')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(mockGetConnections).toHaveBeenCalledTimes(2);
+    expect(mockListCatalog).toHaveBeenCalledTimes(2);
   });
 });

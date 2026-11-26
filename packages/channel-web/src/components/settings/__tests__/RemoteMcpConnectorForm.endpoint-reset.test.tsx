@@ -81,7 +81,11 @@ async function openAndMove() {
   fireEvent.change(screen.getByLabelText('Server URL'), {
     target: { value: 'https://other.example.com/mcp' },
   });
-  expect(screen.getByTestId('address-change-resets-tools')).toBeVisible();
+  expect(
+    screen
+      .getAllByRole('status')
+      .find((el) => /^Changing the address resets/.test(el.textContent ?? '')),
+  ).toBeVisible();
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled(),
   );

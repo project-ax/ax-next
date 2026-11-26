@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -84,12 +84,14 @@ function Limits({ agentId, agentName }: { agentId: string; agentName: string }) 
   const [stored, setStored] = useState<RunnerSize | null>(null);
   const [dirty, setDirty] = useState<ReadonlySet<Key>>(new Set());
   const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     let live = true;
+    setLoadFailed(false);
     getAdminAgent(agentId).then(
       (a) => {
         if (!live) return;
@@ -101,16 +103,19 @@ function Limits({ agentId, agentName }: { agentId: string; agentName: string }) 
     return () => {
       live = false;
     };
-  }, [agentId]);
+  }, [agentId, attempt]);
 
   if (loadFailed) {
     return (
-      <Alert variant="destructive">
-        <AlertDescription>We couldn't load these limits. Try reloading the page.</AlertDescription>
-      </Alert>
+      <AsyncState
+        status="error"
+        skeleton="lines"
+        loadingLabel="Loading limits"
+        error={{ message: "We couldn't load these limits.", onRetry: () => setAttempt((n) => n + 1) }}
+      />
     );
   }
-  if (form === null) return <p className="text-[12.5px] text-muted-foreground">Loading…</p>;
+  if (form === null) return <AsyncState status="loading" skeleton="lines" loadingLabel="Loading limits" />;
 
   const set = (k: Key) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setSaved(false);
@@ -188,11 +193,7 @@ function Limits({ agentId, agentName }: { agentId: string; agentName: string }) 
       </p>
       {num('adv-cpu', 'Processor (cores)', 'cpu', 'More cores make builds and tests faster.', { min: 0, step: '0.1' })}
       {num('adv-mem', 'Memory (GB)', 'mem', 'Raise this if tests crash with out-of-memory errors.', { min: 0, step: '0.5' })}
-      {error !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      {error !== null && <Notice tone="danger">{error}</Notice>}
       <div className="flex items-center gap-3">
         <Button type="button" onClick={() => void save()} disabled={busy}>
           Save

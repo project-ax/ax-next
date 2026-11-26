@@ -79,7 +79,7 @@ describe('SkillEditor (form-first)', () => {
     mockGetSkill.mockResolvedValueOnce(DETAIL);
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
-    expect(screen.getByText('Loading…')).toBeTruthy();
+    expect(screen.getByRole('status')).toHaveTextContent('Loading skill');
 
     await waitFor(() => {
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('github-api');

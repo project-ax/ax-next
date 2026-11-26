@@ -21,9 +21,9 @@
  * Card titles carry `role="heading"` (level 2) to keep the h1 -> h2 outline
  * (see TASK-446).
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
+import { Button as AxButton, Notice } from '@project-ax/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
@@ -35,7 +35,6 @@ import {
 } from '@/components/ui/dialog';
 import { FieldGroup } from '@/components/ui/field';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
-import { Spinner } from '@/components/ui/spinner';
 import { slackShortDate } from '@/lib/agent-slack';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
@@ -52,16 +51,6 @@ import {
 } from '@/lib/slack-bot-requests';
 
 type Load = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; list: SlackBotRequestList };
-
-/** A button's busy face: a spinner and what it's doing. */
-function Busy({ children }: { children: ReactNode }) {
-  return (
-    <>
-      <Spinner data-icon="inline-start" aria-hidden="true" />
-      {children}
-    </>
-  );
-}
 
 export function SlackBotRequests() {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
@@ -122,21 +111,18 @@ export function SlackBotRequests() {
   if (load.kind === 'loading') return null;
   if (load.kind === 'error') {
     return (
-      <Alert variant="destructive">
-        <AlertDescription className="flex flex-col items-start gap-3">
-          <p>{COPY['loadFailed']}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setLoad({ kind: 'loading' });
-              void read();
-            }}
-          >
-            Try again
-          </Button>
-        </AlertDescription>
-      </Alert>
+      <Notice
+        tone="danger"
+        action={{
+          label: 'Try again',
+          onClick: () => {
+            setLoad({ kind: 'loading' });
+            void read();
+          },
+        }}
+      >
+        {COPY['loadFailed']}
+      </Notice>
     );
   }
 
@@ -144,9 +130,7 @@ export function SlackBotRequests() {
   if (requests.length === 0) {
     // Nothing left to act on. If that's why the dialog just closed, say so.
     return changed ? (
-      <Alert>
-        <AlertDescription>{COPY['changed']}</AlertDescription>
-      </Alert>
+      <Notice tone="info">{COPY['changed']}</Notice>
     ) : null;
   }
 
@@ -161,9 +145,7 @@ export function SlackBotRequests() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {changed && (
-            <Alert>
-              <AlertDescription>{COPY['changed']}</AlertDescription>
-            </Alert>
+            <Notice tone="info">{COPY['changed']}</Notice>
           )}
           <ul className="flex flex-col gap-4">
             {requests.map((request) => (
@@ -176,9 +158,7 @@ export function SlackBotRequests() {
                     {`Asked by ${request.requestedBy} on ${slackShortDate(request.requestedAt)}.`}
                   </p>
                   {declineFailed === request.requestId && (
-                    <p role="alert" className="text-[12.5px] text-destructive">
-                      {COPY['declineFailed']}
-                    </p>
+                    <Notice tone="danger">{COPY['declineFailed']}</Notice>
                   )}
                 </div>
                 <div className="flex gap-2">
@@ -191,16 +171,16 @@ export function SlackBotRequests() {
                   >
                     Approve…
                   </Button>
-                  <Button
+                  <AxButton
                     size="sm"
-                    variant="outline"
-                    // While it works the visible "Declining…" is the name.
-                    aria-label={declining === request.requestId ? undefined : `Decline ${request.botName}`}
-                    disabled={declining !== null}
+                    intent="secondary"
+                    aria-label={`Decline ${request.botName}`}
+                    busy={declining === request.requestId}
+                    disabled={declining !== null && declining !== request.requestId}
                     onClick={() => void decline(request)}
                   >
-                    {declining === request.requestId ? <Busy>Declining…</Busy> : 'Decline'}
-                  </Button>
+                    Decline
+                  </AxButton>
                 </div>
               </li>
             ))}
@@ -354,17 +334,15 @@ function ApproveForm({
         </FieldGroup>
       )}
       {formError !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{formError}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{formError}</Notice>
       )}
       <DialogFooter className="gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>
+        <AxButton type="button" intent="secondary" onClick={onCancel} disabled={busy}>
           {COPY['cancel']}
-        </Button>
-        <Button type="submit" disabled={busy}>
-          {busy ? <Busy>Creating…</Busy> : COPY['approve']}
-        </Button>
+        </AxButton>
+        <AxButton type="submit" intent="primary" busy={busy}>
+          {COPY['approve']}
+        </AxButton>
       </DialogFooter>
     </form>
   );

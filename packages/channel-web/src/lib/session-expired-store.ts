@@ -1,7 +1,7 @@
 /**
  * "This tab's session is over." One bit, set once, read by `App.tsx`.
  *
- * Built in the `toast-store` mould — a module singleton over
+ * A module singleton over
  * `useSyncExternalStore` — for the same reason the six siblings are: the thing
  * that learns the session ended is a `fetch` wrapper in `lib/http.ts`, which
  * has no React context to write into and no business acquiring one.

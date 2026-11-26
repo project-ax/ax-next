@@ -9,37 +9,33 @@ describe('ConnectorAccessNotice', () => {
   it.each(CONNECTOR_ACCESS_KINDS)('%s: renders its own copy, whole', (kind) => {
     render(<ConnectorAccessNotice kind={kind} />);
     const { headline, details } = connectorAccessCopy(kind);
-    const notice = screen.getByTestId('connector-access-notice');
+    const notice = screen.getByRole('status');
     expect(notice).toHaveTextContent(headline);
     expect(notice).toHaveTextContent(details);
   });
 
   it('is a standing note, not an interrupting alert', () => {
-    // The shadcn Alert defaults to role="alert" (an assertive live region). This
+    // A danger or warning Notice is role="alert" (an assertive live region). This
     // is a disclosure that is simply THERE, and announcing it as an emergency
     // every time a dialog opens would be its own kind of untruth. It also keeps
     // `getByRole('alert')` meaning "something went wrong" on the surfaces it
     // sits in.
     render(<ConnectorAccessNotice kind="key" />);
-    expect(screen.getByRole('note')).toBe(screen.getByTestId('connector-access-notice'));
+    expect(screen.getByRole('status')).toHaveTextContent(connectorAccessCopy('key').headline);
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it('is built on the shadcn Alert, and hides its icon from assistive tech', () => {
+  it('hides its icon from assistive tech', () => {
     render(<ConnectorAccessNotice kind="key" />);
-    const notice = screen.getByTestId('connector-access-notice');
-    // Alert's own base classes are the fingerprint of the primitive.
-    expect(notice.className).toMatch(/\brounded-lg\b/);
-    expect(notice.className).toMatch(/\bborder\b/);
-    const icon = notice.querySelector('svg');
+    const icon = screen.getByRole('status').querySelector('svg');
     expect(icon).not.toBeNull();
     // Decorative: the sentence carries the meaning, so a screen reader skips the glyph.
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('forwards layout classes to the Alert', () => {
+  it('forwards layout classes to its wrapper', () => {
     render(<ConnectorAccessNotice kind="key" className="mt-3 max-w-[660px]" />);
-    const notice = screen.getByTestId('connector-access-notice');
+    const notice = screen.getByRole('status').parentElement as HTMLElement;
     expect(notice.className).toMatch(/\bmt-3\b/);
     expect(notice.className).toMatch(/max-w-\[660px\]/);
   });

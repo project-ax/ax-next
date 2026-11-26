@@ -221,12 +221,12 @@ describe('Rename', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  it("while Slack answers, Escape doesn't close the dialog and the button reads Renaming…", async () => {
+  it("while Slack answers, Escape doesn't close the dialog and the button stays labelled and busy", async () => {
     let settle: (v: { botName: string }) => void = () => {};
     rename.mockReturnValueOnce(new Promise((resolve) => (settle = resolve)));
     const { onChanged } = renderIt('rename');
     fireEvent.submit(nameInput().closest('form')!);
-    expect(await screen.findByRole('button', { name: 'Renaming…' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename' })).toHaveAttribute('aria-busy', 'true'));
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     settle({ botName: 'Quill Bot' });
@@ -311,13 +311,13 @@ describe('Change picture', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it("while Slack answers, Escape doesn't close the dialog and the button reads Saving…", async () => {
+  it("while Slack answers, Escape doesn't close the dialog and the button stays labelled and busy", async () => {
     let settle: () => void = () => {};
     setPicture.mockReturnValueOnce(new Promise<void>((resolve) => (settle = resolve)));
     renderIt('picture');
     await pick('UE5H');
     fireEvent.click(screen.getByRole('button', { name: 'Save picture' }));
-    expect(await screen.findByRole('button', { name: 'Saving…' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save picture' })).toHaveAttribute('aria-busy', 'true'));
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     settle();

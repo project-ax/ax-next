@@ -73,7 +73,7 @@ describe('RebuildBotDialog', () => {
       ),
     ).toBeInTheDocument();
     expect(slackCardWordsFound(slackCardText())).toEqual([]);
-    expect(within(dialog).getByRole('button', { name: 'Keep it' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled();
     expect(within(dialog).getByRole('button', { name: 'Set up again' })).toBeEnabled();
   });
 
@@ -82,9 +82,9 @@ describe('RebuildBotDialog', () => {
     expect(await screen.findByRole('heading', { name: 'Set up Quill Bot again?' })).toBeInTheDocument();
   });
 
-  it('Keep it sends nothing and closes', async () => {
+  it('Cancel sends nothing and closes', async () => {
     const { onClose } = renderRebuild();
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep it' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(disconnect).not.toHaveBeenCalled();
   });
@@ -128,14 +128,14 @@ describe('RebuildBotDialog', () => {
     expect(onCancelled).toHaveBeenCalledWith(expect.objectContaining({ approverIsViewer: true, approverGone: false }));
   });
 
-  it('busy face says Removing… and a second press sends nothing', async () => {
+  it('busy keeps the label, marks the button busy, and a second press sends nothing', async () => {
     let finish!: (v: { appDeleted: boolean }) => void;
     disconnect.mockReturnValueOnce(new Promise((r) => (finish = r)));
     renderRebuild();
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set up again' }));
-    const busy = await within(dialog).findByRole('button', { name: /Removing…/ });
-    expect(busy).toBeDisabled();
+    const busy = within(dialog).getByRole('button', { name: 'Set up again' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     expect(disconnect).toHaveBeenCalledTimes(1);
     finish({ appDeleted: true });
@@ -175,13 +175,13 @@ describe('ClaimBotDialog', () => {
       ),
     ).toBeInTheDocument();
     expect(slackCardWordsFound(slackCardText())).toEqual([]);
-    expect(within(dialog).getByRole('button', { name: 'Not now' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled();
     expect(within(dialog).getByRole('button', { name: 'Take over' })).toBeEnabled();
   });
 
-  it('Not now sends nothing and closes', async () => {
+  it('Cancel sends nothing and closes', async () => {
     const { onClose } = renderClaim();
-    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Not now' }));
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(claim).not.toHaveBeenCalled();
   });
@@ -194,13 +194,14 @@ describe('ClaimBotDialog', () => {
     expect(claim).toHaveBeenCalledWith('a1', BOT_ID);
   });
 
-  it('busy face says Taking over… and a second press sends nothing', async () => {
+  it('busy keeps the label, marks the button busy, and a second press sends nothing', async () => {
     let finish!: () => void;
     claim.mockReturnValueOnce(new Promise<void>((r) => (finish = r)));
     renderClaim();
     const dialog = await screen.findByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Take over' }));
-    const busy = await within(dialog).findByRole('button', { name: /Taking over…/ });
+    const busy = within(dialog).getByRole('button', { name: 'Take over' });
+    await waitFor(() => expect(busy).toHaveAttribute('aria-busy', 'true'));
     fireEvent.click(busy);
     expect(claim).toHaveBeenCalledTimes(1);
     finish();

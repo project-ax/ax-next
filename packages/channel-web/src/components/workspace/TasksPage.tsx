@@ -28,7 +28,7 @@
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {
@@ -44,17 +44,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { Separator } from '@/components/ui/separator';
-import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
-import { readAlertVariant } from '@/lib/read-register';
+import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS, groupTasks, taskGroup, type ActiveTaskGroup } from '@/lib/task-groups';
 import { rowFact, rowLatest } from '@/lib/task-row-line';
@@ -149,12 +141,19 @@ export function TasksPage({
       <div className="flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
           {state.kind === 'loading' && (
-            <div className="flex justify-center py-10">
-              <Spinner />
-            </div>
+            <AsyncState status="loading" skeleton="rows" loadingLabel="Loading tasks" />
           )}
           {state.kind === 'failed' && (
-            <TasksLoadFailure error={state.error} onRetry={retry} />
+            <AsyncState
+              status="error"
+              skeleton="block"
+              loadingLabel="Loading tasks"
+              error={{
+                message: LOAD_COPY[state.error],
+                tone: readNoticeTone(state.error),
+                ...(state.error === 'failed' ? { onRetry: retry } : {}),
+              }}
+            />
           )}
           {state.kind === 'ready' && (
             <TaskBoard
@@ -221,34 +220,6 @@ function AgentFilter({
   );
 }
 
-/**
- * The page couldn't load at all. Borrowed from the old project page's
- * `ProjectLoadFailure` (e011da3) without its "All projects" button, and private
- * until a second surface wants it (decisions row 12). A failed read is ours to
- * retry. An expired session is the reader's to sign back into, so it offers no
- * button, in the default register (`lib/read-register.ts`).
- */
-function TasksLoadFailure({
-  error,
-  onRetry,
-}: {
-  error: TasksReadError;
-  onRetry: () => void;
-}) {
-  return (
-    <Alert variant={readAlertVariant(error)}>
-      <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span className="min-w-0">{LOAD_COPY[error]}</span>
-        {error === 'failed' && (
-          <Button variant="secondary" size="sm" className="ml-auto" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-      </AlertDescription>
-    </Alert>
-  );
-}
-
 function TaskBoard({
   tasks,
   agent,
@@ -301,46 +272,26 @@ function TaskBoard({
         nothing about the tasks it couldn't load (`lib/read-register.ts`).
       */}
       {(refreshFailed || unavailableAgents.length > 0) && (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span className="flex min-w-0 flex-col gap-1">
-              {refreshFailed && (
-                <span>We couldn’t refresh your tasks just now, so this list may be out of date.</span>
-              )}
-              {unavailableAgents.length > 0 && (
-                <span>
-                  We couldn’t load tasks from{' '}
-                  {AGENT_LIST.format(unavailableAgents.map((a) => a.agentName))} just now, so
-                  some may be missing.
-                </span>
-              )}
-            </span>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="ml-auto"
-              onClick={onRetry}
-              disabled={refreshing}
-            >
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <Notice tone="danger" action={{ label: 'Try again', onClick: onRetry, busy: refreshing }}>
+          {refreshFailed && (
+            <p>We couldn’t refresh your tasks just now, so this list may be out of date.</p>
+          )}
+          {unavailableAgents.length > 0 && (
+            <p>
+              We couldn’t load tasks from{' '}
+              {AGENT_LIST.format(unavailableAgents.map((a) => a.agentName))} just now, so
+              some may be missing.
+            </p>
+          )}
+        </Notice>
       )}
       {/* Only when nothing is missing: zero rows plus an agent we couldn't read is not "no tasks". */}
       {tasks.length === 0 && unavailableAgents.length === 0 && (
-        <Empty className="border border-dashed">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <ListChecks aria-hidden="true" />
-            </EmptyMedia>
-            <EmptyTitle>No tasks yet</EmptyTitle>
-            <EmptyDescription>
-              Ask an agent in chat to keep an eye on something for you, like an inbox or a
-              queue.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <EmptyState
+          icon={ListChecks}
+          title="No tasks yet"
+          description="Ask an agent in chat to keep an eye on something for you, like an inbox or a queue."
+        />
       )}
       {groups.map(({ group, rows }) => (
         <TaskGroupSection key={group} group={group} rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} />

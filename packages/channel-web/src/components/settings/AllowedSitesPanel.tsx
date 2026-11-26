@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
+import { AsyncState, ConfirmAction, EmptyState } from '@project-ax/ui';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import { listAllAllowedSites, setSiteAgents } from '@/lib/connections';
 import { SiteAgentsDialog } from './SiteAgentsDialog';
@@ -48,11 +49,10 @@ export function AllowedSitesPanel() {
       });
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    listChatAgents()
+  const loadAgents = useCallback((isCancelled: () => boolean) => {
+    return listChatAgents()
       .then((a) => {
-        if (cancelled) return;
+        if (isCancelled()) return;
         const personal = a.filter((x) => x.visibility === 'personal');
         setAgents(personal);
         setOnlyTeamAgents(a.length > 0 && personal.length === 0);
@@ -61,17 +61,31 @@ export function AllowedSitesPanel() {
       .catch(() => {
         // Without the agent list we cannot tell personal agents from team
         // ones, so listing every grant would put a team agent's sites here.
-        if (!cancelled) {
+        if (!isCancelled()) {
           setError(
-            'We couldn’t load your agents just now, so we can’t show your allowed sites. Try again in a moment.',
+            'We couldn’t load your agents just now, so we can’t show your allowed sites.',
           );
         }
       });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadAgents(() => cancelled);
     void refresh();
     return () => {
       cancelled = true;
     };
-  }, [refresh]);
+  }, [loadAgents, refresh]);
+
+  // Re-read both lists. The error clears first so a retry that fails again
+  // shows the notice again rather than a stale one.
+  const retryReads = (): void => {
+    setError(null);
+    setGrants(null);
+    void loadAgents(() => false);
+    void refresh();
+  };
 
   // host → agentIds (sorted host order). Derived from the flat grant list.
   const byHost = new Map<string, string[]>();
@@ -90,12 +104,11 @@ export function AllowedSitesPanel() {
     agents.length > 0 && agents.every((a) => ids.includes(a.agentId));
 
   const removeHost = async (host: string): Promise<void> => {
-    try {
-      await setSiteAgents(host, [], byHost.get(host) ?? []);
-      await refresh();
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+    // A failure is shown inside the confirmation, and the site stays listed.
+    await setSiteAgents(host, [], byHost.get(host) ?? []);
+    await refresh();
+    // The site's row is gone; park focus on the panel's primary action.
+    focusAfterRemoval('[data-return-focus="allowed-sites"]');
   };
 
   return (
@@ -115,28 +128,34 @@ export function AllowedSitesPanel() {
             Connectors.
           </p>
         </div>
-        <Button size="sm" disabled={agents.length === 0} onClick={() => setAdding(true)}>
+        <Button size="sm" data-return-focus="allowed-sites" disabled={agents.length === 0} onClick={() => setAdding(true)}>
           Add a site
         </Button>
       </div>
 
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading allowed sites"
+          error={{ message: error, onRetry: retryReads }}
+        />
       )}
 
       <Card variant="settings" className="divide-y divide-border">
         {(grants === null || !agentsLoaded) && !error && (
-          <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
+          <AsyncState status="loading" skeleton="rows" loadingLabel="Loading allowed sites" />
         )}
-        {grants !== null && agentsLoaded && hosts.length === 0 && (
-          <div className="px-4 py-3 text-sm text-muted-foreground">
-            {/* With Add disabled, "add one above" would point at nothing. */}
-            {onlyTeamAgents
-              ? 'Your agents are all team agents. Their sites are in each agent’s settings, under Connectors.'
-              : 'No allowed sites yet — add one above.'}
-          </div>
+        {grants !== null && agentsLoaded && !error && hosts.length === 0 && (
+          // With Add disabled, "add one above" would point at nothing.
+          <EmptyState
+            title={onlyTeamAgents ? 'Your agents are all team agents' : 'No allowed sites yet'}
+            description={
+              onlyTeamAgents
+                ? 'Their sites are in each agent’s settings, under Connectors.'
+                : 'Add one above.'
+            }
+          />
         )}
         {hosts.map((host) => {
           const ids = byHost.get(host) ?? [];
@@ -164,9 +183,14 @@ export function AllowedSitesPanel() {
               <Button variant="outline" size="sm" onClick={() => setEditingHost(host)}>
                 Edit
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => void removeHost(host)}>
-                Remove
-              </Button>
+              <ConfirmAction
+                trigger={{ label: 'Remove', intent: 'quiet', size: 'sm' }}
+                title={`Remove ${host}?`}
+                description={`Your agents can no longer reach ${host} until you allow it again.`}
+                confirmLabel="Remove site"
+                errorMessage={(e) => (e instanceof Error ? e.message : String(e))}
+                onConfirm={() => removeHost(host)}
+              />
             </div>
           );
         })}

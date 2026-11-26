@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { routineApi, type Routine } from '@/lib/routines';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { FieldGroup } from '@/components/ui/field';
-import { Skeleton } from '@/components/ui/skeleton';
 import { CredentialSlotRow } from '@/components/credentials/CredentialSlotRow';
 import { TaskAppConnection } from './TaskAppConnection';
 import { WebhookAddressFields } from '@/components/routines/WebhookAddressFields';
@@ -39,9 +38,8 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
   return <div role="group" aria-label="App update setup" className="flex min-w-0 flex-col gap-3 text-[13px]">
     <p className="text-muted-foreground">{row?.kind === 'repeat' ? 'Each accepted update queues one run.' : `Batch updates into a check-in within ${row?.webhook?.respondWithin ?? '5m'}, during active hours.`}</p>
     <div>
-      {failed ? <Alert variant="destructive"><AlertDescription>We couldn’t load app setup. Your access or the task may have changed.
-        <Button type="button" variant="outline" onClick={() => setGeneration(value => value + 1)}>Reload app setup</Button>
-      </AlertDescription></Alert> : row?.webhook ? <FieldGroup>
+      {failed ? <AsyncState status="error" skeleton="block" loadingLabel="Loading app setup"
+        error={{ message: 'We couldn’t load app setup. Your access or the task may have changed.', onRetry: () => setGeneration(value => value + 1) }} /> : row?.webhook ? <FieldGroup>
         <p className="text-sm">Paste this address into the other app’s webhook settings.</p>
         <WebhookAddressFields agentId={agentId} routineId={routineId} path={row.webhook.path} saved disabled={busy} onPendingChange={setBusy} />
         {row.permissions.manageSecret ? <>
@@ -52,7 +50,7 @@ function AppSetup({ agentId, routineId, onEdit }: Parameters<typeof TaskAppUpdat
         </> : <p className="text-sm text-muted-foreground">Signing secret management is currently unavailable.</p>}
         {!busy && <TaskAppConnection key={connectionGeneration} agentId={agentId} routineId={routineId} />}
         <p className="text-sm text-muted-foreground">The address and signing secret stay private. The agent receives only the app’s updates.</p>
-      </FieldGroup> : <Skeleton aria-label="Loading app setup" className="h-24 w-full" />}
+      </FieldGroup> : <AsyncState status="loading" skeleton="block" loadingLabel="Loading app setup" />}
     </div>
     <Button type="button" variant="outline" size="sm" className="self-start" disabled={row === null || busy} onClick={onEdit}>Edit app setup</Button>
   </div>;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CredentialSlotRow } from '../CredentialSlotRow';
 import { REQUEST_TIMEOUT_MS } from '@/lib/http';
 
@@ -34,7 +34,7 @@ describe('own routine signing-secret controls', () => {
     expect(screen.queryByText('Not set')).not.toBeInTheDocument();
     vi.useRealTimers();
     available = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Saved')).toBeInTheDocument();
   });
 
@@ -52,6 +52,8 @@ describe('own routine signing-secret controls', () => {
     render(row());
     fireEvent.click(await screen.findByRole('button', { name: 'Replace key' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Remove key' }));
+    // Asks first; the confirm button of the same name does the removal.
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Remove this key?' })).getByRole('button', { name: 'Remove key' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(await screen.findByText('Not set')).toBeInTheDocument();
     expect(fetch.mock.calls.some(([url]) => String(url).includes('/admin/credentials'))).toBe(false);
@@ -93,7 +95,7 @@ describe('own routine signing-secret controls', () => {
     expect(screen.queryByText(/PRIVATE/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add key' })).toBeDisabled();
     available = true;
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Saved')).toBeInTheDocument();
   });
 
@@ -127,8 +129,12 @@ describe('own routine signing-secret controls', () => {
     expect(await screen.findByRole('alert')).not.toHaveTextContent('PRIVATE');
     expect(screen.getByLabelText('Replace API key')).toHaveValue('keep this draft');
     fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove key' })).toBeEnabled());
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const confirm = await screen.findByRole('dialog', { name: 'Remove this key?' });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Remove key' }));
+    // The failure is said inside the confirmation, without the response details.
+    await waitFor(() => expect(within(confirm).getByRole('alert')).toBeInTheDocument());
+    expect(within(confirm).getByRole('alert')).not.toHaveTextContent('PRIVATE');
+    expect(within(confirm).getByRole('button', { name: 'Remove key' })).toBeEnabled();
     expect(screen.getByLabelText('Replace API key')).toHaveValue('keep this draft');
     expect(screen.getByText('Saved')).toBeInTheDocument();
   });

@@ -23,7 +23,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Skeleton } from '@/components/ui/skeleton';
+import { AsyncState } from '@project-ax/ui';
 import { saveBlob } from '@/lib/file-download';
 import { useResolvedTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
@@ -253,7 +253,8 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
           </div>
         ) : (
           <div className="relative" style={{ height }}>
-            {!ready && <Skeleton className="absolute inset-0 rounded-none" />}
+            {/* In flow, with the (still loading, invisible) frame lifted out of it, so no overlay wrapper is needed. */}
+            {!ready && <AsyncState status="loading" skeleton="block" loadingLabel="Loading visual" />}
             {loaded && (
               <iframe
                 ref={iframeRef}
@@ -269,7 +270,7 @@ export function VisualFrame(props: { conversationId: string; visual: ThreadVisua
                 style={{ height }}
                 className={cn(
                   'block w-full border-0',
-                  ready ? 'opacity-100' : 'opacity-0',
+                  ready ? 'opacity-100' : 'absolute inset-0 opacity-0',
                   recalled === undefined && 'transition-opacity motion-reduce:transition-none',
                 )}
               />

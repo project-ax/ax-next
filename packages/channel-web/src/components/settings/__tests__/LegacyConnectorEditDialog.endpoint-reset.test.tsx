@@ -42,7 +42,16 @@ function full(): Connector {
   };
 }
 
-const WARNING = 'endpoint-change-resets-tools';
+// The "what Save will cost" warning: a warning Notice (role="status"), found by its words.
+const WARNING_TEXT = /^Changing (where this connector points|this server’s address)/;
+const warning = (): HTMLElement | null =>
+  screen.queryAllByRole('status').find((el) => WARNING_TEXT.test(el.textContent ?? '')) ?? null;
+const findWarning = () =>
+  waitFor(() => {
+    const el = warning();
+    if (el === null) throw new Error('no warning');
+    return el;
+  });
 
 async function openEditor(connector: Connector) {
   vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(connector);
@@ -73,17 +82,17 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
 
   it('no warning while the URL is what was saved', async () => {
     await openEditor(full());
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
   });
 
   it('warns when the URL changes, and the warning goes away when it is put back', async () => {
     const { url } = await openEditor(full());
     fireEvent.change(url, { target: { value: 'https://mcp.example.com/gdrive-v2' } });
-    expect(await screen.findByTestId(WARNING)).toHaveTextContent(
+    expect(await findWarning()).toHaveTextContent(
       /resets its tool permissions.*asking first/i,
     );
     fireEvent.change(url, { target: { value: URL_SAVED } });
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
   });
 
   it('a new connector never warns — it has no permissions to lose', async () => {
@@ -92,7 +101,7 @@ describe('LegacyConnectorEditDialog — endpoint change resets tool permissions 
     );
     fireEvent.change(await screen.findByLabelText(/service name/i), { target: { value: 'X' } });
     fireEvent.change(screen.getByLabelText(/^url$/i), { target: { value: 'https://mcp.example.com/x' } });
-    expect(screen.queryByTestId(WARNING)).not.toBeInTheDocument();
+    expect(warning()).not.toBeInTheDocument();
   });
 
   it('a refused save because the reset failed says so plainly and stays open', async () => {

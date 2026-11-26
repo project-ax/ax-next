@@ -93,7 +93,7 @@ import { Label } from '@/components/ui/label';
 import { Field, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { AsyncState, Notice, Stack } from '@project-ax/ui';
 import {
   Card,
   CardContent,
@@ -341,9 +341,7 @@ function ServicesSection({
         </div>
 
         {composeError && (
-          <Alert variant="destructive">
-            <AlertDescription>{composeError}</AlertDescription>
-          </Alert>
+          <Notice tone="danger">{composeError}</Notice>
         )}
 
         {profiles.length > 0 && (
@@ -392,23 +390,19 @@ function ServicesSection({
         </div>
 
         {needsGroup && (
-          <Alert>
-            <AlertTitle>Pick a group to bring in services</AlertTitle>
-            <AlertDescription>
-              Every service in your file belongs to a group, so none start by
-              default. Choose a group above and we’ll add its services.
-            </AlertDescription>
-          </Alert>
+          <Notice tone="info" title="Pick a group to bring in services">
+            Every service in your file belongs to a group, so none start by
+            default. Choose a group above and we’ll add its services.
+          </Notice>
         )}
 
         {pinning && (
-          <p className="text-xs text-muted-foreground">Looking up exact versions…</p>
+          <AsyncState status="loading" skeleton="lines" loadingLabel="Looking up exact versions" />
         )}
 
         {Object.keys(form.pinned).length > 0 && (
-          <Alert>
-            <AlertTitle>We locked these to exact versions</AlertTitle>
-            <AlertDescription>
+          <Notice tone="info" title="We locked these to exact versions">
+            <>
               <p className="mb-1">
                 A name like <span className="font-mono">redis:7</span> can change
                 over time, so we saved the exact version instead:
@@ -421,14 +415,17 @@ function ServicesSection({
                   </li>
                 ))}
               </ul>
-            </AlertDescription>
-          </Alert>
+            </>
+          </Notice>
         )}
 
         {form.drafts.length > 0 && !pinning && (
-          <Alert variant="destructive">
-            <AlertTitle>We couldn’t lock a few images to an exact version</AlertTitle>
-            <AlertDescription>
+          <Notice
+            tone="danger"
+            title="We couldn’t lock a few images to an exact version"
+            action={{ label: 'Try again', onClick: () => void pinDrafts(form, seq.current) }}
+          >
+            <>
               <ul className="list-disc pl-5">
                 {form.drafts.map((d) => (
                   <li key={d.name}>
@@ -437,35 +434,22 @@ function ServicesSection({
                   </li>
                 ))}
               </ul>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={() => void pinDrafts(form, seq.current)}
-              >
-                Try again
-              </Button>
-            </AlertDescription>
-          </Alert>
+            </>
+          </Notice>
         )}
 
         {form.appServices.length > 0 && (
-          <Alert>
-            <AlertTitle>We skipped services that run your own code</AlertTitle>
-            <AlertDescription>
-              Skipped: {form.appServices.map((a) => a.service).join(', ')}. They use
-              your own code, so we didn’t save them as services. The agent can run
-              them inside its sandbox instead.
-            </AlertDescription>
-          </Alert>
+          <Notice tone="info" title="We skipped services that run your own code">
+            Skipped: {form.appServices.map((a) => a.service).join(', ')}. They use
+            your own code, so we didn’t save them as services. The agent can run
+            them inside its sandbox instead.
+          </Notice>
         )}
 
         {/* I10 — what we removed because it can’t cross into the sandbox. */}
         {drops.length > 0 && (
-          <Alert>
-            <AlertTitle>We removed a few things</AlertTitle>
-            <AlertDescription>
+          <Notice tone="warning" title="We removed a few things">
+            <>
               <p className="mb-1">
                 These can’t cross into the sandbox — they’re how a container breaks
                 out of one, so we left them behind:
@@ -479,15 +463,14 @@ function ServicesSection({
                   </li>
                 ))}
               </ul>
-            </AlertDescription>
-          </Alert>
+            </>
+          </Notice>
         )}
 
         {/* I8 — un-pinned images (and other un-translatable services). */}
         {invalid.length > 0 && (
-          <Alert variant="destructive">
-            <AlertTitle>A few services need a fix</AlertTitle>
-            <AlertDescription>
+          <Notice tone="danger" title="A few services need a fix">
+            <>
               <ul className="list-disc pl-5">
                 {invalid.map((iv, i) => (
                   <li key={i}>
@@ -495,8 +478,8 @@ function ServicesSection({
                   </li>
                 ))}
               </ul>
-            </AlertDescription>
-          </Alert>
+            </>
+          </Notice>
         )}
 
         {/* Declared service rows. */}
@@ -1163,27 +1146,26 @@ export function LegacyConnectorEditDialog({
               {form.mechanism === 'mcp' && (
                 <Field>
                   <FieldTitle>OAuth hosts from MCP metadata</FieldTitle>
-                  <div role="status" aria-live="polite" className="min-w-0">
-                    {discoveringHosts ? (
-                      <FieldDescription>Discovering OAuth hosts…</FieldDescription>
-                    ) : currentDiscovery?.status === 'ready' ? (
-                      <>
-                        <ul className="flex flex-col gap-1 text-sm">
-                          {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
-                        </ul>
-                        <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
-                      </>
-                    ) : currentDiscovery?.status === 'error' ? (
-                      <>
-                        <FieldDescription>Could not discover OAuth hosts. Check the URL, retry, or enter the hosts manually above.</FieldDescription>
-                        <Button type="button" variant="outline" size="sm" onClick={() => setDiscoveryRetry((n) => n + 1)}>
-                          Retry discovery
-                        </Button>
-                      </>
-                    ) : (
-                      <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
-                    )}
-                  </div>
+                  {/* No live wrapper: AsyncState and Notice carry their own live roles, and live regions must not nest. */}
+                  {discoveringHosts ? (
+                    <AsyncState status="loading" skeleton="lines" loadingLabel="Discovering OAuth hosts" />
+                  ) : currentDiscovery?.status === 'ready' ? (
+                    <>
+                      <ul className="flex flex-col gap-1 text-sm">
+                        {discoveredHosts.map((host) => <li key={host} className="break-all">{host}</li>)}
+                      </ul>
+                      <FieldDescription>These hosts will be included in the allowlist when you save.</FieldDescription>
+                    </>
+                  ) : currentDiscovery?.status === 'error' ? (
+                    <Notice
+                      tone="danger"
+                      action={{ label: 'Try again', onClick: () => setDiscoveryRetry((n) => n + 1) }}
+                    >
+                      Could not discover OAuth hosts. Check the URL, try again, or enter the hosts manually above.
+                    </Notice>
+                  ) : (
+                    <FieldDescription>Enter a public HTTPS MCP URL to discover its OAuth hosts.</FieldDescription>
+                  )}
                 </Field>
               )}
             </FieldGroup>
@@ -1434,8 +1416,8 @@ export function LegacyConnectorEditDialog({
               below every per-mechanism field: a new site is typed in the hosts
               field, and a server address only exists for an MCP connector. */}
           {(retargeted || endpointChanged) && (
-            <Alert role="note" data-testid="endpoint-change-resets-tools">
-              <AlertDescription className="flex flex-col gap-2">
+            <Notice tone="warning">
+              <Stack gap="sm">
                 {retargeted && (
                   <p>
                     Changing where this connector points signs everyone out of it.{' '}
@@ -1454,17 +1436,15 @@ export function LegacyConnectorEditDialog({
                     choose again.
                   </p>
                 )}
-              </AlertDescription>
-            </Alert>
+              </Stack>
+            </Notice>
           )}
 
           {/* Services (service bundle) — independent of the mechanism choice. */}
           <ServicesSection form={form} setForm={setForm} />
 
           {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
+            <Notice tone="danger">{error}</Notice>
           )}
 
           <div className="flex items-center justify-end gap-2">

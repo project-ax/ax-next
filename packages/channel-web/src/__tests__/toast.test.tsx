@@ -1,120 +1,85 @@
 /**
- * ToastStack — top-right session-level notifications.
+ * Toasts as channel-web sees them: the shared `toast` store from `@project-ax/ui`
+ * drawn by `<ToastRegion />`. The store and component are unit-tested in the
+ * package; these cover what the SPA relies on, through role and name queries.
  *
- * Behaviors under test:
- *
- *   1. `toastActions.show({ ... })` renders a toast with the given title.
- *
- *   2. `toastActions.error(title, detail)` adds the `.error` class and
- *      shows the detail line.
- *
- *   3. Auto-dismiss: info toasts (`duration > 0`) self-remove when the
- *      duration elapses; errors (default `duration: 0`) stay sticky.
- *
- *   4. Dismiss button removes the toast from the DOM.
+ *   1. `toast.show({ title })` renders the title in the "Notifications" region.
+ *   2. A danger toast shows its description.
+ *   3. Info toasts auto-dismiss; danger toasts stay put.
+ *   4. The "Dismiss" button removes the toast.
+ *   5. The region is one polite live region; toasts add no alert role of their own.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
-import { ToastStack } from '../components/Toast';
-import { toastActions } from '../lib/toast-store';
+import { toast, ToastRegion } from '@project-ax/ui';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-describe('ToastStack', () => {
+describe('ToastRegion', () => {
   beforeEach(() => {
-    toastActions.reset();
+    toast.dismissAll();
     vi.useFakeTimers();
   });
   afterEach(() => {
+    toast.dismissAll();
     vi.useRealTimers();
-    toastActions.reset();
   });
+
+  const region = () => screen.getByRole('region', { name: 'Notifications' });
 
   it('renders a toast with the given title', () => {
-    render(<ToastStack />);
+    render(<ToastRegion />);
     act(() => {
-      toastActions.show({ title: 'Saved' });
+      toast.show({ title: 'Saved' });
     });
-    expect(screen.getByText('Saved')).toBeTruthy();
+    expect(within(region()).getByText('Saved')).toBeTruthy();
   });
 
-  it('error toast adds the .error class and renders detail', () => {
-    const { container } = render(<ToastStack />);
+  it('a danger toast renders its description', () => {
+    render(<ToastRegion />);
     act(() => {
-      toastActions.error('Quota exceeded', 'Try again tomorrow.');
+      toast.show({ title: 'Quota exceeded', description: 'Try again tomorrow.', tone: 'danger' });
     });
-    const toast = container.querySelector('.toast');
-    expect(toast?.classList.contains('error')).toBe(true);
-    expect(screen.getByText('Try again tomorrow.')).toBeTruthy();
+    expect(within(region()).getByText('Quota exceeded')).toBeTruthy();
+    expect(within(region()).getByText('Try again tomorrow.')).toBeTruthy();
   });
 
-  it('info toast auto-dismisses after duration (two-phase)', () => {
-    // Phase 1: duration timer flips the .leaving class so CSS can
-    // animate the slide-out. Phase 2: 180ms later the node unmounts.
-    const { container } = render(<ToastStack />);
+  it('an info toast auto-dismisses after its duration', () => {
+    render(<ToastRegion />);
     act(() => {
-      toastActions.show({ title: 'Connecting…', duration: 100 });
+      toast.show({ title: 'Connecting…', duration: 100 });
     });
     expect(screen.getByText('Connecting…')).toBeTruthy();
-
-    // Advance past the duration → leaving phase.
     act(() => {
-      vi.advanceTimersByTime(150);
-    });
-    // Still in DOM, now with `.leaving` class so the CSS animation runs.
-    expect(screen.getByText('Connecting…')).toBeTruthy();
-    expect(container.querySelector('.toast.leaving')).toBeTruthy();
-
-    // Advance past the leave animation → unmount.
-    act(() => {
-      vi.advanceTimersByTime(200);
+      vi.advanceTimersByTime(100);
     });
     expect(screen.queryByText('Connecting…')).toBeNull();
   });
 
-  it('error toast stays sticky (no auto-dismiss)', () => {
-    render(<ToastStack />);
+  it('a danger toast stays until dismissed', () => {
+    render(<ToastRegion />);
     act(() => {
-      toastActions.error('Disconnected');
+      toast.show({ title: 'Disconnected', tone: 'danger' });
     });
-    expect(screen.getByText('Disconnected')).toBeTruthy();
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
     expect(screen.getByText('Disconnected')).toBeTruthy();
   });
 
-  it('error toast carries role="alert" so screen readers announce immediately', () => {
-    // The stack region is aria-live="polite" — fine for info toasts —
-    // but error toasts override with role="alert" (assertive).
-    const { container } = render(<ToastStack />);
+  it('the Dismiss button removes the toast', () => {
+    render(<ToastRegion />);
     act(() => {
-      toastActions.error('Disconnected');
+      toast.show({ title: 'Disconnected', tone: 'danger' });
     });
-    const errorToast = container.querySelector('.toast.error');
-    expect(errorToast?.getAttribute('role')).toBe('alert');
-  });
-
-  it('info toast does NOT carry role="alert" (polite stack region is enough)', () => {
-    const { container } = render(<ToastStack />);
-    act(() => {
-      toastActions.show({ title: 'Saved' });
-    });
-    const toast = container.querySelector('.toast');
-    expect(toast?.getAttribute('role')).toBeNull();
-  });
-
-  it('dismiss button slides out, then removes the toast (two-phase)', () => {
-    const { container } = render(<ToastStack />);
-    act(() => {
-      toastActions.error('Disconnected');
-    });
-    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
-    // Phase 1 — `.leaving` applied; node still in DOM for the animation.
-    expect(screen.getByText('Disconnected')).toBeTruthy();
-    expect(container.querySelector('.toast.leaving')).toBeTruthy();
-    // Phase 2 — animation finishes, node unmounts.
-    act(() => {
-      vi.advanceTimersByTime(200);
-    });
+    fireEvent.click(within(region()).getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByText('Disconnected')).toBeNull();
+  });
+
+  it('is one polite live region; toasts do not add an alert role (no double announcement)', () => {
+    render(<ToastRegion />);
+    act(() => {
+      toast.show({ title: 'Disconnected', tone: 'danger' });
+    });
+    expect(region().getAttribute('aria-live')).toBe('polite');
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

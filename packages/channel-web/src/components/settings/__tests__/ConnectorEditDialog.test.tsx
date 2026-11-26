@@ -135,7 +135,7 @@ describe('ConnectorEditDialog', () => {
     await httpDraft();
     await screen.findByText(/could not discover oauth hosts/i);
     expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: /retry discovery/i }));
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
     expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
     await screen.findByText('accounts.google.com', { exact: true });
     expect(oauthLib.discoverOAuthHosts).toHaveBeenCalledTimes(2);

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { StorageTab } from '../StorageTab';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import type { AdminStorage, MyStorage, StorageOwner } from '@/lib/storage-api';
 
 /*
@@ -176,8 +176,8 @@ beforeEach(() => {
   cleanup = makeCleanup();
   handler = defaultHandler;
   installFetch();
-  toastActions.reset();
-  showToast = vi.spyOn(toastActions, 'show');
+  toast.dismissAll();
+  showToast = vi.spyOn(toast, 'show');
 });
 
 afterEach(() => {
@@ -185,9 +185,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function lastToast(): { title: string; detail?: string; kind?: string } {
+function lastToast(): { title: string; description?: string; tone?: string } {
   const args = showToast.mock.calls.at(-1)?.[0] as
-    | { title: string; detail?: string; kind?: string }
+    | { title: string; description?: string; tone?: string }
     | undefined;
   if (args === undefined) throw new Error('no toast was shown');
   return args;
@@ -232,7 +232,9 @@ describe('StorageTab — Your storage, for everyone', () => {
   it('shows a busy placeholder that a screen reader can announce while it loads', () => {
     handler = () => new Promise<Response>(() => {});
     render(<StorageTab isAdmin={false} />);
-    expect(screen.getByText('Loading your storage…')).toBeInTheDocument();
+    const loading = screen.getByRole('status');
+    expect(loading).toHaveAttribute('aria-busy', 'true');
+    expect(loading).toHaveTextContent('Loading your storage…');
     expect(screen.queryByRole('progressbar')).toBeNull();
     // The card keeps its title while it loads, so the page does not jump.
     expect(screen.getByRole('heading', { name: 'Your storage' })).toBeInTheDocument();
@@ -266,7 +268,9 @@ describe('StorageTab — Your storage, for everyone', () => {
   it('warns kindly, and truthfully, when they are getting close', async () => {
     mine = makeMine({ usedBytes: Math.round(4.2 * GB), status: 'near-limit' });
     await renderPerson();
-    const alert = within(myCard()).getByRole('alert');
+    // A heads-up, not an interruption: a warning Notice is a polite status.
+    expect(within(myCard()).queryByRole('alert')).toBeNull();
+    const alert = within(myCard()).getByRole('status');
     expect(alert).toHaveTextContent("You're getting close to your limit");
     expect(alert).toHaveTextContent("new uploads and published files won't be saved");
     expect(alert.textContent ?? '').toMatch(/ask your agent to clean up files it no longer needs/i);
@@ -283,7 +287,6 @@ describe('StorageTab — Your storage, for everyone', () => {
     expect(alert).toHaveTextContent("New uploads and published files can't be saved");
     expect(alert.textContent ?? '').toMatch(/keep chatting/i);
     expect(alert.textContent ?? '').toMatch(/ask an admin for more room/i);
-    expect(alert).toHaveClass('text-destructive');
   });
 
   it('points at the agent and an admin, and never says delete', async () => {
@@ -690,8 +693,8 @@ describe('StorageTab — an admin also sees the limits and everyone', () => {
 
       await waitFor(() => expect(showToast).toHaveBeenCalled());
       expect(lastToast().title).toBe('Storage limits saved');
-      expect(lastToast().detail).toBe('The new settings apply to everyone right away.');
-      expect(lastToast().kind ?? 'info').toBe('info');
+      expect(lastToast().description).toBe('The new settings apply to everyone right away.');
+      expect(lastToast().tone ?? 'info').toBe('info');
 
       // The form now IS the saved state: nothing left to save.
       await waitFor(() => expect(screen.getByRole('button', { name: 'Save limits' })).toBeDisabled());

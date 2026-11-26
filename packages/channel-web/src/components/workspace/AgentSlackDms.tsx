@@ -18,12 +18,10 @@
  * of showing an error it can't fix.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { AGENT_SLACK_DM_COPY as COPY, agentSlackBotStale, chooseSlackDmAgent } from '@/lib/agent-slack';
-import { RESOLUTION_FOCUS_RING } from '@/lib/consent-focus';
 import { logRequestFailure } from '@/lib/http';
-import { cn } from '@/lib/utils';
 
 export interface AgentSlackDmsProps {
   agentId: string;
@@ -48,14 +46,14 @@ const sameName = (a: string, b: string): boolean => a.trim().toLocaleLowerCase()
  * successful switch fails: the switch still happened.
  */
 export function AgentSlackDmsSwitched({ botName, switched }: { botName: string; switched: { self: string; from: string } }) {
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     ref.current?.focus();
   }, []);
   return (
-    <Alert ref={ref} tabIndex={-1} className={cn('rounded-sm', RESOLUTION_FOCUS_RING)}>
-      <AlertDescription>{COPY.switched(botName, switched.self, switched.from)}</AlertDescription>
-    </Alert>
+    <section ref={ref} tabIndex={-1}>
+      <Notice tone="success">{COPY.switched(botName, switched.self, switched.from)}</Notice>
+    </section>
   );
 }
 
@@ -116,11 +114,7 @@ export function AgentSlackDms({
   return (
     <div className="flex flex-col items-start gap-3">
       <p className="text-[13px] text-muted-foreground">{COPY.goesTo(botName, other)}</p>
-      {failed && (
-        <Alert variant="destructive">
-          <AlertDescription>{COPY.notSwitched}</AlertDescription>
-        </Alert>
-      )}
+      {failed && <Notice tone="danger">{COPY.notSwitched}</Notice>}
       <Button variant="outline" size="sm" disabled={busy} onClick={() => void choose()}>
         {busy ? COPY.switching : COPY.useInstead(self)}
       </Button>

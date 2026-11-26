@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Trash2, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Select,
   SelectContent,
@@ -13,6 +12,7 @@ import { listSkills, listUserSkills } from '@/lib/skills';
 import { humanizeId } from '@/lib/humanize';
 import { patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary } from '@ax/skills';
+import { Notice } from '@project-ax/ui';
 
 interface Attachment {
   skillId: string;
@@ -46,19 +46,22 @@ export function SkillAttachmentsSection({
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
   const [allSkills, setAllSkills] = useState<SkillSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [readTick, setReadTick] = useState(0);
   const [saving, setSaving] = useState(false);
   const [addingSkillId, setAddingSkillId] = useState<string | null>(null);
 
   useEffect(() => {
+    setReadError(null);
     void (async () => {
       try {
         const skills = isAdmin ? await listSkills() : await listUserSkills();
         setAllSkills(skills);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setReadError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, [isAdmin]);
+  }, [isAdmin, readTick]);
 
   const skillById = useMemo(
     () => new Map(allSkills.map((s) => [s.id, s])),
@@ -126,10 +129,13 @@ export function SkillAttachmentsSection({
         </Button>
       </div>
 
+      {readError && (
+        <Notice tone="danger" action={{ label: 'Try again', onClick: () => setReadTick((n) => n + 1) }}>
+          {readError}
+        </Notice>
+      )}
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Notice tone="danger">{error}</Notice>
       )}
 
       {/* (TASK-343 / audit D9) "No skills attached." states a fact and teaches

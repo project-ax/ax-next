@@ -20,7 +20,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
-import { toastActions } from '@/lib/toast-store';
+import { toast } from '@project-ax/ui';
 import { KICKOFF_TEXT } from '@/lib/bootstrap-kickoff';
 import { HttpError } from '@/lib/http';
 import { WorkspaceShell, type WorkspaceShellProps } from '../WorkspaceShell';
@@ -103,12 +103,12 @@ beforeEach(() => {
   // Spy rather than mock the implementation, so the real store still
   // updates (nothing here reads it back) — restored below so the call
   // count from one test can never leak into the next.
-  vi.spyOn(toastActions, 'error');
+  vi.spyOn(toast, 'show');
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
-  toastActions.reset();
+  toast.dismissAll();
 });
 
 function renderShell(props: WorkspaceShellProps = {}) {
@@ -245,7 +245,8 @@ describe('workspace create-agent door', () => {
     await waitFor(() =>
       expect(window.location.pathname).toBe('/workspace/agents/a-new'),
     );
-    await waitFor(() => expect(toastActions.error).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toast.show).toHaveBeenCalledTimes(1));
+    expect(toast.show).toHaveBeenCalledWith(expect.objectContaining({ tone: 'danger' }));
   });
 
   /**
@@ -258,7 +259,7 @@ describe('workspace create-agent door', () => {
     sendMessageMock.mockRejectedValue(new HttpError('/api/chat/messages', 503));
     renderShell({ kickoffAgentId: 'a-new' });
 
-    await waitFor(() => expect(toastActions.error).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toast.show).toHaveBeenCalledTimes(1));
     expect(warn).toHaveBeenCalledWith('[workspace-kickoff] /api/chat/messages → 503');
   });
 

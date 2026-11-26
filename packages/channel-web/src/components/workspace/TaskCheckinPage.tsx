@@ -32,7 +32,7 @@
  * browser fetch, and it leaves file links out of prose.
  */
 import { useId, useLayoutEffect, useState, type ReactNode } from 'react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { AsyncState, Notice } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -40,10 +40,8 @@ import {
   BreadcrumbList,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
-import { Button } from '@/components/ui/button';
-import { Spinner } from '@/components/ui/spinner';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
-import { readAlertVariant } from '@/lib/read-register';
+import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { readingText } from '@/lib/task-reading';
@@ -176,11 +174,18 @@ export function TaskCheckinPage({
           <div className="flex-1 overflow-y-auto">
             <div className="mx-auto flex w-full max-w-[900px] flex-col gap-4 px-6 pb-6">
               {state.kind === 'loading' ? (
-                <div className="flex justify-center py-10">
-                  <Spinner />
-                </div>
+                <AsyncState status="loading" skeleton="block" loadingLabel="Loading check-in" />
               ) : (
-                <CheckinLoadFailure error={state.error} onRetry={refresh} />
+                <AsyncState
+                  status="error"
+                  skeleton="block"
+                  loadingLabel="Loading check-in"
+                  error={{
+                    message: LOAD_COPY[state.error],
+                    tone: readNoticeTone(state.error),
+                    ...(state.error === 'failed' ? { onRetry: refresh } : {}),
+                  }}
+                />
               )}
             </div>
           </div>
@@ -192,20 +197,12 @@ export function TaskCheckinPage({
             */}
             {state.refreshFailed && (
               <div className="px-6 pt-4">
-                <Alert variant="destructive">
-                  <AlertDescription className="flex flex-wrap items-center gap-3">
-                    <span className="min-w-0">{REFRESH_FAILED}</span>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="ml-auto"
-                      onClick={refresh}
-                      disabled={state.refreshing}
-                    >
-                      Try again
-                    </Button>
-                  </AlertDescription>
-                </Alert>
+                <Notice
+                  tone="danger"
+                  action={{ label: 'Try again', onClick: refresh, busy: state.refreshing }}
+                >
+                  {REFRESH_FAILED}
+                </Notice>
               </div>
             )}
             {state.page.kind === 'repeat' ? <p className="mx-auto w-full max-w-[900px] px-6 py-3 text-sm text-muted-foreground">
@@ -255,27 +252,6 @@ export function TaskCheckinPage({
         )}
       </div>
     </>
-  );
-}
-
-/**
- * The page couldn't load at all. A failed read is ours to retry. A check-in
- * that isn't there (or isn't yours: the route answers 404 alike) and an ended
- * session offer no button, since pressing again can't fix either
- * (`lib/read-register.ts`). The crumbs above still lead back.
- */
-function CheckinLoadFailure({ error, onRetry }: { error: TaskReadError; onRetry: () => void }) {
-  return (
-    <Alert variant={readAlertVariant(error)}>
-      <AlertDescription className="flex flex-wrap items-center gap-3">
-        <span className="min-w-0">{LOAD_COPY[error]}</span>
-        {error === 'failed' && (
-          <Button variant="secondary" size="sm" className="ml-auto" onClick={onRetry}>
-            Try again
-          </Button>
-        )}
-      </AlertDescription>
-    </Alert>
   );
 }
 

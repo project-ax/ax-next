@@ -37,6 +37,7 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
+import { EmptyState } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -46,13 +47,6 @@ import {
 } from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
 import { useUser } from '@/lib/user-context';
 import { SkillsAppStore } from '@/components/settings/SkillsAppStore';
@@ -333,16 +327,16 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
       return memory !== null && memory !== undefined ? (
         <>{memory}</>
       ) : (
-        <SettingsEmpty
-          Icon={Brain}
+        <EmptyState
+          icon={Brain}
           title="No memories to show"
           description={`Memory isn't switched on for this workspace yet, so ${agent.name} isn't keeping notes. Ask your workspace administrator about turning it on.`}
         />
       );
     case 'model':
       return (
-        <SettingsEmpty
-          Icon={Cpu}
+        <EmptyState
+          icon={Cpu}
           title="Using the workspace default"
           description={`Picking a model just for ${agent.name} isn't here yet. Until it is, ${agent.name} uses whatever model your admin set for the whole workspace.`}
         />
@@ -357,28 +351,6 @@ function SectionBody({ agent, section, busy, instructions, memory, onSection }: 
         </>
       );
   }
-}
-
-function SettingsEmpty({
-  Icon,
-  title,
-  description,
-}: {
-  Icon: Icon;
-  title: string;
-  description: string;
-}) {
-  return (
-    <Empty className="border border-border bg-card">
-      <EmptyHeader>
-        <EmptyMedia variant="icon" className="bg-primary-soft text-primary">
-          <Icon aria-hidden="true" />
-        </EmptyMedia>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{description}</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
-  );
 }
 
 /** Mount the connector manager only while its settings section is open. */

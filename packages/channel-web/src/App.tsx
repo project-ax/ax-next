@@ -51,7 +51,6 @@ import {
   focusNewAgentViewWhenReady,
   refocusNewAgentViewWhenReady,
 } from './lib/new-agent-return-focus';
-import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
 import type { AdminTabId } from './components/admin/AdminSidebar';
 import { SetupWizard } from './components/setup/SetupWizard';
@@ -60,7 +59,7 @@ import {
   consumeOAuthFullPageReturn,
   oauthFullPageErrorMessage,
 } from './lib/oauth-full-page-return';
-import { toastActions } from './lib/toast-store';
+import { toast, ToastRegion } from '@project-ax/ui';
 import {
   SLACK_INSTALL_RETURN_MESSAGES,
   readSlackInstallReturn,
@@ -144,9 +143,9 @@ export const App = () => {
     // reload and Back preserve the connector workflow. Old callbacks use /.
     window.history.replaceState({}, '', result.returnPath ?? '/');
     if (result.toast === 'success') {
-      toastActions.show({ title: "Connected. You're all set.", kind: 'info' });
+      toast.show({ title: "Connected. You're all set." });
     } else {
-      toastActions.error(oauthFullPageErrorMessage(result.reason));
+      toast.show({ title: oauthFullPageErrorMessage(result.reason), tone: 'danger' });
     }
   }, []);
 
@@ -279,7 +278,7 @@ export const App = () => {
         <ErrorBoundary surface="shared-artifact">
           <SharedArtifactPage code={share.code} />
         </ErrorBoundary>
-        <ToastStack />
+        <ToastRegion />
       </>
     );
   }
@@ -344,8 +343,8 @@ const AppContent = ({
     if (slackOutcome === null || slackReturnToasted.current) return;
     slackReturnToasted.current = true;
     const message = SLACK_INSTALL_RETURN_MESSAGES[slackOutcome];
-    if (slackOutcome === 'failed') toastActions.error(message);
-    else toastActions.show({ title: message, kind: 'info' });
+    if (slackOutcome === 'failed') toast.show({ title: message, tone: 'danger' });
+    else toast.show({ title: message });
   }, [slackOutcome]);
   // TASK-1167 — and for an agent's own bot, to whoever started it (a team
   // admin, not necessarily a workspace admin): once, a fixed sentence.
@@ -358,8 +357,8 @@ const AppContent = ({
     const message = (slackBotReturn.fromAdmin ? SLACK_BOT_APPROVED_RETURN_MESSAGES : SLACK_BOT_RETURN_MESSAGES)[
       slackBotReturn.outcome
     ];
-    if (slackBotReturn.outcome === 'failed') toastActions.error(message);
-    else toastActions.show({ title: message, kind: 'info' });
+    if (slackBotReturn.outcome === 'failed') toast.show({ title: message, tone: 'danger' });
+    else toast.show({ title: message });
   }, [slackBotReturn, slackBotAdminReturn]);
   // TASK-443 — closing Settings must not drop the keyboard on `<body>`.
   //
@@ -526,7 +525,7 @@ const AppContent = ({
               setBootstrapAgentName(name);
             }}
           />
-          <ToastStack />
+          <ToastRegion />
         </UserProvider>
       );
     }
@@ -568,7 +567,7 @@ const AppContent = ({
             setKickoffAgentId(agentId);
           }}
         />
-        <ToastStack />
+        <ToastRegion />
       </UserProvider>
     );
   }
@@ -642,7 +641,7 @@ const AppContent = ({
         trips, toasts (retry confirmations, error notes) must still reach
         the user.
       */}
-      <ToastStack />
+      <ToastRegion />
     </UserProvider>
   );
 };

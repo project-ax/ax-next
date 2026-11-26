@@ -22,7 +22,7 @@ import {
   ChevronDown,
   Zap,
 } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -208,19 +208,9 @@ export function HomeComposer({
   return (
     <div className={`${CHAT_CONTENT_CLASS} pb-6`}>
       {error !== null && (
-        <Alert variant="destructive" className="mb-2">
-          <AlertDescription className="flex flex-wrap items-center gap-3">
-            <span className="min-w-0">{error}</span>
-            <Button
-              variant="secondary"
-              size="sm"
-              className="ml-auto"
-              onClick={() => setError(null)}
-            >
-              Dismiss
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <div className="mb-2">
+          <Notice tone="danger" onDismiss={() => setError(null)}>{error}</Notice>
+        </div>
       )}
       {proposal && (
         <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5 shadow-sm">

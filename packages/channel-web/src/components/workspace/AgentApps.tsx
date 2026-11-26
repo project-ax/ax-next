@@ -17,12 +17,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppWindow, Plus } from 'lucide-react';
 import type { AgentAppsRead, AppLink, LinkCodeResponse } from '@ax/apps-bridge-contract';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Button } from '@/components/ui/button';
+import { AsyncState, Button as AxButton, EmptyState, Notice } from '@project-ax/ui';
 import { Card, CardContent } from '@/components/ui/card';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Spinner } from '@/components/ui/spinner';
 import {
   agentAppsErrorCopy,
   agentAppsStale,
@@ -33,6 +29,7 @@ import {
   unlinkApp,
 } from '@/lib/agent-apps';
 import { logRequestFailure } from '@/lib/http';
+import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { AppGrantEditor, type AppGrantEditorTarget } from './AppGrantEditor';
 import { AppLinkCodeDialog } from './AppLinkCodeDialog';
 import { ApprovalRow, LinkRow, UnlinkDialog } from './AgentAppsRows';
@@ -77,37 +74,23 @@ export function AgentApps({ agentId, agentName }: AgentAppsProps) {
 
   switch (load.status) {
     case 'loading':
-      return (
-        <div role="status" className="flex flex-col gap-3">
-          <span className="sr-only">Loading apps…</span>
-          <Skeleton className="h-14 w-full" aria-hidden="true" />
-          <Skeleton className="h-14 w-full" aria-hidden="true" />
-        </div>
-      );
+      return <AsyncState status="loading" skeleton="rows" loadingLabel="Loading apps" />;
     case 'failed':
       return (
-        <Alert variant="destructive">
-          <AlertDescription className="flex flex-col items-start gap-3">
-            <p>We couldn&apos;t load the apps for {agentName}.</p>
-            <Button variant="outline" size="sm" onClick={() => read()}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <AsyncState
+          status="error"
+          skeleton="rows"
+          loadingLabel="Loading apps"
+          error={{ message: `We couldn't load the apps for ${agentName}.`, onRetry: () => read() }}
+        />
       );
     case 'off':
       return (
-        <Empty className="border border-border bg-card">
-          <EmptyHeader>
-            <EmptyMedia variant="icon" className="bg-primary-soft text-primary">
-              <AppWindow aria-hidden="true" />
-            </EmptyMedia>
-            <EmptyTitle>The apps platform isn&apos;t set up here</EmptyTitle>
-            <EmptyDescription>
-              Once an admin connects one, apps built there can use {agentName} and its connectors.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <EmptyState
+          icon={AppWindow}
+          title="The apps platform isn't set up here"
+          description={`Once an admin connects one, apps built there can use ${agentName} and its connectors.`}
+        />
       );
     case 'ok':
       return <AppsBody agentId={agentId} agentName={agentName} data={load.read} onReread={() => read(true)} />;
@@ -149,12 +132,15 @@ function AppsBody({
     if (agentAppsStale(err)) onReread();
   };
 
-  async function run(k: string, write: () => Promise<void>) {
+  /** A refusal is shown on the page, so the confirmation closes either way. */
+  async function run(k: string, write: () => Promise<void>): Promise<void> {
     mark(k, true);
     setNotice(null);
     try {
       await write();
       onReread();
+      // The row that opened the confirmation leaves with the write; park focus on the section's primary action.
+      focusAfterRemoval('[data-return-focus="agent-apps"] button', '#apps-linked');
     } catch (err) {
       refuse(err);
     } finally {
@@ -176,34 +162,26 @@ function AppsBody({
 
   return (
     <div className="flex flex-col gap-6">
-      {notice !== null && (
-        <Alert variant="destructive">
-          <AlertDescription>{notice}</AlertDescription>
-        </Alert>
-      )}
+      {notice !== null && <Notice tone="danger">{notice}</Notice>}
 
       <section aria-labelledby="apps-linked" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 id="apps-linked" className="text-[14px] font-semibold">
+          <h3 id="apps-linked" tabIndex={-1} className="text-[14px] font-semibold">
             Apps that use this agent
           </h3>
           {canManage && (
-            <Button size="sm" onClick={() => void linkApp()} disabled={minting}>
-              {minting ? (
-                <Spinner data-icon="inline-start" aria-hidden="true" />
-              ) : (
-                <Plus data-icon="inline-start" aria-hidden="true" />
-              )}
-              Link an app
-            </Button>
+            <span data-return-focus="agent-apps">
+              <AxButton intent="primary" size="sm" icon={Plus} busy={minting} onClick={() => void linkApp()}>
+                Link an app
+              </AxButton>
+            </span>
           )}
         </div>
         {links.length === 0 ? (
-          <p className="text-[13px] text-muted-foreground">
-            {canManage
-              ? `No apps use ${agentName} yet. Link one to let it use ${agentName}'s connectors.`
-              : `No apps use ${agentName} yet.`}
-          </p>
+          <EmptyState
+            title={`No apps use ${agentName} yet.`}
+            {...(canManage ? { description: `Link one to let it use ${agentName}'s connectors.` } : {})}
+          />
         ) : (
           <Card className="overflow-hidden p-0 shadow-none">
             <CardContent className="p-0">
@@ -217,7 +195,7 @@ function AppsBody({
                     onAdd={() => setEditing({ link, grant: null })}
                     onEdit={(grant) => setEditing({ link, grant })}
                     onRemove={(grant) =>
-                      void run(`${link.appId}:${grant.connectorId}`, () =>
+                      run(`${link.appId}:${grant.connectorId}`, () =>
                         removeGrant(agentId, link.appId, grant.connectorId),
                       )
                     }
@@ -249,7 +227,7 @@ function AppsBody({
                     approval={ap}
                     busy={busy.has(`approval:${ap.appId}:${ap.connectorId}`)}
                     onRevoke={() =>
-                      void run(`approval:${ap.appId}:${ap.connectorId}`, () =>
+                      run(`approval:${ap.appId}:${ap.connectorId}`, () =>
                         revokeApproval(agentId, ap.appId, ap.connectorId),
                       )
                     }
@@ -282,12 +260,9 @@ function AppsBody({
       <UnlinkDialog
         link={unlinking}
         agentName={agentName}
-        busy={unlinking !== null && busy.has(unlinking.appId)}
         onCancel={() => setUnlinking(null)}
-        onConfirm={(link) =>
-          // Closed either way: a refusal's sentence shows on the page, not behind the dialog.
-          void run(link.appId, () => unlinkApp(agentId, link.appId)).finally(() => setUnlinking(null))
-        }
+        // Closed either way: a refusal's sentence shows on the page, not behind the dialog.
+        onConfirm={(link) => run(link.appId, () => unlinkApp(agentId, link.appId))}
       />
     </div>
   );

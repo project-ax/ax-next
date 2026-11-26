@@ -548,7 +548,7 @@ describe('AdminSettings — agents tab', () => {
     // A styled dialog gates the delete — no OS confirm.
     const dialog = await screen.findByRole('dialog');
     expect(confirmSpy).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: /^Delete$/i }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Delete agent$/i }));
 
     await waitFor(() => {
       const del = fetchMock.mock.calls.find(

@@ -4,7 +4,6 @@ import {
   screen,
   fireEvent,
   waitFor,
-  within,
 } from '@testing-library/react';
 import { AuthProvidersTab } from '../AuthProvidersTab';
 import type { AuthProviderEntry } from '@/lib/auth-providers';
@@ -55,7 +54,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Remove provider?')).toBeTruthy();
     });
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText('Google')).toBeTruthy();
+    expect(dialog).toHaveTextContent('Google');
     expect(confirmSpy).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
