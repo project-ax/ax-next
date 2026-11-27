@@ -1,6 +1,7 @@
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { createContext, useContext, useId, useState, type MouseEvent, type ReactNode, type Ref } from 'react';
+import { CLICK_LAYER } from '../internal/click-layer.js';
 import { cx } from '../internal/cx.js';
 import { IconButton } from './IconButton.js';
 
@@ -104,16 +105,10 @@ const CONTENT: Record<ListDensity, string> = {
   compact: 'ax-px-sm ax-pb-sm',
 };
 
-// Shared by the button, the link and the expand-only toggle. The ::after is the stretched layer: absolutely positioned
-// against the row (the nearest positioned ancestor, so the title itself must stay unpositioned), it covers the whole row
-// and takes every click that doesn't land on trailing. Being the title's own pseudo-element, a hit on it IS a hit on the title, so the
-// row hover underlines the title and the focus ring is drawn around the whole row, inset so a flush Card can't clip it.
-// The title's overflow-hidden (truncate) doesn't clip the layer: its containing block is an ancestor of the title.
-const ACTION =
-  'ax-block ax-w-full ax-truncate ax-m-none ax-p-none ax-border-0 ax-bg-transparent ax-text-left ax-font-sans ax-text-fg ' +
-  'ax-no-underline ax-cursor-pointer hover:ax-underline focus-visible:ax-outline-none ' +
-  'after:ax-absolute after:ax-inset-none after:ax-content-empty after:ax-rounded-md ' +
-  'focus-visible:after:ax-outline focus-visible:after:ax-outline-2 focus-visible:after:ax-outline-line-ring focus-visible:after:ax-outline-offset-inset';
+// Shared by the button, the link and the expand-only toggle: the click layer (internal/click-layer.ts) covers the whole
+// row, so the row hover underlines the title. The title's overflow-hidden (truncate) doesn't clip the layer: its
+// containing block is an ancestor of the title.
+const ACTION = cx(CLICK_LAYER, 'ax-truncate ax-no-underline hover:ax-underline after:ax-rounded-md');
 
 // The row's own controls sit above the stretched layer. Their z-index only competes inside the row: the row box is
 // isolated (its own stacking context), so a sticky header or overlay elsewhere on the page still paints over them.

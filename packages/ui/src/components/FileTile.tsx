@@ -1,4 +1,5 @@
 import { useId, type MouseEvent, type ReactNode } from 'react';
+import { CLICK_LAYER } from '../internal/click-layer.js';
 import { cx } from '../internal/cx.js';
 import { fileIcon, formatFileSize, splitFileName } from '../internal/file.js';
 import { Spinner } from '../internal/Spinner.js';
@@ -26,8 +27,9 @@ export interface FileTileProps {
   // 0–100, drawn as a progress bar while working.
   progress?: number;
   // The primary action (open, download). The whole tile is one button named "{actionLabel} {name}"; without onOpen
-  // the tile is not interactive.
-  onOpen?: () => void;
+  // the tile is not interactive. Given the click event, like ListRow's onOpen (`currentTarget` is the tile's button,
+  // e.g. to return focus to it later).
+  onOpen?: (event: MouseEvent<HTMLButtonElement>) => void;
   // Default "Open".
   actionLabel?: string;
   // Controls of the tile's own (remove, retry). They sit above the tile's click layer: clicking one never opens it.
@@ -82,13 +84,8 @@ const META_TONE: Record<'idle' | 'failed', string> = {
   failed: 'ax-break-words ax-text-status-danger',
 };
 
-// The ::after is the click layer, as in ListRow: absolutely positioned against the tile (the nearest positioned
-// ancestor, so the button itself stays unpositioned), it covers the whole tile, and a hit on it IS a hit on the button.
-// The focus ring is drawn on it, inset, so it outlines the tile.
-const ACTION =
-  'ax-block ax-w-full ax-min-w-none ax-m-none ax-p-none ax-border-0 ax-bg-transparent ax-text-left ax-font-sans ax-text-fg ' +
-  'ax-cursor-pointer focus-visible:ax-outline-none after:ax-absolute after:ax-inset-none after:ax-content-empty ' +
-  'focus-visible:after:ax-outline focus-visible:after:ax-outline-2 focus-visible:after:ax-outline-line-ring focus-visible:after:ax-outline-offset-inset';
+// The click layer, as in ListRow (internal/click-layer.ts): it covers the whole tile and its focus ring outlines it.
+const ACTION = cx(CLICK_LAYER, 'ax-min-w-none');
 
 const LAYER_RADIUS: Record<FileTileVariant, string> = {
   card: 'after:ax-rounded-lg',
@@ -183,7 +180,7 @@ export function FileTile({
       aria-describedby={meta ? metaId : undefined}
       aria-busy={working ? true : undefined}
       aria-disabled={working ? true : undefined}
-      onClick={working ? suppress : () => onOpen()}
+      onClick={working ? suppress : (event) => onOpen(event)}
       className={cx(ACTION, LAYER_RADIUS[variant], NAME_TEXT[variant])}
     >
       {nameNode}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatFullTimestamp, formatTimestamp } from '../index.js';
+import { formatFullTimestamp, formatTimestamp, type FormatFullTimestampOptions, type FormatTimestampOptions } from '../index.js';
 
 const tz = { timeZone: 'America/Los_Angeles', locale: 'en-US' };
 // Fri Oct 23 2026, 12:00 PM PDT
@@ -93,4 +93,13 @@ describe('formatTimestamp clock', () => {
 
 describe('formatFullTimestamp', () => {
   it('exact string', () => expect(formatFullTimestamp('2026-10-24T02:13:00Z', tz)).toBe('Fri, Oct 23, 2026, 7:13 PM'));
+});
+
+describe('option types are exported for callers that build options ahead of time', () => {
+  it('a prebuilt options object formats the same as an inline one', () => {
+    const relative: FormatTimestampOptions = { ...tz, now, format: 'relative' };
+    const full: FormatFullTimestampOptions = tz;
+    expect(formatTimestamp(ago(5 * MIN), relative)).toBe(rel(ago(5 * MIN)));
+    expect(formatFullTimestamp('2026-10-24T02:13:00Z', full)).toBe('Fri, Oct 23, 2026, 7:13 PM');
+  });
 });

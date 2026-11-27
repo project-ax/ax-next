@@ -108,6 +108,22 @@ describe('FileTile', () => {
     expect(classes(screen.getByRole('button'))).toEqual(expect.arrayContaining(['after:ax-absolute', 'after:ax-inset-none']));
   });
 
+  it('onOpen receives the click event, like ListRow; currentTarget is the tile button', () => {
+    let seen: EventTarget | null = null;
+    render(
+      <FileTile
+        variant="row"
+        name="Q3 report.pdf"
+        onOpen={(event) => {
+          seen = event.currentTarget;
+        }}
+      />,
+    );
+    const button = screen.getByRole('button', { name: 'Open Q3 report.pdf' });
+    fireEvent.click(button);
+    expect(seen).toBe(button);
+  });
+
   it('without onOpen the tile is not interactive', () => {
     const { container } = render(<FileTile variant="chip" name="notes.txt" />);
     expect(screen.queryByRole('button')).toBeNull();
