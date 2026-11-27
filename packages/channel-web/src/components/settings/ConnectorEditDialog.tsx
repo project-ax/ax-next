@@ -77,9 +77,9 @@ export function ConnectorEditDialog({
   kind?: NewConnectorKind;
 }) {
   const { open, target, prefill } = props;
-  // Stable across renders: the general editor re-seeds its form whenever its
-  // starting connector changes.
-  const blankGeneral = useMemo(() => blankGeneralDraft(), []);
+  // Stable across renders (state, not useMemo, which is only a hint): the general
+  // editor re-seeds its form whenever its starting connector changes.
+  const [blankGeneral] = useState(blankGeneralDraft);
   // "Set it up": pick the editor, then carry only what THAT editor shows (the
   // rest is listed in it, not saved). Memoized: the general editor re-seeds
   // its form whenever its starting connector changes.

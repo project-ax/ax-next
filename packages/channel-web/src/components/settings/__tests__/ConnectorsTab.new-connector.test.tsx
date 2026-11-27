@@ -128,4 +128,86 @@ describe('New connector asks what kind (TASK-1239)', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByLabelText(/service name/i)).toBeNull();
   });
+
+  // The ~200 ms exit animation after Continue. Radix's Presence keeps the chooser
+  // mounted until `animationend`, and by then the chooser's controlled `open` is
+  // already false, so Radix no longer calls onOpenChange for Escape or an outside
+  // click. jsdom has no animations, so we fake the one thing Presence reads: the
+  // computed `animationName`, "exit" once the dialog is closed.
+  describe('while the chooser is still animating out after Continue', () => {
+    let realGetComputedStyle: typeof window.getComputedStyle;
+    let hadCssEscape = true;
+
+    beforeEach(() => {
+      realGetComputedStyle = window.getComputedStyle;
+      window.getComputedStyle = ((el: Element, pseudo?: string | null) => {
+        const real = realGetComputedStyle.call(window, el, pseudo);
+        const exiting = el.matches('[role=dialog][data-state=closed]');
+        return new Proxy(real, {
+          get(target, prop) {
+            if (prop === 'animationName') return exiting ? 'exit' : 'enter';
+            const value = Reflect.get(target, prop, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      }) as typeof window.getComputedStyle;
+      // Presence calls CSS.escape on animationend.
+      const css = (globalThis as { CSS?: { escape?: (s: string) => string } }).CSS;
+      hadCssEscape = typeof css?.escape === 'function';
+      if (!hadCssEscape) {
+        (globalThis as { CSS?: unknown }).CSS = { ...(css ?? {}), escape: (s: string) => s };
+      }
+    });
+    afterEach(() => {
+      window.getComputedStyle = realGetComputedStyle;
+      if (!hadCssEscape) delete (globalThis as { CSS?: { escape?: unknown } }).CSS!.escape;
+    });
+
+    async function continueWithServices() {
+      render(<ConnectorsTab />);
+      fireEvent.click(await screen.findByRole('button', { name: 'New connector' }));
+      const chooser = await screen.findByRole('dialog', { name: 'New connector' });
+      fireEvent.click(within(chooser).getByRole('radio', { name: SERVICES }));
+      fireEvent.click(within(chooser).getByRole('button', { name: 'Continue' }));
+      // Still in the document, mid-exit: this is the window the review found.
+      await waitFor(() => expect(chooser).toHaveAttribute('data-state', 'closed'));
+      expect(chooser.isConnected).toBe(true);
+      return chooser;
+    }
+
+    async function finishExitAndExpectNoEditor(chooser: HTMLElement) {
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { chooser.dispatchEvent(ended); });
+      await flushTask();
+      await flushTask();
+      expect(screen.queryByLabelText(/service name/i)).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      // The header button still works: the tab is not stuck "choosing".
+      fireEvent.click(screen.getByRole('button', { name: 'New connector' }));
+      expect(await screen.findByRole('dialog', { name: 'New connector' })).toBeInTheDocument();
+    }
+
+    it('Escape during the exit drops the pending choice, and New connector still works', async () => {
+      const chooser = await continueWithServices();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await finishExitAndExpectNoEditor(chooser);
+    });
+
+    it('a click outside during the exit drops the pending choice, and New connector still works', async () => {
+      const chooser = await continueWithServices();
+      // Radix arms its outside-click listener one task after the layer mounts.
+      await flushTask();
+      fireEvent.pointerDown(document.body);
+      await finishExitAndExpectNoEditor(chooser);
+    });
+
+    it('with no Escape, the exit finishes and the services editor opens', async () => {
+      const chooser = await continueWithServices();
+      const ended = new Event('animationend', { bubbles: true });
+      Object.defineProperty(ended, 'animationName', { value: 'exit' });
+      act(() => { chooser.dispatchEvent(ended); });
+      expect(await screen.findByLabelText(/service name/i)).toBeInTheDocument();
+    });
+  });
 });

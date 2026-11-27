@@ -142,7 +142,7 @@ Expected: `kind "general" …` and `keeps what the admin typed …` FAIL (the re
 - `export type NewConnectorKind = 'remote' | 'general';`
 - `function blankGeneralDraft(): Connector` returns `{ id: '', name: '', description: '', usageNote: '', keyMode: 'personal', createdAt: '', updatedAt: '', capabilities: emptyCapabilities() }` (import `emptyCapabilities` from `@/lib/connectors`). Empty capabilities make `formFromConnector` open on Direct API. The empty id makes Save derive the id from the name. Doc comment: `TASK-1239: the general editor's blank start. Not saved: the target stays 'new'.`
 - The signature from Interfaces. Doc comment on `kind`: `TASK-1239: which editor a BLANK new connector opens (target 'new', no prefill). 'remote' (default) is the remote MCP server form; 'general' is the general editor, started from an empty draft. Ignored for an edit, and a prefill always decides by what it carries.`
-- `const blankGeneral = useMemo(() => blankGeneralDraft(), []);` goes with the other hooks, before `if (!open) return null`. Comment: `Stable across renders: the general editor re-seeds its form whenever its starting connector changes.`
+- `const [blankGeneral] = useState(blankGeneralDraft);` (state, not `useMemo`: React treats `useMemo` as a hint, `useState` guarantees the identity) goes with the other hooks, before `if (!open) return null`. Comment: `Stable across renders: the general editor re-seeds its form whenever its starting connector changes.`
 - In the `target === 'new'` branch, after the two `routed` returns: `if (kind === 'general') return <LegacyConnectorEditDialog {...props} connector={blankGeneral} />;`, then the existing `return <RemoteMcpConnectorForm {...props} />;`. `props` no longer holds `kind`, so neither form receives it.
 - Replace the branch comment at `:86-87` with: `"Set it up": the request or listing decides (an MCP server opens the remote-server form, which reads the prefill itself; anything else the general editor). A blank one opens what "New connector" asked for (TASK-1239).`
 
@@ -477,7 +477,7 @@ pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts
 
 The last line is the full gate from CLAUDE.md. `@ax/auth-better` needs an explicit `DOCKER_HOST`, and CI runs only the affected packages.
 
-**Browser check, recommended.** It's the only check that sees the real 200 ms exit animation. Run `pnpm --filter @ax/channel-web dev` with `AX_BACKEND_URL` unset (the Vite mock backend) and open Admin › Connectors. Tab to New connector, press Enter, arrow down to the second option, Tab to Continue and press Enter. The general editor opens with focus inside it. Press Escape, and focus is back on New connector. The mock has no pin route, so paste images that already carry `@sha256:` digests if you try a compose file there.
+**Browser check, recommended.** It's the only check that sees the real 200 ms exit animation. Run `pnpm --filter @ax/channel-web dev` with `AX_BACKEND_URL` unset (the Vite mock backend) and open `/?admin=slack`, then click Connectors. (The mock doesn't serve `/api/chat/agents` or `/api/workspace/*`, so the chat shell errors; the admin route doesn't need them.) Tab to New connector, press Enter, arrow down to the second option, Tab to Continue and press Enter. The general editor opens with focus inside it. Press Escape, and focus is back on New connector. The mock has no pin route, so paste images that already carry `@sha256:` digests if you try a compose file there.
 
 ## YAGNI pass
 

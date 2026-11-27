@@ -54,6 +54,17 @@ export function NewConnectorChooser({
   // Cancel, Escape or a click outside. It also wins over a Continue still
   // closing (an Escape during the exit animation): drop the pending choice so
   // `onCloseAutoFocus` opens nothing.
+  //
+  // WHY THE DialogContent HANDLERS. After Continue our controlled `open` is
+  // already false, and Radix only calls `onOpenChange` when the value differs
+  // from the prop, so during the ~200 ms exit animation Escape and an outside
+  // click never reach it. `onEscapeKeyDown` and `onPointerDownOutside` do still
+  // fire, so they call `cancel` directly. While the dialog is still open both
+  // fire (the handler, then `onOpenChange(false)`), so `cancel` must be safe to
+  // run twice: it is, it only clears a ref and tells the parent to close.
+  // NOT COVERED: the X button. Its Close calls `onOpenChange`, a no-op once
+  // `open` is false, so an X press within ~200 ms of Continue still opens the
+  // editor. Accepted: rare, and the admin did just press Continue.
   const cancel = () => {
     chosen.current = null;
     onCancel();
@@ -61,6 +72,8 @@ export function NewConnectorChooser({
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) cancel(); }}>
       <DialogContent
+        onEscapeKeyDown={cancel}
+        onPointerDownOutside={cancel}
         onCloseAutoFocus={() => {
           const kind = chosen.current;
           chosen.current = null;
