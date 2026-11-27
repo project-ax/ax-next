@@ -55,3 +55,9 @@ Gaps in `ListRow` and friends that S4 found but did not fill. None loses functio
 - **`BundleFileView`'s selectable file list is another "current item" gap** for `ListRow`, like `SidebarChats`.
 - **Frozen raw `ul`/`li`/`dl`/`time` outside chat.** Widening `no-raw-elements` froze them in admin, settings and workspace files that S5/S6 will migrate, plus chat and markdown (S7). The ratchet only lets those counts fall.
 - **`PeoplePicker` stays a shadcn `Command` popup.** It arrived from main (agent sharing, #1266) during the S4 rebase. It is a search combobox with a listbox of options, not rows, so `List`/`ListRow` is the wrong fit; it moves to the package `Combobox` in S6a. It has no raw elements, so nothing was frozen for it. Its neighbours from the same PR, the owner rows in `AgentOwners` and the chosen-people rows in `AudienceDialog`, were rows and now use `List`/`ListRow`.
+
+From the S4 before/after walk on kind (report kept locally; it holds dev data). Three regressions it found were fixed in the S4 PRs: a clock a week old dropping its time of day, the rail's Today name not starting with its visible text, and routine runs showing the raw trigger value. These are left:
+
+- **An expandable row shows no expand cue.** The Today decision row lost its chevron when it became a `ListRow`; Enter and Space still toggle it, and neither the old nor the new row sets `aria-expanded`. An `expandable` row should draw the chevron and set `aria-expanded` itself.
+- **`FileTile` in `chip`/`card` form has no download glyph.** The user-turn CSV chip and the generated-file chip lost their trailing download icon; the whole tile is the `Download <file>` button. A trailing action icon on `FileTile` would bring the cue back.
+- **Sentences lost "on … at".** A moment a week or more away reads "You marked it done Sun, Oct 25, 2026, 11:23 AM" (was "on Sun, Oct 25 at 11:23 AM"). Same information; `momentWords` could take a sentence form.

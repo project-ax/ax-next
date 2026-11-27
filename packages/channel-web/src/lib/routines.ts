@@ -32,6 +32,16 @@ export type TriggerSpec = RoutineSchedule | WebhookTrigger;
 export type ActiveHours = NonNullable<RoutineDefinition['activeHours']>;
 export type FireStatus = RoutineFireView['status'];
 export type FireSource = RoutineFireView['triggerSource'];
+/**
+ * Why a run started, in words. A manual start says only that it wasn't the schedule: Check now
+ * and the agent's own start both record `manual`, and nothing says which, so naming either would
+ * be a guess (decisions row 10). The routine runs list and a task's check-in page read the same.
+ */
+export const RUN_SOURCE_WORDS: Record<FireSource, string> = {
+  tick: 'On its schedule',
+  manual: 'Started outside its schedule',
+  webhook: 'Started by an update from another app',
+};
 export type FireNowInput = RoutineFireNowInput;
 export type FireNowOutput = RoutineFireNowOutput;
 export type { RoutineDefinition, RoutinePatch };

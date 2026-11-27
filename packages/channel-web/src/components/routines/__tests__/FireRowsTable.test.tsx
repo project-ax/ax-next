@@ -150,8 +150,20 @@ describe('FireRowsTable list', () => {
     expect(rows[0]).toHaveTextContent('first fire prompt');
     expect(rows[1]).toHaveTextContent('later prompt');
     // Prompt, warning and error sit under their row with no toggle: no two rows share a button name.
-    expect(within(rows[0]!).getByText('Run by tick')).toBeInTheDocument();
+    expect(within(rows[0]!).getByText('On its schedule')).toBeInTheDocument();
     expect(within(list).queryAllByRole('button')).toEqual([]);
     expect(rows[0]!.querySelector('time')).not.toBeNull();
+  });
+
+  // The S4 before/after walk read "Run by manual ok": the raw trigger value had leaked into the title.
+  it.each([
+    ['tick', 'On its schedule'],
+    ['manual', 'Started outside its schedule'],
+    ['webhook', 'Started by an update from another app'],
+  ] as const)('says why a %s run started in words, never the raw value', (triggerSource, words) => {
+    render(<FireRowsTable fires={[{ ...firstFire, triggerSource }]} />);
+    const row = within(screen.getByRole('list', { name: 'Recent runs' })).getByRole('listitem');
+    expect(within(row).getByText(words)).toBeInTheDocument();
+    expect(row).not.toHaveTextContent(new RegExp(`\\b${triggerSource}\\b`));
   });
 });

@@ -83,8 +83,9 @@ export function WorkspaceSidebarNav({
       'h-10 w-full gap-2.5 px-2 max-md:min-h-11',
     );
   // Today says how many wait on you in the same words in both rail states; the
-  // diamond beside it is decorative, so the name carries it.
-  const todayName = pendingCount > 0 ? `Today, ${pendingCount} ${stateWord('waiting').toLowerCase()}` : 'Today';
+  // diamond beside it is decorative, so the name carries it. The name starts with
+  // what the expanded row shows ("Today 2"), so voice control can say it (WCAG 2.5.3).
+  const todayName = pendingCount > 0 ? `Today ${pendingCount} ${stateWord('waiting').toLowerCase()}` : 'Today';
   const iconRow = (
     label: string,
     Icon: typeof Inbox,

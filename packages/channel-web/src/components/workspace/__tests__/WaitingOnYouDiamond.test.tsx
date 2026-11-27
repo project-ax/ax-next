@@ -71,7 +71,16 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
     renderNav(collapsed, 2);
     const today = screen.getByRole('button', { name: /^Today/ });
     expect(diamondIn(today)).not.toBeNull();
-    expect(today).toHaveAccessibleName(`Today, 2 ${WORDS}`);
+    expect(today).toHaveAccessibleName(`Today 2 ${WORDS}`);
+  });
+
+  // WCAG 2.5.3 (axe label-content-name-mismatch): the name starts with what the button shows, so a voice
+  // user saying "click Today 2" reaches it. The before/after walk caught "Today, 1 waiting on you" vs "Today 1".
+  it('the expanded rail names Today by its visible text first', () => {
+    renderNav(false, 2);
+    const today = screen.getByRole('button', { name: /^Today/ });
+    expect(within(today).getByText('2')).toBeTruthy();
+    expect(today).toHaveAccessibleName(/^Today 2\b/);
   });
 
   it.each([

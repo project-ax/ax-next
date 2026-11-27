@@ -31,7 +31,7 @@
  */
 import { useState } from 'react';
 import { List, ListRow, Notice, Stack, StatusBadge, Timestamp, type StatusTone } from '@project-ax/ui';
-import type { Fire, FireStatus } from '../../lib/routines';
+import { RUN_SOURCE_WORDS, type Fire, type FireStatus } from '../../lib/routines';
 import { RunWarning } from './RunWarning';
 
 /** One run's status, as that run's fire row recorded it. A silenced run reads as intentional, not broken. */
@@ -66,7 +66,7 @@ export function FireRowsTable({ fires }: { fires: Fire[] }) {
         return (
           <ListRow
             key={`${f.firedAt}#${i}`}
-            title={`Run by ${f.triggerSource}`}
+            title={RUN_SOURCE_WORDS[f.triggerSource]}
             meta={<>
               <StatusBadge tone={FIRE_TONE[f.status]} dot>{f.status}</StatusBadge>
               {' '}<Timestamp value={f.firedAt} />
