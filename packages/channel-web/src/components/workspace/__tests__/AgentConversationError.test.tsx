@@ -188,6 +188,24 @@ describe('a replayed turn failure', () => {
     }
   });
 
+  it('keeps the time of day for a failure weeks old, not just its date', () => {
+    // The S4 before/after walk: a message from Nov 9 read "Nov 9" with the 10:29 PM only in a hover title,
+    // out of reach for touch and screen readers. A clock carries the date AND the time once it is a week out.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T16:12:00.000Z'));
+    try {
+      const { container } = renderThread([errorRow()]);
+      const when = new Date('2026-09-20T16:12:00.000Z');
+      const text = (container.textContent ?? '').replace(/[  ]/g, ' ');
+      expect(text).toContain(
+        when.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }).replace(/[  ]/g, ' '),
+      );
+      expect(text).toContain(when.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('draws NOTHING for an instant it cannot read', () => {
     /*
       An empty `at` is "no committed instant", not midnight — and not a dash

@@ -77,7 +77,8 @@ export function formatTimestamp(value: Date | string | number, opts: FormatTimes
   if (format === 'clock') {
     if (dayDiff === 0) return time();
     if (Math.abs(dayDiff) < 7) return weekdayTime(date, locale, timeZone);
-    return dateLabel(date, sameYear, locale, timeZone);
+    // Never a bare date: a clock always says when in the day ("Oct 23, 7:13 PM").
+    return fmt(date, locale, timeZone, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), ...TIME });
   }
 
   if (delta >= 0) {
