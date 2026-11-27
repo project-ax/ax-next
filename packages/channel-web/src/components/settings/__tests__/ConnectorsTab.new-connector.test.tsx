@@ -139,6 +139,12 @@ describe('New connector asks what kind (TASK-1239)', () => {
     fireEvent.pointerDown(document.body, { button: 0, ctrlKey: true });
     await flushTask();
     expect(screen.getByRole('dialog', { name: 'New connector' })).toBeInTheDocument();
+    // A plain left-click outside does close it (and proves the listener was armed,
+    // so the two clicks above were really ignored), without opening an editor.
+    fireEvent.pointerDown(document.body, { button: 0 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await flushTask();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   // The ~200 ms exit animation after Continue. Radix's Presence keeps the chooser
