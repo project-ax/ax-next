@@ -35,6 +35,14 @@
  * records are read only while the subview is open, so the list view still
  * reads none.
  *
+ * NEW CONNECTOR (TASK-1239): "New connector" (here, and the directory's
+ * by-hand buttons) first asks what kind (`NewConnectorChooser`). An MCP
+ * server opens the remote-server form. Services, an API or a command-line
+ * tool open the general editor blank, the only editor with the compose
+ * paste. The editor opens once the chooser has closed, so it hands focus
+ * back to the button that started it. "Set it up" skips the question: a
+ * request or a listing already says what it is.
+ *
  * Untrusted text (connector name / description, and everything in a request,
  * which an agent wrote) renders through React text nodes (auto-escaped) —
  * never raw HTML. shadcn primitives + semantic tokens
@@ -60,7 +68,8 @@ import {
 import { relativeDay } from '@/lib/workspace-time';
 import { searchDirectory, prefillFromDirectoryEntry } from '@/lib/connector-directory';
 import { logRequestFailure } from '@/lib/http';
-import { ConnectorEditDialog } from './ConnectorEditDialog';
+import { ConnectorEditDialog, type NewConnectorKind } from './ConnectorEditDialog';
+import { NewConnectorChooser } from './NewConnectorChooser';
 import { ConnectorDirectory } from './ConnectorDirectory';
 import { RoleCard } from '@/components/admin/RoleCard';
 import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
@@ -138,6 +147,10 @@ export function ConnectorsTab() {
   const [editing, setEditing] = useState<ConnectorSummary | 'new' | null>(null);
   // "Set it up": the request the create editor starts from (null = blank).
   const [prefill, setPrefill] = useState<ConnectorPrefill | null>(null);
+  // "New connector" asks what kind first (TASK-1239): the chooser is open.
+  const [choosing, setChoosing] = useState(false);
+  // What the chooser picked: the blank editor a new connector opens.
+  const [newKind, setNewKind] = useState<NewConnectorKind>('remote');
   // The list, or the directory subview that replaces it.
   const [view, setView] = useState<'list' | 'directory'>('list');
   // Whether to offer "Find in directory": null until the first answer, then
@@ -288,10 +301,7 @@ export function ConnectorsTab() {
             setPrefill(prefillFromDirectoryEntry(entry));
             setEditing('new');
           }}
-          onNewConnector={() => {
-            setPrefill(null);
-            setEditing('new');
-          }}
+          onNewConnector={() => setChoosing(true)}
         />
       ) : (
         <>
@@ -301,7 +311,7 @@ export function ConnectorsTab() {
                 Find in directory
               </Button>
             )}
-            <Button data-return-focus="admin-connectors" onClick={() => { setPrefill(null); setEditing('new'); }}>New connector</Button>
+            <Button data-return-focus="admin-connectors" onClick={() => setChoosing(true)}>New connector</Button>
           </SettingsActions>
 
           {error && (
@@ -407,6 +417,20 @@ export function ConnectorsTab() {
         </>
       )}
 
+      {/* "New connector" asks what kind first (TASK-1239). The chooser hands
+          over only once it has closed; see NewConnectorChooser. */}
+      {choosing && (
+        <NewConnectorChooser
+          onCancel={() => setChoosing(false)}
+          onChosen={(kind) => {
+            setChoosing(false);
+            setPrefill(null);
+            setNewKind(kind);
+            setEditing('new');
+          }}
+        />
+      )}
+
       {/* Admin curation: create / edit the connector definition. "Set it up"
           is the same create, started from a request; the server clears the
           request when it's created, so both lists refresh. */}
@@ -414,6 +438,7 @@ export function ConnectorsTab() {
         <ConnectorEditDialog
           target={editing}
           {...(editing === 'new' && prefill ? { prefill } : {})}
+          {...(editing === 'new' && !prefill ? { kind: newKind } : {})}
           open
           onOpenChange={(o) => {
             if (!o) setEditing(null);
