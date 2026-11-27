@@ -10,6 +10,8 @@ Connection details list known server, saved, and discovered hosts separately fro
 
 New connectors are remote HTTPS MCP servers. Existing remote connectors use the new form. Existing connectors whose first server is not HTTP retain their original editor. Loading an existing connector must succeed before editing is allowed, so a failed request cannot replace full capabilities with a summary.
 
+> **Update 2026-11-27 (TASK-1239):** "New connector" now asks what kind first. "MCP server" opens this form. "Services, APIs or command-line tools" opens the general editor (`LegacyConnectorEditDialog`), which is where an admin pastes a compose file. The paragraph above describes what #833 shipped.
+
 ## Authentication and headers
 
 - No sign-in supports public servers and API keys supplied as headers.

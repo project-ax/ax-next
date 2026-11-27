@@ -545,11 +545,20 @@ describe('ConnectorsTab', () => {
     expect(within(tile).queryByRole('button', { name: /default/i })).toBeNull();
   });
 
-  it('admin "New connector" opens the create form', async () => {
+  it('admin "New connector" asks what kind first; MCP server opens the remote-server form', async () => {
     render(<ConnectorsTab />);
     await screen.findByText('My Notion');
     fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
-    expect(await screen.findByLabelText(/^name$/i)).toBeInTheDocument();
+    const chooser = await screen.findByRole('dialog', { name: 'New connector' });
+    expect(within(chooser).getByText('What are you adding? You’ll fill in the details next.')).toBeInTheDocument();
+    expect(within(chooser).getByRole('radio', { name: 'MCP server' })).toBeChecked();
+    expect(within(chooser).getByRole('radio', { name: 'Services, APIs or command-line tools' })).not.toBeChecked();
+    expect(within(chooser).getByText('Tools from a remote server, like Linear or Notion.')).toBeInTheDocument();
+    expect(
+      within(chooser).getByText('A database or cache from a Compose file, an API that takes a key, or a tool from npm or PyPI.'),
+    ).toBeInTheDocument();
+    fireEvent.click(within(chooser).getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByLabelText('Server URL')).toBeInTheDocument();
   });
 
   it('admin per-row Edit opens the edit form prefilled', async () => {
