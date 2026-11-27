@@ -12,6 +12,9 @@ import { formatFullTimestamp, formatTimestamp } from '@project-ax/ui';
 export function momentWords(value: Date | string | number, now: Date): string | null {
   const relative = formatTimestamp(value, { now });
   if (relative === null) return null;
-  const bareDate = relative === formatTimestamp(value, { now, format: 'clock' }) && !relative.includes(':');
+  // The clock form always carries the time of day, so a relative form that is the clock form's date alone
+  // ("Oct 13" vs "Oct 13, 10:02 AM") is a bare date.
+  const clock = formatTimestamp(value, { now, format: 'clock' }) ?? '';
+  const bareDate = clock !== relative && clock.startsWith(relative);
   return bareDate ? formatFullTimestamp(value) : relative;
 }

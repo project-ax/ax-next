@@ -85,9 +85,11 @@ describe('bad input', () => {
 describe('formatTimestamp clock', () => {
   it('today', () => expect(clock('2026-10-24T02:13:00Z')).toBe('7:13 PM'));
   it('under 7 days', () => expect(clock('2026-10-21T02:13:00Z')).toBe('Tue 7:13 PM'));
-  it('7 days back is a date', () => expect(clock('2026-10-17T02:13:00Z')).toBe('Oct 16'));
-  it('older, same year', () => expect(clock('2026-09-02T19:00:00Z')).toBe('Sep 2'));
-  it('older, other year', () => expect(clock('2025-10-23T19:00:00Z')).toBe('Oct 23, 2025'));
+  // A clock never drops the time of day: a chat message from last month still says when in the day it was sent.
+  it('7 days back is a date and a time', () => expect(clock('2026-10-17T02:13:00Z')).toBe('Oct 16, 7:13 PM'));
+  it('older, same year', () => expect(clock('2026-09-02T19:00:00Z')).toBe('Sep 2, 12:00 PM'));
+  it('older, other year', () => expect(clock('2025-10-23T19:00:00Z')).toBe('Oct 23, 2025, 12:00 PM'));
+  it('a week or more ahead', () => expect(clock('2026-11-02T17:02:00Z')).toBe('Nov 2, 9:02 AM'));
   it('future within a week', () => expect(clock('2026-10-26T17:02:00Z')).toBe('Mon 10:02 AM'));
 });
 
