@@ -41,15 +41,15 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
     expect(item.textContent!.toLowerCase()).toContain(WORDS);
   });
 
-  it('the collapsed sidebar rail flags Today when something waits on you', () => {
-    render(
+  function renderNav(collapsed: boolean, pendingCount: number) {
+    return render(
       <UserProvider value={{ id: 'u1', email: 'u@example.com', name: 'Uma', role: 'user' } as never}>
         <WorkspaceSidebarNav
           agents={[OTHER, WAITING]}
           route="tasks"
           selectedAgentId="a1"
-          pendingCount={2}
-          collapsed
+          pendingCount={pendingCount}
+          collapsed={collapsed}
           onToday={vi.fn()}
           onTasks={vi.fn()}
           onAgent={vi.fn()}
@@ -61,9 +61,33 @@ describe('waiting on you is the warning diamond on every surface (rule 8)', () =
         />
       </UserProvider>,
     );
+  }
+
+  // Both rail states draw the diamond and say the same words, count included.
+  it.each([
+    ['collapsed', true],
+    ['expanded', false],
+  ])('the %s sidebar rail flags Today when something waits on you', (_state, collapsed) => {
+    renderNav(collapsed, 2);
     const today = screen.getByRole('button', { name: /^Today/ });
     expect(diamondIn(today)).not.toBeNull();
-    expect(today).toHaveAccessibleName(`Today, ${WORDS}`);
+    expect(today).toHaveAccessibleName(`Today, 2 ${WORDS}`);
+  });
+
+  it.each([
+    ['collapsed', true],
+    ['expanded', false],
+  ])('the %s sidebar rail says just Today, with no diamond, when nothing waits', (_state, collapsed) => {
+    renderNav(collapsed, 0);
+    const today = screen.getByRole('button', { name: /^Today/ });
+    expect(diamondIn(today)).toBeNull();
+    expect(today).toHaveAccessibleName('Today');
+  });
+
+  it('the expanded rail still shows the count', () => {
+    renderNav(false, 3);
+    const today = screen.getByRole('button', { name: /^Today/ });
+    expect(within(today).getByText('3')).toBeTruthy();
   });
 
   it('the Today queue row for a held question draws the diamond and says the words', () => {

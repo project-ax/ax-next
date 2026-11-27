@@ -260,9 +260,10 @@ export function DecisionRow({
       onOpen={onToggle}
       /*
         THE QUESTION, and therefore where Undo puts you (TASK-427): undoing re-opens the row, unmounting the receipt
-        the person was standing on. The title button is a real control, so it is the landing. Its name says whose
-        question this is and that it waits on a person; the row describes it by its age and the summary, so landing
-        on it reads the question back, and two waiting questions from one agent differ by that description.
+        the person was standing on. The title button is a real control, so it is the landing. Its name IS the
+        question (the summary); the row's meta (whose question it is, "waiting on you", and its age) describes it, so
+        landing on it reads the question back, then whose it is, and two waiting questions from one agent differ by
+        their names.
       */
       titleRef={answerRef}
       leading={

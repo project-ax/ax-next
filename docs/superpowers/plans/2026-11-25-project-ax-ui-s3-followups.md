@@ -54,3 +54,4 @@ Gaps in `ListRow` and friends that S4 found but did not fill. None loses functio
 - **`Timeline` has no non-entry item slot.** `TaskUpdates`' fold needs a raw `<li>`.
 - **`BundleFileView`'s selectable file list is another "current item" gap** for `ListRow`, like `SidebarChats`.
 - **Frozen raw `ul`/`li`/`dl`/`time` outside chat.** Widening `no-raw-elements` froze them in admin, settings and workspace files that S5/S6 will migrate, plus chat and markdown (S7). The ratchet only lets those counts fall.
+- **`PeoplePicker` stays a shadcn `Command` popup.** It arrived from main (agent sharing, #1266) during the S4 rebase. It is a search combobox with a listbox of options, not rows, so `List`/`ListRow` is the wrong fit; it moves to the package `Combobox` in S6a. It has no raw elements, so nothing was frozen for it. Its neighbours from the same PR, the owner rows in `AgentOwners` and the chosen-people rows in `AudienceDialog`, were rows and now use `List`/`ListRow`.

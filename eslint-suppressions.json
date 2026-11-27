@@ -892,11 +892,6 @@
       "count": 3
     }
   },
-  "packages/channel-web/src/components/workspace/AgentOwners.tsx": {
-    "ax-ui/no-raw-elements": {
-      "count": 2
-    }
-  },
   "packages/channel-web/src/components/workspace/AgentRail.tsx": {
     "ax-ui/no-arbitrary-values": {
       "count": 4
@@ -1054,11 +1049,6 @@
     },
     "ax-ui/no-raw-elements": {
       "count": 11
-    }
-  },
-  "packages/channel-web/src/components/workspace/AudienceDialog.tsx": {
-    "ax-ui/no-raw-elements": {
-      "count": 2
     }
   },
   "packages/channel-web/src/components/workspace/ChatComposer.tsx": {

@@ -267,3 +267,36 @@ describe('AudienceDialog at the people cap', () => {
     expect(screen.queryByText(SHARING_COPY.picker.peopleCap)).toBeNull();
   });
 });
+
+describe('AudienceDialog — what is chosen so far is rows of one list (S4)', () => {
+  const draftList = (dialog: HTMLElement) => within(dialog).getByRole('list', { name: SHARING_COPY.picker.fieldLabel });
+
+  it('people are rows, each with its own Remove; removing the last leaves Just me', () => {
+    const dialog = renderDialog({
+      kind: 'list',
+      members: [
+        { type: 'user', id: 'carol', displayName: 'Carol' },
+        { type: 'user', id: 'dave', displayName: 'Dave' },
+      ],
+    } as SharingView['audience']);
+    const rows = within(draftList(dialog)).getAllByRole('listitem');
+    expect(rows.map((r) => within(r).getByRole('button').getAttribute('aria-label'))).toEqual([
+      SHARING_COPY.picker.remove('Carol'),
+      SHARING_COPY.picker.remove('Dave'),
+    ]);
+    fireEvent.click(within(rows[0]!).getByRole('button', { name: SHARING_COPY.picker.remove('Carol') }));
+    fireEvent.click(within(dialog).getByRole('button', { name: SHARING_COPY.picker.remove('Dave') }));
+    expect(within(dialog).queryByRole('list', { name: SHARING_COPY.picker.fieldLabel })).toBeNull();
+    expect(within(dialog).getByText(SHARING_COPY.picker.emptyDraft('Juniper'))).toBeTruthy();
+  });
+
+  it('Everyone is one row of the same list, with its hint and its own Remove', () => {
+    const dialog = renderDialog({ kind: 'everyone' });
+    const [row, ...rest] = within(draftList(dialog)).getAllByRole('listitem');
+    expect(rest).toHaveLength(0);
+    expect(within(row!).getByText(SHARING_COPY.audience.everyone)).toBeTruthy();
+    expect(within(row!).getByText(SHARING_COPY.picker.everyoneHint)).toBeTruthy();
+    fireEvent.click(within(row!).getByRole('button', { name: SHARING_COPY.picker.remove(SHARING_COPY.audience.everyone) }));
+    expect(within(dialog).getByText(SHARING_COPY.picker.emptyDraft('Juniper'))).toBeTruthy();
+  });
+});

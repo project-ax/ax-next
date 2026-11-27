@@ -82,18 +82,22 @@ export function WorkspaceSidebarNav({
     cn(
       'h-10 w-full gap-2.5 px-2 max-md:min-h-11',
     );
+  // Today says how many wait on you in the same words in both rail states; the
+  // diamond beside it is decorative, so the name carries it.
+  const todayName = pendingCount > 0 ? `Today, ${pendingCount} ${stateWord('waiting').toLowerCase()}` : 'Today';
   const iconRow = (
     label: string,
     Icon: typeof Inbox,
     action: () => void,
     active = false,
-    needsYou = false,
+    // Set when something waits on you: the control's name, and the diamond.
+    waitingName?: string,
   ) => (
     <IconTooltip label={label} side="right">
       <Button
         variant="ghost"
         size="icon"
-        aria-label={needsYou ? `${label}, ${stateWord('waiting').toLowerCase()}` : label}
+        aria-label={waitingName ?? label}
         onClick={go(action)}
         className={cn(
           'relative rounded-sm',
@@ -101,7 +105,7 @@ export function WorkspaceSidebarNav({
         )}
       >
         <Icon aria-hidden="true" />
-        {needsYou && (
+        {waitingName !== undefined && (
           <span className="absolute right-2 top-2">
             <StatusMark tone="warning" />
           </span>
@@ -149,7 +153,7 @@ export function WorkspaceSidebarNav({
             Inbox,
             onToday,
             route === 'today',
-            pendingCount > 0,
+            pendingCount > 0 ? todayName : undefined,
           )}
           {iconRow('Tasks', ListChecks, onTasks, route === 'tasks')}
           <div className="mt-3.5 flex flex-col items-center gap-1">
@@ -183,11 +187,12 @@ export function WorkspaceSidebarNav({
               onClick={go(onToday)}
               className={row()}
               data-active={route === 'today'}
+              aria-label={todayName}
             >
               <Inbox data-icon="inline-start" aria-hidden="true" />
               Today
               {pendingCount > 0 && (
-                <StatusBadge tone="warning" size="sm">
+                <StatusBadge tone="warning" size="sm" dot>
                   {pendingCount}
                 </StatusBadge>
               )}
