@@ -129,6 +129,18 @@ describe('New connector asks what kind (TASK-1239)', () => {
     expect(screen.queryByLabelText(/service name/i)).toBeNull();
   });
 
+  it('a right-click or ctrl+click on the backdrop leaves the question open, like every other dialog', async () => {
+    render(<ConnectorsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'New connector' }));
+    await screen.findByRole('dialog', { name: 'New connector' });
+    // Radix arms its outside-click listener one task after the layer mounts.
+    await flushTask();
+    fireEvent.pointerDown(document.body, { button: 2 });
+    fireEvent.pointerDown(document.body, { button: 0, ctrlKey: true });
+    await flushTask();
+    expect(screen.getByRole('dialog', { name: 'New connector' })).toBeInTheDocument();
+  });
+
   // The ~200 ms exit animation after Continue. Radix's Presence keeps the chooser
   // mounted until `animationend`, and by then the chooser's controlled `open` is
   // already false, so Radix no longer calls onOpenChange for Escape or an outside
@@ -136,31 +148,24 @@ describe('New connector asks what kind (TASK-1239)', () => {
   // computed `animationName`, "exit" once the dialog is closed.
   describe('while the chooser is still animating out after Continue', () => {
     let realGetComputedStyle: typeof window.getComputedStyle;
-    let hadCssEscape = true;
 
     beforeEach(() => {
       realGetComputedStyle = window.getComputedStyle;
       window.getComputedStyle = ((el: Element, pseudo?: string | null) => {
         const real = realGetComputedStyle.call(window, el, pseudo);
-        const exiting = el.matches('[role=dialog][data-state=closed]');
+        // Read live, like a browser's computed style: Radix keeps one style
+        // object per mount and reads animationName from it later.
         return new Proxy(real, {
           get(target, prop) {
-            if (prop === 'animationName') return exiting ? 'exit' : 'enter';
+            if (prop === 'animationName') return el.matches('[role=dialog][data-state=closed]') ? 'exit' : 'enter';
             const value = Reflect.get(target, prop, target);
             return typeof value === 'function' ? value.bind(target) : value;
           },
         });
       }) as typeof window.getComputedStyle;
-      // Presence calls CSS.escape on animationend.
-      const css = (globalThis as { CSS?: { escape?: (s: string) => string } }).CSS;
-      hadCssEscape = typeof css?.escape === 'function';
-      if (!hadCssEscape) {
-        (globalThis as { CSS?: unknown }).CSS = { ...(css ?? {}), escape: (s: string) => s };
-      }
     });
     afterEach(() => {
       window.getComputedStyle = realGetComputedStyle;
-      if (!hadCssEscape) delete (globalThis as { CSS?: { escape?: unknown } }).CSS!.escape;
     });
 
     async function continueWithServices() {

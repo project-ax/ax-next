@@ -477,7 +477,7 @@ pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts
 
 The last line is the full gate from CLAUDE.md. `@ax/auth-better` needs an explicit `DOCKER_HOST`, and CI runs only the affected packages.
 
-**Browser check, recommended.** It's the only check that sees the real 200 ms exit animation. Run `pnpm --filter @ax/channel-web dev` with `AX_BACKEND_URL` unset (the Vite mock backend) and open `/?admin=slack`, then click Connectors. (The mock doesn't serve `/api/chat/agents` or `/api/workspace/*`, so the chat shell errors; the admin route doesn't need them.) Tab to New connector, press Enter, arrow down to the second option, Tab to Continue and press Enter. The general editor opens with focus inside it. Press Escape, and focus is back on New connector. The mock has no pin route, so paste images that already carry `@sha256:` digests if you try a compose file there.
+**Browser check, recommended.** It's the only check that sees the real 200 ms exit animation. Run `pnpm --filter @ax/channel-web dev` with `AX_BACKEND_URL` unset (the Vite mock backend) and sign in as the mock admin (`/auth/mock/google-callback?user=u1`; the default mock user u2 is not an admin), open `/?admin=slack`, then click Connectors. (The mock doesn't serve `/api/chat/agents` or `/api/workspace/*`, so the chat shell errors; the admin route doesn't need them.) Tab to New connector, press Enter, arrow down to the second option, Tab to Continue and press Enter. The general editor opens with focus inside it. Press Escape, and focus is back on New connector. The mock has no pin route, so paste images that already carry `@sha256:` digests if you try a compose file there.
 
 ## YAGNI pass
 
