@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  emptyCapabilities,
   getConnector,
   type Connector,
   type ConnectorPrefill,
@@ -42,9 +43,43 @@ function draftFromPrefill(prefill: ConnectorPrefill): Connector {
   };
 }
 
+/**
+ * TASK-1239: the general editor's blank start. Not saved: the target stays
+ * 'new'. Empty capabilities open it on Direct API; the empty id makes Save
+ * derive the id from the name.
+ */
+function blankGeneralDraft(): Connector {
+  return {
+    id: '',
+    name: '',
+    description: '',
+    usageNote: '',
+    keyMode: 'personal',
+    createdAt: '',
+    updatedAt: '',
+    capabilities: emptyCapabilities(),
+  };
+}
+
+export type NewConnectorKind = 'remote' | 'general';
+
 /** A failed full fetch must never fall back to saving a metadata-only summary. */
-export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
+export function ConnectorEditDialog({
+  kind = 'remote',
+  ...props
+}: ConnectorEditDialogProps & {
+  /**
+   * TASK-1239: which editor a BLANK new connector opens (target 'new', no
+   * prefill). 'remote' (default) is the remote MCP server form; 'general' is
+   * the general editor, started from an empty draft. Ignored for an edit, and
+   * a prefill always decides by what it carries.
+   */
+  kind?: NewConnectorKind;
+}) {
   const { open, target, prefill } = props;
+  // Stable across renders: the general editor re-seeds its form whenever its
+  // starting connector changes.
+  const blankGeneral = useMemo(() => blankGeneralDraft(), []);
   // "Set it up": pick the editor, then carry only what THAT editor shows (the
   // rest is listed in it, not saved). Memoized: the general editor re-seeds
   // its form whenever its starting connector changes.
@@ -83,8 +118,10 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
   }, [open, id, retry]);
   if (!open) return null;
   if (target === 'new') {
-    // "Set it up": an MCP request opens the remote-server form (it reads the
-    // prefill itself); anything else opens the general editor.
+    // "Set it up": the request or listing decides (an MCP server opens the
+    // remote-server form, which reads the prefill itself; anything else the
+    // general editor). A blank one opens what "New connector" asked for
+    // (TASK-1239).
     if (routed?.kind === 'general')
       return (
         <LegacyConnectorEditDialog
@@ -95,6 +132,8 @@ export function ConnectorEditDialog(props: ConnectorEditDialogProps) {
       );
     if (routed?.kind === 'remote')
       return <RemoteMcpConnectorForm {...props} prefill={routed.prefill} />;
+    if (kind === 'general')
+      return <LegacyConnectorEditDialog {...props} connector={blankGeneral} />;
     return <RemoteMcpConnectorForm {...props} />;
   }
   if (loaded?.id === id) {

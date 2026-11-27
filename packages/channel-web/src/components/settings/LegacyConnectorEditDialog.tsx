@@ -1,8 +1,11 @@
 /**
- * ConnectorEditDialog — the mechanism-first connector create/edit form
- * (TASK-128, settings-unified epic). Admin-only since slice 2a: opened from
- * Admin › Connectors, it exposes the workspace-level fields and reads
- * and writes through `/admin/connectors`.
+ * LegacyConnectorEditDialog: the general connector editor, for a connector
+ * with no MCP server (allowed hosts, keys, a package, services). TASK-128,
+ * settings-unified epic. Admin-only since slice 2a. Admin › Connectors opens
+ * it for a new connector ("New connector" → "Services, APIs or command-line
+ * tools", TASK-1239; or "Set it up" on a request with no MCP server, slice
+ * 2c) and to edit one. MCP servers use `RemoteMcpConnectorForm` (#833). It
+ * reads and writes through `/admin/connectors`.
  *
  * MECHANISM-FIRST. A segmented picker at the top — MCP server / Direct API /
  * Command-line tool — reshapes the visible fields (the old "Advanced — how it
