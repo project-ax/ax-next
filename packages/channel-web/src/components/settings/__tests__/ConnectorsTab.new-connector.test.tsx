@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { ConnectorsTab } from '../ConnectorsTab';
 import * as connectorsLib from '@/lib/connectors';
 import * as directoryLib from '@/lib/connector-directory';
@@ -25,6 +25,10 @@ const PINNED: Record<string, string> = {
   'redis:7': `docker.io/library/redis@sha256:${'a'.repeat(64)}`,
   'postgres:16': `docker.io/library/postgres@sha256:${'b'.repeat(64)}`,
 };
+
+// The chooser opens the editor one task after it closes (see NewConnectorChooser).
+// Wait out that task before asserting that nothing opened, or a late open slips past.
+const flushTask = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 
 describe('New connector asks what kind (TASK-1239)', () => {
   beforeEach(() => {
@@ -88,6 +92,8 @@ describe('New connector asks what kind (TASK-1239)', () => {
     const first = await screen.findByRole('dialog', { name: 'New connector' });
     fireEvent.click(within(first).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(document.activeElement).toBe(opener));
+    await flushTask();
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     fireEvent.click(opener);
     const chooser = await screen.findByRole('dialog', { name: 'New connector' });
@@ -106,6 +112,20 @@ describe('New connector asks what kind (TASK-1239)', () => {
     const chooser = await screen.findByRole('dialog', { name: 'New connector' });
     fireEvent.click(within(chooser).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await flushTask();
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('The directory isn’t available yet')).toBeInTheDocument();
+  });
+
+  it('Escape closes the question without opening an editor, even with services picked', async () => {
+    render(<ConnectorsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'New connector' }));
+    const chooser = await screen.findByRole('dialog', { name: 'New connector' });
+    fireEvent.click(within(chooser).getByRole('radio', { name: SERVICES }));
+    fireEvent.keyDown(chooser, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await flushTask();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByLabelText(/service name/i)).toBeNull();
   });
 });

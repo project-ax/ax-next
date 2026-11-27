@@ -51,8 +51,15 @@ export function NewConnectorChooser({
   const [open, setOpen] = useState(true);
   // Set by Continue; read once, when the dialog has finished closing.
   const chosen = useRef<NewConnectorKind | null>(null);
+  // Cancel, Escape or a click outside. It also wins over a Continue still
+  // closing (an Escape during the exit animation): drop the pending choice so
+  // `onCloseAutoFocus` opens nothing.
+  const cancel = () => {
+    chosen.current = null;
+    onCancel();
+  };
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onCancel(); }}>
+    <Dialog open={open} onOpenChange={(next) => { if (!next) cancel(); }}>
       <DialogContent
         onCloseAutoFocus={() => {
           const kind = chosen.current;
@@ -79,7 +86,7 @@ export function NewConnectorChooser({
           </RadioGroup>
         </FieldSet>
         <DialogFooter>
-          <Button type="button" variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button type="button" variant="ghost" onClick={cancel}>Cancel</Button>
           <Button type="button" onClick={() => { chosen.current = choice; setOpen(false); }}>Continue</Button>
         </DialogFooter>
       </DialogContent>
