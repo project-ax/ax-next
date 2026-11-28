@@ -51,3 +51,20 @@ export function clampAttachmentName(name: string): string {
   if (last >= 0xd800 && last <= 0xdbff) head = head.slice(0, -1);
   return `${head}…`;
 }
+
+// A real extension: letters and digits, at most 12, after a dot that isn't the
+// name's first character. The same rule `FileTile` splits a name by, so the
+// extension kept here is the one it shows whole.
+const EXTENSION = /\.[a-z0-9]{1,12}$/i;
+
+/**
+ * `clampAttachmentName` for a filename: the stem is clamped and the extension
+ * is put back, so a 400-character `report….csv` still says `.csv`. The drawn
+ * name is bounded by ATTACHMENT_NAME_MAX_CHARS plus a 13-character extension
+ * at most. A dotfile or a name with no extension clamps whole.
+ */
+export function clampFileName(name: string): string {
+  const match = EXTENSION.exec(name);
+  if (match === null || match.index === 0) return clampAttachmentName(name);
+  return clampAttachmentName(name.slice(0, match.index)) + match[0];
+}

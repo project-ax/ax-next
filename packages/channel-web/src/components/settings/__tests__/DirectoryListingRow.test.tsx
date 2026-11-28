@@ -26,11 +26,11 @@ function renderRow(entry: DirectoryEntry, added = false) {
 
 /** The row itself. Only reachable while no sheet is open (the sheet is modal). */
 function row(title: string): HTMLElement {
-  return screen.getByRole('button', { name: `Details for ${title}` });
+  return screen.getByRole('button', { name: title }).closest('li')!;
 }
 
 async function openSheet(title: string): Promise<HTMLElement> {
-  fireEvent.click(row(title));
+  fireEvent.click(within(row(title)).getByRole('button'));
   return screen.findByRole('dialog', { name: title });
 }
 
@@ -150,7 +150,7 @@ describe('DirectoryListingRow', () => {
     renderRow(directoryEntry({ title, description, publisher: '<i>pub</i>', version: '<u>1</u>' }));
     expect(screen.getByText(description)).toBeInTheDocument();
     expect(screen.getByTestId('directory-proof-domain')).toHaveTextContent('Published by <i>pub</i>');
-    expect(screen.getByRole('button', { name: 'Details for <img src=x onerror=alert(1)>Evil' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '<img src=x onerror=alert(1)>Evil' })).toBeInTheDocument();
 
     const sheet = await openSheet(title);
     expect(within(sheet).getByText(description)).toBeInTheDocument();

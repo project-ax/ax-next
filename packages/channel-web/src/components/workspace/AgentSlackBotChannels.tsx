@@ -11,6 +11,7 @@
  * (the loading face unmounts it), so a stale page never lingers.
  */
 import { Hash } from 'lucide-react';
+import { Card, List, ListRow } from '@project-ax/ui';
 import { AGENT_SLACK_CARD_COPY, botWho, type BotChannelRow, type InviteTarget } from '@/lib/agent-slack';
 
 export interface AgentSlackBotChannelsProps {
@@ -25,21 +26,13 @@ export function AgentSlackBotChannels({ invite, channels }: AgentSlackBotChannel
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[13px] text-muted-foreground">{AGENT_SLACK_CARD_COPY.channelsLead(invite)}</p>
-      <ul
-        aria-label={`Channels ${who} has answered in`}
-        className="m-0 list-none divide-y divide-border rounded-md border border-border p-0"
-      >
-        {channels.map((row) => (
-          <li key={row.channelId} className="flex flex-col gap-2 px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <span className="flex min-w-0 items-center gap-1.5 text-[14px] font-medium">
-                <Hash aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate">{row.name}</span>
-              </span>
-            </div>
-          </li>
-        ))}
-      </ul>
+      <Card flush>
+        <List label={`Channels ${who} has answered in`}>
+          {channels.map((row) => (
+            <ListRow key={row.channelId} title={row.name} leading={<Hash size={14} aria-hidden="true" />} />
+          ))}
+        </List>
+      </Card>
     </div>
   );
 }

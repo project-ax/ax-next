@@ -1,8 +1,6 @@
 import type { FC } from 'react';
-import { Download, File as FileIcon, FileText, Image as ImageIcon } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { clampAttachmentName } from '@/lib/attachment-name';
-import { cn } from '@/lib/utils';
+import { FileTile } from '@project-ax/ui';
+import { clampFileName } from '@/lib/attachment-name';
 
 /**
  * AttachmentChip — renders an attachment in the transcript.
@@ -11,10 +9,12 @@ import { cn } from '@/lib/utils';
  *
  *   - `downloadable` (default): given the file's `attachmentId` plus the
  *     `conversationId` it belongs to, builds a
- *     `GET /api/files?conversationId=…&id=…` URL and renders the name + a
- *     download action (image preview for `image/*`). The id is opaque — the
- *     chip only hands it back to the server, which checks the file belongs
- *     to that conversation and to the person asking.
+ *     `GET /api/files?conversationId=…&id=…` URL and renders a `FileTile`
+ *     chip that is itself the Download button. An `image/*` file is a
+ *     `FileTile` card instead, with the image itself as an inline preview,
+ *     so it can be seen without downloading it. The id is opaque — the chip only hands it back to
+ *     the server, which checks the file belongs to that conversation and to
+ *     the person asking.
  *
  *   - `pending`: the live-frame variant — used right after a user hits
  *     send, before the next read brings back the committed copy of the
@@ -22,8 +22,8 @@ import { cn } from '@/lib/utils';
  *     chip the file's id, and it becomes the downloadable variant.
  *
  * `displayName` is CLAMPED here, in the component, rather than at each call
- * site. A filename comes off a person's own disk and has no length limit, and
- * this component spends it on an `<img alt>` and two `aria-label`s — a screen
+ * site (the stem is clamped; `clampFileName` keeps the extension). A filename comes off a person's own disk and has no length limit, and
+ * this component spends it on a title attribute and an `aria-label` — a screen
  * reader announcing four hundred characters is its own kind of broken, and the
  * CSS `truncate` on the visible row does nothing about it, because CSS does not
  * touch the accessibility tree. TASK-431 exists because a clamp that used to
@@ -51,50 +51,18 @@ export type AttachmentChipProps =
       mediaType: string;
     };
 
-function pickIcon(mediaType: string) {
-  if (mediaType.startsWith('image/')) return ImageIcon;
-  if (mediaType.startsWith('text/') || mediaType === 'application/json') return FileText;
-  return FileIcon;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function downloadUrl(conversationId: string, attachmentId: string): string {
   return `/api/files?conversationId=${encodeURIComponent(conversationId)}&id=${encodeURIComponent(attachmentId)}`;
 }
 
 export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
-  const displayName = clampAttachmentName(props.displayName);
+  const displayName = clampFileName(props.displayName);
 
   if (props.variant === 'pending') {
-    const Icon = pickIcon(props.mediaType);
-    return (
-      <div
-        className={cn(
-          'inline-flex items-center gap-2 max-w-[280px]',
-          'rounded-md border border-border bg-card px-2.5 py-1.5',
-          'text-[12px] leading-tight text-foreground',
-          'opacity-80',
-        )}
-        data-variant="pending"
-      >
-        <div className="size-7 shrink-0 rounded-sm bg-muted flex items-center justify-center text-muted-foreground">
-          <Icon className="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="truncate font-medium">{displayName}</div>
-        </div>
-      </div>
-    );
+    return <FileTile variant="chip" name={displayName} kind={props.mediaType} />;
   }
 
   const { attachmentId, mediaType, conversationId, sizeBytes } = props;
-  const isImage = mediaType.startsWith('image/');
-  const Icon = pickIcon(mediaType);
   const href = downloadUrl(conversationId, attachmentId);
 
   const onDownload = () => {
@@ -104,60 +72,11 @@ export const AttachmentChip: FC<AttachmentChipProps> = (props) => {
     window.open(href, '_blank', 'noopener,noreferrer');
   };
 
-  if (isImage) {
+  const size = typeof sizeBytes === 'number' && sizeBytes > 0 ? { size: sizeBytes } : {};
+  if (mediaType.startsWith('image/')) {
     return (
-      <button
-        type="button"
-        aria-label={`Download ${displayName}`}
-        onClick={onDownload}
-        className={cn(
-          'group/chip block max-w-[280px] overflow-hidden',
-          'rounded-md border border-border bg-card',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        )}
-      >
-        <img
-          src={href}
-          alt={displayName}
-          className="block max-h-[200px] w-auto object-contain bg-muted"
-        />
-        <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-muted-foreground">
-          <Icon className="size-3.5 shrink-0" strokeWidth={1.5} aria-hidden="true" />
-          <span className="truncate">{displayName}</span>
-        </div>
-      </button>
+      <FileTile variant="card" name={displayName} kind={mediaType} actionLabel="Download" onOpen={onDownload} previewUrl={href} {...size} />
     );
   }
-
-  return (
-    <div
-      className={cn(
-        'inline-flex items-center gap-2 max-w-[280px]',
-        'rounded-md border border-border bg-card px-2.5 py-1.5',
-        'text-[12px] leading-tight text-foreground',
-      )}
-    >
-      <div className="size-7 shrink-0 rounded-sm bg-muted flex items-center justify-center text-muted-foreground">
-        <Icon className="size-3.5" strokeWidth={1.5} aria-hidden="true" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="truncate font-medium">{displayName}</div>
-        {typeof sizeBytes === 'number' && sizeBytes > 0 && (
-          <div className="font-mono text-[10px] text-muted-foreground">
-            {formatSize(sizeBytes)}
-          </div>
-        )}
-      </div>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        aria-label={`Download ${displayName}`}
-        className="size-5 shrink-0 opacity-60 hover:opacity-100"
-        onClick={onDownload}
-      >
-        <Download className="size-3" strokeWidth={1.5} aria-hidden="true" />
-      </Button>
-    </div>
-  );
+  return <FileTile variant="chip" name={displayName} kind={mediaType} actionLabel="Download" onOpen={onDownload} {...size} />;
 };

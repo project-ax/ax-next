@@ -44,6 +44,7 @@ import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { momentWords } from '@/lib/moment-words';
 import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
+import { RUN_SOURCE_WORDS } from '@/lib/routines';
 import { TASK_GROUP_LABELS } from '@/lib/task-groups';
 import { readingText } from '@/lib/task-reading';
 import { runFailureText, updateText } from '@/lib/task-updates';
@@ -67,16 +68,6 @@ const REFRESH_FAILED =
 const NOTHING_ELSE = 'There’s nothing else to show from this check-in.';
 const NO_REASON = 'No reason was recorded.';
 
-/**
- * Why it ran. A manual start says only that it wasn't the schedule: Check now
- * and the agent's own start both record `manual`, and nothing says which, so
- * naming either would be a guess (decisions row 10).
- */
-const WHY: Record<TaskCheckin['triggerSource'], string> = {
-  tick: 'On its schedule',
-  manual: 'Started outside its schedule',
-  webhook: 'Started by an update from another app',
-};
 
 /**
  * Sends nothing. `readOnly` draws no composer and this page holds no way to
@@ -306,7 +297,7 @@ function CheckinSummary({ page }: { page: TaskCheckin }) {
         </p>
       )}
       <p className="break-words text-[12px] text-muted-foreground">
-        {`${page.agentName} · ${WHY[page.triggerSource]} · read-only`}
+        {`${page.agentName} · ${RUN_SOURCE_WORDS[page.triggerSource]} · read-only`}
       </p>
     </section>
   );

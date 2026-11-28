@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppWindow, Plus } from 'lucide-react';
 import type { AgentAppsRead, AppLink, LinkCodeResponse } from '@ax/apps-bridge-contract';
-import { AsyncState, Button as AxButton, Card, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Card, EmptyState, List, Notice } from '@project-ax/ui';
 import {
   agentAppsErrorCopy,
   agentAppsStale,
@@ -183,7 +183,7 @@ function AppsBody({
           />
         ) : (
           <Card flush>
-              <ul aria-labelledby="apps-linked" className="m-0 list-none divide-y divide-border p-0">
+              <List label="Apps that use this agent">
                 {links.map((link) => (
                   <LinkRow
                     key={link.appId}
@@ -200,7 +200,7 @@ function AppsBody({
                     onUnlink={() => setUnlinking(link)}
                   />
                 ))}
-              </ul>
+              </List>
           </Card>
         )}
       </section>
@@ -216,7 +216,7 @@ function AppsBody({
             </p>
           </div>
           <Card flush>
-              <ul aria-labelledby="apps-approvals" className="m-0 list-none divide-y divide-border p-0">
+              <List label="Apps using this agent's sign-ins as you">
                 {approvals.map((ap) => (
                   <ApprovalRow
                     key={`${ap.appId}:${ap.connectorId}`}
@@ -229,7 +229,7 @@ function AppsBody({
                     }
                   />
                 ))}
-              </ul>
+              </List>
           </Card>
         </section>
       )}

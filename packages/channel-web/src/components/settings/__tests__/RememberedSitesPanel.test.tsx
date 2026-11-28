@@ -3,6 +3,19 @@ import { render, screen, waitFor, fireEvent, within } from '@testing-library/rea
 import { RememberedSitesPanel } from '../RememberedSitesPanel';
 import * as sitesLib from '@/lib/remembered-sites';
 
+// A row is a list item whose title is the host (plain text: the row has no primary action).
+const LIST = 'Sites we read without asking';
+const hostItem = (el: HTMLElement) => el.closest('li')!;
+const findRow = async (host: string) => hostItem(await within(await screen.findByRole('list', { name: LIST })).findByText(host));
+const getRow = (host: string) => hostItem(within(screen.getByRole('list', { name: LIST })).getByText(host));
+const queryRow = (host: string) => {
+  const list = screen.queryByRole('list', { name: LIST });
+  const el = list === null ? null : within(list).queryByText(host);
+  return el === null ? null : hostItem(el);
+};
+const findAllRows = async (host: string) => (await within(await screen.findByRole('list', { name: LIST })).findAllByText(host)).map(hostItem);
+const getAllRows = (host: string) => within(screen.getByRole('list', { name: LIST })).getAllByText(host).map(hostItem);
+
 describe('RememberedSitesPanel', () => {
   beforeEach(() => {
     vi.spyOn(sitesLib, 'listRememberedSites').mockResolvedValue([
@@ -16,17 +29,17 @@ describe('RememberedSitesPanel', () => {
   it('shows a global row with "Set by your admin" and no button; a user row with "Ask again"', async () => {
     render(<RememberedSitesPanel />);
 
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
     expect(within(userRow).getByRole('button', { name: 'Ask again' })).toBeInTheDocument();
 
-    const globalRow = screen.getByTestId('remembered-site-admin.example.com');
+    const globalRow = getRow('admin.example.com');
     expect(within(globalRow).getByText('Set by your admin')).toBeInTheDocument();
     expect(within(globalRow).queryByRole('button', { name: 'Ask again' })).toBeNull();
   });
 
   it('clicking Ask again revokes the host and re-reads the list', async () => {
     render(<RememberedSitesPanel />);
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
     fireEvent.click(within(userRow).getByRole('button', { name: 'Ask again' }));
 
     await waitFor(() =>
@@ -41,7 +54,7 @@ describe('RememberedSitesPanel', () => {
 
   it('shows the "we\'ll ask next time" notice on revoked: true', async () => {
     render(<RememberedSitesPanel />);
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
     fireEvent.click(within(userRow).getByRole('button', { name: 'Ask again' }));
 
     await screen.findByText('We’ll ask about that one next time.');
@@ -50,7 +63,7 @@ describe('RememberedSitesPanel', () => {
   it('shows the "already gone" notice on revoked: false', async () => {
     vi.spyOn(sitesLib, 'forgetRememberedSite').mockResolvedValue({ revoked: false });
     render(<RememberedSitesPanel />);
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
     fireEvent.click(within(userRow).getByRole('button', { name: 'Ask again' }));
 
     await screen.findByText('That one was already gone.');
@@ -59,11 +72,11 @@ describe('RememberedSitesPanel', () => {
   it('shows the failure notice on a thrown DELETE, and the row stays', async () => {
     vi.spyOn(sitesLib, 'forgetRememberedSite').mockRejectedValue(new Error('boom'));
     render(<RememberedSitesPanel />);
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
     fireEvent.click(within(userRow).getByRole('button', { name: 'Ask again' }));
 
     await screen.findByText('We couldn’t take that back just now. Nothing changed.');
-    expect(screen.getByTestId('remembered-site-user.example.com')).toBeInTheDocument();
+    expect(getRow('user.example.com')).toBeInTheDocument();
   });
 
   it('renders the empty state when there are no remembered sites', async () => {
@@ -141,7 +154,7 @@ describe('RememberedSitesPanel', () => {
     const retry = await screen.findByRole('button', { name: 'Try again' });
     fireEvent.click(retry);
 
-    await screen.findByTestId('remembered-site-user.example.com');
+    await findRow('user.example.com');
     expect(screen.queryByText(UNKNOWN_COPY)).toBeNull();
     expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
@@ -154,7 +167,7 @@ describe('RememberedSitesPanel', () => {
     render(<RememberedSitesPanel />);
 
     await screen.findByText(UNKNOWN_COPY);
-    expect(screen.queryAllByTestId(/^remembered-site-/)).toHaveLength(0);
+    expect(screen.queryAllByRole('listitem')).toHaveLength(0);
     expect(screen.queryByText(EMPTY_COPY)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
 
@@ -176,7 +189,7 @@ describe('RememberedSitesPanel', () => {
     // again" with no word on whether it worked. The notice belongs to the
     // panel, not to the Card that the unknown state replaces.
     render(<RememberedSitesPanel />);
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
     vi.spyOn(sitesLib, 'listRememberedSites').mockRejectedValue(new Error('network down'));
 
     fireEvent.click(within(userRow).getByRole('button', { name: 'Ask again' }));
@@ -187,7 +200,7 @@ describe('RememberedSitesPanel', () => {
 
   it('keeps the notice on screen after the revoked row disappears from a re-read', async () => {
     render(<RememberedSitesPanel />);
-    const userRow = await screen.findByTestId('remembered-site-user.example.com');
+    const userRow = await findRow('user.example.com');
 
     // After the revoke, the next list() call comes back without that host —
     // the row that showed the button is gone, but the notice must still be
@@ -200,7 +213,7 @@ describe('RememberedSitesPanel', () => {
 
     await screen.findByText('We’ll ask about that one next time.');
     await waitFor(() =>
-      expect(screen.queryByTestId('remembered-site-user.example.com')).toBeNull(),
+      expect(queryRow('user.example.com')).toBeNull(),
     );
     // The row is gone; the notice must not be.
     expect(screen.getByText('We’ll ask about that one next time.')).toBeInTheDocument();
@@ -223,8 +236,8 @@ describe('RememberedSitesPanel', () => {
     ]);
     render(<RememberedSitesPanel />);
 
-    await screen.findAllByTestId('remembered-site-dup.example.com');
-    expect(screen.getAllByTestId('remembered-site-dup.example.com')).toHaveLength(2);
+    await findAllRows('dup.example.com');
+    expect(getAllRows('dup.example.com')).toHaveLength(2);
     expect(
       errors.some((a) => String(a[0] ?? '').toLowerCase().includes('same key')),
       JSON.stringify(errors),

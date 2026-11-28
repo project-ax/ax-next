@@ -157,7 +157,7 @@ async function renderLoaded() {
 
 /** The table row that holds this exact text. */
 function rowOf(text: string): HTMLElement {
-  const row = screen.getByRole('button', { name: `Details for ${text}`, hidden: true });
+  const row = screen.getByRole('button', { name: text, hidden: true }).closest('li');
   if (row === null) throw new Error(`no table row holds "${text}"`);
   return row;
 }
@@ -178,7 +178,7 @@ function closeUsageDetails() {
 function openUsageDetails(name: string) {
   if (screen.queryByRole('dialog', { name })) return;
   closeUsageDetails();
-  fireEvent.click(screen.getByRole('button', { name: `Details for ${name}` }));
+  fireEvent.click(screen.getByRole('button', { name }));
 }
 
 function lastToast(): { title: string; description?: string; tone?: string } {
@@ -278,12 +278,12 @@ describe('UsageTab — who used what', () => {
     await renderLoaded();
     const list = screen.getByRole('list', { name: 'Estimated usage per person, last 24 hours' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(5);
-    expect(within(list).getAllByRole('button', { name: /^Details for / })).toHaveLength(5);
+    expect(within(list).getAllByRole('button')).toHaveLength(5);
   });
 
   it('lists the biggest spender first, in the order the server sent', async () => {
     await renderLoaded();
-    const rows = screen.getAllByRole('listitem');
+    const rows = within(screen.getByRole('list', { name: 'Estimated usage per person, last 24 hours' })).getAllByRole('listitem');
     expect(rows).toHaveLength(5);
     expect(within(rows[0]!).getByText('jo@example.co')).toBeInTheDocument();
     expect(within(rows[4]!).getByText('u-anon')).toBeInTheDocument();

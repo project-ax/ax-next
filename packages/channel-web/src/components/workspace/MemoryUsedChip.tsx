@@ -23,7 +23,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { cn } from '@/lib/utils';
 import { MemoryFixesContext, useFixLedger } from '@/lib/use-conversation-memory';
 import type { MemoryUsed, MemoryUsedStatement } from '@/lib/workspace-types';
 import {
@@ -42,7 +41,7 @@ import {
   memoryUsedLabel,
   type MemoryUsedSinceKind,
 } from './memory-copy';
-import { formatTimestamp, StatusBadge } from '@project-ax/ui';
+import { formatTimestamp, List, ListRow, StatusBadge } from '@project-ax/ui';
 
 // Nothing in memory changes under the chip's own list when a fix saves: the
 // list is what the answer USED, which a later fix does not rewrite.
@@ -90,46 +89,44 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
         />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <ul className="px-3.5 py-1">
+        <List label={memoryUsedLabel(used.statements.length)}>
           {used.statements.map((row, i) => {
             const since: MemoryUsedSinceKind | undefined =
               fixes.get(row.id)?.kind ?? row.closedSince;
             return (
-              <li
+              <ListRow
                 key={`${i}-${row.id}`}
-                className={cn(
-                  'flex items-start justify-between gap-3 py-2',
-                  i > 0 && 'border-t border-rule-soft',
-                )}
-              >
-                <div className="flex min-w-0 flex-col gap-0.5">
-                  <span {...memoryRowLanding(row.id, 'break-words text-[12.5px]')}>
-                    {memoryStatementText(row)}
-                  </span>
-                  <span className="text-[11.5px] text-muted-foreground">
+                title={memoryStatementText(row)}
+                meta={
+                  // The landing for focus after an Undo (TASK-651): the row's own line, readable and script-focusable.
+                  <span
+                    role="group"
+                    aria-label={memoryStatementText(row)}
+                    {...memoryRowLanding(row.id)}
+                  >
                     {memoryUsedDetail(row, formatTimestamp(row.when) ?? '')}
                   </span>
-                </div>
-                {since !== undefined ? (
-                  <StatusBadge tone="neutral">
-                    {MEMORY_USED_SINCE[since]}
-                  </StatusBadge>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="shrink-0"
-                    aria-label={memoryFixLabel(row.value)}
-                    onClick={() => setFixTarget(row)}
-                  >
-                    {MEMORY_FIX}
-                  </Button>
-                )}
-              </li>
+                }
+                trailing={
+                  since !== undefined ? (
+                    <StatusBadge tone="neutral">{MEMORY_USED_SINCE[since]}</StatusBadge>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="shrink-0"
+                      aria-label={memoryFixLabel(row.value)}
+                      onClick={() => setFixTarget(row)}
+                    >
+                      {MEMORY_FIX}
+                    </Button>
+                  )
+                }
+              />
             );
           })}
-        </ul>
+        </List>
         {receipt.receipt !== null && (
           <MemoryReceipt
             receipt={receipt.receipt}

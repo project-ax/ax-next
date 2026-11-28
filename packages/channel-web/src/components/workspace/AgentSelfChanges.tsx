@@ -16,7 +16,7 @@
  * Built from the installed shadcn `Card` and `Button` and semantic tokens only
  * (invariant 6).
  */
-import { Card, Timestamp } from '@project-ax/ui';
+import { Card, List, ListRow, Timestamp } from '@project-ax/ui';
 import { useId } from 'react';
 import { Button } from '@/components/ui/button';
 import type { SelfChangeRow } from '@/lib/workspace-self-changes';
@@ -42,35 +42,32 @@ export function AgentSelfChanges({ rows, onReview }: Props) {
       </h2>
       <p className="mb-1.5 text-[12.5px] text-muted-foreground">{SELF_CHANGES_NOTE}</p>
       <Card flush>
-        <ul className="divide-y divide-border">
-          {rows.map((row) => {
-            return (
-              <li
-                key={row.key}
-                className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-[13.5px]"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="font-medium">{row.agentName}</span> {row.words}
-                </span>
-                <span className="shrink-0 text-[12.5px] text-muted-foreground">
-                  <Timestamp value={row.changedAt} />
-                </span>
-                {onReview !== undefined && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`Review: ${row.agentName} ${row.words}`}
-                    onClick={onReview}
-                    className="shrink-0"
-                  >
-                    Review
-                  </Button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <List label={SELF_CHANGES_HEADING}>
+          {rows.map((row) => (
+            <ListRow
+              key={row.key}
+              title={row.agentName}
+              description={row.words}
+              meta={<Timestamp value={row.changedAt} />}
+              {...(onReview !== undefined
+                ? {
+                    trailing: (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Review: ${row.agentName} ${row.words}`}
+                        onClick={onReview}
+                        className="shrink-0"
+                      >
+                        Review
+                      </Button>
+                    ),
+                  }
+                : {})}
+            />
+          ))}
+        </List>
       </Card>
     </section>
   );

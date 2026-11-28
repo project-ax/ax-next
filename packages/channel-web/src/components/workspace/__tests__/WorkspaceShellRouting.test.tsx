@@ -577,7 +577,7 @@ describe('agent settings page (TASK-888)', () => {
     if (state === 'pending') await act(async () => { finishUpload(result); });
     fireEvent.click(screen.getByRole('button', { name: 'Back to chat' }));
     expect(screen.getByPlaceholderText('Message Quill')).toHaveValue('Please read this file');
-    expect(screen.getByText('notes.txt')).toBeVisible();
+    expect(screen.getByTitle('notes.txt')).toBeVisible();
     expect(screen.getByText('Ready to send')).toBeVisible();
     expect(uploadAttachment).toHaveBeenCalledTimes(1);
   });

@@ -33,10 +33,11 @@ try {
         return r.fulfill({ json });
       });
       await page.goto(`${origin}/workspace/agents/layout-agent/settings/connectors`);
-      const row = page.getByRole('button', { name: 'Edit GitHub', exact: true });
+      // The row is a ListRow: its title button (named by the connector) opens the details; the status line is the title's next sibling.
+      const row = page.getByRole('list', { name: /connectors$/ }).getByRole('button', { name: 'GitHub', exact: true });
       await row.waitFor();
       const measured = await row.evaluate((el) => {
-        const name = el.querySelector('[data-testid="connector-name-github"]');
+        const name = el;
         const status = name.nextElementSibling;
         const nameRect = name.getBoundingClientRect();
         const statusRect = status.getBoundingClientRect();
@@ -46,13 +47,14 @@ try {
         return {
           nameWidth: nameRect.width,
           textWidth: textRect.width,
+          clipped: name.scrollWidth > name.clientWidth,
           statusWidth: statusRect.width,
           left: nameRect.left,
           right: nameRect.right,
           viewport: innerWidth,
         };
       });
-      assert(measured.nameWidth >= measured.textWidth && measured.nameWidth > 0, `${width}px: connector name is clipped or hidden: ${JSON.stringify(measured)}`);
+      assert(!measured.clipped && measured.nameWidth >= measured.textWidth && measured.nameWidth > 0, `${width}px: connector name is clipped or hidden: ${JSON.stringify(measured)}`);
       assert(measured.statusWidth >= 100, `${width}px: connector status has no readable width: ${JSON.stringify(measured)}`);
       assert(measured.left >= 0 && measured.right <= measured.viewport, `${width}px: connector identity is off-screen`);
       const signin = page.getByRole('button', { name: 'Sign in again', exact: true });

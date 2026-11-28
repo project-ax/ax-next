@@ -49,7 +49,7 @@
  * only (invariant #6).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { AsyncState, ConfirmAction, EmptyState, Notice, Timestamp } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, List, Notice, Timestamp } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listConnectors,
@@ -71,7 +71,7 @@ import { ConnectorEditDialog, type NewConnectorKind } from './ConnectorEditDialo
 import { NewConnectorChooser } from './NewConnectorChooser';
 import { ConnectorDirectory } from './ConnectorDirectory';
 import { RoleCard } from '@/components/admin/RoleCard';
-import { SettingsActions, SettingsDetailRow } from './SettingsLayout';
+import { SettingsActions, SheetRow } from './SettingsLayout';
 import { Button } from '@/components/ui/button';
 
 /**
@@ -266,8 +266,7 @@ export function ConnectorsTab() {
     // row without the flag is the admin's to edit, as it always was here.
     const canEdit = c.canEdit ?? true;
     return (
-      <div key={c.id} data-testid={`connector-tile-${c.id}`}>
-        <SettingsDetailRow label={c.name} detail={needsCaption(c.keyMode)}>
+      <SheetRow key={c.id} title={c.name} meta={needsCaption(c.keyMode)}>
           <p className="text-sm text-muted-foreground">People sign in from each agent’s Connectors tab.</p>
           <div className="flex flex-col gap-3">
             {canEdit && (
@@ -285,8 +284,7 @@ export function ConnectorsTab() {
               </div>
             )}
           </div>
-        </SettingsDetailRow>
-      </div>
+      </SheetRow>
     );
   };
 
@@ -409,9 +407,9 @@ export function ConnectorsTab() {
           )}
 
           {connectors !== null && list.length > 0 && (
-            <section className="flex flex-col gap-3.5">
+            <List label="Connectors">
               {list.map((c) => renderTile(c))}
-            </section>
+            </List>
           )}
         </>
       )}

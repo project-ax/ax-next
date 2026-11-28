@@ -17,7 +17,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Inline, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
+import { AsyncState, List, ListRow, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import { listCatalogRequests } from '@/lib/catalog';
 import type { CatalogRequest } from '@ax/skills';
 import { BundleReviewDialog } from '@/components/admin/BundleReviewDialog';
@@ -71,32 +71,29 @@ export function AwaitingReviewSection({ onReviewed }: { onReviewed: () => void }
               here.
             </Text>
           ) : (
-            requests.map((r) => (
-              <div
-                key={r.requestId}
-                className="flex items-start justify-between gap-3 rounded-md border border-border p-3"
-              >
-                <div className="flex flex-col gap-1 min-w-0">
-                  <Inline gap="sm">
+            <List label="Skills awaiting review">
+              {requests.map((r) => (
+                <ListRow
+                  key={r.requestId}
+                  title={r.skillId}
+                  meta={<>
                     <StatusBadge tone="neutral">{r.kind}</StatusBadge>
-                    <span className="font-mono text-xs">{r.skillId}</span>
-                  </Inline>
-                  <p className="text-sm">{r.description}</p>
-                  <p className="text-xs text-muted-foreground">
-                    requested by {r.requestedByUserId} ·{' '}
-                    <Timestamp value={r.createdAt} />
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Review ${r.skillId}`}
-                  onClick={() => setReviewing(r)}
-                >
-                  Review
-                </Button>
-              </div>
-            ))
+                    {' '}requested by {r.requestedByUserId} · <Timestamp value={r.createdAt} />
+                  </>}
+                  description={r.description}
+                  trailing={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Review ${r.skillId}`}
+                      onClick={() => setReviewing(r)}
+                    >
+                      Review
+                    </Button>
+                  }
+                />
+              ))}
+            </List>
           )}
         </Stack>
       )}

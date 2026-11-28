@@ -154,9 +154,13 @@ const typeQuery = (box: HTMLElement, value: string) => fireEvent.change(box, { t
 /** The query of every `searchDirectory` call, in order. */
 const queries = () => search.mock.calls.map(([q]) => q);
 /** Every listing row's accessible name, in order. */
-const rowNames = () =>
-  screen.queryAllByRole('button', { name: /^Details for / }).map((b) => b.getAttribute('aria-label'));
-const row = (title: string) => screen.getByRole('button', { name: `Details for ${title}` });
+const rowNames = () => {
+  const list = screen.queryByRole('list', { name: 'Directory results' });
+  return list === null ? [] : within(list).getAllByRole('button').map((b) => b.textContent);
+};
+/** A listing's title button (click it to open its sheet), and its list item (everything the row shows). */
+const rowButton = (title: string) => screen.getByRole('button', { name: title });
+const row = (title: string) => rowButton(title).closest('li')!;
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** Let real time pass inside `act`, so anything it sets off lands before the next check. */
 const pass = (ms: number) =>
@@ -177,7 +181,7 @@ describe('ConnectorDirectory', () => {
       expect(box).toHaveValue('');
       expect(box).toHaveAttribute('placeholder', 'Search by service, like Notion or Stripe');
       expect(box).toHaveFocus();
-      expect(screen.queryAllByRole('button', { name: /^Details for/ })).toEqual([]);
+      expect(screen.queryByRole('list', { name: 'Directory results' })).toBeNull();
       expect(screen.queryByRole('status')).toBeNull();
       expect(search).toHaveBeenCalledTimes(1);
       expect(search).toHaveBeenCalledWith('', { signal: expect.any(AbortSignal) });
@@ -287,7 +291,7 @@ describe('ConnectorDirectory', () => {
     it('headings step down from the page title', async () => {
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       // A fragment of Admin › Connectors, which sits under the pane's h1.
       expect(headingOutlineProblems(document.body, 2)).toEqual([]);
       expect(headingOutline()).toEqual(['h2: Find a connector']);
@@ -298,9 +302,9 @@ describe('ConnectorDirectory', () => {
     it('typing shows each listing’s title, publisher proof, description and auth chip', async () => {
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      const linearRow = await screen.findByRole('button', { name: 'Details for Linear' });
+      const linearRow = (await screen.findByRole('button', { name: 'Linear' })).closest('li')!;
       const communityRow = row('Quick Notes');
-      expect(rowNames()).toEqual(['Details for Linear', 'Details for Quick Notes']);
+      expect(rowNames()).toEqual(['Linear', 'Quick Notes']);
       expect(screen.getByRole('status')).toHaveTextContent(/^2 servers match$/);
       expect(within(linearRow).getByTestId('directory-proof-domain')).toHaveTextContent('Published by linear.app');
       expect(within(communityRow).getByTestId('directory-proof-account')).toHaveTextContent(
@@ -321,7 +325,7 @@ describe('ConnectorDirectory', () => {
       );
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       expect(screen.getByText(/this is the list from 6 hr ago/)).toBeInTheDocument();
       expect(screen.queryByText(/^List updated/)).toBeNull();
     });
@@ -330,7 +334,7 @@ describe('ConnectorDirectory', () => {
       search.mockImplementation(async (q) => (q === '' ? directoryPage() : directoryPage({ entries: [linear] })));
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       expect(screen.getByRole('status')).toHaveTextContent(/^1 server matches$/);
     });
 
@@ -344,7 +348,7 @@ describe('ConnectorDirectory', () => {
       await pass(SEARCH_DEBOUNCE_MS / 2);
       expect(queries()).toEqual(['']);
       expect(screen.getByText('Searching…').closest('[role="status"]')).not.toBeNull();
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       // Any timer the typing failed to cancel has had time to fire too.
       await pass(SEARCH_DEBOUNCE_MS);
       expect(queries()).toEqual(['', 'notion']);
@@ -369,16 +373,16 @@ describe('ConnectorDirectory', () => {
       typeQuery(box, 'linear');
       await waitFor(() => expect(queries()).toEqual(['', 'linear']));
       typeQuery(box, 'notion');
-      await screen.findByRole('button', { name: 'Details for Notion' });
+      await screen.findByRole('button', { name: 'Notion' });
 
       // The older answer arrives last, and is fully processed before the checks.
       await act(async () => {
         slow.resolve(directoryPage({ entries: [linear] }));
         await wait(0);
       });
-      expect(screen.queryByRole('button', { name: 'Details for Linear' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Linear' })).toBeNull();
       // Nor does it knock the newer answer off the screen.
-      expect(rowNames()).toEqual(['Details for Notion']);
+      expect(rowNames()).toEqual(['Notion']);
       expect(screen.getByRole('status')).toHaveTextContent(/^1 server matches$/);
       // The older request was cancelled when the newer one went out.
       expect(search.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
@@ -402,7 +406,7 @@ describe('ConnectorDirectory', () => {
       typeQuery(box, 'linear');
       await waitFor(() => expect(queries()).toEqual(['', 'linear']));
       typeQuery(box, 'notion');
-      await screen.findByRole('button', { name: 'Details for Notion' });
+      await screen.findByRole('button', { name: 'Notion' });
       await pass(0);
       expect(search.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
       expect(screen.queryByRole('alert')).toBeNull();
@@ -422,7 +426,7 @@ describe('ConnectorDirectory', () => {
       renderDirectory();
       const box = await searchBox();
       typeQuery(box, 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       typeQuery(box, 'notion');
       await waitFor(() => expect(queries()).toEqual(['', 'linear', 'notion']));
 
@@ -495,7 +499,7 @@ describe('ConnectorDirectory', () => {
         q === '' ? directoryPage() : directoryPage({ entries: [linear, community] }),
       );
       fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }));
-      expect(await screen.findByRole('button', { name: 'Details for Linear' })).toBeInTheDocument();
+      expect(await screen.findByRole('button', { name: 'Linear' })).toBeInTheDocument();
       expect(queries()).toEqual(['', 'linear', 'linear docs', 'linear docs']);
       expect(screen.queryByRole('alert')).toBeNull();
     });
@@ -521,12 +525,12 @@ describe('ConnectorDirectory', () => {
       });
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       // The route sends a page and no total, so a bare count would understate.
       expect(screen.getByRole('status')).toHaveTextContent(/^More than 2 servers match$/);
 
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-      await screen.findByRole('button', { name: 'Details for Tickets' });
+      await screen.findByRole('button', { name: 'Tickets' });
       expect(search).toHaveBeenLastCalledWith(
         'linear',
         expect.objectContaining({ cursor: 'cur2', signal: expect.any(AbortSignal) }),
@@ -536,13 +540,13 @@ describe('ConnectorDirectory', () => {
       expect(more).toBeEnabled();
 
       fireEvent.click(more);
-      await screen.findByRole('button', { name: 'Details for Docs' });
+      await screen.findByRole('button', { name: 'Docs' });
       expect(search).toHaveBeenLastCalledWith('linear', expect.objectContaining({ cursor: 'cur3' }));
       expect(rowNames()).toEqual([
-        'Details for Linear',
-        'Details for Quick Notes',
-        'Details for Tickets',
-        'Details for Docs',
+        'Linear',
+        'Quick Notes',
+        'Tickets',
+        'Docs',
       ]);
       expect(screen.getByRole('status')).toHaveTextContent(/^4 servers match$/);
       expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
@@ -562,7 +566,7 @@ describe('ConnectorDirectory', () => {
       expect(screen.queryByText(/Nothing matches/)).toBeNull();
       expect(screen.getByRole('status')).toHaveTextContent(/^No servers here yet\. There may be more\.$/);
       fireEvent.click(more);
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       expect(screen.getByRole('status')).toHaveTextContent(/^1 server matches$/);
     });
 
@@ -571,10 +575,10 @@ describe('ConnectorDirectory', () => {
       pagedSearch(async () => directoryPage({ entries: [community, tickets] }));
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
-      await screen.findByRole('button', { name: 'Details for Tickets' });
-      expect(rowNames()).toEqual(['Details for Linear', 'Details for Quick Notes', 'Details for Tickets']);
+      await screen.findByRole('button', { name: 'Tickets' });
+      expect(rowNames()).toEqual(['Linear', 'Quick Notes', 'Tickets']);
       expect(screen.getByRole('status')).toHaveTextContent(/^3 servers match$/);
     });
 
@@ -587,19 +591,19 @@ describe('ConnectorDirectory', () => {
       });
       renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       expect(await screen.findByText(MORE_FAILED)).toBeInTheDocument();
       expect(warn).toHaveBeenCalled();
       // The rows it had stay, and the failure offers its own Try again.
-      expect(rowNames()).toEqual(['Details for Linear', 'Details for Quick Notes']);
+      expect(rowNames()).toEqual(['Linear', 'Quick Notes']);
       expect(screen.getByRole('alert')).toHaveTextContent(MORE_FAILED);
       const again = screen.getByRole('button', { name: 'Try again' });
       expect(again).toBeEnabled();
 
       fail = false;
       fireEvent.click(again);
-      await screen.findByRole('button', { name: 'Details for Tickets' });
+      await screen.findByRole('button', { name: 'Tickets' });
       expect(screen.queryByText(MORE_FAILED)).toBeNull();
     });
 
@@ -620,16 +624,16 @@ describe('ConnectorDirectory', () => {
       renderDirectory();
       const box = await searchBox();
       typeQuery(box, 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       typeQuery(box, 'notion');
-      await screen.findByRole('button', { name: 'Details for Notion' });
+      await screen.findByRole('button', { name: 'Notion' });
 
       await act(async () => {
         page2.resolve(directoryPage({ entries: [tickets] }));
         await wait(0);
       });
-      expect(rowNames()).toEqual(['Details for Notion']);
+      expect(rowNames()).toEqual(['Notion']);
       expect(screen.getByRole('status')).toHaveTextContent(/^1 server matches$/);
     });
 
@@ -652,11 +656,11 @@ describe('ConnectorDirectory', () => {
       renderDirectory();
       const box = await searchBox();
       typeQuery(box, 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       await waitFor(() => expect(search).toHaveBeenLastCalledWith('linear', expect.objectContaining({ cursor: 'cur2' })));
       typeQuery(box, 'notion');
-      await screen.findByRole('button', { name: 'Details for Notion' });
+      await screen.findByRole('button', { name: 'Notion' });
       await pass(0);
 
       expect(search.mock.calls[2]?.[1]?.signal?.aborted).toBe(true);
@@ -678,7 +682,7 @@ describe('ConnectorDirectory', () => {
       renderDirectory();
       const box = await searchBox();
       typeQuery(box, 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
       await waitFor(() => expect(search).toHaveBeenLastCalledWith('linear', expect.objectContaining({ cursor: 'cur2' })));
       typeQuery(box, 'linea');
@@ -691,7 +695,7 @@ describe('ConnectorDirectory', () => {
         page2.resolve(directoryPage({ entries: [tickets] }));
         await wait(0);
       });
-      expect(rowNames()).toEqual(['Details for Linear', 'Details for Quick Notes']);
+      expect(rowNames()).toEqual(['Linear', 'Quick Notes']);
       expect(screen.getByRole('status')).toHaveTextContent(/^More than 2 servers match$/);
     });
   });
@@ -705,12 +709,12 @@ describe('ConnectorDirectory', () => {
       getConnector.mockResolvedValue(fullConnector(SUMMARY, ['https://MCP.linear.app:443/mcp/']));
       renderDirectory([SUMMARY]);
       typeQuery(await searchBox(), 'linear');
-      const linearRow = await screen.findByRole('button', { name: 'Details for Linear' });
+      const linearRow = (await screen.findByRole('button', { name: 'Linear' })).closest('li')!;
       expect(await within(linearRow).findByText('Added')).toBeInTheDocument();
       expect(within(row('Linear SSE')).queryByText('Added')).toBeNull();
       expect(getConnector).toHaveBeenCalledWith(SUMMARY.id, '/admin/connectors');
 
-      fireEvent.click(linearRow);
+      fireEvent.click(within(linearRow).getByRole('button'));
       const sheet = await screen.findByRole('dialog', { name: 'Linear' });
       expect(within(sheet).getByRole('button', { name: 'Already in your connectors' })).toBeDisabled();
       expect(within(sheet).queryByRole('button', { name: 'Set it up' })).toBeNull();
@@ -726,14 +730,14 @@ describe('ConnectorDirectory', () => {
       });
       renderDirectory([broken, notes]);
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       // A record that did load still counts: one failure doesn't drop the rest.
       expect(await within(row('Quick Notes')).findByText('Added')).toBeInTheDocument();
       expect(warn).toHaveBeenCalled();
 
       // The one that didn't load is skipped, never read as a match.
       expect(within(row('Linear')).queryByText('Added')).toBeNull();
-      fireEvent.click(row('Linear'));
+      fireEvent.click(rowButton('Linear'));
       const sheet = await screen.findByRole('dialog', { name: 'Linear' });
       expect(within(sheet).getByRole('button', { name: 'Set it up' })).toBeEnabled();
       expect(within(sheet).queryByRole('button', { name: 'Already in your connectors' })).toBeNull();
@@ -797,7 +801,7 @@ describe('ConnectorDirectory', () => {
       // The connector was edited to Linear's address before its first read answered.
       setConnectors([{ ...SUMMARY, updatedAt: '2026-11-02T00:00:00.000Z' }]);
       typeQuery(box, 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
       expect(await within(row('Linear')).findByText('Added')).toBeInTheDocument();
 
       // The first read, from before the edit, lands last.
@@ -814,12 +818,12 @@ describe('ConnectorDirectory', () => {
     it('Back and Set it up go to the parent', async () => {
       const { onBack, onSetUp } = renderDirectory();
       typeQuery(await searchBox(), 'linear');
-      await screen.findByRole('button', { name: 'Details for Linear' });
+      await screen.findByRole('button', { name: 'Linear' });
 
       fireEvent.click(screen.getByRole('button', { name: 'Back to connectors' }));
       expect(onBack).toHaveBeenCalledTimes(1);
 
-      fireEvent.click(row('Linear'));
+      fireEvent.click(rowButton('Linear'));
       const sheet = await screen.findByRole('dialog', { name: 'Linear' });
       fireEvent.click(within(sheet).getByRole('button', { name: 'Set it up' }));
       expect(onSetUp).toHaveBeenCalledTimes(1);

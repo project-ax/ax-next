@@ -244,16 +244,18 @@ describe('DecisionRow — the outcomes the host cannot claim', () => {
 });
 
 /*
-  TASK-436 — the collapsed summary is one clamped line, and it is the only
-  thing the reader has to go on before opening the row. jsdom has no CSS, so
-  this asserts the recoverable half: the whole summary is in `title`.
+  TASK-436 — the collapsed summary is the only thing the reader has to go on
+  before opening the row. jsdom has no CSS, so this asserts the recoverable
+  half: the whole summary is in `title` (and is the control's name).
 */
 describe('DecisionRow — a clamped summary (TASK-436)', () => {
   it('keeps the whole summary reachable in `title`', () => {
     const summary =
       'Move the quarterly review with the EMEA regional leads from Thursday 09:30 to Friday 14:00 and re-invite everyone';
     renderRow(decisionFixture({ summary }), false);
+    // The summary is the row's title: one line on screen, the whole of it in `title` and in the control's name.
     expect(screen.getByText(summary).getAttribute('title')).toBe(summary);
+    expect(screen.getByRole('button', { name: summary })).toBeTruthy();
   });
 });
 
@@ -307,20 +309,48 @@ describe('DecisionRow — the mark is one fixed-size StatusMark', () => {
   TASK-544 — on a held (non-stale) question the dot is the only thing that
   says the state: the text beside it is the question itself. The dot is
   `aria-hidden`, so the row says the state word too, after the agent's name,
-  the way the sidebar roster does ("Scheduler, waiting on you").
+  the way the sidebar roster does ("Scheduler, waiting on you"). The row's title is the
+  question (the control's name); the wording sits in its meta, which describes it.
 */
 describe('DecisionRow — the held question says its state', () => {
-  it("puts the state word in the question button's accessible name", () => {
+  it("names the question button by the question, and says whose and that it waits in its description", () => {
     renderRow(decisionFixture(), false);
-    expect(
-      screen.getByRole('button', { name: /^Scheduler\s*, waiting on you\b/ }),
-    ).toBeTruthy();
+    const button = screen.getByRole('button', { name: 'Move your 1:1 with Marcus to Thursday 9:30?' });
+    expect(button).toHaveAccessibleDescription(/^Scheduler, waiting on you · /);
   });
 
-  it('keeps the word out of sight — it is for assistive tech only', () => {
+  it('gives two waiting questions from one agent distinct names: what each asks', () => {
+    const first = decisionFixture({ id: 'q1', summary: 'Move the 1:1 with Marcus?' });
+    const second = decisionFixture({ id: 'q2', summary: 'Cancel Friday’s review?' });
+    render(
+      <ul>
+        {[first, second].map((d) => (
+          <DecisionRow
+            key={d.id}
+            decision={d}
+            agent={agent}
+            expanded={false}
+            onToggle={vi.fn()}
+            onOpenAgent={vi.fn()}
+            onApprove={vi.fn()}
+            onDismiss={vi.fn()}
+            onUndo={vi.fn()}
+          />
+        ))}
+      </ul>,
+    );
+    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'Move the 1:1 with Marcus?',
+      'Cancel Friday’s review?',
+    ]);
+    expect(screen.getByRole('button', { name: 'Move the 1:1 with Marcus?' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cancel Friday’s review?' })).toBeTruthy();
+  });
+
+  it('says it in the row’s meta, where everyone can read it', () => {
     renderRow(decisionFixture(), false);
-    const word = screen.getByText(/^, waiting on you$/);
-    expect(word.className.split(/\s+/)).toContain('sr-only');
+    expect(screen.getByText('Scheduler, waiting on you')).toBeVisible();
+    expect(screen.getByText('Scheduler, waiting on you').closest('[data-part="meta"]')).not.toBeNull();
   });
 
   it('does not add it to a stale row, whose visible summary already says it', () => {

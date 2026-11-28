@@ -55,14 +55,13 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { Button as AxButton, Notice, StatusMark } from '@project-ax/ui';
+import { Button as AxButton, List, Notice, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { Separator } from '@/components/ui/separator';
 import { returnFocusToConsentRegion } from '@/lib/consent-focus';
 import { registerNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
@@ -215,13 +214,11 @@ export function TodayTaskGroup({
     // A labelled group, not a `<section>`: a labelled section is a region
     // landmark, and Today can hold many blocks (TodayView's consent wrapper
     // does the same).
-    <div
-      ref={rootRef}
-      role="group"
-      aria-labelledby={headingId}
-      className="min-w-0 border-b border-rule-soft last:border-b-0"
-    >
-      <div className="flex min-w-0 flex-col gap-1 px-5 py-3.5">
+    // A list item that holds a heading and a named group, which a `ListRow` has no way to say: the row's divider
+    // is still the list's (no border here).
+    <li>
+    <div ref={rootRef} role="group" aria-labelledby={headingId} className="min-w-0">
+      <div className="flex min-w-0 flex-col gap-1 px-3 py-3">
         <h2 id={headingId} className="flex min-w-0 items-start gap-3">
           {/* `h-5` is the first line's height, so the mark stays on it however the heading wraps. */}
           <span className="flex h-5 shrink-0 items-center">
@@ -380,10 +377,10 @@ export function TodayTaskGroup({
       {group.decisions.length > 0 && (
         // Indented so each approval's mark sits under the task's name.
         <div className="min-w-0 pl-5">
-          <Separator />
-          {children}
+          <List label={`Approvals for ${group.taskName}`}>{children}</List>
         </div>
       )}
     </div>
+    </li>
   );
 }

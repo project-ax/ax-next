@@ -17,9 +17,9 @@
  * changes only when a save's answer arrives (`onSaved`); a refusal leaves it
  * as it was and says why. Every name goes through `personLabel`.
  */
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { UserPlus, X } from 'lucide-react';
-import { Inline, Notice, Stack, StatusBadge, Text } from '@project-ax/ui';
+import { Inline, List, ListRow, Notice, Stack, StatusBadge, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
 import { Button } from '@/components/ui/button';
 import { OWNERS_MAX } from '@/lib/agent-sharing';
@@ -39,7 +39,6 @@ export interface AgentOwnersProps {
 
 export function AgentOwners({ agentId, agentName, owners, onSaved }: AgentOwnersProps) {
   const me = useUser()?.id ?? null;
-  const headingId = useId();
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,39 +70,43 @@ export function AgentOwners({ agentId, agentName, owners, onSaved }: AgentOwners
 
   return (
     <Stack gap="sm">
-      <Text id={headingId} role="body-strong">
-        {SHARING_COPY.owners.heading}
-      </Text>
-      <ul aria-labelledby={headingId}>
+      <Text role="body-strong">{SHARING_COPY.owners.heading}</Text>
+      <List label={SHARING_COPY.owners.heading}>
         {owners.map((o) => {
           const name = personLabel(o.displayName);
           const removable = me !== null && !o.creator && o.id !== me;
+          const tags = (
+            <>
+              {o.creator && <StatusBadge tone="neutral">{SHARING_COPY.owners.creator}</StatusBadge>}
+              {o.id === me && <StatusBadge tone="neutral">{SHARING_COPY.owners.you}</StatusBadge>}
+            </>
+          );
           return (
-            <li key={o.id}>
-              <Inline justify="between" gap="sm">
-                <Inline gap="sm" wrap>
-                  <Text>{name}</Text>
-                  {o.creator && <StatusBadge tone="neutral">{SHARING_COPY.owners.creator}</StatusBadge>}
-                  {o.id === me && <StatusBadge tone="neutral">{SHARING_COPY.owners.you}</StatusBadge>}
-                </Inline>
-                {removable && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={SHARING_COPY.owners.remove(name)}
-                    title={SHARING_COPY.owners.remove(name)}
-                    disabled={removing}
-                    onClick={() => void remove(o.id)}
-                  >
-                    <X aria-hidden="true" />
-                  </Button>
-                )}
-              </Inline>
-            </li>
+            <ListRow
+              key={o.id}
+              title={name}
+              {...(o.creator || o.id === me ? { meta: <Inline gap="xs">{tags}</Inline> } : {})}
+              {...(removable
+                ? {
+                    trailing: (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={SHARING_COPY.owners.remove(name)}
+                        title={SHARING_COPY.owners.remove(name)}
+                        disabled={removing}
+                        onClick={() => void remove(o.id)}
+                      >
+                        <X aria-hidden="true" />
+                      </Button>
+                    ),
+                  }
+                : {})}
+            />
           );
         })}
-      </ul>
+      </List>
       {error !== null && (
         <Notice tone="danger">{error}</Notice>
       )}

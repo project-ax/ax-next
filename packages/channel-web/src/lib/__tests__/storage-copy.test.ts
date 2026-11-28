@@ -12,7 +12,6 @@ import {
   WARN_PERCENT_INVALID,
   breakdownRows,
   failureMessage,
-  formatBytes,
   formatMb,
   ownerBreakdown,
   ownerLabel,
@@ -28,42 +27,10 @@ const KB = 1024;
 const MB = KB * 1024;
 const GB = MB * 1024;
 
-describe('formatBytes', () => {
-  it('counts in 1024s, with one decimal only when there is one to show', () => {
-    expect(formatBytes(0)).toBe('0 B');
-    expect(formatBytes(1)).toBe('1 B');
-    expect(formatBytes(1023)).toBe('1023 B');
-    expect(formatBytes(KB)).toBe('1 KB');
-    expect(formatBytes(1.5 * KB)).toBe('1.5 KB');
-    expect(formatBytes(MB)).toBe('1 MB');
-    expect(formatBytes(123.4 * MB)).toBe('123.4 MB');
-    expect(formatBytes(GB)).toBe('1 GB');
-    expect(formatBytes(2.3 * GB)).toBe('2.3 GB');
-    expect(formatBytes(5 * GB)).toBe('5 GB');
-    expect(formatBytes(3 * 1024 * GB)).toBe('3 TB');
-  });
-
-  it('trims a ".0" that rounding leaves behind', () => {
-    // 2.04 GB rounds to 2.0 and must read "2 GB", not "2.0 GB".
-    expect(formatBytes(2.04 * GB)).toBe('2 GB');
-  });
-
-  it('rolls over to the next unit instead of printing "1024 KB"', () => {
-    expect(formatBytes(1024 * KB - 1)).toBe('1 MB');
-    expect(formatBytes(1024 * MB - 1)).toBe('1 GB');
-  });
-
-  it('never prints nonsense for input that is not a size', () => {
-    expect(formatBytes(-5)).toBe('0 B');
-    expect(formatBytes(Number.NaN)).toBe('0 B');
-    expect(formatBytes(Number.POSITIVE_INFINITY)).toBe('0 B');
-  });
-
-  it('stops at TB rather than inventing a unit', () => {
-    expect(formatBytes(2048 * 1024 * GB)).toBe('2048 TB');
-  });
-});
-
+// formatBytes moved into @project-ax/ui as `formatFileSize` (the file chips' and
+// this tab's one size formatter); its cases moved with it, to packages/ui
+// src/__tests__/file.test.ts. What stays here is that this file's sentences
+// read their sizes through it.
 describe('formatMb', () => {
   it('reads a limit in MB the way a person would say it', () => {
     expect(formatMb(1024)).toBe('1 GB');

@@ -49,7 +49,7 @@ function Harness(props: { providers?: CatalogProvider[]; initial?: Draft; onOpen
 }
 
 function openDetails(label: string) {
-  fireEvent.click(screen.getByRole('button', { name: `Details for ${label}` }));
+  fireEvent.click(screen.getByRole('button', { name: `${label}` }));
 }
 function removeSelectedModel(label: string) {
   openDetails(label);
@@ -92,7 +92,7 @@ describe('ModelCatalogPane', () => {
     render(<Harness />);
     fireEvent.click(screen.getByRole('checkbox', { name: /Kimi K3/ }));
     expect(screen.getByRole('heading', { name: 'Available to users (2)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Kimi K3' })).toBeInTheDocument();
   });
 
   it('offers "Select all N shown" only while searching, and it selects every match', () => {
@@ -101,8 +101,8 @@ describe('ModelCatalogPane', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'openrouter' } });
     fireEvent.click(screen.getByRole('button', { name: 'Select all 2 shown' }));
     expect(screen.getByRole('heading', { name: 'Available to users (3)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Details for xAI: Grok 4.6' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Kimi K3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'xAI: Grok 4.6' })).toBeInTheDocument();
   });
 
   it('opens a matching provider group while searching even if the admin collapsed it', () => {
@@ -142,7 +142,7 @@ describe('SelectedModelsPane', () => {
   it('opens model actions on demand and restores the row without changing the selection', async () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
     expect(screen.queryByRole('button', { name: 'Remove Kimi K3' })).toBeNull();
-    const row = screen.getByRole('button', { name: 'Details for Kimi K3' });
+    const row = screen.getByRole('button', { name: 'Kimi K3' });
     row.focus();
     openDetails('Kimi K3');
     const dialog = screen.getByRole('dialog', { name: 'Kimi K3' });
@@ -151,8 +151,8 @@ describe('SelectedModelsPane', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await waitFor(() => expect(row).toHaveFocus());
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
-    expect(row).toHaveTextContent('Enabled');
+    expect(screen.getByRole('button', { name: 'Claude Sonnet 4.6' }).closest('li')).toHaveTextContent('Default');
+    expect(row.closest('li')).toHaveTextContent('Enabled');
   });
 
   it('explains the Default and shows the empty state when nothing is selected', () => {
@@ -164,32 +164,32 @@ describe('SelectedModelsPane', () => {
 
   it('marks the Default and lets the admin move it', () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
-    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
+    expect(screen.getByRole('button', { name: 'Claude Sonnet 4.6' }).closest('li')).toHaveTextContent('Default');
     expect(screen.getByText('Default')).toBeInTheDocument();
     openDetails('Kimi K3');
     fireEvent.click(screen.getByRole('button', { name: 'Make Kimi K3 the Default' }));
     expect(screen.getByRole('button', { name: 'Make Kimi K3 the Default' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveTextContent('Default');
+    expect(screen.getByRole('button', { name: 'Kimi K3' }).closest('li')).toHaveTextContent('Default');
   });
 
   it('removing the Default promotes the first remaining model, visibly', () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
     removeSelectedModel('Claude Sonnet 4.6');
-    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveTextContent('Default');
+    expect(screen.getByRole('button', { name: 'Kimi K3' }).closest('li')).toHaveTextContent('Default');
   });
 
   it('shows when a model is no longer listed or its provider has no key', () => {
     const providers = PROVIDERS.map((p) => (p.id === 'anthropic' ? { ...p, status: 'no-key' as const, models: [] } : p));
     render(<Harness providers={providers} initial={{ allowed: [SONNET, 'openrouter/gone/model'], default: SONNET }} />);
-    expect(screen.getByRole('button', { name: `Details for ${SONNET}` })).toHaveTextContent('Needs an API key');
-    expect(screen.getByRole('button', { name: 'Details for openrouter/gone/model' })).toHaveTextContent('No longer listed');
+    expect(screen.getByRole('button', { name: SONNET }).closest('li')).toHaveTextContent('Needs an API key');
+    expect(screen.getByRole('button', { name: 'openrouter/gone/model' }).closest('li')).toHaveTextContent('No longer listed');
   });
 
   it('moves focus to the next row after a remove, and to the list when none remain', async () => {
     render(<Harness initial={{ allowed: [SONNET, KIMI], default: SONNET }} />);
     removeSelectedModel('Claude Sonnet 4.6');
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Kimi K3' })).toHaveFocus());
     removeSelectedModel('Kimi K3');
     expect(screen.getByText('No models yet')).toBeInTheDocument();
     await waitFor(() => expect(document.activeElement).not.toBe(document.body));
