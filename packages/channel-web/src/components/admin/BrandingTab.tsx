@@ -15,7 +15,6 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Field, FieldContent, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field';
-import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useBranding } from '@/lib/branding-context';
 import {
@@ -24,7 +23,7 @@ import {
   ALLOWED_LOGO_TYPES,
   type PutBrandingInput,
 } from '@/lib/branding';
-import { Notice } from '@project-ax/ui';
+import { List, ListRow, Notice } from '@project-ax/ui';
 
 interface PendingLogo {
   contentType: string;
@@ -353,7 +352,12 @@ export function BrandingTab() {
           onRemove={() => setLight('clear')}
         />
 
-        <SettingsDisclosure title="Dark logo" value={darkChosen ? 'Custom' : 'Automatic'}>
+        {fileError !== null && (
+          <Notice tone="danger">{fileError}</Notice>
+        )}
+
+        <List label="More logo options">
+        <ListRow title="Dark logo" meta={darkChosen ? 'Custom' : 'Automatic'} expandable={{ content: (<>
         <LogoField
           label="Dark logo"
           hint="Optional — leave empty and we'll auto-invert the light logo for dark mode."
@@ -364,12 +368,8 @@ export function BrandingTab() {
           onRemove={() => setDark('clear')}
         />
 
-        </SettingsDisclosure>
-        {fileError !== null && (
-          <Notice tone="danger">{fileError}</Notice>
-        )}
-
-        <SettingsDisclosure title="Preview">
+        </>) }} />
+        <ListRow title="Preview" expandable={{ content: (<>
           <div className="grid grid-cols-2 gap-3">
             <PreviewTile
               surface="light"
@@ -394,7 +394,8 @@ export function BrandingTab() {
         >
           Clear branding
         </Button>
-        </SettingsDisclosure>
+        </>) }} />
+        </List>
       </FieldGroup>
 
       <div className="mt-6 flex flex-wrap items-center gap-3">

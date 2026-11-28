@@ -36,7 +36,7 @@ import { ChevronLeft, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
-import { AsyncState, Button as AxButton, EmptyState, formatTimestamp, Heading, Notice, Stack, Text, Timestamp } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, EmptyState, formatTimestamp, Heading, List, Notice, Stack, Text, Timestamp } from '@project-ax/ui';
 import {
   DIRECTORY_QUERY_MAX,
   connectorServerAddresses,
@@ -351,11 +351,11 @@ export function ConnectorDirectory({
     } else if (shown !== null) {
       content = (
         <>
-          <div className="flex w-full flex-col">
+          <List label="Directory results">
             {shown.entries.map((entry) => (
               <DirectoryListingRow key={entry.id} entry={entry} added={isAdded(entry)} onSetUp={onSetUp} />
             ))}
-          </div>
+          </List>
           {shown.nextCursor !== undefined &&
             (more === 'failed' ? (
               <Notice tone="danger" action={{ label: 'Try again', onClick: showMore }}>

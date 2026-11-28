@@ -251,11 +251,11 @@ describe('TaskPage (TASK-910)', () => {
     await renderReady();
     const runs = screen.getByRole('region', { name: 'Run history' });
     // The failed run says why in plain words, beside its mark's hidden word.
-    expect(within(runs).getByText('Failed:')).toHaveClass('sr-only');
+    expect(within(runs).getByRole('img', { name: 'Failed' })).toBeInTheDocument();
     expect(within(runs).getByText('The app refused the run.')).toBeVisible();
     // The host's live state, one line, in the card's own live region.
     expect(within(runs).getByRole('status')).toHaveTextContent('2 app updates waiting');
-    expect(within(runs).getByRole('link', { name: /^See what it did/ })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
+    expect(within(runs).getByRole('link', { name: `See what it did, ${REPORTED_WORDS}` })).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/shared-run');
     // A Repeat job's pill, its Run now, and the shared thread behind Memory between runs.
     expect(screen.getByText('Scheduled')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Run now' })).toBeEnabled();
@@ -460,7 +460,8 @@ describe('TaskPage (TASK-910)', () => {
     const { onNavigate } = await renderReady();
     // A count of the note's lines, said in words.
     const notes = within(about()).getByRole('button', { name: /^Quill’s notes/ });
-    expect(notes).toHaveAccessibleName(/2 lines/);
+    // (In the row beside the toggle: a row's toggle is named by its title alone.)
+    expect(within(notes.closest('li')!).getByText(/2 lines/)).toBeInTheDocument();
     fireEvent.click(notes);
     expect(within(about()).getByText(/Ticket 4410 is from an enterprise customer\./)).toBeInTheDocument();
     expect(within(about()).getByRole('button', { name: 'Clear notes' })).toBeInTheDocument();
@@ -3384,7 +3385,7 @@ describe('TaskPage: the minimal header and the ⋯ menu (2026-10-29)', () => {
     await renderReady();
     const line = within(screen.getByRole('region', { name: 'Run history' })).getByText(reason);
     expect(line.closest('[class*="line-clamp"]')).toBeNull();
-    expect(line).toHaveClass('whitespace-pre-wrap', 'break-words');
+    expect(line).toHaveClass('ax-whitespace-pre-wrap', 'ax-break-words');
   });
 
   it('⋯ holds Edit task, Duplicate and Delete task…, and Delete asks first', async () => {

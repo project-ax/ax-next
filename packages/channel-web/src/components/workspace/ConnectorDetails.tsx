@@ -26,7 +26,7 @@
  * description is deliberately not drawn here (the editor in Settings shows it,
  * fenced); the rail is too narrow to set it apart as "their words".
  */
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ChevronLeft,
   CircleAlert,
@@ -35,9 +35,8 @@ import {
   LogIn,
   Trash2,
 } from 'lucide-react';
-import { AsyncState, Card, formatTimestamp, Notice, Stack, Timestamp } from '@project-ax/ui';
+import { AsyncState, Card, formatTimestamp, List, ListRow, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Tooltip,
@@ -592,24 +591,27 @@ function ToolGroup({
         )}
       </div>
       <Card flush>
-        <ul>
-          {tools.map((tool, i) => (
-            <Fragment key={tool.toolKey}>
-              {i > 0 && <Separator />}
-              <ToolRow
-                tool={tool}
-                busy={pending.has(tool.toolKey)}
-                onChange={(v) => onChange(tool, v)}
-              />
-            </Fragment>
+        <List label={`Tools: ${label.toLowerCase()}`} density="compact">
+          {tools.map((tool) => (
+            <ListRow
+              key={tool.toolKey}
+              title={tool.title}
+              trailing={
+                <VerdictToggle
+                  tool={tool}
+                  busy={pending.has(tool.toolKey)}
+                  onChange={(v) => onChange(tool, v)}
+                />
+              }
+            />
           ))}
-        </ul>
+        </List>
       </Card>
     </section>
   );
 }
 
-function ToolRow({
+function VerdictToggle({
   tool,
   busy,
   onChange,
@@ -619,10 +621,6 @@ function ToolRow({
   onChange: (verdict: AgentToolVerdict) => void;
 }) {
   return (
-    <li className="flex min-h-10 items-center gap-2 py-1 pl-3 pr-1.5">
-      <span className="min-w-0 flex-1 truncate text-[13px]" title={tool.title}>
-        {tool.title}
-      </span>
       <ToggleGroup
         type="single"
         variant="outline"
@@ -667,6 +665,5 @@ function ToolRow({
           );
         })}
       </ToggleGroup>
-    </li>
   );
 }

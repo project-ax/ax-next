@@ -22,7 +22,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, X } from 'lucide-react';
-import { Inline, Notice, Stack, Text } from '@project-ax/ui';
+import { Inline, List, ListRow, Notice, Stack, Text } from '@project-ax/ui';
 import type { SharingView } from '@ax/agents';
 import { Button } from '@/components/ui/button';
 import {
@@ -359,58 +359,32 @@ function DraftRows({
   if (draft.kind === 'just-me') {
     return <Text role="meta">{SHARING_COPY.picker.emptyDraft(agentName)}</Text>;
   }
-  if (draft.kind === 'everyone') {
-    return (
-      <DraftRow
-        label={SHARING_COPY.audience.everyone}
-        hint={SHARING_COPY.picker.everyoneHint}
-        disabled={disabled}
-        onRemove={onRemoveEveryone}
-      />
-    );
-  }
+  // Everyone is one row of the same list, so it reads (and removes) like a person.
+  const rows =
+    draft.kind === 'everyone'
+      ? [{ id: EVERYONE, label: SHARING_COPY.audience.everyone, hint: SHARING_COPY.picker.everyoneHint, onRemove: onRemoveEveryone }]
+      : draft.members.map((m) => ({ id: m.id, label: personLabel(m.displayName), hint: undefined, onRemove: () => onRemovePerson(m.id) }));
   return (
-    <ul aria-label={SHARING_COPY.picker.fieldLabel}>
-      {draft.members.map((m) => (
-        <li key={m.id}>
-          <DraftRow
-            label={personLabel(m.displayName)}
-            disabled={disabled}
-            onRemove={() => onRemovePerson(m.id)}
-          />
-        </li>
+    <List label={SHARING_COPY.picker.fieldLabel}>
+      {rows.map((r) => (
+        <ListRow
+          key={r.id}
+          title={r.label}
+          {...(r.hint !== undefined ? { description: r.hint } : {})}
+          trailing={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={SHARING_COPY.picker.remove(r.label)}
+              disabled={disabled}
+              onClick={r.onRemove}
+            >
+              <X aria-hidden="true" />
+            </Button>
+          }
+        />
       ))}
-    </ul>
-  );
-}
-
-function DraftRow({
-  label,
-  hint,
-  disabled,
-  onRemove,
-}: {
-  label: string;
-  hint?: string;
-  disabled: boolean;
-  onRemove: () => void;
-}) {
-  return (
-    <Inline justify="between" gap="sm">
-      <Stack gap="none">
-        <Text>{label}</Text>
-        {hint !== undefined && <Text role="meta">{hint}</Text>}
-      </Stack>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        aria-label={SHARING_COPY.picker.remove(label)}
-        disabled={disabled}
-        onClick={onRemove}
-      >
-        <X aria-hidden="true" />
-      </Button>
-    </Inline>
+    </List>
   );
 }

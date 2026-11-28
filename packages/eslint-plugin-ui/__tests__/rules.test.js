@@ -101,6 +101,8 @@ tester.run('no-raw-elements', plugin.rules['no-raw-elements'], {
     { code: 'const a = <input />;', errors: [{ message: /TextField/ }] },
     { code: 'const a = <li />;', errors: [{ message: /ListRow/ }] },
     { code: 'const a = <td />;', errors: [{ message: /DataTable/ }] },
+    { code: 'const a = <dl />;', errors: [{ message: /KeyValueList/ }] },
+    { code: 'const a = <time />;', errors: [{ message: /Timestamp/ }] },
     {
       code: 'const a = <div>x</div>;',
       languageOptions: tsLanguageOptions,
@@ -123,6 +125,7 @@ tester.run('no-raw-elements (elements option)', plugin.rules['no-raw-elements'],
   invalid: [
     { code: 'const a = <div />;', options: NARROW, errors: [{ message: /Stack/ }] },
     { code: 'const a = <span />;', options: NARROW, errors: [{ message: /Text/ }] },
+    { code: 'const a = <time />;', options: [{ elements: ['time', 'dd'] }], errors: [{ message: /Timestamp/ }] },
     { code: 'const a = <h4>t</h4>;', options: NARROW, errors: [{ message: /Heading/ }] },
     { code: 'const a = <button />;', options: [{ elements: ['button'] }], errors: [{ message: /IconButton/ }] },
     {

@@ -167,7 +167,6 @@ import {
   ArrowUpRight,
   Check,
   ChevronLeft,
-  ChevronRight,
   Clock,
   Copy,
   FileText,
@@ -183,11 +182,9 @@ import {
   ShieldCheck,
   Target,
   Trash2,
-  type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, Avatar, Button as AxButton, Card, formatTimestamp, Grid, Notice, Stack, StatusBadge, StatusMark, Timestamp } from '@project-ax/ui';
+import { AsyncState, Avatar, Button as AxButton, Card, formatTimestamp, Grid, List, ListRow, Notice, Stack, StatusBadge, StatusMark, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1719,50 +1716,17 @@ function ClaimBanner({ detail, finish, unticked }: { detail: TaskDetail; finish:
   );
 }
 
-/** One row of the About list: its icon, one line, a short fact and a chevron. It opens in place. */
-function AboutRow({
-  icon: Icon,
-  label,
-  meta,
-  metaWords,
-  children,
-}: {
-  icon: LucideIcon;
-  /** Person- or host-written; one line on screen, the whole of it inside. */
-  label: string;
-  /** The short fact at the end ("On", "2"), shown. */
-  meta?: string | undefined;
-  /** What `meta` says in words, for a screen reader, when the shown fact is only a number. */
-  metaWords?: string | undefined;
-  children: ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
+/**
+ * The short fact at the end of an About row ("On", "2"), shown. When it is only a number, `metaWords` says it in
+ * words for a screen reader and the number is hidden from one.
+ */
+function aboutMeta(meta: string | undefined, metaWords?: string): ReactNode {
+  if (meta === undefined) return undefined;
   return (
-    <li>
-      <Collapsible open={open} onOpenChange={setOpen}>
-        <CollapsibleTrigger asChild>
-          <Button
-            variant="ghost"
-            className="h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-[14px] font-normal"
-          >
-            <Icon data-icon="inline-start" aria-hidden="true" className="text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-left">{label}</span>
-            {meta !== undefined && (
-              <span aria-hidden={metaWords !== undefined || undefined} className="text-[13px] text-muted-foreground">
-                {meta}
-              </span>
-            )}
-            {metaWords !== undefined && <span className="sr-only">{metaWords}</span>}
-            <ChevronRight
-              data-icon="inline-end"
-              aria-hidden="true"
-              className={cn('text-muted-foreground transition-transform', open && 'rotate-90')}
-            />
-          </Button>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="px-2.5 pb-3 pt-1">{children}</CollapsibleContent>
-      </Collapsible>
-    </li>
+    <>
+      <span aria-hidden={metaWords !== undefined || undefined}>{meta}</span>
+      {metaWords !== undefined && <span className="sr-only">{metaWords}</span>}
+    </>
   );
 }
 
@@ -1800,105 +1764,126 @@ function AboutList({
     </Button>
   );
   const text = 'whitespace-pre-wrap break-words text-[13px] leading-relaxed';
+  const settingsLink = routeLinkProps({ kind: 'agent-settings', id: agentId, section: 'routines' }, onNavigate);
   return (
     <Card flush>
       <section aria-labelledby={headingId} className="p-1.5">
         <h2 id={headingId} className="sr-only">
           About this task
         </h2>
-        <ul className="flex flex-col divide-y divide-border">
+        <List label="About this task">
           {!repeat &&
             (brief.goodWhen !== null ? (
-              <AboutRow icon={Target} label={brief.goodWhen}>
-                <p className="text-[12px] text-muted-foreground">Going well when</p>
-                <p className={text}>{brief.goodWhen}</p>
-              </AboutRow>
-            ) : permissions.edit ? (
-              <li>
-                <Button
-                  variant="ghost"
-                  className="h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-[14px] font-normal text-muted-foreground"
-                  onClick={onEdit}
-                >
-                  <Target data-icon="inline-start" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate text-left">Add how we’ll know it’s going well</span>
-                </Button>
-              </li>
-            ) : (
-              <li className="flex items-center gap-2.5 px-2.5 py-2 text-[14px] text-muted-foreground">
-                <Target aria-hidden="true" className="size-4 shrink-0" />
-                Nothing saved for how we’ll know it’s going well.
-              </li>
-            ))}
-          <AboutRow icon={FileText} label="Instructions">
-            <p className={cn(text, brief.promptBody === null && 'text-muted-foreground')}>
-              {brief.promptBody ?? 'No instructions saved.'}
-            </p>
-          </AboutRow>
-          {!repeat && (
-            <AboutRow
-              icon={NotebookPen}
-              label={`${agentName}’s notes`}
-              meta={noteLines > 0 ? String(noteLines) : undefined}
-              metaWords={noteLines > 0 ? `, ${noteLines} ${noteLines === 1 ? 'line' : 'lines'}` : undefined}
-            >
-              <TaskNotes
-                agentId={agentId}
-                routineId={routineId}
-                agentName={agentName}
-                notes={notes}
-                onCleared={onRefresh}
+              <ListRow
+                title={brief.goodWhen}
+                leading={<Target aria-hidden="true" width={16} height={16} />}
+                expandable={{
+                  content: (
+                    <>
+                      <p className="text-[12px] text-muted-foreground">Going well when</p>
+                      <p className={text}>{brief.goodWhen}</p>
+                    </>
+                  ),
+                }}
               />
-            </AboutRow>
-          )}
-          <AboutRow icon={Plug} label="App updates" meta={appOn ? 'On' : 'Off'}>
-            {!appOn ? (
-              <p className="text-[13px] text-muted-foreground">
-                {permissions.edit ? (
-                  <>
-                    Off. Turn it on in Edit task. {editLink}
-                  </>
-                ) : (
-                  'Off.'
-                )}
-              </p>
             ) : permissions.edit ? (
-              <TaskAppUpdates key={`${agentId}/${routineId}/${detail.revision}`} agentId={agentId} routineId={routineId} onEdit={onEdit} />
+              <ListRow
+                title="Add how we’ll know it’s going well"
+                leading={<Target aria-hidden="true" width={16} height={16} />}
+                onOpen={onEdit}
+              />
             ) : (
-              <p className="text-[13px] text-muted-foreground">
-                On. Only someone who manages this agent’s tasks can see its setup.
-              </p>
-            )}
-          </AboutRow>
-          {repeat && (
-            <AboutRow icon={History} label="Memory between runs" meta={detail.repeat?.sharedThread ? 'One thread' : 'Fresh'}>
-              <p className="text-[13px] text-muted-foreground">
-                {detail.repeat?.sharedThread
-                  ? 'This job uses a shared thread. A transcript can include several runs.'
-                  : 'Each run starts fresh.'}
-                {permissions.edit && (
-                  <>
-                    {' Change it in Edit task. '}
-                    {editLink}
-                  </>
-                )}
-              </p>
-            </AboutRow>
+              <ListRow
+                title="How we’ll know it’s going well"
+                description="Nothing saved for how we’ll know it’s going well."
+                leading={<Target aria-hidden="true" width={16} height={16} />}
+              />
+            ))}
+          <ListRow
+            title="Instructions"
+            leading={<FileText aria-hidden="true" width={16} height={16} />}
+            expandable={{
+              content: (
+                <p className={cn(text, brief.promptBody === null && 'text-muted-foreground')}>
+                  {brief.promptBody ?? 'No instructions saved.'}
+                </p>
+              ),
+            }}
+          />
+          {!repeat && (
+            <ListRow
+              title={`${agentName}’s notes`}
+              leading={<NotebookPen aria-hidden="true" width={16} height={16} />}
+              meta={aboutMeta(
+                noteLines > 0 ? String(noteLines) : undefined,
+                noteLines > 0 ? `, ${noteLines} ${noteLines === 1 ? 'line' : 'lines'}` : undefined,
+              )}
+              expandable={{
+                content: (
+                  <TaskNotes
+                    agentId={agentId}
+                    routineId={routineId}
+                    agentName={agentName}
+                    notes={notes}
+                    onCleared={onRefresh}
+                  />
+                ),
+              }}
+            />
           )}
-          <li>
-            <Button
-              asChild
-              variant="ghost"
-              className="h-auto w-full justify-start gap-2.5 px-2.5 py-2 text-[13px] font-normal text-muted-foreground"
-            >
-              <a {...routeLinkProps({ kind: 'agent-settings', id: agentId, section: 'routines' }, onNavigate)}>
-                <ShieldCheck data-icon="inline-start" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-left">{`What ${agentName} can do without asking`}</span>
-                <ArrowUpRight data-icon="inline-end" aria-hidden="true" />
-              </a>
-            </Button>
-          </li>
-        </ul>
+          <ListRow
+            title="App updates"
+            leading={<Plug aria-hidden="true" width={16} height={16} />}
+            meta={aboutMeta(appOn ? 'On' : 'Off')}
+            expandable={{
+              content: !appOn ? (
+                <p className="text-[13px] text-muted-foreground">
+                  {permissions.edit ? (
+                    <>
+                      Off. Turn it on in Edit task. {editLink}
+                    </>
+                  ) : (
+                    'Off.'
+                  )}
+                </p>
+              ) : permissions.edit ? (
+                <TaskAppUpdates key={`${agentId}/${routineId}/${detail.revision}`} agentId={agentId} routineId={routineId} onEdit={onEdit} />
+              ) : (
+                <p className="text-[13px] text-muted-foreground">
+                  On. Only someone who manages this agent’s tasks can see its setup.
+                </p>
+              ),
+            }}
+          />
+          {repeat && (
+            <ListRow
+              title="Memory between runs"
+              leading={<History aria-hidden="true" width={16} height={16} />}
+              meta={aboutMeta(detail.repeat?.sharedThread ? 'One thread' : 'Fresh')}
+              expandable={{
+                content: (
+                  <p className="text-[13px] text-muted-foreground">
+                    {detail.repeat?.sharedThread
+                      ? 'This job uses a shared thread. A transcript can include several runs.'
+                      : 'Each run starts fresh.'}
+                    {permissions.edit && (
+                      <>
+                        {' Change it in Edit task. '}
+                        {editLink}
+                      </>
+                    )}
+                  </p>
+                ),
+              }}
+            />
+          )}
+          <ListRow
+            title={`What ${agentName} can do without asking`}
+            leading={<ShieldCheck aria-hidden="true" width={16} height={16} />}
+            href={settingsLink.href}
+            onNavigate={settingsLink.onClick}
+          />
+        </List>
       </section>
     </Card>
   );

@@ -3,38 +3,18 @@
  * (reports, pages, spreadsheets). List only — opening one is the parent's job
  * (`onOpen`), so the chat's artifact card can open the same viewer.
  *
- * Each row has an icon square (the slot a thumbnail will fill later), the
- * title, and "Type · EXT" underneath.
+ * Each row is a `FileTile` row in a `List`: an icon square (the slot a thumbnail will
+ * fill later), the title, and "Type · EXT" underneath.
  */
 import { useEffect, useRef, useState } from 'react';
-import {
-  Code2,
-  Download,
-  File,
-  FileText,
-  Globe,
-  Image as ImageIcon,
-  Sheet as SheetIcon,
-  type LucideIcon,
-} from 'lucide-react';
-import type { ArtifactKind } from '@ax/ipc-protocol/content-blocks';
-import { AsyncState, EmptyState, Notice } from '@project-ax/ui';
+import { Download } from 'lucide-react';
+import { AsyncState, EmptyState, FileTile, List, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { artifactTypeLine } from '@/lib/artifact-labels';
 import { DOWNLOAD_STARTED_MS, DOWNLOAD_STARTED_NOTE, saveFromUrl } from '@/lib/file-download';
 import { logRequestFailure } from '@/lib/http';
 import { useAgentArtifacts } from '@/lib/use-agent-artifacts';
 import { ArtifactsDownloadRefused, workspaceApi } from '@/lib/workspace-api';
-import type { ArtifactSummary } from '@/lib/workspace-types';
-
-export const KIND_ICONS: Record<ArtifactKind, LucideIcon> = {
-  document: FileText,
-  web: Globe,
-  spreadsheet: SheetIcon,
-  image: ImageIcon,
-  code: Code2,
-  file: File,
-};
 
 const FAILED_NOTE = 'That download didn’t start, so nothing was saved. Try again in a moment.';
 const BUSY_NOTE = 'One download at a time, please — try again in a moment.';
@@ -48,27 +28,6 @@ function downloadNote(e: unknown): string {
     if (e.status === 413) return TOO_BIG_NOTE;
   }
   return FAILED_NOTE;
-}
-
-function ArtifactRow({ artifact, onOpen }: { artifact: ArtifactSummary; onOpen: () => void }) {
-  const Icon = KIND_ICONS[artifact.kind];
-  const line = artifactTypeLine(artifact);
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title={artifact.title}
-      className="group flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-    >
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground group-hover:bg-background">
-        <Icon size={18} aria-hidden />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="line-clamp-2 break-words text-[13px] font-medium leading-snug text-foreground">{artifact.title}</span>
-        <span className="truncate text-[12px] text-muted-foreground">{line}</span>
-      </span>
-    </button>
-  );
 }
 
 export function AgentArtifacts({
@@ -173,13 +132,18 @@ export function AgentArtifacts({
           <Notice tone={note === DOWNLOAD_STARTED_NOTE ? 'success' : 'danger'}>{note}</Notice>
         </div>
       )}
-      <ul className="flex flex-col">
+      <List label={`${agentName}’s artifacts`}>
         {artifacts.map((a) => (
-          <li key={a.artifactId}>
-            <ArtifactRow artifact={a} onOpen={() => onOpen(a.artifactId)} />
-          </li>
+          <FileTile
+            key={a.artifactId}
+            variant="row"
+            name={a.title}
+            kind={a.extension}
+            detail={artifactTypeLine(a)}
+            onOpen={() => onOpen(a.artifactId)}
+          />
         ))}
-      </ul>
+      </List>
     </div>
   );
 }

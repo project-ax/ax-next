@@ -20,15 +20,17 @@
  * (`server/routes-workspace.ts`). Here they are only ever React text
  * children: never `dangerouslySetInnerHTML`, never the markdown renderer, so
  * `**bold**` or `<img>` in an update shows as those characters. Each clamped
- * one keeps the whole fenced value in a `title` (TASK-436).
+ * one is the row's description, whole in the page and clamped to two lines by the row (TASK-436).
  *
  * Each row opens its task page (TASK-910) through a real link, so it can open
- * in a new tab too. A needs-you row's Reply button sits beside that link,
- * never inside it: a button nested in a link is two controls in one.
+ * in a new tab too. The link is named by the task and described by its row's
+ * meta (agent, kind, fact), so two agents' "Weekly digest" differ. A
+ * needs-you row's Reply button sits beside that link, never inside it: a
+ * button nested in a link is two controls in one.
  */
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { Bot, ChevronDown, ListChecks, MessageSquare, Plus, Repeat2 } from 'lucide-react';
-import { AsyncState, Avatar, Card, EmptyState, Notice, StatusMark } from '@project-ax/ui';
+import { AsyncState, Avatar, Card, EmptyState, List, ListRow, Notice, StatusBadge, StatusMark, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -43,7 +45,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Separator } from '@/components/ui/separator';
 import { HTTP_SESSION_ENDED } from '@/lib/http';
 import { readNoticeTone } from '@/lib/read-register';
 import { routeLinkProps } from '@/lib/route-link';
@@ -54,7 +55,8 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { TasksReadError, TasksState } from '@/lib/workspace-tasks';
 import type { TaskRow, UnavailableAgent } from '@/lib/workspace-types';
 import { STATE_TONE } from './bits';
-import { IconAction, TaskKindIcon } from './task-bits';
+import { TASK_KIND_LABELS } from '@/lib/task-kinds';
+import { IconAction } from './task-bits';
 import { TaskDialog } from './TaskDialog';
 
 /** How often "checked 4 min ago" is recomputed, as `LearnedInChat` does. */
@@ -397,7 +399,7 @@ function RowSection({
           {title} <span className="font-normal tabular-nums">{rows.length}</span>
         </span>
       </h2>
-      <TaskList rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} />
+      <TaskList rows={rows} now={now} onNavigate={onNavigate} onReply={onReply} label={title} />
     </section>
   );
 }
@@ -474,32 +476,25 @@ function TaskList({
   now: Date;
   onNavigate: (route: WorkspaceRoute) => void;
   onReply?: ((route: TaskRoute) => void) | undefined;
-  label?: string;
+  label: string;
 }) {
-  // `overflow-hidden`: a row's hover fill must follow the card's rounded
-  // corners, and its focus ring is drawn inside the row for the same reason.
   return (
     <Card flush>
-      <ul aria-label={label}>
-        {rows.map((row, i) => (
-          <li key={`${row.agentId}:${row.routineId}`}>
-            {i > 0 && <Separator />}
-            <TaskItem row={row} now={now} onNavigate={onNavigate} onReply={onReply} />
-          </li>
+      <List label={label}>
+        {rows.map((row) => (
+          <TaskItem key={`${row.agentId}:${row.routineId}`} row={row} now={now} onNavigate={onNavigate} onReply={onReply} />
         ))}
-      </ul>
+      </List>
     </Card>
   );
 }
 
 /**
  * One task: its agent's tile, its name, at most one latest line
- * (`rowLatest`), its kind's icon and one short right-hand fact (`rowFact`),
- * whose whole sentence is in the link's name and a `title`; a needs-you row
- * keeps that fact, which may be the late finish-date warning, and has Reply
- * after it. Below `sm` the
- * name and the latest line stack. A needs-you row quotes its ask in the
- * foreground and gets a Reply button beside the link, which opens the task
+ * (`rowLatest`, the row's description), its kind's name and one short fact
+ * (`rowFact`, whose whole sentence a screen reader hears) in the meta line; a
+ * needs-you row keeps that fact, which may be the late finish-date warning,
+ * and has Reply after it. A needs-you row quotes its ask and gets a Reply button beside the link, which opens the task
  * page with its reply box focused (the shell's one-shot memory, `onReply`),
  * where the ask is the first thing.
  */
@@ -519,52 +514,60 @@ function TaskItem({
   const needsYou = row.kind !== 'repeat' && taskGroup(row) === 'needs-you';
   const latest = rowLatest(row);
   const fact = rowFact(row, now);
+  const link = routeLinkProps(route, onNavigate);
+  // The visible words are hidden from screen readers so the sentence isn't read twice.
+  const factWords =
+    fact === null ? null : (
+      <span title={fact.full}>
+        <span aria-hidden="true">{fact.short}</span>
+        <span className="sr-only">{fact.full}</span>
+      </span>
+    );
   return (
-    <div className="flex items-center gap-1 transition-colors hover:bg-accent">
-      <a
-        {...routeLinkProps(route, onNavigate)}
-        className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      >
-        <span className="shrink-0" title={row.agentName}>
-          <Avatar name={row.agentName} size="sm" />
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
-          <span id={nameId} className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0" title={row.name}>
-            {row.name}
-          </span>
-          {latest !== null && (
-            <span
-              className={cn('min-w-0 truncate text-[13px]', needsYou ? 'text-foreground' : 'text-muted-foreground')}
-              title={latest.text}
-            >
-              {latest.ask ? '“' : null}
-              {latest.text}
-              {latest.ask ? '”' : null}
-            </span>
+    <ListRow
+      title={row.name}
+      href={link.href}
+      onNavigate={link.onClick}
+      leading={<Avatar name={row.agentName} size="sm" />}
+      // The agent's name is said on every row (the avatar is only its initial); every row keeps its fact, a late
+      // finish date in the danger tone.
+      meta={
+        <>
+          <Text role="meta" inline>{row.agentName}</Text>
+          {' · '}
+          <Text role="meta" inline>{TASK_KIND_LABELS[row.kind]}</Text>
+          {fact !== null && (
+            <>
+              {' · '}
+              {fact.late ? (
+                <StatusBadge tone="danger" size="sm">
+                  {factWords}
+                </StatusBadge>
+              ) : (
+                factWords
+              )}
+            </>
           )}
-        </span>
-        <TaskKindIcon kind={row.kind} className="hidden sm:inline-flex" />
-        <span className="sr-only">{row.agentName}</span>
-        {/* Every row keeps its fact (a late finish date is the one in the error colour); a needs-you row's Reply follows it, beside the link. */}
-        {fact !== null && (
-          <span
-            className={cn('shrink-0 text-[13px] tabular-nums', fact.late ? 'text-destructive' : 'text-muted-foreground')}
-            title={fact.full}
-          >
-            <span aria-hidden="true">{fact.short}</span>
-            <span className="sr-only">{fact.full}</span>
-          </span>
-        )}
-      </a>
-      {needsYou && (
-        <IconAction
-          icon={MessageSquare}
-          label="Reply"
-          aria-describedby={nameId}
-          className="mr-3 shrink-0"
-          onClick={() => (onReply ?? onNavigate)(route)}
-        />
-      )}
-    </div>
+        </>
+      }
+      {...(latest !== null ? { description: latest.ask ? `“${latest.text}”` : latest.text } : {})}
+      trailing={
+        <>
+          {needsYou && (
+            <>
+              <span id={nameId} hidden>
+                {row.name}
+              </span>
+              <IconAction
+                icon={MessageSquare}
+                label="Reply"
+                aria-describedby={nameId}
+                onClick={() => (onReply ?? onNavigate)(route)}
+              />
+            </>
+          )}
+        </>
+      }
+    />
   );
 }

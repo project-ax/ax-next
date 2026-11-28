@@ -1,3 +1,4 @@
+import { List } from '@project-ax/ui';
 import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 
 // Mirrors the canonical PROVIDER_ENDPOINTS table in @ax/core (`name`,
@@ -27,12 +28,14 @@ const KNOWN_PROVIDERS = [
 export function ProvidersPanel() {
   return (
     <div className="font-sans">
+      <List label="Model providers">
       {KNOWN_PROVIDERS.map((p) => (
         <CredentialSlotRow key={p.provider} displayName={p.name}
           destination={{ kind: 'provider', provider: p.provider }}
           slot={{ label: p.slot, kind: 'api-key', description: p.description }}
           scope={{ scope: 'global', ownerId: null }} />
       ))}
+      </List>
     </div>
   );
 }

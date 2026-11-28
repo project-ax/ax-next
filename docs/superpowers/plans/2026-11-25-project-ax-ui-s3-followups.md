@@ -6,8 +6,8 @@ The user's directive for this migration applies: **the functionality must stay t
 
 ## Should become cards
 
-- **Retry drops focus.** Pressing "Try again" switches `AsyncState` from error to loading, so the button unmounts and keyboard focus falls to `<body>`. Fix it once in `packages/ui`, for example by focusing the status container on retry.
-- **GeneratedFileChip stays on its own markup until S4 `FileTile`.** Moving it onto the one-line ui `Button` (fixed 40px height, no wrap) made long names overflow the chip and cover the next one, checked on kind; the change was reverted in #1262. Its shadcn button still sets `disabled` while busy, which drops focus.
+- **Retry drops focus (partly closed in S4).** `WorkspaceAttachmentChip`'s "Try again" now keeps focus. The package-level `AsyncState` retry is still open. Pressing "Try again" switches `AsyncState` from error to loading, so the button unmounts and keyboard focus falls to `<body>`. Fix it once in `packages/ui`, for example by focusing the status container on retry.
+- **CLOSED in S4: GeneratedFileChip stays on its own markup until S4 `FileTile`.** It now uses `FileTile`, and a busy chip keeps focus. Original note: Moving it onto the one-line ui `Button` (fixed 40px height, no wrap) made long names overflow the chip and cover the next one, checked on kind; the change was reverted in #1262. Its shadcn button still sets `disabled` while busy, which drops focus.
 - **IconAction busy sites need a disabled-reason tooltip.** The sites are TaskPage 907/971/992/1019 and TaskReplyBox 316. The package `IconButton` shows no tooltip while disabled. Do this in S6a.
 - **Delete task dialog.** It stays a `Dialog` because it offers "Pause instead". Moving it to `ConfirmAction` would drop that choice, which needs product sign-off; revisit in S6b. Pause agents also stays a `Dialog`, because it has a Reason field.
 - **Conversation welcome needs a hero treatment.** Either a title role or an `EmptyState` size variant. S5b/S7.
@@ -41,3 +41,23 @@ The user's directive for this migration applies: **the functionality must stay t
   - A second config block that matches channel-web goes unseen.
 - **Lint coverage.** Channel-web `.ts` files aren't covered by the tsx-only `ax-ui` block.
 - **Busy label swaps.** About 35 shadcn buttons still swap their label while busy ("Saving…"). Migrate them in S6a.
+
+## S4 follow-ups
+
+Gaps in `ListRow` and friends that S4 found but did not fill. None loses functionality; each has a workaround in place.
+
+- **`ListRow` has no current-item state.** `SidebarChats` needs `aria-current="page"`, so it keeps hand-written `<li>`s (frozen in `eslint-suppressions.json`).
+- **`ListRow` can't hold a group heading.** `TodayTaskGroup` is an `h2` plus a named group inside the queue `List`, so it stays a raw `<li>`. Either a `ListGroup` or a heading slot would let both go.
+- **`expandable` is not controllable.** `RoutinesList` and `DecisionRow` need the parent to open or close a row, so they own their own toggles.
+- **No `aria-controls` on the `RoutinesList` runs toggle.** The button says it is expanded but does not point at what it expands.
+- **`HeadingLevelContext` is not public.** Three raw `h1`/`h3` in channel-web wait on it.
+- **`Timeline` has no non-entry item slot.** `TaskUpdates`' fold needs a raw `<li>`.
+- **`BundleFileView`'s selectable file list is another "current item" gap** for `ListRow`, like `SidebarChats`.
+- **Frozen raw `ul`/`li`/`dl`/`time` outside chat.** Widening `no-raw-elements` froze them in admin, settings and workspace files that S5/S6 will migrate, plus chat and markdown (S7). The ratchet only lets those counts fall.
+- **`PeoplePicker` stays a shadcn `Command` popup.** It arrived from main (agent sharing, #1266) during the S4 rebase. It is a search combobox with a listbox of options, not rows, so `List`/`ListRow` is the wrong fit; it moves to the package `Combobox` in S6a. It has no raw elements, so nothing was frozen for it. Its neighbours from the same PR, the owner rows in `AgentOwners` and the chosen-people rows in `AudienceDialog`, were rows and now use `List`/`ListRow`.
+
+From the S4 before/after walk on kind (report kept locally; it holds dev data). Three regressions it found were fixed in the S4 PRs: a clock a week old dropping its time of day, the rail's Today name not starting with its visible text, and routine runs showing the raw trigger value. These are left:
+
+- **An expandable row shows no expand cue.** The Today decision row lost its chevron when it became a `ListRow`; Enter and Space still toggle it, and neither the old nor the new row sets `aria-expanded`. An `expandable` row should draw the chevron and set `aria-expanded` itself.
+- **`FileTile` in `chip`/`card` form has no download glyph.** The user-turn CSV chip and the generated-file chip lost their trailing download icon; the whole tile is the `Download <file>` button. A trailing action icon on `FileTile` would bring the cue back.
+- **Sentences lost "on … at".** A moment a week or more away reads "You marked it done Sun, Oct 25, 2026, 11:23 AM" (was "on Sun, Oct 25 at 11:23 AM"). Same information; `momentWords` could take a sentence form.

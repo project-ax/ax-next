@@ -330,10 +330,10 @@ export default tseslint.config(
       'ax-ui/no-style-prop': 'error',
       // Narrowed to shipped replacements; widens per area in S3–S6 (roadmap).
       'ax-ui/no-classname': ['error', { intrinsicOnly: true }],
-      'ax-ui/no-raw-elements': ['error', { elements: ['div', 'span', 'p', 'h2', 'h3', 'h4', 'h5', 'h6'] }],
+      'ax-ui/no-raw-elements': ['error', { elements: ['div', 'span', 'p', 'ul', 'ol', 'li', 'dl', 'dt', 'dd', 'time', 'h2', 'h3', 'h4', 'h5', 'h6'] }],
       // Radix, @project-ax/ui internals, and the shadcn modules S3 replaced.
       // Widens per area in S4–S6 (spinner stays: whole-page boot + in-button).
-      'ax-ui/no-internal-imports': ['error', { uiModules: ['alert', 'skeleton', 'empty'] }],
+      'ax-ui/no-internal-imports': ['error', { uiModules: ['alert', 'skeleton', 'empty', 'badge', 'card'] }],
     },
   },
 );

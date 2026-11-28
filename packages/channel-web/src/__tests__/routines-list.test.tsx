@@ -29,6 +29,16 @@ describe('routine list', () => {
     show();
     expect(await screen.findByText('2 app updates waiting.')).toBeVisible();
   });
+  it('opens its run panel inside the same list item as the routine, with its toggle expanded', async () => {
+    show();await screen.findByText(row.name);
+    const toggle = screen.getByRole('button',{name:`Recent runs for ${row.name}`});
+    const item = toggle.closest('li') as HTMLElement;
+    expect(toggle).toHaveAttribute('aria-expanded','false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded','true');
+    expect(within(item).getByRole('button',{name:'Fire now'})).toBeVisible();
+    expect(screen.getAllByRole('listitem').filter((li) => li.parentElement === item.parentElement)).toHaveLength(1);
+  });
   it('keeps a definitive busy response visible when the fire control releases its pending lock', async () => {
     vi.mocked(routineApi.fireNow).mockRejectedValue(new RoutineApiError(409,'busy','routineId'));
     show();await screen.findByText(row.name);

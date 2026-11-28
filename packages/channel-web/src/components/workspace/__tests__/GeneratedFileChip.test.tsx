@@ -62,6 +62,18 @@ async function settle(): Promise<void> {
   });
 }
 
+/**
+ * The agent file is gone: the chip says so in its status line (the same live element, so the change is announced),
+ * keeps the name on screen, and offers no download control at all.
+ */
+async function expectGone(name = 'Q3 plan #1.pdf'): Promise<void> {
+  const line = await screen.findByText('No longer available');
+  expect(line).toBeVisible();
+  expect(line).toHaveAttribute('role', 'status');
+  expect(screen.getByTitle(name)).toBeVisible();
+  expect(screen.queryByRole('button', { name: `Download ${name}` })).toBeNull();
+}
+
 /** What `AgentConversation` needs to draw `thread` in conversation `c1`, and nothing more. */
 function conversationProps(thread: ThreadMessage[]): ComponentProps<typeof AgentConversation> {
   return {
@@ -101,9 +113,11 @@ describe('GeneratedFileChip', () => {
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     render(<GeneratedFileChip file={{ ...file, attachmentId: null }} conversationId="c1" />);
-    const button = screen.getByRole('button', { name: 'Download budget.csv' });
-    expect(button).toBeDisabled();
-    fireEvent.click(button);
+    // Nothing to download by, so there is no download control at all: the chip is plain text.
+    expect(screen.queryByRole('button')).toBeNull();
+    const name = screen.getByTitle('budget.csv');
+    expect(name).toBeVisible();
+    fireEvent.click(name);
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -113,22 +127,38 @@ describe('GeneratedFileChip', () => {
     vi.stubGlobal('fetch', fetch);
     render(<GeneratedFileChip file={file} conversationId="c1" />);
     const button = screen.getByRole('button', { name: 'Download budget.csv' });
+    // One polite status line, the same element through every change, says what is happening.
+    const live = screen.getByRole('status');
+    expect(live).toHaveTextContent('2 KB · Download');
+    button.focus();
     fireEvent.click(button);
     fireEvent.click(button);
     expect(fetch).toHaveBeenCalledOnce();
-    expect(button).toBeDisabled();
+    // Busy, not disabled: the control keeps focus (a disabled button would drop it to <body>) and swallows the click.
+    expect(button).toHaveAttribute('aria-busy', 'true');
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).toHaveFocus();
     expect(screen.getByText('Downloading…')).toBeVisible();
+    expect(screen.getByRole('status')).toBe(live);
+    expect(live).toHaveTextContent('Downloading…');
     resolve(new Response('{}', { status: 404 }));
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This file is no longer available'));
     expect(saveBlob).not.toHaveBeenCalled();
     expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute('aria-busy');
+    expect(button).not.toHaveAttribute('aria-disabled');
+    expect(button).toHaveFocus();
     fireEvent.click(button);
     expect(fetch).toHaveBeenCalledTimes(2);
     resolve(new Response('data'));
     await waitFor(() => expect(saveBlob).toHaveBeenCalledOnce());
     // The attachment's hand-over starts the same window as an agent file's.
     expect(await screen.findByText(DOWNLOAD_STARTED_NOTE)).toBeVisible();
-    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(DOWNLOAD_STARTED_NOTE);
+    expect(button).toHaveFocus();
+    // In the window a click does nothing.
+    fireEvent.click(button);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   describe('agent-file chips (TASK-1012)', () => {
@@ -175,7 +205,7 @@ describe('GeneratedFileChip', () => {
       fireEvent.click(button);
       await waitFor(() => expect(saveFromUrl).toHaveBeenCalledOnce());
       expect(await screen.findByText(DOWNLOAD_STARTED_NOTE)).toBeVisible();
-      expect(button).toBeDisabled();
+      expect(button).toHaveAccessibleDescription(DOWNLOAD_STARTED_NOTE);
 
       // Right after the note appears, a click does nothing: no second probe.
       fireEvent.click(button);
@@ -284,9 +314,7 @@ describe('GeneratedFileChip', () => {
       vi.stubGlobal('fetch', fetch);
       render(<GeneratedFileChip file={agentFile} conversationId="c & 1" />);
 
-      const button = await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' });
-      expect(button).toBeDisabled();
-      expect(screen.getByText('No longer available')).toBeVisible();
+      await expectGone();
       expect(screen.queryByText('10 B · Download')).toBeNull();
       // Asked once, with no click, through the conversation's own status
       // route, both parts encoded whole, once.
@@ -295,8 +323,8 @@ describe('GeneratedFileChip', () => {
         '/api/workspace/conversations/c%20%26%201/status/user-files/reports%2FQ3%20plan%20%231.pdf',
         expect.objectContaining({ credentials: 'include' }),
       );
-      // There is nothing to download, and the button says so by doing nothing.
-      fireEvent.click(button);
+      // There is nothing to download, and clicking the chip does nothing.
+      fireEvent.click(screen.getByTitle('Q3 plan #1.pdf'));
       await settle();
       expect(fetch).toHaveBeenCalledOnce();
       expect(saveBlob).not.toHaveBeenCalled();
@@ -340,7 +368,7 @@ describe('GeneratedFileChip', () => {
 
       // The next turn, in which the agent deleted the file.
       view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
-      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      await expectGone();
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(fetch).toHaveBeenLastCalledWith(STATUS_URL, expect.anything());
     });
@@ -350,7 +378,7 @@ describe('GeneratedFileChip', () => {
       // would serve it, so the chip must not go on saying it is gone.
       vi.stubGlobal('fetch', chipFetch({ status: statusAnswers(404, 200) }));
       const view = render(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={1} />);
-      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      await expectGone();
       view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
       expect(await screen.findByRole('button', { name: 'Download Q3 plan #1.pdf' })).toBeEnabled();
       expect(screen.getByText('10 B · Download')).toBeVisible();
@@ -365,7 +393,7 @@ describe('GeneratedFileChip', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Download Q3 plan #1.pdf' }));
       await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('We could not download this file just now. Try again.'));
       view.rerender(<GeneratedFileChip file={agentFile} conversationId="c1" recheckKey={2} />);
-      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      await expectGone();
       // "Try again" next to a button that can't be pressed is a dead end.
       expect(screen.queryByRole('alert')).toBeNull();
     });
@@ -421,7 +449,7 @@ describe('GeneratedFileChip', () => {
       expect(fetch).toHaveBeenCalledOnce();
 
       view.rerender(<AgentConversation {...conversationProps([reply, { kind: 'user', id: 'u2', text: 'Delete it.' }])} />);
-      expect(await screen.findByRole('button', { name: 'Q3 plan #1.pdf is no longer available' })).toBeDisabled();
+      await expectGone();
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(fetch).toHaveBeenLastCalledWith(STATUS_URL, expect.anything());
     });

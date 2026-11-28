@@ -184,7 +184,7 @@ describe('the user bubble lets long text wrap', () => {
       }),
     );
 
-    expect(screen.getByText('notes.txt')).toBeInTheDocument();
+    expect(screen.getByTitle('notes.txt')).toBeInTheDocument();
     expect(bubble(text).className).toContain('break-words');
   });
 });
