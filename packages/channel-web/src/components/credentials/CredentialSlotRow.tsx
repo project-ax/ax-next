@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { SettingsRow } from '../settings/SettingsLayout';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Notice } from '@project-ax/ui';
+import { Notice, StatusBadge } from '@project-ax/ui';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import type { Destination } from '@ax/credentials';
 import { CredentialSlotForm } from './CredentialSlotForm';
@@ -76,7 +75,7 @@ function CredentialSlotTarget({ destination, slot, scope, displayName, onSaved }
     {displayName ? <SettingsRow label={displayName} value={status === 'ready' && isSet ? 'Key saved' : statusLabel} onClick={() => { if (canManage) setOpen(true); }} /> : <div className="flex items-center justify-between gap-3 py-2">
       <div className="flex items-center gap-2">
         <span className="text-sm">{humanLabel}</span>
-        <Badge variant={status === 'ready' && isSet ? 'default' : 'outline'}>{statusLabel}</Badge>
+        <StatusBadge tone={status === 'ready' && isSet ? 'success' : 'neutral'} dot>{statusLabel}</StatusBadge>
       </div>
       <Button size="sm" variant="outline" className="shrink-0" disabled={!canManage} onClick={() => setOpen(true)}>{isSet ? 'Replace key' : 'Add key'}</Button>
     </div>}

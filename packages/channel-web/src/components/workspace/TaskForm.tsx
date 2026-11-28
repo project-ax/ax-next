@@ -25,7 +25,7 @@ import {
   ROUTINE_NAME_MAX_CHARS,
   type RoutineDefinition,
 } from '@ax/routines-contract';
-import { Notice, Stack } from '@project-ax/ui';
+import { Avatar, Notice, Stack } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent } from '@/components/ui/collapsible';
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
@@ -44,7 +44,6 @@ import { cn } from '@/lib/utils';
 import { ActiveHoursDaySelector } from '@/components/routines/ActiveHoursDaySelector';
 import { WebhookAddressFields } from '@/components/routines/WebhookAddressFields';
 import { useRoutineDraft } from '@/components/routines/use-routine-draft';
-import { AgentTile } from './bits';
 import { IconAction, TASK_KIND_ICONS, TASK_KIND_SHORT } from './task-bits';
 import {
   durationWords,
@@ -351,7 +350,7 @@ export function TaskForm({
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap gap-2">
           {mode === 'create' && agentChoices !== undefined && agentChoices.agents.length > 1 && chosenAgent && (
-            <SettingChip leading={<AgentTile agent={{ name: chosenAgent.agentName }} size={18} />}
+            <SettingChip leading={<Avatar name={chosenAgent.agentName} size="xs" />}
               label={chosenAgent.agentName} name={`Agent: ${chosenAgent.agentName}`}
               open={chip === 'agent'} onOpenChange={openChip('agent')} disabled={disabled}>
               <RadioGroup aria-label="Agent" value={agentChoices.selected} disabled={disabled}
@@ -363,7 +362,7 @@ export function TaskForm({
                   <Field key={agent.agentId} orientation="horizontal">
                     <RadioGroupItem id={`${id}-agent-${agent.agentId}`} value={agent.agentId} />
                     <FieldLabel htmlFor={`${id}-agent-${agent.agentId}`} className="font-normal">
-                      <AgentTile agent={{ name: agent.agentName }} size={20} />
+                      <Avatar name={agent.agentName} size="sm" />
                       {agent.agentName}
                     </FieldLabel>
                   </Field>

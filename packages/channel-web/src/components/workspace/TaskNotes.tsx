@@ -33,7 +33,7 @@
  * hand focus back to the button, which is still there.
  */
 import { useRef, useState } from 'react';
-import { ConfirmAction } from '@project-ax/ui';
+import { ConfirmAction, InsetBlock } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { afterDialogCloses } from '@/lib/focus-after-removal';
 import { RESOLUTION_FOCUS_RING, takeResolutionFocus } from '@/lib/consent-focus';
@@ -116,9 +116,9 @@ export function TaskNotes({
       ) : (
         <>
           <p className="text-[12px] text-muted-foreground">{`${agentName} keeps these for its next check-in.`}</p>
-          <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-muted px-3 py-2">
-            {notes}
-          </p>
+          <InsetBlock>
+            <p className="m-0 whitespace-pre-wrap break-words">{notes}</p>
+          </InsetBlock>
           <Button variant="outline" size="sm" className="self-start" onClick={() => setConfirming(true)}>
             Clear notes
           </Button>

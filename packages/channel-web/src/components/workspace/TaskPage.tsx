@@ -185,9 +185,8 @@ import {
   Trash2,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, Button as AxButton, Notice } from '@project-ax/ui';
+import { AsyncState, Avatar, Button as AxButton, Card, formatTimestamp, Grid, Notice, Stack, StatusBadge, StatusMark, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   DropdownMenu,
@@ -213,10 +212,10 @@ import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { useTaskPoll } from '@/lib/use-task-poll';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useTask, type TaskReadError } from '@/lib/workspace-task';
-import { checkInWhen, monthDay, timeAgo } from '@/lib/workspace-time';
 import type { TaskDetail, TaskFinishBy, TaskReplyCheckIn, TaskStep } from '@/lib/workspace-types';
-import { AgentTile, StateDot, StateDotSlot } from './bits';
-import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT, TaskStatusPill } from './task-bits';
+import { STATE_TONE } from './bits';
+import { momentWords } from '@/lib/moment-words';
+import { IconAction, IconLink, MetaChip, TASK_KIND_ICONS, TASK_KIND_SHORT } from './task-bits';
 import { TaskFinishDate } from './TaskFinishDate';
 import {
   MARK_DONE_NOT_ALLOWED,
@@ -327,6 +326,15 @@ function bannerOf(detail: TaskDetail): Banner {
 }
 
 /** The header's pill: the list's own group, or a Repeat job's "Scheduled" / "Paused". */
+/** The task's state as a badge: its mark's shape and its word. Never colour alone. */
+function StatusPill({ group, label }: { group: TaskGroup; label?: string }) {
+  return (
+    <StatusBadge tone={STATE_TONE[group]} dot>
+      {label ?? TASK_GROUP_LABELS[group]}
+    </StatusBadge>
+  );
+}
+
 function pillOf(detail: TaskDetail): { group: TaskGroup; label?: string } {
   if (detail.kind === 'repeat' && detail.doneAt === null) {
     return detail.enabled ? { group: 'on-track', label: 'Scheduled' } : { group: 'paused' };
@@ -731,7 +739,7 @@ export function TaskPage({
               <h1 className="min-w-0 break-words text-[24px] font-semibold leading-tight tracking-[-0.01em]">
                 {detail?.name ?? 'Task'}
               </h1>
-              {detail !== null && <TaskStatusPill {...pillOf(detail)} />}
+              {detail !== null && <StatusPill {...pillOf(detail)} />}
             </div>
             <div className="flex flex-col gap-2">
               {detail !== null && (
@@ -1049,14 +1057,14 @@ function MetaRow({
 }) {
   const { agentName } = detail;
   const done = detail.doneAt !== null;
-  const next = detail.enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
-  const doneWhen = done ? checkInWhen(detail.doneAt as string, now) : null;
-  // The month-day form every short date on the page uses ("Oct 25", `finishByShort`'s).
-  const doneDay = done ? monthDay(detail.doneAt as string) : '';
+  const next = detail.enabled && detail.nextCheckAt !== null ? momentWords(detail.nextCheckAt, now) : null;
+  const doneWhen = done ? momentWords(detail.doneAt as string, now) : null;
+  // The short moment the chip shows: "30 min ago" today, the date once it is a week old.
+  const doneDay = done ? (formatTimestamp(detail.doneAt as string, { now }) ?? '') : '';
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
       <span className="inline-flex items-center gap-1.5 text-[13px]">
-        <AgentTile agent={{ name: agentName }} size={18} />
+        <Avatar name={agentName} size="xs" />
         {agentName}
       </span>
       <MetaChip
@@ -1299,21 +1307,23 @@ function TaskBody({
         <ClaimBanner detail={detail} finish={finish} unticked={unticked} />
       )}
       {banner === 'miss' && (
-        <Card className="bg-muted p-4 shadow-none">{missFix}</Card>
+        <Notice tone="warning" announce={false}>
+          {missFix}
+        </Notice>
       )}
       {banner === 'ask' && (
         <section aria-label={`${agentName} asks`}>
-          <Card className="flex flex-col gap-3 bg-warning-soft p-4 shadow-none">
+          <Notice tone="warning" announce={false}>
             <div className="flex items-start gap-2.5">
               <span className="mt-0.5 shrink-0">
-                <AgentTile agent={{ name: agentName }} size={20} />
+                <Avatar name={agentName} size="sm" />
               </span>
               <p className="min-w-0 whitespace-pre-wrap break-words text-[15px] leading-relaxed">
                 {detail.task?.ask}
               </p>
             </div>
             {replyBox}
-          </Card>
+          </Notice>
         </section>
       )}
       {/*
@@ -1349,8 +1359,9 @@ function TaskBody({
         first two rows, so About starts under them. Only when the latest card
         is taller than the steps does About wait for it.
       */}
-      <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_290px] lg:grid-rows-[auto_auto_1fr] lg:items-start">
-        <Card className="flex flex-col gap-3 p-4 lg:col-start-1 lg:row-start-1">
+      <Grid columns={{ base: 1, lg: 2 }}>
+        <Card>
+          <Stack gap="md">
           <LatestUpdate
             detail={detail}
             now={now}
@@ -1373,10 +1384,10 @@ function TaskBody({
               collapsed
             />
           )}
+        </Stack>
         </Card>
         {detail.kind === 'get-done' && (
-          <div className="lg:col-start-2 lg:row-span-2 lg:row-start-1">
-            <TaskSteps
+          <TaskSteps
               agentId={agentId}
               routineId={routineId}
               steps={detail.steps}
@@ -1397,10 +1408,10 @@ function TaskBody({
                 )
               }
             />
-          </div>
         )}
         {checkInsCard && (
-          <Card className="flex flex-col gap-2 p-4 lg:col-start-1 lg:row-span-2 lg:row-start-2">
+          <Card>
+            <Stack gap="md">
             <TaskUpdates
               updates={detail.updates}
               replies={detail.replies}
@@ -1412,19 +1423,18 @@ function TaskBody({
               shown={3}
             />
             {banner !== 'ask' && replyBox}
+          </Stack>
           </Card>
         )}
-        <div className={cn('lg:col-start-2', detail.kind === 'get-done' ? 'lg:row-start-3' : 'lg:row-span-3 lg:row-start-1')}>
-          <AboutList
-            detail={detail}
-            agentId={agentId}
-            routineId={routineId}
-            onEdit={onEdit}
-            onNavigate={onNavigate}
-            onRefresh={onRefresh}
-          />
-        </div>
-      </div>
+        <AboutList
+          detail={detail}
+          agentId={agentId}
+          routineId={routineId}
+          onEdit={onEdit}
+          onNavigate={onNavigate}
+          onRefresh={onRefresh}
+        />
+      </Grid>
     </>
   );
 }
@@ -1454,22 +1464,23 @@ function PollLine({ poll, agentName, repeat }: { poll: TaskPoll; agentName: stri
 
 /**
  * A time as the page shows it: a muted "2 hr ago" on screen, and the whole
- * sentence ("Checked at 10:02 AM · Next check at 1:00 PM") for a screen
+ * sentence ("Checked Today 10:02 AM · Next check Tomorrow 1:00 PM") for a screen
  * reader. Nothing at all when there's nothing to say.
  */
-function WhenLine({ short, full }: { short: string | null; full: string | null }) {
-  if (short === null && full === null) return null;
+function WhenLine({ at, now, full }: { at: string; now: Date; full: string | null }) {
   return (
     <span className="shrink-0 text-[12px] leading-6 tabular-nums text-muted-foreground">
-      {short !== null && <span aria-hidden="true">{short}</span>}
+      <span aria-hidden="true">
+        <Timestamp value={at} now={now} />
+      </span>
       {full !== null && <span className="sr-only">{full}</span>}
     </span>
   );
 }
 
-/** "Checked at 10:02 AM · Next check at 1:00 PM", "… · Paused", or less when a time can't be read. */
+/** "Checked Today 10:02 AM · Next check Tomorrow 1:00 PM", "… · Paused", or less when a time can't be read. */
 function checkedSentence(label: 'Checked' | 'Last check-in', at: string, enabled: boolean, next: string | null, now: Date): string | null {
-  const checked = checkInWhen(at, now);
+  const checked = momentWords(at, now);
   const parts = [
     checked === null ? null : `${label} ${checked}`,
     !enabled ? 'Paused' : next === null ? null : `Next check ${next}`,
@@ -1510,7 +1521,7 @@ function LatestUpdate({
   const fromCheckIn = latestUpdateCheckIn(task, detail.updates);
   const cantShow = task !== null && (task.update === null || task.update === '');
   const next =
-    enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+    enabled && detail.nextCheckAt !== null ? momentWords(detail.nextCheckAt, now) : null;
   const banner = bannerOf(detail);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2">
@@ -1520,9 +1531,7 @@ function LatestUpdate({
       {missLine !== null && <div className="text-muted-foreground">{missLine}</div>}
       {task === null ? (
         <p className="flex items-center gap-2 text-[14px] text-muted-foreground">
-          <StateDotSlot>
-            <StateDot state="no-update" />
-          </StateDotSlot>
+          <StatusMark tone="neutral" />
           <span>{next === null || done ? 'No update yet.' : `No update yet. It’ll check in ${next}.`}</span>
         </p>
       ) : (
@@ -1537,8 +1546,9 @@ function LatestUpdate({
             {cantShow ? CANT_SHOW : task.update}
           </p>
           <WhenLine
-            short={timeAgo(task.reportedAt, now)}
-            full={done ? `Last update ${checkInWhen(task.reportedAt, now) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
+            at={task.reportedAt}
+            now={now}
+            full={done ? `Last update ${momentWords(task.reportedAt, now) ?? ''}`.trim() : checkedSentence('Checked', task.reportedAt, enabled, next, now)}
           />
           {fromCheckIn === null ? null : (
             <IconLink
@@ -1599,7 +1609,7 @@ function MissLine({
     checkNow: permissions.fire,
     edit: permissions.edit,
   });
-  const next = enabled && detail.nextCheckAt !== null ? checkInWhen(detail.nextCheckAt, now) : null;
+  const next = enabled && detail.nextCheckAt !== null ? momentWords(detail.nextCheckAt, now) : null;
   const missed = missCheckIn(miss, detail.updates);
   // The button does what its words say: Edit, Resume or Check now. A too-long brief nobody here may
   // shorten names no action, so it stays words.
@@ -1618,15 +1628,13 @@ function MissLine({
     <section aria-labelledby={headingId} className="flex flex-col gap-1.5">
       <div className="flex items-start gap-2.5">
         <span className="flex h-6 items-center">
-          <StateDotSlot>
-            <StateDot state={group} />
-          </StateDotSlot>
+          <StatusMark tone={STATE_TONE[group]} />
         </span>
         <h2 id={headingId} className="sr-only">
           {TASK_GROUP_LABELS[group]}
         </h2>
         <p className="min-w-0 flex-1 break-words text-[14px] leading-6">{missSummary(miss)}</p>
-        <WhenLine short={timeAgo(miss.at, now)} full={checkedSentence('Last check-in', miss.at, enabled, next, now)} />
+        <WhenLine at={miss.at} now={now} full={checkedSentence('Last check-in', miss.at, enabled, next, now)} />
         {missed !== null && (
           <IconLink
             icon={ArrowUpRight}
@@ -1665,19 +1673,18 @@ function DoneBanner({
   now: Date;
   doneLineRef: RefObject<HTMLParagraphElement | null>;
 }) {
-  const doneWhen = checkInWhen(detail.doneAt as string, now);
+  const doneWhen = momentWords(detail.doneAt as string, now);
   return (
     <section aria-label="Done">
-      <Card className="bg-primary-soft px-4 py-3 shadow-none">
+      <Notice tone="success" announce={false}>
         <p
           ref={doneLineRef}
           tabIndex={-1}
-          className={cn('flex items-center gap-2 rounded-sm text-[14px] font-medium', RESOLUTION_FOCUS_RING)}
+          className={cn('m-0 rounded-sm', RESOLUTION_FOCUS_RING)}
         >
-          <Check aria-hidden="true" className="size-4 shrink-0 text-primary" />
-          <span>{doneWhen === null ? 'You marked this done.' : `You marked this done ${doneWhen}.`}</span>
+          {doneWhen === null ? 'You marked this done.' : `You marked this done ${doneWhen}.`}
         </p>
-      </Card>
+      </Notice>
     </section>
   );
 }
@@ -1688,10 +1695,10 @@ function ClaimBanner({ detail, finish, unticked }: { detail: TaskDetail; finish:
   const { agentName } = detail;
   return (
     <section aria-labelledby={headingId}>
-      <Card className="flex flex-col gap-3 bg-primary-soft p-4 shadow-none sm:flex-row sm:items-center">
+      <Notice tone="info" announce={false}>
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <span className="shrink-0">
-            <AgentTile agent={{ name: agentName }} size={20} />
+            <Avatar name={agentName} size="sm" />
           </span>
           <h2 id={headingId} className="min-w-0 break-words text-[15px] font-medium">
             {detail.noRecentUpdate !== null
@@ -1707,7 +1714,7 @@ function ClaimBanner({ detail, finish, unticked }: { detail: TaskDetail; finish:
           agentName={agentName}
           running={detail.enabled}
         />
-      </Card>
+      </Notice>
     </section>
   );
 }
@@ -1794,7 +1801,7 @@ function AboutList({
   );
   const text = 'whitespace-pre-wrap break-words text-[13px] leading-relaxed';
   return (
-    <Card>
+    <Card flush>
       <section aria-labelledby={headingId} className="p-1.5">
         <h2 id={headingId} className="sr-only">
           About this task

@@ -17,7 +17,7 @@ export interface IconButtonProps {
 
 // Shared with the TooltipOpen story; not part of the package exports.
 export const TOOLTIP_CLASS =
-  'ax-z-50 ax-rounded-md ax-border ax-border-line-border ax-bg-overlay ax-px-md ax-py-xs ax-shadow-overlay ax-text-caption ax-text-fg-muted ax-font-sans';
+  'ax-z-50 ax-rounded-md ax-border ax-border-solid ax-border-line-border ax-bg-overlay ax-px-md ax-py-xs ax-shadow-overlay ax-text-caption ax-text-fg-muted ax-font-sans';
 
 export function IconButton({ label, icon, intent = 'quiet', size = 'md', ...rest }: IconButtonProps) {
   return (

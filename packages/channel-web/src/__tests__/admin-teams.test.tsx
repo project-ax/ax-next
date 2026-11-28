@@ -15,10 +15,11 @@
  * shell was deleted in Task 1.4 and replaced by AdminShell; the tab content
  * components are unchanged and can be tested in isolation.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { AdminTeamWire } from '@ax/teams';
 import { TeamList } from '../components/admin/TeamList';
+import { freezeClock, thawClock } from '@/test-utils/time';
 
 const fetchMock = vi.fn();
 
@@ -30,6 +31,7 @@ function jsonOk(body: unknown): Response {
 }
 
 beforeEach(() => {
+  freezeClock();
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   // Default: empty response for any background fetches.
@@ -37,6 +39,8 @@ beforeEach(() => {
     Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
   );
 });
+
+afterEach(() => thawClock());
 
 describe('AdminSettings — Teams tab', () => {
   it('lists the caller\'s teams by their displayName (read-only)', async () => {
@@ -61,7 +65,8 @@ describe('AdminSettings — Teams tab', () => {
     // The list route carries no member list, so the card must not pretend to
     // count one.
     expect(screen.queryByText(/members?\b/i)).toBeNull();
-    expect(screen.getByText(/^Created /)).toBeTruthy();
+    // Created 2026-09-01T12:00Z, read at the frozen "now" (Nov 26): a plain date, in the reader's own zone.
+    expect(screen.getByText(`Created ${new Date('2026-09-01T12:00:00.000Z').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`)).toBeTruthy();
   });
 
   it('shows the deferred-feature note', async () => {

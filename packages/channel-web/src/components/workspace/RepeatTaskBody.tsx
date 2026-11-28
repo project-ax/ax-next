@@ -14,21 +14,21 @@
  * Each run is one row: its mark (done, off-track or no update for completed,
  * failed or finished quietly, with the word hidden beside it), what it said
  * (or its plain status, or a failure's reason through `runFailureText`), its
- * short time (`RowTime`) and a See what it did link. The newest four show; the rest wait behind
+ * time (`RowTime`) and a See what it did link. The newest four show; the rest wait behind
  * "N earlier". An agent-written update and a recorded reason are only ever
  * React text children.
  */
 import { useEffect, useId, useState } from 'react';
 import { ArrowUpRight, History } from 'lucide-react';
+import { Card, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { momentWords } from '@/lib/moment-words';
 import { routeLinkProps } from '@/lib/route-link';
 import { runFailureText } from '@/lib/task-updates';
 import { cn } from '@/lib/utils';
-import { updateStamp } from '@/lib/workspace-time';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import type { RepeatTaskState, TaskDetail, TaskUpdate } from '@/lib/workspace-types';
-import { StateDot, StateDotSlot } from './bits';
+import { STATE_TONE } from './bits';
 import { IconLink, RowTime } from './task-bits';
 
 /** How many runs show before "N earlier". */
@@ -86,7 +86,7 @@ export function RepeatTaskBody({
   );
   return (
     <Card>
-      <section aria-labelledby={headingId} className="flex flex-col gap-1 p-4">
+      <section aria-labelledby={headingId} className="flex flex-col gap-1">
         <h2 id={headingId} className="sr-only">
           Run history
         </h2>
@@ -161,13 +161,11 @@ function RunRow({
       : update.report?.update != null && update.report.update !== ''
         ? update.report.update
         : word;
-  const stamp = updateStamp(update.firedAt, now);
+  const stamp = momentWords(update.firedAt, now);
   return (
     <li className="flex items-start gap-2.5 py-1.5">
       <span className="flex h-6 items-center">
-        <StateDotSlot>
-          <StateDot state={RUN_MARK[update.status]} />
-        </StateDotSlot>
+        <StatusMark tone={STATE_TONE[RUN_MARK[update.status]]} />
       </span>
       {said !== word && <span className="sr-only">{`${word}:`}</span>}
       {/* A failure's reason is read whole, never clamped; any other run's line is. */}
@@ -179,7 +177,7 @@ function RunRow({
       >
         {said}
       </p>
-      <RowTime iso={update.firedAt} now={now} className="pt-0.5 leading-5" />
+      <RowTime at={update.firedAt} now={now} />
       {update.conversationId !== null ? (
         <IconLink
           icon={ArrowUpRight}

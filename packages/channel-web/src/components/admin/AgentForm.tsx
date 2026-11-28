@@ -50,9 +50,8 @@ import { AgentToolPicker } from './AgentToolPicker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { ConfirmAction, Notice, EmptyState, Stack } from '@project-ax/ui';
+import { Card, ConfirmAction, EmptyState, Notice, Stack } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import { SettingsActions, SettingsDetailRow } from '../settings/SettingsLayout';
 
@@ -539,8 +538,8 @@ if (base.model !== editing.model) patch.model = base.model;
 
   // ── Create / edit form view ────────────────────────────────────────────
   return (
-    <div className="font-sans">
-      <div className="mb-5 flex items-center gap-3">
+    <Stack gap="md">
+      <div className="flex items-center gap-3">
         <Button variant="ghost" size="sm" onClick={cancelForm}>
           ← Back
         </Button>
@@ -549,7 +548,7 @@ if (base.model !== editing.model) patch.model = base.model;
         </h2>
       </div>
 
-      <Card className="p-5">
+      <Card>
         <form
           className="flex flex-col gap-4"
           onSubmit={(e) => void submit(e)}
@@ -773,7 +772,7 @@ if (base.model !== editing.model) patch.model = base.model;
       {/* Skill attachments — only available when editing an existing agent.
           New agents get their skill-attachment section after first save. */}
       {editing !== 'new' && (
-        <Card className="p-5 mt-4">
+        <Card>
           <SkillAttachmentsSection
             agentId={editing.id}
             initialAttachments={editing.skillAttachments ?? []}
@@ -797,11 +796,9 @@ if (base.model !== editing.model) patch.model = base.model;
           (its owner-scoped opening is a tracked follow-up), so it's hidden for
           non-admins. Only meaningful once the agent exists. */}
       {editing !== 'new' && isAdmin && (
-        <div className="mt-4">
-          <AuthoredSkillsSection agentId={editing.id} />
-        </div>
+        <AuthoredSkillsSection agentId={editing.id} />
       )}
-    </div>
+    </Stack>
   );
 }
 

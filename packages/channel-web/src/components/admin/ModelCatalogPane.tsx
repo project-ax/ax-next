@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Input } from '@/components/ui/input';
-import { EmptyState, Notice } from '@project-ax/ui';
+import { Card, EmptyState, Heading, Notice, Stack } from '@project-ax/ui';
 import type { CatalogProvider } from '@/lib/models-admin';
 import { countModels } from '@/lib/models-picker';
 import { cachedNote, countLine, providerNoKey, providerProblem } from '@/lib/models-copy';
@@ -40,11 +39,10 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
   const groups = filtering ? shown : providers;
 
   return (
-    <Card variant="settings">
-      <CardHeader className="flex flex-col gap-3">
-        <CardTitle role="heading" aria-level={2} className="text-lg">
-          All models
-        </CardTitle>
+    <Card>
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Heading>All models</Heading>
         <div className="relative">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
@@ -74,8 +72,8 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
             </Button>
           )}
         </div>
-      </CardHeader>
-      <CardContent className="max-h-[60vh] flex flex-col gap-4 overflow-y-auto">
+      </Stack>
+      <Stack gap="md">
         {filtering && shownCount === 0 && (
           <EmptyState
             title={`No models match “${query.trim()}”`}
@@ -141,7 +139,8 @@ export function ModelCatalogPane(props: ModelCatalogPaneProps) {
             </Collapsible>
           );
         })}
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }

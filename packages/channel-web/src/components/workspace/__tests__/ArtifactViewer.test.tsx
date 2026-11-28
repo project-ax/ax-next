@@ -33,7 +33,9 @@ vi.mock('@/lib/workspace-api', async () => {
 });
 
 const api = vi.mocked(workspaceApi);
-const NOW = Date.parse('2026-11-06T12:00:00Z');
+// Local noon, so "2 hr ago" is the same local day in any time zone.
+const NOW = new Date(2026, 10, 6, 12, 0).getTime();
+const TWO_HR_AGO = new Date(NOW - 2 * 3_600_000).toISOString();
 
 function detail(over: Partial<ArtifactDetail> = {}): ArtifactDetail {
   return {
@@ -50,7 +52,7 @@ function detail(over: Partial<ArtifactDetail> = {}): ArtifactDetail {
     createdAt: '2026-11-01T00:00:00Z',
     updatedAt: '2026-11-06T10:00:00Z',
     versions: [
-      { version: 3, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-06T10:00:00Z' },
+      { version: 3, mediaType: 'text/html', sizeBytes: 10, createdAt: TWO_HR_AGO },
       { version: 2, mediaType: 'text/html', sizeBytes: 9, createdAt: '2026-11-05T12:00:00Z' },
       { version: 1, mediaType: 'text/html', sizeBytes: 8, createdAt: '2026-11-01T00:00:00Z' },
     ],
@@ -232,7 +234,7 @@ describe('ArtifactViewer', () => {
     api.artifact.mockResolvedValue(
       detail({
         versions: [
-          { version: 3, mediaType: 'text/html', sizeBytes: 10, createdAt: '2026-11-06T10:00:00Z' },
+          { version: 3, mediaType: 'text/html', sizeBytes: 10, createdAt: TWO_HR_AGO },
           { version: 1, mediaType: 'application/vnd.ms-excel', sizeBytes: 8, createdAt: '2026-11-01T00:00:00Z' },
         ],
       }),

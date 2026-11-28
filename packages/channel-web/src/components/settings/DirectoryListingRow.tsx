@@ -19,17 +19,13 @@
  * "No sign-in".
  *
  * shadcn primitives and semantic tokens only (invariant 6). The chips are
- * `badgeVariants` on a `span` rather than `Badge`, because `Badge` renders a
- * `div` and a row's value sits inside the row's `button` (the `UsageTab`
- * precedent).
+ * `StatusBadge`s, which render a `span`, so they are valid inside the row's
+ * `button`.
  */
-import type { ReactNode } from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { Notice } from '@project-ax/ui';
-import { badgeVariants } from '@/components/ui/badge';
+import { formatTimestamp, KeyValueList, Notice, Stack, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
-import { monthDayYear } from '@/lib/workspace-time';
 import { SettingsDetailRow } from './SettingsLayout';
 
 const NO_DESCRIPTION = 'The publisher didn’t add a description.';
@@ -59,11 +55,11 @@ function howPeopleConnect(entry: DirectoryEntry): string {
 }
 
 /**
- * "Version 1.4.0 · updated Nov 3" ("Nov 3, 2024" in another year), or only the
+ * "Version 1.4.0 · updated 5 min ago" ("Nov 3" or "Nov 3, 2024" once it is older), or only the
  * version when the date can't be read.
  */
 function listingLine(entry: DirectoryEntry): string {
-  const updated = monthDayYear(entry.updatedAt);
+  const updated = formatTimestamp(entry.updatedAt);
   return updated ? `Version ${entry.version} · updated ${updated}` : `Version ${entry.version}`;
 }
 
@@ -82,16 +78,6 @@ function ProofLine({ entry }: { entry: DirectoryEntry }) {
     <span data-testid="directory-proof-account" className="block">
       {`Community · ${entry.publisher}`}
     </span>
-  );
-}
-
-/** One `dt`/`dd` pair in the sheet. */
-function DetailItem({ term, children }: { term: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs text-muted-foreground">{term}</dt>
-      <dd className="flex flex-col gap-1 break-words">{children}</dd>
-    </div>
   );
 }
 
@@ -122,13 +108,9 @@ export function DirectoryListingRow({
       value={
         hasChips ? (
           <span className="flex items-center gap-1.5">
-            {added && <span className={badgeVariants({ variant: 'accent', size: 'compact' })}>Added</span>}
-            {entry.deprecated && (
-              <span className={badgeVariants({ variant: 'warning', size: 'compact' })}>Deprecated</span>
-            )}
-            {authChip !== null && (
-              <span className={badgeVariants({ variant: 'secondary', size: 'compact' })}>{authChip}</span>
-            )}
+            {added && <StatusBadge tone="info" size="sm">Added</StatusBadge>}
+            {entry.deprecated && <StatusBadge tone="warning" size="sm">Deprecated</StatusBadge>}
+            {authChip !== null && <StatusBadge tone="neutral" size="sm">{authChip}</StatusBadge>}
           </span>
         ) : undefined
       }
@@ -136,22 +118,30 @@ export function DirectoryListingRow({
     >
       {(close) => (
         <>
-          <dl className="flex flex-col gap-4 text-sm">
-            <DetailItem term="Published by">
-              <span className="flex items-center gap-1.5">
-                {domain && <ShieldCheck aria-hidden="true" className="size-4 shrink-0 text-primary" />}
-                <span className="min-w-0">{entry.publisher}</span>
-              </span>
-              <span className="text-muted-foreground">
-                {domain
-                  ? `The publisher proved they control ${entry.publisher}.`
-                  : 'A community listing. It isn’t checked against any company.'}
-              </span>
-            </DetailItem>
-            <DetailItem term="Connects to">{directoryHost(entry.url)}</DetailItem>
-            <DetailItem term="How people connect">{howPeopleConnect(entry)}</DetailItem>
-            <DetailItem term="Listing">{listingLine(entry)}</DetailItem>
-          </dl>
+          <KeyValueList
+            layout="stacked"
+            items={[
+              {
+                label: 'Published by',
+                value: (
+                  <Stack gap="xs">
+                    <span className="flex items-center gap-1.5">
+                      {domain && <ShieldCheck aria-hidden="true" className="size-4 shrink-0 text-primary" />}
+                      <span className="min-w-0">{entry.publisher}</span>
+                    </span>
+                    <span className="text-muted-foreground">
+                      {domain
+                        ? `The publisher proved they control ${entry.publisher}.`
+                        : 'A community listing. It isn’t checked against any company.'}
+                    </span>
+                  </Stack>
+                ),
+              },
+              { label: 'Connects to', value: directoryHost(entry.url) },
+              { label: 'How people connect', value: howPeopleConnect(entry) },
+              { label: 'Listing', value: listingLine(entry) },
+            ]}
+          />
           {entry.deprecated && <p className="text-sm text-muted-foreground">{DEPRECATED_NOTE}</p>}
           <Notice tone="info">{TRUST_NOTE}</Notice>
           <div className="flex flex-wrap items-center justify-end gap-2">

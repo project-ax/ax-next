@@ -298,13 +298,13 @@ describe("the agent's own bot, in the ready section", () => {
       botChannels: [{ channelId: 'C0BOTSUP01', name: 'help' }],
     });
     const heading = await liveTitle('@quill');
-    const card = heading.closest('[data-slot="card"]') as HTMLElement;
+    const card = screen.getByRole('region', { name: heading.textContent ?? '' });
     expect(
       within(card).getByText('@quill has answered in these channels.'),
     ).toBeInTheDocument();
     const list = within(card).getByRole('list', { name: 'Channels @quill has answered in' });
     expect(within(list).getByText('help')).toBeInTheDocument();
-    expect(card.querySelector('[data-slot="card-description"]')).toHaveTextContent('In any Slack channel, type /invite @quill');
+    expect(card.querySelector('code')!.parentElement).toHaveTextContent('In any Slack channel, type /invite @quill');
     // The only button on the card is a ⋯ or two: nothing hangs outside the menus.
     const menu = await openMenu('@quill');
     expect(within(menu).getByRole('menuitem', { name: 'Remove from Slack' })).toBeInTheDocument();

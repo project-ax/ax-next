@@ -1,3 +1,4 @@
+import { freezeClock, thawClock, visibleText } from '@/test-utils/time';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
@@ -53,7 +54,9 @@ const read = (
   ...(factsVisibility !== undefined ? { factsVisibility } : {}),
 });
 
+// Every test runs at the same frozen "now": a noted date reads with its year once it is not this year.
 beforeEach(() => {
+  freezeClock();
   vi.clearAllMocks();
   recallMock.mockResolvedValue({ statements: [], degraded: [] });
   rememberMock.mockResolvedValue({ id: 'mem-new' });
@@ -70,7 +73,21 @@ async function memoryAction(label: string): Promise<HTMLElement> {
   return screen.findByRole('menuitem', { name: label });
 }
 
+afterEach(() => thawClock());
+
 describe('MemorySurface', () => {
+  it.each([false, true])('renders valid DOM: React reports no nesting error (compact=%s)', async (compact) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    recallMock.mockResolvedValue({ statements: [fact({ id: 'a' }), fact({ id: 'b', kind: 'opinion' })], degraded: [] });
+    render(<CompactSurfaceContext.Provider value={compact}>
+      <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
+    </CompactSurfaceContext.Provider>);
+    await screen.findByText('Preference');
+    const calls = error.mock.calls.map((c) => String(c[0]));
+    error.mockRestore();
+    expect(calls).toEqual([]);
+  });
+
   it.each([false, true])('uses Preference and Fact chips with saved-by fallbacks (compact=%s)', async (compact) => {
     recallMock.mockResolvedValue({ statements: [
       fact({ id: 'opinion', kind: 'opinion', savedBy: 'person' }),
@@ -84,8 +101,10 @@ describe('MemorySurface', () => {
     render(<CompactSurfaceContext.Provider value={compact}>
       <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
     </CompactSurfaceContext.Provider>);
-    expect(await screen.findByText('Preference')).toHaveClass('bg-primary-soft', 'text-primary');
+    // The kind badge keeps its distinction: a preference is the info tone, a fact the plain one.
+    expect((await screen.findByText('Preference')).parentElement).toHaveClass('ax-bg-status-info-soft');
     expect(screen.getAllByText('Fact')).toHaveLength(3);
+    for (const fact of screen.getAllByText('Fact')) expect(fact.parentElement).toHaveClass('ax-bg-surface-raised');
     expect(screen.getByText('Saved by a person')).toBeInTheDocument();
     expect(screen.getByText('Agent note')).toBeInTheDocument();
     expect(screen.getByText('Older memory')).toBeInTheDocument();
@@ -103,9 +122,13 @@ describe('MemorySurface', () => {
     </CompactSurfaceContext.Provider>);
     const badge = await screen.findByText('Shared');
     expect(screen.getAllByText('Shared')).toHaveLength(1);
-    expect(badge).toHaveAttribute('title', 'Learned in a shared conversation. Anyone there could see it.');
+    // The hint is always in the accessibility tree (no hover needed), as the old `title` was.
+    const hint = screen.getByText('Learned in a shared conversation. Anyone there could see it.');
+    expect(hint).toHaveClass('sr-only');
     // Beside its kind: the same container as the shared row's Fact badge.
-    expect(badge.parentElement).toContainElement(within(badge.parentElement!).getByText('Fact'));
+    const badges = badge.parentElement!.parentElement!;
+    expect(badges).toContainElement(hint);
+    expect(badges).toContainElement(within(badges).getByText('Fact'));
   });
 
   it.each([0, 1, 3])('shows the current-memory footer for %s memories', async (count) => {
@@ -136,7 +159,7 @@ describe('MemorySurface', () => {
         fact({ id: 'invalid', when: 'unknown' }),
       ], degraded: [] });
       render(<MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />);
-      expect(await screen.findByText('Yesterday')).toBeInTheDocument();
+      expect(await screen.findByText('Yesterday 12:01 AM')).toBeInTheDocument();
       expect(screen.getByText('Unknown date')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -178,9 +201,9 @@ describe('MemorySurface', () => {
       const { container } = render(<CompactSurfaceContext.Provider value={compact}>
         <MemorySurface agentId="a1" agentName="Quill" memory={read(true)} />
       </CompactSurfaceContext.Provider>);
-      await waitFor(() => expect(container.querySelector('time')?.textContent).toBe('Today'));
+      await waitFor(() => expect(visibleText(container.querySelector('time')!)).toBe('14 min ago'));
       const times = Array.from(container.querySelectorAll('time'));
-      expect(times.map((time) => time.textContent)).toEqual(['Today', 'Yesterday', dates[2]!.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]);
+      expect(times.map((time) => visibleText(time))).toEqual(['14 min ago', 'Yesterday 11:59 PM', dates[2]!.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })]);
       expect(times.map((time) => time.dateTime)).toEqual(dates.map((date) => date.toISOString()));
     } finally {
       vi.useRealTimers();
@@ -1109,7 +1132,7 @@ describe('MemorySurface — settings manager (TASK-890)', () => {
     expect(screen.getAllByRole('switch', { name: 'Show replaced memories' })).toHaveLength(1);
     const date = table.querySelector('time')!;
     expect(date.dateTime).toBe(when);
-    expect(date.textContent).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
+    expect(visibleText(date)).toBe(new Date(when).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }));
     expect(screen.queryByText('UTC engine date')).toBeNull();
     expect(screen.getByRole('button', { name: 'Memory actions: Boston' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Fix: Boston' })).toBeNull();

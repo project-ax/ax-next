@@ -2254,7 +2254,7 @@ describe('channel-web agent-workspace BFF', () => {
     });
     // TASK-435: the wire now carries the instant verbatim, not a
     // server-formatted clock string — formatting is the client's job
-    // (`lib/workspace-time.ts`), done in the READER's timezone.
+    // (`formatTimestamp` in `@project-ax/ui`), done in the READER's timezone.
     expect(body.thread[1]!.at).toBe('2026-08-01T10:00:05.000Z');
     // No result row for tu2, so it is honestly still running rather than done.
     expect(body.thread[2]).toMatchObject({

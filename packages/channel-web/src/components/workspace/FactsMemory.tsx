@@ -1,14 +1,6 @@
 import { useContext, useEffect, useRef, useState } from 'react';
-import { AsyncState, EmptyState, Notice, Text } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { AsyncState, Card, EmptyState, formatTimestamp, Inline, Notice, Stack, StatusBadge, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
 import {
   Field,
   FieldGroup,
@@ -55,8 +47,6 @@ import {
   MEMORY_SHARED_BADGE,
   MEMORY_SHARED_BADGE_HINT,
   MEMORY_KIND_PREFERENCE,
-  MEMORY_NOTED_TODAY,
-  MEMORY_NOTED_YESTERDAY,
   memoryListFooter,
   memoryFixLabel,
   memoryForgetLabel,
@@ -107,18 +97,24 @@ function kindLabel(row: FactMemoryStatement): string {
 }
 
 function KindBadge({ row }: { row: FactMemoryStatement }) {
-  return <Badge variant={row.kind === 'opinion' ? 'accent' : 'secondary'} size="compact">{kindLabel(row)}</Badge>;
+  return <StatusBadge tone={row.kind === 'opinion' ? 'info' : 'neutral'} size="sm">{kindLabel(row)}</StatusBadge>;
 }
 
 /** Marks a memory learned in a shared conversation; absent for private ones. */
 function SharedBadge({ row }: { row: FactMemoryStatement }) {
   if (row.audience !== 'shared') return null;
-  return <Badge variant="outline" size="compact" title={MEMORY_SHARED_BADGE_HINT}>{MEMORY_SHARED_BADGE}</Badge>;
+  return (
+    <>
+      <StatusBadge tone="neutral" size="sm">{MEMORY_SHARED_BADGE}</StatusBadge>
+      {/* Always in the accessibility tree (the old `title` was too): the privacy hint is not hover-only. */}
+      <span className="sr-only">{MEMORY_SHARED_BADGE_HINT}</span>
+    </>
+  );
 }
 
 /** The kind badge, with the Shared badge beside it when the memory is shared. */
 function RowBadges({ row }: { row: FactMemoryStatement }) {
-  return <span className="inline-flex flex-wrap items-center gap-1"><KindBadge row={row} /><SharedBadge row={row} /></span>;
+  return <Inline gap="xs" wrap><KindBadge row={row} /><SharedBadge row={row} /></Inline>;
 }
 
 /**
@@ -171,7 +167,7 @@ function ClosureNote({
     // effect (TASK-526, card item 8).
     return (
       <span className="text-sm text-muted-foreground">
-        <Badge variant="secondary">{MEMORY_CLOSURE_BADGE.overridden}</Badge>
+        <StatusBadge tone="neutral">{MEMORY_CLOSURE_BADGE.overridden}</StatusBadge>
         {MEMORY_OVERRIDDEN_NOTE}
       </span>
     );
@@ -183,11 +179,11 @@ function ClosureNote({
       : undefined;
   return (
     <span className="text-sm text-muted-foreground">
-      <Badge variant="secondary">
+      <StatusBadge tone="neutral">
         {row.closure === 'forgotten' || row.closure === 'retracted'
           ? MEMORY_CLOSURE_BADGE[row.closure]
           : MEMORY_CLOSURE_BADGE.replaced}
-      </Badge>{' '}
+      </StatusBadge>{' '}
       {row.until.slice(0, 10)}
       {row.closure === 'replaced' &&
         (replacement !== undefined
@@ -280,20 +276,8 @@ function FactsMemory({ agentId, agentName, memory, onCount }: MemorySurfaceProps
 }
 
 function NotedDate({ when }: { when: string }) {
-  const date = new Date(when);
-  if (Number.isNaN(date.getTime())) return <span>Unknown date</span>;
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-  // Calendar days, rather than elapsed hours, also work at midnight and across DST.
-  const label = date.toDateString() === today.toDateString() ? MEMORY_NOTED_TODAY
-    : date.toDateString() === yesterday.toDateString() ? MEMORY_NOTED_YESTERDAY
-    : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  return (
-    <time dateTime={when}>
-      {label}
-    </time>
-  );
+  if (formatTimestamp(when) === null) return <span>Unknown date</span>;
+  return <Timestamp value={when} />;
 }
 
 function MemoryActions({ row, onFix, onForget }: {
@@ -433,19 +417,21 @@ function MemoriesManager({ agentId, agentName, refresh, extractionPaused = false
           <ul aria-label="Memories" className="flex flex-col gap-3">
             {rows.map((row) => <li key={row.id}>
               <Card>
-                <CardHeader className="flex flex-row items-start justify-between gap-3 p-4 pb-2">
-                  <CardTitle><RowBadges row={row} /></CardTitle>
+                <Stack gap="lg">
+                <Inline justify="between" align="start">
+                  <RowBadges row={row} />
                   {isCurrent(row) && <MemoryActions row={row} onFix={onFix} onForget={onForget} />}
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2 p-4 pt-0">
+                </Inline>
+                <Stack gap="xs">
                   {statement(row)}
-                  <CardDescription>Noted <NotedDate when={row.when} /></CardDescription>
-                </CardContent>
+                  <Text role="meta">Noted <NotedDate when={row.when} /></Text>
+                </Stack>
+              </Stack>
               </Card>
             </li>)}
           </ul>
         ) : (
-          <Card className="overflow-hidden border border-border shadow-none">
+          <Card flush>
             <Table className="min-w-[30rem] table-fixed">
               <TableHeader className="bg-muted">
                 <TableRow className="border-border">

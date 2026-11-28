@@ -7,12 +7,12 @@
  * renders as literal text` is the card's acceptance test for that: markup
  * stays text, and nothing becomes an element, a link or a source.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DirectoryListingRow } from '../DirectoryListingRow';
 import type { DirectoryEntry } from '@/lib/connector-directory';
 import { directoryEntry } from '@/lib/__tests__/directory-fixtures';
-import { monthDayYear } from '@/lib/workspace-time';
+import { freezeClock, thawClock } from '@/test-utils/time';
 
 const TRUST =
   'The directory checks who published a server, not what it does. An agent with this connector can send it whatever the agent is working on, so only add servers you’d trust with that.';
@@ -41,7 +41,14 @@ function detailFor(sheet: HTMLElement, term: string): HTMLElement {
   return dd;
 }
 
+// The listing's date as the row words it, derived in the reader's own zone and locale.
+const day = (iso: string, withYear = false) =>
+  new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}) });
+
 describe('DirectoryListingRow', () => {
+  beforeEach(freezeClock);
+  afterEach(thawClock);
+
   it('a verified listing shows its domain with a shield, and the sheet says what was proved', async () => {
     renderRow(directoryEntry());
     const proof = screen.getByTestId('directory-proof-domain');
@@ -57,7 +64,7 @@ describe('DirectoryListingRow', () => {
     ).toBeInTheDocument();
     expect(detailFor(sheet, 'Connects to').textContent).toBe('mcp.linear.app');
     expect(detailFor(sheet, 'Listing').textContent).toBe(
-      `Version 1.4.0 · updated ${monthDayYear('2026-11-03T12:00:00.000Z')}`,
+      `Version 1.4.0 · updated ${day('2026-11-03T12:00:00.000Z')}`,
     );
     // A note beside the decision, not an alert: `role="alert"` means something broke.
     expect(within(sheet).getByRole('status')).toHaveTextContent(TRUST);
@@ -70,7 +77,7 @@ describe('DirectoryListingRow', () => {
     renderRow(directoryEntry({ updatedAt }));
     const sheet = await openSheet('Linear');
     const listing = detailFor(sheet, 'Listing').textContent;
-    expect(listing).toBe(`Version 1.4.0 · updated ${monthDayYear(updatedAt)}`);
+    expect(listing).toBe(`Version 1.4.0 · updated ${day(updatedAt, true)}`);
     expect(listing).toContain('2023');
   });
 

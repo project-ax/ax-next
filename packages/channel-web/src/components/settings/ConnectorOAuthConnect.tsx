@@ -17,8 +17,7 @@
  * shadcn primitives + semantic tokens only (invariant #6). No raw colors.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Notice } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { Notice, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { ConnectorAccessNotice } from '@/components/credentials/ConnectorAccessNotice';
 import { getOAuthStatus, type OAuthStatus } from '@/lib/connectors-oauth';
@@ -95,7 +94,7 @@ export function ConnectorOAuthConnect({
 
   // ── Status badge ──────────────────────────────────────────────────────────
 
-  function StatusBadge() {
+  function ConnectionStatus() {
     if (status === 'checking') {
       return (
         <span className="text-sm text-muted-foreground">Checking…</span>
@@ -109,20 +108,20 @@ export function ConnectorOAuthConnect({
       );
     }
     if (status === 'connected') {
-      return <Badge variant="secondary">Connected</Badge>;
+      return <StatusBadge tone="success" dot>Connected</StatusBadge>;
     }
     if (status === 'needs-reconnect') {
       // Slice 3 — the sign-in is the agent's, not "yours", and the fix is
       // called "Sign in again" everywhere (menu, dialog, button).
       return (
         <>
-          <Badge variant="destructive">Sign-in expired</Badge>
+          <StatusBadge tone="danger" dot>Sign-in expired</StatusBadge>
           <span className="text-xs text-muted-foreground">The sign-in to {serviceName} expired. Sign in again to keep it working.</span>
         </>
       );
     }
     // not-connected
-    return <Badge variant="outline">Not connected</Badge>;
+    return <StatusBadge tone="neutral" dot>Not connected</StatusBadge>;
   }
 
   // ── Connect button label ──────────────────────────────────────────────────
@@ -139,7 +138,7 @@ export function ConnectorOAuthConnect({
     <div className="flex flex-col gap-4">
       {/* Status indicator */}
       <div>
-        <StatusBadge />
+        <ConnectionStatus />
       </div>
 
       {/* Error from beginOAuth */}

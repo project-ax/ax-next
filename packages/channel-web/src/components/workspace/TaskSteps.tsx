@@ -92,9 +92,8 @@ import {
   RoutineStepTextSchema,
   type RoutineStepOp,
 } from '@ax/routines-contract';
-import { Button as AxButton, Notice } from '@project-ax/ui';
+import { Button as AxButton, Card, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   DropdownMenu,
@@ -481,7 +480,7 @@ export function TaskSteps({
 
   return (
     <Card>
-      <section ref={section} aria-labelledby={headingId} className="flex flex-col gap-2 p-4">
+      <section ref={section} aria-labelledby={headingId} className="flex flex-col gap-2">
         <div className="flex min-h-7 items-center gap-2">
           {/* Seen as "1/2"; heard as the whole count. */}
           <h2 id={headingId} className="flex flex-1 items-center gap-1.5 text-[13px] font-medium text-muted-foreground">

@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { Inbox, ListChecks, PanelLeft, Plus, Search } from 'lucide-react';
 import { BrandMark } from '@/components/BrandMark';
 import { UserMenu } from '@/components/UserMenu';
-import { Badge } from '@/components/ui/badge';
+import { StatusBadge, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useRailPreference } from '@/lib/use-rail-preference';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
 import type { SidebarChatList } from '@/lib/sidebar-chats';
 import { AgentSwitcher } from './AgentSwitcher';
+import { stateWord } from './bits';
 import { IconTooltip } from './IconTooltip';
 import { SidebarChats } from './SidebarChats';
 
@@ -92,7 +93,7 @@ export function WorkspaceSidebarNav({
       <Button
         variant="ghost"
         size="icon"
-        aria-label={label}
+        aria-label={needsYou ? `${label}, ${stateWord('waiting').toLowerCase()}` : label}
         onClick={go(action)}
         className={cn(
           'relative rounded-sm',
@@ -101,10 +102,9 @@ export function WorkspaceSidebarNav({
       >
         <Icon aria-hidden="true" />
         {needsYou && (
-          <span
-            className="absolute right-2 top-2 size-1.5 rounded-full bg-warning"
-            aria-hidden="true"
-          />
+          <span className="absolute right-2 top-2">
+            <StatusMark tone="warning" />
+          </span>
         )}
       </Button>
     </IconTooltip>
@@ -187,12 +187,9 @@ export function WorkspaceSidebarNav({
               <Inbox data-icon="inline-start" aria-hidden="true" />
               Today
               {pendingCount > 0 && (
-                <Badge
-                  variant="warning"
-                  className="ml-auto h-5 min-w-5 justify-center px-1.5 text-[11px]"
-                >
+                <StatusBadge tone="warning" size="sm">
                   {pendingCount}
-                </Badge>
+                </StatusBadge>
               )}
             </Button>
             <Button

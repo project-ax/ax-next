@@ -31,8 +31,8 @@ import { SETTINGS_OPENER_ATTR } from '../lib/settings-return-focus';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
-import { AvatarTile } from './AvatarTile';
 import { SidebarSectionLabel } from './SidebarSectionLabel';
+import { Avatar } from '@project-ax/ui';
 import { Button } from './ui/button';
 import { IconTooltip } from './workspace/IconTooltip';
 
@@ -93,14 +93,7 @@ export function UserMenu({
           hover:bg-muted aria-expanded:bg-muted
         "
       >
-        <AvatarTile
-          shape="square"
-          size={26}
-          background="muted"
-          className="user-avatar text-[11px] tracking-[0.04em] text-foreground"
-        >
-          {user.name.split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase() || 'U'}
-        </AvatarTile>
+        <Avatar name={user.name} size="md" tone="neutral" />
         <span className={collapsed ? 'sr-only' : 'flex min-w-0 flex-1 flex-col gap-px text-left'}>
           <span className="user-name text-[12.5px] leading-[1.15] tracking-[-0.005em] text-foreground truncate">
             {user.name}
@@ -139,14 +132,7 @@ export function UserMenu({
           className="w-[var(--radix-dropdown-menu-trigger-width)] min-w-60 p-1.5 rounded-[10px] bg-card shadow-popover"
         >
           <div className="flex items-center gap-2.5 px-2.5 pb-2 mb-1 border-b border-border">
-            <AvatarTile
-              shape="round"
-              size={36}
-              background="muted"
-              className="text-foreground font-semibold text-sm"
-            >
-              {user.name[0]?.toUpperCase() ?? 'U'}
-            </AvatarTile>
+            <Avatar name={user.name} size="lg" shape="round" tone="neutral" />
             <div className="min-w-0">
               <div className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground truncate">
                 {user.name}

@@ -23,8 +23,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
-import { Button as AxButton, Notice } from '@project-ax/ui';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button as AxButton, Card, formatTimestamp, Heading, Notice, Stack, Text } from '@project-ax/ui';
 import {
   Dialog,
   DialogContent,
@@ -35,7 +34,6 @@ import {
 } from '@/components/ui/dialog';
 import { FieldGroup } from '@/components/ui/field';
 import { SlackAppsLink, TokenField } from '@/components/slack/SlackConfigToken';
-import { slackShortDate } from '@/lib/agent-slack';
 import { logRequestFailure } from '@/lib/http';
 import { goToSlack } from '@/lib/slack-admin';
 import { renderSlackAvatar } from '@/lib/slack-avatar';
@@ -136,14 +134,13 @@ export function SlackBotRequests() {
 
   return (
     <>
-      <Card variant="settings">
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2} className="text-base">
-            {COPY['title']}
-          </CardTitle>
-          <CardDescription>{COPY['description']}</CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+      <Card>
+        <Stack gap="lg">
+        <Stack gap="xs">
+          <Heading>{COPY['title']}</Heading>
+          <Text role="meta">{COPY['description']}</Text>
+        </Stack>
+        <Stack gap="md">
           {changed && (
             <Notice tone="info">{COPY['changed']}</Notice>
           )}
@@ -155,7 +152,7 @@ export function SlackBotRequests() {
                     {`${request.botName} for ${request.agentName}${request.teamName !== null ? ` · ${request.teamName}` : ''}`}
                   </p>
                   <p className="text-[12.5px] text-muted-foreground">
-                    {`Asked by ${request.requestedBy} on ${slackShortDate(request.requestedAt)}.`}
+                    {`Asked by ${request.requestedBy} ${formatTimestamp(request.requestedAt) ?? request.requestedAt}.`}
                   </p>
                   {declineFailed === request.requestId && (
                     <Notice tone="danger">{COPY['declineFailed']}</Notice>
@@ -186,7 +183,8 @@ export function SlackBotRequests() {
             ))}
           </ul>
           {truncated && <p className="text-[12.5px] text-muted-foreground">{COPY['more']}</p>}
-        </CardContent>
+        </Stack>
+      </Stack>
       </Card>
       <ApproveDialog
         request={approving}

@@ -33,7 +33,7 @@
  */
 import type { ReactNode } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
-import { Notice, Text } from '@project-ax/ui';
+import { InsetBlock, Notice, StatusMark, Text, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   RESOLUTION_FOCUS_RING,
@@ -42,7 +42,7 @@ import {
 import { routeLinkProps } from '@/lib/route-link';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
-import { StateDot, StateDotSlot, stateWord } from './bits';
+import { STATE_TONE, stateWord } from './bits';
 import { ConsentAnnouncement } from './ConsentAnnouncement';
 import { DecisionRequestBlock } from './DecisionRequestBlock';
 import { DecisionTaskBlock } from './DecisionTaskBlock';
@@ -59,14 +59,6 @@ import {
   type DecisionOutcome,
 } from './decision-copy';
 import { useDecisionClock } from './use-decision-clock';
-
-function ago(iso: string): string {
-  const mins = Math.round((Date.now() - Date.parse(iso)) / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const h = Math.round(mins / 60);
-  return `${h}h ago`;
-}
 
 /** The dot's colour follows the outcome's tone, so the list scans at a glance. */
 const TONE_DOT: Record<DecisionOutcome['tone'], 'working' | 'resting' | 'stopped'> = {
@@ -206,9 +198,7 @@ export function DecisionRow({
             data-testid={`decision-outcome-${d.id}`}
             className={`flex items-center gap-3 ${RESOLUTION_FOCUS_RING}`}
           >
-            <StateDotSlot>
-              <StateDot state={TONE_DOT[outcome.tone]} />
-            </StateDotSlot>
+            <StatusMark tone={STATE_TONE[TONE_DOT[outcome.tone]]} />
             <span
               className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
               title={outcome.line}
@@ -278,9 +268,7 @@ export function DecisionRow({
           onClick={onToggle}
           className={`flex w-full items-center gap-3 px-5 py-3.5 text-left ${RESOLUTION_FOCUS_RING}`}
         >
-          <StateDotSlot>
-            <StateDot state={stale ? 'stopped' : 'held'} />
-          </StateDotSlot>
+          <StatusMark tone={STATE_TONE[stale ? 'stopped' : 'held']} />
           <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
           {/*
             On a held question the dot is the only thing that says the state —
@@ -303,7 +291,7 @@ export function DecisionRow({
             {stale ? DECISION_STALE_SUMMARY : d.summary}
           </span>
           <span className="shrink-0 text-[12.5px] text-muted-foreground">
-            {ago(d.createdAt)}
+            <Timestamp value={d.createdAt} />
           </span>
           {expanded ? (
             <ChevronUp size={13} className="shrink-0 text-muted-foreground" />
@@ -332,11 +320,13 @@ export function DecisionRow({
             </p>
 
             {d.preview && (
-              <div className="mt-3 max-w-[660px] rounded-md bg-muted px-4 py-3.5">
-                <div className="mb-1.5 text-[11.5px] text-muted-foreground">
-                  {d.preview.meta}
-                </div>
-                <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+              <div className="mt-3 max-w-[660px]">
+                <InsetBlock>
+                  <div className="mb-1.5 text-[11.5px] text-muted-foreground">
+                    {d.preview.meta}
+                  </div>
+                  <div className="text-[13px] leading-relaxed">{d.preview.body}</div>
+                </InsetBlock>
               </div>
             )}
 

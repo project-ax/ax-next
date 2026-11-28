@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { AsyncState, EmptyState } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, formatTimestamp, StatusBadge, Timestamp } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
@@ -110,11 +108,6 @@ export function RememberedSitesPanel() {
     }
   };
 
-  const rememberedDate = (iso: string): string | null => {
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString();
-  };
-
   return (
     <section className="flex flex-col gap-5">
       <div>
@@ -157,7 +150,7 @@ export function RememberedSitesPanel() {
           }}
         />
       ) : (
-      <Card variant="settings" className="divide-y divide-border">
+      <Card flush>
         {list.status === 'loading' && (
           <AsyncState status="loading" skeleton="rows" loadingLabel="Loading remembered sites" />
         )}
@@ -174,7 +167,7 @@ export function RememberedSitesPanel() {
           />
         )}
         {(list.status === 'ok' ? list.sites : []).map((site) => {
-          const date = rememberedDate(site.rememberedAt);
+          const remembered = formatTimestamp(site.rememberedAt) !== null;
           return (
             <div
               // scope+host, not host alone. @ax/tool-policy dedupes this list
@@ -189,9 +182,13 @@ export function RememberedSitesPanel() {
               <span className="flex-1 min-w-0 break-all text-sm text-foreground">
                 {site.host}
               </span>
-              {date && <span className="text-xs text-muted-foreground">{date}</span>}
+              {remembered && (
+                <span className="text-xs text-muted-foreground">
+                  <Timestamp value={site.rememberedAt} />
+                </span>
+              )}
               {site.scope === 'global' ? (
-                <Badge variant="secondary">Set by your admin</Badge>
+                <StatusBadge tone="neutral">Set by your admin</StatusBadge>
               ) : (
                 <Button
                   variant="ghost"

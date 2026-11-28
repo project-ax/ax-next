@@ -21,7 +21,7 @@ export interface ButtonBaseProps
 }
 
 const BASE =
-  'ax-relative ax-inline-flex ax-items-center ax-justify-center ax-whitespace-nowrap ax-rounded-md ax-border ax-text-subheading ax-font-sans ' +
+  'ax-relative ax-inline-flex ax-items-center ax-justify-center ax-whitespace-nowrap ax-rounded-md ax-border ax-border-solid ax-text-subheading ax-font-sans ' +
   'ax-min-h-touch ax-min-w-touch md:ax-min-h-none md:ax-min-w-none ax-transition-colors ax-duration-fast ' +
   'focus-visible:ax-outline focus-visible:ax-outline-2 focus-visible:ax-outline-offset-2 focus-visible:ax-outline-line-ring ' +
   'disabled:ax-pointer-events-none';

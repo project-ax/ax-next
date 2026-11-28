@@ -22,7 +22,7 @@ import {
   ChevronDown,
   Zap,
 } from 'lucide-react';
-import { Notice } from '@project-ax/ui';
+import { Avatar, Notice } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -37,7 +37,6 @@ import {
   useWorkspaceAttachments,
   type SendableAttachment,
 } from '@/lib/workspace-attachments';
-import { AgentTile } from './bits';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
 
@@ -256,7 +255,7 @@ export function HomeComposer({
                     disabled={blocked !== null}
                     onClick={() => confirm(a.id)}
                   >
-                    <AgentTile agent={a} size={18} />
+                    <Avatar name={a.name} size="xs" />
                     {a.name}
                   </DropdownMenuItem>
                 ))}
@@ -323,7 +322,7 @@ export function HomeComposer({
               cannot be used is still a control the eye has to rule out.
             */
             <span className="flex h-8 shrink-0 max-md:h-11 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium">
-              <AgentTile agent={sole} size={16} />
+              <Avatar name={sole.name} size="xs" />
               {sole.name}
             </span>
           ) : (
@@ -336,7 +335,7 @@ export function HomeComposer({
                   className="flex h-8 shrink-0 max-md:h-11 items-center gap-1.5 rounded-md bg-muted px-2.5 text-[12.5px] font-medium"
                 >
                   {picked ? (
-                    <AgentTile agent={picked} size={16} />
+                    <Avatar name={picked.name} size="xs" />
                   ) : (
                     <Zap size={11} className="text-primary" />
                   )}
@@ -351,7 +350,7 @@ export function HomeComposer({
                 </DropdownMenuItem>
                 {agents.map((a) => (
                   <DropdownMenuItem key={a.id} onClick={() => setPick(a.id)}>
-                    <AgentTile agent={a} size={18} />
+                    <Avatar name={a.name} size="xs" />
                     {a.name}
                   </DropdownMenuItem>
                 ))}

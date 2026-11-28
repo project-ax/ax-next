@@ -55,7 +55,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { Button as AxButton, Notice } from '@project-ax/ui';
+import { Button as AxButton, Notice, StatusMark } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -72,7 +72,7 @@ import type { TodayGroup } from '@/lib/today-queue';
 import { cn } from '@/lib/utils';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { isOpenDecision, type TaskRow } from '@/lib/workspace-types';
-import { StateDot, StateDotSlot } from './bits';
+import { STATE_TONE } from './bits';
 import { MARK_DONE_NOT_ALLOWED, MarkDoneConfirmation, useMarkDone } from './TaskMarkDone';
 import { CANT_SHOW } from './TaskPage';
 import { TaskReplyBox } from './TaskReplyBox';
@@ -225,7 +225,7 @@ export function TodayTaskGroup({
         <h2 id={headingId} className="flex min-w-0 items-start gap-3">
           {/* `h-5` is the first line's height, so the mark stays on it however the heading wraps. */}
           <span className="flex h-5 shrink-0 items-center">
-            <StateDotSlot>{mark !== null && <StateDot state={mark} />}</StateDotSlot>
+            {mark !== null && <StatusMark tone={STATE_TONE[mark]} />}
           </span>
           {/* At phone width the agent's name wraps under the task's instead of squeezing it. */}
           <span className="flex min-w-0 flex-wrap items-center gap-x-2">
@@ -235,7 +235,7 @@ export function TodayTaskGroup({
             >
               {group.taskName}
             </span>
-            {/* The mark is `aria-hidden`, so the state is said here (`StateDot`'s rule). */}
+            {/* The mark is `aria-hidden`, so the state is said here (`StatusMark`'s rule). */}
             {mark !== null && (
               <span className="sr-only">{`, ${TASK_GROUP_LABELS[mark].toLowerCase()}`}</span>
             )}

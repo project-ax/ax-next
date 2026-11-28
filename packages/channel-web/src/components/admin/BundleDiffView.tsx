@@ -1,12 +1,12 @@
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
+import { StatusBadge, type StatusTone } from '@project-ax/ui';
 import { diffLines, type BundleFileEntry } from '@/lib/bundle-diff';
 
-const STATUS_VARIANT: Record<BundleFileEntry['status'], 'secondary' | 'outline' | 'destructive'> = {
-  added: 'secondary',
-  modified: 'secondary',
-  unchanged: 'outline',
-  removed: 'destructive',
+const STATUS_TONE: Record<BundleFileEntry['status'], StatusTone> = {
+  added: 'neutral',
+  modified: 'neutral',
+  unchanged: 'neutral',
+  removed: 'danger',
 };
 
 /**
@@ -67,9 +67,7 @@ export function BundleDiffView({ entries }: { entries: BundleFileEntry[] }) {
         <div key={entry.path} className="rounded-md border border-border overflow-hidden">
           <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-muted/40 border-b border-border">
             <span className="font-mono text-xs truncate">{entry.path}</span>
-            <Badge variant={STATUS_VARIANT[entry.status]} className="text-[10px] capitalize">
-              {entry.status}
-            </Badge>
+            <StatusBadge tone={STATUS_TONE[entry.status]}>{entry.status}</StatusBadge>
           </div>
           <FileBody entry={entry} />
         </div>

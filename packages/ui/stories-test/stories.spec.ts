@@ -38,3 +38,16 @@ for (const { id } of stories) {
     });
   }
 }
+
+// Real layout: a badge in a 390px box must end inside it (jsdom can't measure). Padding counts, so it needs border-box.
+test('components-statusbadge--long-text stays inside its 390px box', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto('/iframe.html?id=components-statusbadge--long-text&viewMode=story');
+  const badge = page.locator('#storybook-root span[title]').first().locator('xpath=..');
+  await badge.waitFor();
+  const box = await badge.boundingBox();
+  const container = await page.locator('#storybook-root > div').first().boundingBox();
+  expect(box && container).toBeTruthy();
+  expect(container!.width).toBe(390);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(container!.x + container!.width + 0.5);
+});

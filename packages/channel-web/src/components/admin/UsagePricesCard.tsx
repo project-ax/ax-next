@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import {
@@ -13,7 +12,7 @@ import {
 } from '@/components/ui/table';
 import { putModelPrices, type ModelPrice } from '@/lib/usage-admin';
 import { failureMessage } from '@/lib/usage-copy';
-import { Notice } from '@project-ax/ui';
+import { Card, Heading, Notice, Stack, Text } from '@project-ax/ui';
 
 const rates = [
   ['inputUsdPerMillion', 'Input'],
@@ -70,18 +69,15 @@ export function UsagePricesCard({
     }
   };
   return (
-    <Card variant="settings">
-      <CardHeader>
-        <CardTitle role="heading" aria-level={2}>
-          Model prices
-        </CardTitle>
-        <CardDescription>
-          Estimates in USD per million tokens. Saved prices apply to future usage; past estimates
+    <Card>
+      <Stack gap="lg">
+      <Stack gap="xs">
+        <Heading>Model prices</Heading>
+        <Text role="meta">Estimates in USD per million tokens. Saved prices apply to future usage; past estimates
           stay as recorded. Without an override, Claude families use built-in rates and other models
-          use a conservative high rate.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+          use a conservative high rate.</Text>
+      </Stack>
+      <Stack gap="md">
         {prices.length > 0 && (
           <Table>
             <TableHeader>
@@ -211,7 +207,8 @@ export function UsagePricesCard({
             </div>
           </form>
         )}
-      </CardContent>
+      </Stack>
+    </Stack>
     </Card>
   );
 }

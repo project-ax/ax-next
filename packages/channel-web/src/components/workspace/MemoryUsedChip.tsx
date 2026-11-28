@@ -17,7 +17,6 @@
  */
 import { useContext, useRef, useState } from 'react';
 import { BookOpen, ChevronRight } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -43,18 +42,7 @@ import {
   memoryUsedLabel,
   type MemoryUsedSinceKind,
 } from './memory-copy';
-
-const DATE = new Intl.DateTimeFormat(undefined, {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-});
-
-/** The row's date, or '' when `when` does not parse. */
-function usedDate(when: string): string {
-  const t = Date.parse(when);
-  return Number.isNaN(t) ? '' : DATE.format(new Date(t));
-}
+import { formatTimestamp, StatusBadge } from '@project-ax/ui';
 
 // Nothing in memory changes under the chip's own list when a fix saves: the
 // list is what the answer USED, which a later fix does not rewrite.
@@ -119,13 +107,13 @@ export function MemoryUsedChip({ used, agentId }: { used: MemoryUsed; agentId: s
                     {memoryStatementText(row)}
                   </span>
                   <span className="text-[11.5px] text-muted-foreground">
-                    {memoryUsedDetail(row, usedDate(row.when))}
+                    {memoryUsedDetail(row, formatTimestamp(row.when) ?? '')}
                   </span>
                 </div>
                 {since !== undefined ? (
-                  <Badge variant="secondary" className="shrink-0">
+                  <StatusBadge tone="neutral">
                     {MEMORY_USED_SINCE[since]}
-                  </Badge>
+                  </StatusBadge>
                 ) : (
                   <Button
                     type="button"

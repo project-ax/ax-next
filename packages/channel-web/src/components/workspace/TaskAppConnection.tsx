@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RoutineWebhookStatusOutputSchema, type RoutineWebhookStatus, type WebhookDetectedApp, type WebhookRefusalReason } from '@ax/routines-contract';
 import { routineApi } from '@/lib/routines';
-import { AsyncState } from '@project-ax/ui';
+import { AsyncState, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 const reasons: Record<WebhookRefusalReason, string> = {
   signature: 'the signature didn’t match. Check the signing secret',
@@ -14,7 +14,6 @@ const reasons: Record<WebhookRefusalReason, string> = {
 };
 /** The app the host detected from a delivery's signature (TASK-1026). */
 const apps: Record<WebhookDetectedApp, string> = { stripe: 'Stripe', slack: 'Slack', zendesk: 'Zendesk', github: 'GitHub', linear: 'Linear', other: 'Signed app' };
-const time = (value: string) => new Date(value).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
 /** Remount this read when private setup changes. Failed refreshes clear earlier connection claims. */
 export function TaskAppConnection({ agentId, routineId }: { agentId: string; routineId: string }) {
   const [status, setStatus] = useState<RoutineWebhookStatus | null>(null);
@@ -40,13 +39,13 @@ export function TaskAppConnection({ agentId, routineId }: { agentId: string; rou
     {failed ? <AsyncState status="error" skeleton="lines" loadingLabel="Checking app connection"
       error={{ message: 'We couldn’t check the connection.', onRetry: refresh }} />
       : status ? <div className="flex flex-col gap-2" role="status">
-        <p className="text-sm">{status.lastAcceptedAt ? <>{name} connected · last accepted update {time(status.lastAcceptedAt)} · {status.signatureChecked ? (noTimestamp ? 'signature checked, no timestamp' : 'signature checked') : 'signature not checked'}</>
-          : status.verifiedAt ? <>{name} address verified {time(status.verifiedAt)} · Waiting for the first update</>
+        <p className="text-sm">{status.lastAcceptedAt ? <>{name} connected · last accepted update <Timestamp value={status.lastAcceptedAt} /> · {status.signatureChecked ? (noTimestamp ? 'signature checked, no timestamp' : 'signature checked') : 'signature not checked'}</>
+          : status.verifiedAt ? <>{name} address verified <Timestamp value={status.verifiedAt} /> · Waiting for the first update</>
             : status.setupReady ? 'Waiting for the first update' : 'Waiting for setup'}</p>
         {status.lastAcceptedAt && noTimestamp && <p className="text-sm text-muted-foreground">This app doesn’t sign the time it sent each update, so we can’t spot an old update that’s sent again.</p>}
         {status.lastAcceptedAt && <p className="text-sm text-muted-foreground">Accepted means safely received. Check Updates for the check-in’s result.</p>}
         {status.refusals.length > 0 && <div className="flex flex-col gap-1 text-sm text-muted-foreground">
-          <p>Updates turned away since {time(status.windowStart)}:</p>
+          <p>Updates turned away since <Timestamp value={status.windowStart} />:</p>
           <ul className="list-disc pl-5">{status.refusals.map(item => <li key={item.reason}>{item.count} because {reasons[item.reason]}.</li>)}</ul>
         </div>}
       </div> : <AsyncState status="loading" skeleton="lines" loadingLabel="Checking app connection" />}

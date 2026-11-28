@@ -65,7 +65,7 @@ describe('SetupShell — say how long this is (B5)', () => {
         <div />
       </SetupShell>,
     );
-    expect(screen.getByTestId('setup-step').textContent).toBe('Step 2 of 3');
+    expect(screen.getByText('Step 2 of 3')).toBeTruthy();
   });
 
   it('names the page with a real heading (TASK-689)', () => {
@@ -91,7 +91,7 @@ describe('SetupShell — say how long this is (B5)', () => {
         <div />
       </SetupShell>,
     );
-    expect(screen.queryByTestId('setup-step')).toBeNull();
+    expect(screen.queryByText(/^Step \d+ of \d+$/)).toBeNull();
   });
 });
 
@@ -118,7 +118,7 @@ describe('StepGate names the moment the link was printed (B9)', () => {
   it('points at when ax printed the link, not vaguely at "your terminal"', () => {
     render(<StepGate autoToken={null} onClaimed={() => {}} />);
     expect(screen.getByText(/we printed when you started ax/i)).toBeTruthy();
-    expect(screen.getByTestId('setup-step').textContent).toBe('Step 1 of 3');
+    expect(screen.getByText('Step 1 of 3')).toBeTruthy();
   });
 });
 

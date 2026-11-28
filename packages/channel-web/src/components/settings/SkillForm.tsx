@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Check, ChevronsUpDown, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -33,7 +32,7 @@ import {
 } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 import { listConnectors } from '@/lib/connectors';
-import { AsyncState, Grid, Notice } from '@project-ax/ui';
+import { AsyncState, Grid, Inline, InsetBlock, Notice, Stack, StatusBadge } from '@project-ax/ui';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -494,10 +493,8 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
             {files.map((f, idx) => {
               const hint = fileHints[idx];
               return (
-                <div
-                  key={idx}
-                  className="rounded-md border border-border p-3 flex flex-col gap-2 bg-muted/30"
-                >
+                <InsetBlock key={idx}>
+<Stack gap="sm">
                   <div className="flex items-center gap-2">
                     <Input
                       aria-label={`Bundle file path ${idx + 1}`}
@@ -527,7 +524,8 @@ function SkillFormBody({ skillId, onSaved, onCancel, api = defaultApi }: SkillFo
                     value={f.contents}
                     onChange={(e) => setFileContents(idx, e.target.value)}
                   />
-                </div>
+                </Stack>
+</InsetBlock>
               );
             })}
           </div>
@@ -644,17 +642,17 @@ function FormFields({
         <Label className="text-xs font-medium text-muted-foreground">Connectors · optional</Label>
         <div className="flex flex-wrap items-center gap-1.5">
           {form.connectors.map((c) => (
-            <Badge key={c} variant="secondary" className="text-xs gap-1 pr-1">
-              {c}
+            <Inline key={c} gap="xs">
+              <StatusBadge tone="neutral">{c}</StatusBadge>
               <button
                 type="button"
                 aria-label={`Remove connector ${c}`}
-                className="rounded-sm opacity-70 hover:opacity-100"
+                className="shrink-0 rounded-sm opacity-70 hover:opacity-100"
                 onClick={() => removeConnector(c)}
               >
                 <X className="h-3 w-3" />
               </button>
-            </Badge>
+            </Inline>
           ))}
           <Popover open={connectorPickerOpen} onOpenChange={setConnectorPickerOpen}>
             <PopoverTrigger asChild>
@@ -767,7 +765,8 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
       <div className="flex flex-col gap-2">
         <label className="text-xs font-medium text-muted-foreground">Parsed preview</label>
         {parsed.ok ? (
-          <div className="rounded-md border border-border p-3 flex flex-col gap-3 bg-muted/30">
+          <InsetBlock>
+<Stack gap="md">
             <div>
               <div className="text-xs text-muted-foreground">Name</div>
               <div className="text-sm font-mono">{parsed.value.id}</div>
@@ -782,13 +781,14 @@ function RawEditor({ value, onChange, parsed }: RawEditorProps) {
                 <span className="text-xs text-muted-foreground">none</span>
               ) : (
                 parsed.value.connectors.map((c) => (
-                  <Badge key={c} variant="secondary" className="text-xs mr-1">
+                  <StatusBadge key={c} tone="neutral">
                     {c}
-                  </Badge>
+                  </StatusBadge>
                 ))
               )}
             </div>
-          </div>
+          </Stack>
+</InsetBlock>
         ) : (
           <Notice tone="danger">{liveError}</Notice>
         )}

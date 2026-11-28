@@ -15,6 +15,7 @@
  * it back anywhere as if a person had written it — which is why "Edit first"
  * stays keyed to the host-authored `preview`, never to this.
  */
+import { InsetBlock, Stack, Text } from '@project-ax/ui';
 import type { Decision } from '@/lib/workspace-api';
 
 export const DECISION_REQUEST_HEADING = 'What it wants to run';
@@ -31,31 +32,27 @@ export function DecisionRequestBlock({
   className?: string;
 }) {
   return (
-    <div
-      data-testid="decision-request"
-      className={`rounded-md border border-border bg-muted px-3.5 py-2.5 ${className}`}
-    >
-      <div className="text-[11.5px] text-muted-foreground">{DECISION_REQUEST_HEADING}</div>
-      <code
-        data-testid="decision-request-tool"
-        className="mt-0.5 block break-all font-mono text-[12.5px] text-foreground"
-      >
-        {request.tool}
-      </code>
-      {request.input !== null ? (
-        <pre
-          data-testid="decision-request-input"
-          className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-sm bg-background px-2.5 py-2 font-mono text-[12px] leading-relaxed text-foreground"
-        >
-          {request.input}
-        </pre>
-      ) : (
-        <p className="mt-1.5 text-[12px] text-muted-foreground">{DECISION_REQUEST_NO_INPUT}</p>
-      )}
-      {request.truncated && (
-        <p className="mt-1.5 text-[11.5px] text-muted-foreground">{DECISION_REQUEST_TRUNCATED}</p>
-      )}
-      <p className="mt-1.5 text-[11.5px] text-muted-foreground">{DECISION_REQUEST_PROVENANCE}</p>
+    <div data-testid="decision-request" className={className}>
+      <InsetBlock>
+        <Stack gap="sm">
+          <Text role="meta">{DECISION_REQUEST_HEADING}</Text>
+          <code data-testid="decision-request-tool" className="block break-all font-mono text-[12.5px] text-foreground">
+            {request.tool}
+          </code>
+          {request.input !== null ? (
+            <pre
+              data-testid="decision-request-input"
+              className="m-0 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[12px] leading-relaxed text-foreground"
+            >
+              {request.input}
+            </pre>
+          ) : (
+            <Text role="meta">{DECISION_REQUEST_NO_INPUT}</Text>
+          )}
+          {request.truncated && <Text role="meta">{DECISION_REQUEST_TRUNCATED}</Text>}
+          <Text role="meta">{DECISION_REQUEST_PROVENANCE}</Text>
+        </Stack>
+      </InsetBlock>
     </div>
   );
 }

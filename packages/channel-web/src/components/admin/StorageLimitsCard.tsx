@@ -13,14 +13,6 @@
 import { useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import {
   Field,
   FieldDescription,
   FieldError,
@@ -39,7 +31,7 @@ import {
   failureMessage,
   formatMb,
 } from '@/lib/storage-copy';
-import { AsyncState, Notice, toast } from '@project-ax/ui';
+import { AsyncState, Card, Heading, Inline, Notice, Stack, Text, toast } from '@project-ax/ui';
 
 const LIMIT = STORAGE_LIMIT_BOUNDS.limitMb;
 const WARN = STORAGE_LIMIT_BOUNDS.warnPercent;
@@ -127,16 +119,13 @@ export function StorageLimitsCard({ limits, onSaved }: StorageLimitsCardProps) {
 
   return (
     <form onSubmit={(e) => void save(e)} noValidate>
-      <Card variant="settings">
-        <CardHeader>
-          <CardTitle role="heading" aria-level={2} className="text-lg">
-            Storage limits
-          </CardTitle>
-          <CardDescription>
-            Everyone gets the same two settings. You can change them any time.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-6">
+      <Card>
+        <Stack gap="lg">
+        <Stack gap="xs">
+          <Heading>Storage limits</Heading>
+          <Text role="meta">Everyone gets the same two settings. You can change them any time.</Text>
+        </Stack>
+        <Stack gap="lg">
           {limits === null ? (
             <AsyncState status="loading" skeleton="rows" loadingLabel="Loading storage limits" />
           ) : (
@@ -213,12 +202,13 @@ export function StorageLimitsCard({ limits, onSaved }: StorageLimitsCardProps) {
           {saveError !== null && (
             <Notice tone="danger">{saveError}</Notice>
           )}
-        </CardContent>
-        <CardFooter>
+        </Stack>
+        <Inline gap="sm">
           <Button type="submit" disabled={!changed || saving}>
             {saving ? 'Saving…' : 'Save limits'}
           </Button>
-        </CardFooter>
+        </Inline>
+      </Stack>
       </Card>
     </form>
   );

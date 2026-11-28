@@ -36,7 +36,7 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AsyncState, ConfirmAction, EmptyState, Notice } from '@project-ax/ui';
+import { AsyncState, ConfirmAction, EmptyState, Notice, StatusBadge } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   Trash2,
@@ -58,7 +58,6 @@ import {
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import {
   Select,
   SelectContent,
@@ -507,12 +506,9 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                         </span>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
-                        <Badge
-                          variant={a.status === 'active' ? 'secondary' : 'outline'}
-                          className="text-xs"
-                        >
+                        <StatusBadge tone={a.status === 'active' ? 'success' : 'neutral'} dot>
                           {a.status === 'active' ? 'active' : 'pending review'}
-                        </Badge>
+                        </StatusBadge>
                         <Button
                           variant="outline"
                           size="sm"
@@ -643,9 +639,9 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm truncate">{humanizeId(s.id)}</span>
-                      <Badge variant="secondary" className="text-xs shrink-0">
+                      <StatusBadge tone="neutral">
                         your own
-                      </Badge>
+                      </StatusBadge>
                     </div>
                     <span className="text-xs text-muted-foreground">{s.description}</span>
                   </div>
@@ -715,15 +711,14 @@ export function SkillsAppStore({ isAdmin, agentId: fixedAgentId, agentName }: { 
                           {humanizeId(s.skillId)}
                         </span>
                         {s.source === 'default' && (
-                          <Badge variant="outline" className="text-xs shrink-0">
-                            <Building2 className="h-3 w-3 mr-1" />
-                            default
-                          </Badge>
+                          <StatusBadge tone="neutral">
+                            <Building2 aria-hidden="true" className="inline h-3 w-3" /> default
+                          </StatusBadge>
                         )}
                         {isOwn && (
-                          <Badge variant="secondary" className="text-xs shrink-0">
+                          <StatusBadge tone="neutral">
                             your own
-                          </Badge>
+                          </StatusBadge>
                         )}
                       </div>
                       <span className="text-xs text-muted-foreground">{s.description}</span>

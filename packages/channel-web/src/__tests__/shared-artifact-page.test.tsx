@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SharedArtifactPage } from '../components/SharedArtifactPage';
+import { beforeNoon, freezeClock, thawClock, visibleText } from '@/test-utils/time';
 
 const CODE = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123_-';
 
@@ -25,7 +26,7 @@ function artifact(over: Record<string, unknown> = {}) {
       extension: 'html',
       mediaType: 'text/html',
       sizeBytes: 1200,
-      updatedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+      updatedAt: beforeNoon(2 * 3_600_000),
       agentName: 'Deal Desk',
       ...over,
     },
@@ -46,6 +47,7 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
 
 let originalFetch: typeof fetch;
 beforeEach(() => {
+  freezeClock();
   routes = {
     view: ok(artifact()),
     text: ok({ text: '# Plan\n\nhello', truncated: false }),
@@ -57,6 +59,7 @@ beforeEach(() => {
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 });
 afterEach(() => {
+  thawClock();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
@@ -65,7 +68,8 @@ describe('SharedArtifactPage', () => {
   it('shows the name, "Made by Deal Desk · updated …", "Made with AI by a teammate", the preview and Download, and no version picker', async () => {
     render(<SharedArtifactPage code={CODE} />);
     expect(await screen.findByRole('heading', { name: 'Q3 pipeline' })).toBeTruthy();
-    expect(screen.getByText('Made by Deal Desk · updated 2 hr ago')).toBeTruthy();
+    const byline = screen.getByText((_, el) => el?.tagName === 'P' && visibleText(el) === 'Made by Deal Desk · updated 2 hr ago');
+    expect(byline.querySelector('time')?.getAttribute('datetime')).toBe(beforeNoon(2 * 3_600_000));
     expect(screen.getByText('Made with AI by a teammate')).toBeTruthy();
     const frame = await screen.findByTitle('Q3 pipeline');
     expect(frame.tagName).toBe('IFRAME');
@@ -87,7 +91,7 @@ describe('SharedArtifactPage', () => {
   it('with no agent name, says "an agent"', async () => {
     routes.view = ok(artifact({ agentName: null }));
     render(<SharedArtifactPage code={CODE} />);
-    expect(await screen.findByText(/^Made by an agent · updated /)).toBeTruthy();
+    expect(await screen.findByText((_, el) => el?.tagName === 'P' && visibleText(el) === 'Made by an agent · updated 2 hr ago')).toBeTruthy();
   });
 
   it('markdown reads through the link\'s text route', async () => {

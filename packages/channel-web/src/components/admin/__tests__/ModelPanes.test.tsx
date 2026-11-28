@@ -5,6 +5,7 @@ import type { CatalogProvider } from '@/lib/models-admin';
 import { filterProviders, removeModel, setDefault, toggleModel, addModels, type Draft } from '@/lib/models-picker';
 import { ModelCatalogPane } from '../ModelCatalogPane';
 import { SelectedModelsPane } from '../SelectedModelsPane';
+import { beforeNoon, NOON } from '@/test-utils/time';
 
 const OPUS = 'anthropic/claude-opus-4-7';
 const SONNET = 'anthropic/claude-sonnet-4-6';
@@ -35,7 +36,7 @@ function Harness(props: { providers?: CatalogProvider[]; initial?: Draft; onOpen
         onRetry={props.onRetry ?? (() => {})}
         retrying={false}
         {...(props.onOpenKeys !== undefined ? { onOpenKeys: props.onOpenKeys } : {})}
-        nowMs={Date.parse('2026-09-30T12:10:00Z')}
+        nowMs={NOON.getTime()}
       />
       <SelectedModelsPane
         draft={draft}
@@ -122,9 +123,9 @@ describe('ModelCatalogPane', () => {
   });
 
   it('a cached list says how old it is', () => {
-    const providers = PROVIDERS.map((p) => (p.id === 'openrouter' ? { ...p, status: 'cached' as const, fetchedAt: '2026-09-30T12:00:00Z' } : p));
+    const providers = PROVIDERS.map((p) => (p.id === 'openrouter' ? { ...p, status: 'cached' as const, fetchedAt: beforeNoon(10 * 60_000) } : p));
     render(<Harness providers={providers} />);
-    expect(screen.getByText('Showing models from 10 minutes ago.')).toBeInTheDocument();
+    expect(screen.getByText('Showing models from 10 min ago.')).toBeInTheDocument();
   });
 
   it('a provider with no key says what to do, and the link opens the keys tab', () => {

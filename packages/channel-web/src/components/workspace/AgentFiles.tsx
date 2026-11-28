@@ -41,8 +41,7 @@ import {
   FileText,
   Folder,
 } from 'lucide-react';
-import { AsyncState, Button as AxButton, EmptyState, Notice, Text } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { AsyncState, Button as AxButton, EmptyState, Notice, Text, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Breadcrumb,
@@ -579,9 +578,9 @@ function FileViewer({
         <span className="truncate font-mono text-[13px]" title={basename(label)}>
           {basename(label)}
         </span>
-        <Badge variant="secondary" className="shrink-0">
+        <StatusBadge tone="neutral">
           written by {agentName}
-        </Badge>
+        </StatusBadge>
         <span className="ml-auto shrink-0">
         <AxButton
           intent="secondary"

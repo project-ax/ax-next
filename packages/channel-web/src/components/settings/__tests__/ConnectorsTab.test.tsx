@@ -1,3 +1,4 @@
+import { byVisibleText } from '@/test-utils/time';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { ConnectorsTab } from '../ConnectorsTab';
@@ -229,9 +230,9 @@ describe('ConnectorsTab', () => {
       ]);
       render(<ConnectorsTab />);
       const linear = await screen.findByTestId('connector-request-linear');
-      expect(within(linear).getByText('Requested 2 weeks ago')).toBeInTheDocument();
+      expect(within(linear).getByText(byVisibleText('Requested Oct 7'))).toBeInTheDocument();
       expect(
-        within(screen.getByTestId('connector-request-notion')).getByText('Requested today'),
+        within(screen.getByTestId('connector-request-notion')).getByText(byVisibleText('Requested 3 hr ago')),
       ).toBeInTheDocument();
     } finally {
       vi.useRealTimers();

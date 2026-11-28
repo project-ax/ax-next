@@ -5,6 +5,7 @@
  * the answer was handed, and Fix goes through the shared dialog — after which
  * the row says what happened to it instead of offering Fix again.
  */
+import { freezeClock, thawClock } from '@/test-utils/time';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
@@ -90,11 +91,17 @@ function open(): void {
   fireEvent.click(t);
 }
 
+/** The row's date as the chip words it: this year, so no year. */
+const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
 beforeEach(() => {
+  freezeClock();
   vi.clearAllMocks();
   correctMock.mockResolvedValue({ id: 'mem-new' });
   uncorrectMock.mockResolvedValue({ undone: true });
 });
+
+afterEach(() => thawClock());
 
 describe('MemoryUsedChip', () => {
   it('counts one memory in the singular', () => {
@@ -124,9 +131,9 @@ describe('MemoryUsedChip', () => {
     const items = await screen.findAllByRole('listitem');
     expect(items).toHaveLength(2);
     expect(within(items[0]!).getByText(memoryStatementText(boston))).toBeInTheDocument();
-    expect(within(items[0]!).getByText(/^Saved by a person · .*2026/)).toBeInTheDocument();
+    expect(within(items[0]!).getByText(`Saved by a person · ${day(boston.when)}`)).toBeInTheDocument();
     expect(within(items[1]!).getByText(memoryStatementText(tea))).toBeInTheDocument();
-    expect(within(items[1]!).getByText(/^From a chat · .*2026/)).toBeInTheDocument();
+    expect(within(items[1]!).getByText(`From a chat · ${day(tea.when)}`)).toBeInTheDocument();
     expect(
       within(items[0]!).getByRole('button', { name: memoryFixLabel('Boston') }).textContent,
     ).toBe(MEMORY_FIX);

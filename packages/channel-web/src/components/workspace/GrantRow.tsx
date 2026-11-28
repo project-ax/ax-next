@@ -34,7 +34,6 @@
  *     document. `lib/consent-focus.ts` carries the argument.
  */
 import { useRef, useState, type ReactElement } from 'react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -85,7 +84,7 @@ import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-desti
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import { Notice, toast } from '@project-ax/ui';
+import { Notice, toast, StatusBadge } from '@project-ax/ui';
 import { cn } from '@/lib/utils';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -427,7 +426,7 @@ export function GrantRow({
           {HOST_WALL_EXPLANATION}
         </p>
         <div className={cn('mt-3 flex flex-wrap gap-1.5', error !== null && 'mb-3')}>
-          <Badge variant="secondary">{request.host}</Badge>
+          <StatusBadge tone="neutral">{request.host}</StatusBadge>
         </div>
         {failure}
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -590,9 +589,9 @@ export function GrantRow({
           <p className="text-xs text-muted-foreground">{REACH_LEAD_IN}</p>
           <div className="flex flex-wrap gap-1.5">
             {request.hosts.map((h) => (
-              <Badge key={h} variant="secondary">
+              <StatusBadge key={h} tone="neutral">
                 {h}
-              </Badge>
+              </StatusBadge>
             ))}
           </div>
         </div>
@@ -628,7 +627,7 @@ export function GrantRow({
             key={s.slot}
             className="mt-3 flex items-center gap-2 text-[13px] text-muted-foreground"
           >
-            <Badge variant="secondary">{humanizeId(account ?? s.slot)}</Badge>
+            <StatusBadge tone="neutral">{humanizeId(account ?? s.slot)}</StatusBadge>
             <span>
               {connectorService !== undefined
                 ? `Using the ${humanizeSlotLabel(s.slot, account)} that’s already set up.`

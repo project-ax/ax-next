@@ -11,6 +11,7 @@
  * be read says so; approved access for this connector moves here with Revoke.
  */
 import { afterAll, beforeAll, describe, expect, it, vi, beforeEach } from 'vitest';
+import { visibleText } from '@/test-utils/time';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { workspaceApi, WorkspaceApiError, type AgentDetail } from '@/lib/workspace-api';
 import type {
@@ -590,7 +591,7 @@ describe('when the tool list cannot be read', () => {
 });
 
 /**
- * The date assertions below ("on 7 Oct", "14 Aug") are about the READER's
+ * The date assertions below ("Signed in by you 7 Oct", "14 Aug") are about the READER's
  * calendar and language, so pin both: the zone (`process.env.TZ`, read live —
  * see workspace-timestamp-parity.test.tsx) and the default locale (the app
  * passes no locale, so a default `Intl.DateTimeFormat` is answered as en-GB).
@@ -602,6 +603,9 @@ function pinReaderClock(): void {
   beforeAll(() => {
     savedTz = process.env.TZ;
     process.env.TZ = 'UTC';
+    // "Now" is fixed too: a same-year date reads "7 Oct", a year later "7 Oct 2026".
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-26T12:00:00Z'));
     const Real = Intl.DateTimeFormat;
     // A `function`, not an arrow: the app calls it with `new`.
     vi.spyOn(Intl, 'DateTimeFormat').mockImplementation(function (
@@ -612,6 +616,7 @@ function pinReaderClock(): void {
     } as unknown as typeof Intl.DateTimeFormat);
   });
   afterAll(() => {
+    vi.useRealTimers();
     vi.mocked(Intl.DateTimeFormat).mockRestore();
     if (savedTz === undefined) delete process.env.TZ;
     else process.env.TZ = savedTz;
@@ -622,7 +627,7 @@ describe('who the agent signed in as (slice 4)', () => {
   pinReaderClock();
   /** The line is split by `<bdi>`, so match the whole paragraph's text. */
   const findLine = (text: string) =>
-    screen.findByText((_c, el) => el?.tagName === 'P' && el.textContent === text);
+    screen.findByText((_c, el) => el?.tagName === 'P' && visibleText(el) === text);
   function withSignIn(signedIn: AgentConnectorRow['signedIn']) {
     vi.mocked(workspaceApi.connectors).mockResolvedValue({
       shared: false, connectorsSupported: true, manageable: true, sharedCredentials: false,
@@ -643,16 +648,16 @@ describe('who the agent signed in as (slice 4)', () => {
   });
 
   it.each([
-    [{ byName: 'Vinay', byYou: true }, 'Signed in by you on 7 Oct'],
-    [{ byName: 'Vinay', byYou: false }, 'Signed in by Vinay on 7 Oct'],
-    [{ byName: null, byYou: false }, 'Signed in by someone on 7 Oct'],
+    [{ byName: 'Vinay', byYou: true }, 'Signed in by you 7 Oct'],
+    [{ byName: 'Vinay', byYou: false }, 'Signed in by Vinay 7 Oct'],
+    [{ byName: null, byYou: false }, 'Signed in by someone 7 Oct'],
   ])('with no account, says who signed in and when (%o)', async (who, text) => {
     withSignIn({ account: null, at: AT, ...who });
     renderTab();
     await openDetails();
     const line = await findLine(text);
     // Who signed in is isolated too (a display name can be right-to-left).
-    expect(line.querySelector('bdi')?.textContent).toBe(text.replace(/^Signed in by (.*) on .*$/, '$1'));
+    expect(line.querySelector('bdi')?.textContent).toBe(text.replace(/^Signed in by (.*) 7 Oct$/, '$1'));
   });
 
   it('a sign-in from before slice 4 (nothing recorded) adds no line at all', async () => {
@@ -693,7 +698,7 @@ describe('access you approved', () => {
     expect(within(section).getByText('uploads.linear.app')).toBeTruthy();
     expect(within(section).queryByText('api.linear.app')).toBeNull();
     expect(within(section).getByRole('button', { name: /Revoke/ })).toBeTruthy();
-    // The grant line's date comes from the shared `shortDay` helper: day first.
+    // The grant line's date comes from the shared `Timestamp`: day first in the pinned en-GB.
     expect(within(section).getByText('14 Aug')).toBeTruthy();
   });
 

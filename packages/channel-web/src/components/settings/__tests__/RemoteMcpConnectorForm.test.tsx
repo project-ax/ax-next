@@ -1039,7 +1039,7 @@ describe('tool permissions (TASK-737)', () => {
       await addFirst(options);
       await screen.findByRole('group', { name: 'Permission for Search issues' });
       expect(toolPermsGets).toEqual(['/admin/connectors/linear/tool-permissions']);
-      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(4);
+      expect(screen.getAllByText('Suggested')).toHaveLength(4);
       await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(options.onSaved).toHaveBeenCalledTimes(1));
@@ -1365,7 +1365,7 @@ describe('tool permissions (TASK-737)', () => {
       expect(isSuggested('Create issue')).toBe(true);
       expect(isSuggested('Update issue')).toBe(true);
       expect(isSuggested('Read an issue')).toBe(false);
-      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(3);
+      expect(screen.getAllByText('Suggested')).toHaveLength(3);
     });
 
     it('drops the badge from a row the person picks, and the note once none are left', async () => {
@@ -1381,7 +1381,7 @@ describe('tool permissions (TASK-737)', () => {
       expect(isSuggested('Update issue')).toBe(false);
       expect(screen.getByTestId('tool-permission-suggestions')).toBeVisible();
       fireEvent.click(within(group('Search issues')).getByRole('radio', { name: 'Deny' }));
-      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByText('Suggested')).toBeNull();
       expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
     });
 
@@ -1390,7 +1390,7 @@ describe('tool permissions (TASK-737)', () => {
       const options = props();
       const view = render(<ConnectorEditDialog {...options} />);
       await screen.findByRole('group', { name: 'Permission for Search issues' });
-      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(4);
+      expect(screen.getAllByText('Suggested')).toHaveLength(4);
       await waitFor(() =>
         expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled(),
       );
@@ -1409,7 +1409,7 @@ describe('tool permissions (TASK-737)', () => {
       render(<ConnectorEditDialog {...props()} />);
       await screen.findByRole('group', { name: 'Permission for Search issues' });
       expect(pressed('Search issues')).toEqual(['Allow']);
-      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByText('Suggested')).toBeNull();
       expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
     });
 
@@ -1422,7 +1422,7 @@ describe('tool permissions (TASK-737)', () => {
       await screen.findByText(
         'We saved the connector, but not its tool permissions. Try saving again.',
       );
-      expect(screen.getAllByTestId('tool-permission-suggested')).toHaveLength(4);
+      expect(screen.getAllByText('Suggested')).toHaveLength(4);
     });
 
     it('has no badge or note once every listed tool has a saved choice', async () => {
@@ -1434,14 +1434,14 @@ describe('tool permissions (TASK-737)', () => {
       await openEditor();
       await screen.findByRole('group', { name: 'Permission for Search issues' });
       expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
-      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByText('Suggested')).toBeNull();
     });
 
     it('never marks a saved choice for a tool the server no longer lists', async () => {
       serve(inventory({ tools: [], defaults: [{ toolKey: 'mcp.linear.get_issue', verdict: 'deny' }] }));
       await openEditor();
       await screen.findByRole('group', { name: 'Permission for get_issue' });
-      expect(screen.queryByTestId('tool-permission-suggested')).toBeNull();
+      expect(screen.queryByText('Suggested')).toBeNull();
       expect(screen.queryByTestId('tool-permission-suggestions')).toBeNull();
     });
   });

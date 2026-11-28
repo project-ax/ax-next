@@ -332,6 +332,15 @@ describe('UsageTab — who used what', () => {
     expect(within(rowOf('Casey Lee')).getByText('Paused')).toBeInTheDocument();
   });
 
+  it('weights the status tones: close to limit warns, at limit and paused are danger (rule 8)', async () => {
+    await renderLoaded();
+    closeUsageDetails();
+    const fill = (who: string, label: string) => within(rowOf(who)).getByText(label).parentElement!;
+    expect(fill('Riley Park', 'Close to limit')).toHaveClass('ax-bg-status-warning-soft');
+    expect(fill('jo@example.co', 'At limit')).toHaveClass('ax-bg-status-danger-soft');
+    expect(fill('Casey Lee', 'Paused')).toHaveClass('ax-bg-status-danger-soft');
+  });
+
   it("shows why someone is paused, so the next admin doesn't have to ask", async () => {
     await renderLoaded();
     openUsageDetails('Casey Lee');

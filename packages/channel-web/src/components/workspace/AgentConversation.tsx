@@ -33,7 +33,7 @@ import {
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import { AsyncState, EmptyState, Inline, Notice, Stack } from '@project-ax/ui';
+import { Avatar, AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -54,7 +54,6 @@ import { readNoticeTone } from '@/lib/read-register';
 import { askOwnerInstead, turnErrorText } from '@/lib/turn-error-labels';
 import { canManageAgent } from '@/lib/agent-sharing';
 import { getDraft, setDraft as saveDraft } from '@/lib/workspace-draft-store';
-import { localTime } from '@/lib/workspace-time';
 import { useStickToBottom } from '@/lib/use-stick-to-bottom';
 import {
   composerSendBlock,
@@ -71,7 +70,6 @@ import type {
 } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
 import type { GrantResume } from '@/lib/workspace-resume';
-import { AgentTile } from './bits';
 import {
   CONSENT_REGION_ATTR,
   RESOLUTION_FOCUS_RING,
@@ -1307,14 +1305,14 @@ function Message({
 
       IT KEEPS ITS CLOCK, like the agent bubble it stands in for — and for the
       same reason the row is not hoisted: WHEN a turn failed is most of what
-      makes it legible as history rather than as now. `localTime` returns null
+      makes it legible as history rather than as now. `formatTimestamp` returns null
       for a missing or unparseable instant and the row is then drawn without
       one, which is the honest render of "we do not have a time to show".
     */
-    const failedAt = localTime(m.at);
+    const failedAt = formatTimestamp(m.at, { format: 'clock' });
     return (
       <div className="flex gap-3">
-        <AgentTile agent={agent} size={24} />
+        <Avatar name={agent.name} size="md" />
         <div className="min-w-0 max-w-[600px] flex-1 whitespace-pre-line">
           <Notice tone="danger">
             {canManageAgent(agent)
@@ -1323,7 +1321,7 @@ function Message({
           </Notice>
           {failedAt !== null && (
             <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-              {failedAt}
+              <Timestamp value={m.at} format="clock" />
             </div>
           )}
         </div>
@@ -1367,7 +1365,7 @@ function Message({
     if (!d) return null;
     return (
       <ThreadApproval>
-        <AgentTile agent={agent} size={24} />
+        <Avatar name={agent.name} size="md" />
         <ApprovalCard
           agentName={agent.name}
           decision={d}
@@ -1439,7 +1437,7 @@ function AgentReply({
   fileRecheckKey: number;
   onOpenArtifact?: (artifactId: string) => void;
 }) {
-  const clock = localTime(r.at);
+  const clock = formatTimestamp(r.at, { format: 'clock' });
   const lastActivity = r.parts.map((p) => p.kind).lastIndexOf('activity');
   const cards =
     r.artifacts.length > 0 ? (
@@ -1461,7 +1459,7 @@ function AgentReply({
       {...{ [TURN_ID_ATTR]: r.id, [TURN_IDS_ATTR]: r.turnIds.join(' ') }}
       className={`-mx-2 -my-1 flex gap-3 rounded-lg px-2 py-1 ${MEMORY_SOURCE_CLASS}`}
     >
-      <AgentTile agent={agent} size={24} />
+      <Avatar name={agent.name} size="md" />
       <div className="min-w-0 flex-1">
         {/*
           A turn that only ran tools has no prose, and the step panel IS the
@@ -1562,7 +1560,7 @@ function AgentReply({
         {/*
           `at` is `''` on the live streaming frame (no committed instant until
           the turn ends) and can be an unparseable instant in principle — either
-          way `localTime` returns `null`, and the row is dropped entirely
+          way `formatTimestamp` returns `null`, and the row is dropped entirely
           rather than drawn as an empty div. An empty clock row used to render
           (an empty string is still a child), which left a sliver of dead
           whitespace under the live bubble; no row at all is the honest render
@@ -1570,7 +1568,7 @@ function AgentReply({
         */}
         {clock !== null && (
           <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-            {clock}
+            <Timestamp value={r.at} format="clock" />
           </div>
         )}
       </div>

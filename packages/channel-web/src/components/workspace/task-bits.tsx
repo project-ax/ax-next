@@ -24,14 +24,11 @@
  */
 import type { ComponentProps, ReactNode, Ref } from 'react';
 import { ListChecks, RefreshCw, Repeat2, type LucideIcon } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
+import { Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { TASK_GROUP_LABELS, type TaskGroup } from '@/lib/task-groups';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
 import { cn } from '@/lib/utils';
-import { compactStamp, fullStamp } from '@/lib/workspace-time';
-import { StateDot } from './bits';
 
 type Kind = keyof typeof TASK_KIND_LABELS;
 
@@ -189,48 +186,11 @@ export function IconLink({
   );
 }
 
-/**
- * A compact row's time: "7:13 PM" today, "Fri 7:13 PM" this past week, "Oct 23"
- * before that (`compactStamp`). The whole date is its tooltip (`title`: our
- * words, never an agent's) and its hidden text, which is what a screen reader
- * hears. Nothing for an instant it can't read.
- */
-export function RowTime({ iso, now, className }: { iso: string; now: Date; className?: string }) {
-  const short = compactStamp(iso, now);
-  const full = fullStamp(iso);
-  if (short === null || full === null) return null;
+/** A compact row's time: the shared `Timestamp` ("5 min ago", "Yesterday 7:13 PM", "Oct 23"), laid out as the row's muted trailing column. */
+export function RowTime({ at, now }: { at: string; now: Date }) {
   return (
-    <time
-      dateTime={iso}
-      title={full}
-      className={cn('shrink-0 whitespace-nowrap text-[12px] tabular-nums text-muted-foreground', className)}
-    >
-      <span aria-hidden="true">{short}</span>
-      <span className="sr-only">{full}</span>
-    </time>
-  );
-}
-
-const PILL: Record<TaskGroup, string> = {
-  'needs-you': 'bg-warning-soft text-warning',
-  'off-track': 'bg-destructive-soft text-destructive',
-  'on-track': 'bg-primary-soft text-primary',
-  done: 'bg-primary-soft text-primary',
-  'no-recent-update': 'bg-canvas text-muted-foreground',
-  'no-update': 'bg-canvas text-muted-foreground',
-  paused: 'bg-canvas text-muted-foreground',
-};
-
-/** The task's state as a pill: its mark's shape and colour, and its word. Never colour alone. */
-export function TaskStatusPill({ group, label, className }: { group: TaskGroup; label?: string; className?: string }) {
-  return (
-    <Badge
-      variant="outline"
-      size="compact"
-      className={cn('gap-1.5 border-transparent px-2 py-1 text-[12px]', PILL[group], className)}
-    >
-      <StateDot state={group} />
-      {label ?? TASK_GROUP_LABELS[group]}
-    </Badge>
+    <span className="shrink-0 whitespace-nowrap pt-0.5 text-[12px] leading-5 tabular-nums text-muted-foreground">
+      <Timestamp value={at} now={now} />
+    </span>
   );
 }

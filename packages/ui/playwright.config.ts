@@ -14,6 +14,9 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${PORT}`,
     viewport: { width: 800, height: 600 },
     deviceScaleFactor: 1,
+    // Timestamp stories render in the browser's zone and locale; pin both so baselines are deterministic.
+    timezoneId: 'UTC',
+    locale: 'en-US',
   },
   projects: [{ name: 'chromium' }],
   webServer: {

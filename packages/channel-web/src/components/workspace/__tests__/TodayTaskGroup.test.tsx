@@ -381,19 +381,19 @@ describe('TodayTaskGroup (TASK-933)', () => {
   });
 
   it('draws the mark in the heading: needs you for an ask, paused when auto-paused, none for approvals only', () => {
-    const dot = (heading: HTMLElement) => heading.querySelector('span[aria-hidden="true"]');
+    const dot = (heading: HTMLElement) => heading.querySelector('svg[data-shape]');
 
     const asked = renderGroup(group([asking()]));
     const askMark = dot(within(screen.getByRole('group', { name: /^Zero open support tickets/ })).getByRole('heading'));
-    expect(askMark).toHaveClass('bg-warning');
+    expect(askMark).toHaveAttribute('data-shape', 'diamond');
     asked.unmount();
 
     const paused = renderGroup(
       group([row({ enabled: false, task: report('on-track'), noRecentUpdate: misses(5, { autoPaused: true }) })]),
     );
     const pausedMark = dot(within(screen.getByRole('group', { name: /^Zero open support tickets/ })).getByRole('heading'));
-    expect(pausedMark).toHaveClass('bg-state-quiet');
-    expect(pausedMark).not.toHaveClass('bg-warning');
+    expect(pausedMark).toHaveAttribute('data-shape', 'ring');
+    expect(pausedMark).not.toHaveAttribute('data-shape', 'diamond');
     paused.unmount();
 
     renderGroup(group([], [approval('d1')]));

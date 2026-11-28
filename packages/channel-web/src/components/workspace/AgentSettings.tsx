@@ -37,7 +37,7 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { EmptyState } from '@project-ax/ui';
+import { Card, EmptyState } from '@project-ax/ui';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -46,7 +46,6 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { useUser } from '@/lib/user-context';
 import { SkillsAppStore } from '@/components/settings/SkillsAppStore';
@@ -176,8 +175,7 @@ export function AgentSettings(props: AgentSettingsProps) {
         <div className="px-4 pb-6">
           <h1 className="font-brand text-[22px] font-semibold">{agent.name} settings</h1>
           <p className="mt-1 text-[13.5px] text-muted-foreground">{subtitle}</p>
-          <Card className="mt-5 overflow-hidden p-0 shadow-none">
-            <CardContent className="p-0">
+          <Card flush>
             <ul aria-label="Settings sections" className="m-0 list-none divide-y divide-border p-0">
               {AGENT_SETTINGS_SECTIONS.map((id) => {
                 const { label, Icon, summary } = SETTINGS_SECTIONS[id];
@@ -207,7 +205,6 @@ export function AgentSettings(props: AgentSettingsProps) {
                 );
               })}
             </ul>
-            </CardContent>
           </Card>
         </div>
       </div>

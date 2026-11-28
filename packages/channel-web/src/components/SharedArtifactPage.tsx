@@ -14,13 +14,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
-import { AsyncState, Button as AxButton, Divider, EmptyState, Text } from '@project-ax/ui';
+import { AsyncState, Button as AxButton, Divider, EmptyState, formatTimestamp, Text, Timestamp } from '@project-ax/ui';
 import { saveFromContentOrigin } from '@/lib/file-download';
 import { HttpError, logRequestFailure } from '@/lib/http';
 import { sharedArtifactsApi } from '@/lib/shared-artifacts-api';
 import { useResolvedTheme } from '@/lib/theme';
 import { toast } from '@project-ax/ui';
-import { timeAgo } from '@/lib/workspace-time';
 import { artifactPreviewKind, type ArtifactTokenPurpose, type SharedArtifactView } from '@/lib/workspace-types';
 import { ArtifactPreview } from './workspace/ArtifactPreview';
 import { DOWNLOAD_FAILED } from './workspace/ArtifactViewer';
@@ -91,14 +90,14 @@ function Shared({ code, artifact }: { code: string; artifact: SharedArtifactView
     })();
   }, [loadToken]);
 
-  const when = timeAgo(artifact.updatedAt) ?? 'a while ago';
   return (
     <>
       <header className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="truncate text-xl font-semibold text-foreground">{artifact.title}</h1>
           <Text role="meta">
-            Made by {artifact.agentName ?? 'an agent'} · updated {when}
+            Made by {artifact.agentName ?? 'an agent'} · updated{' '}
+            {formatTimestamp(artifact.updatedAt) === null ? 'a while ago' : <Timestamp value={artifact.updatedAt} />}
           </Text>
         </div>
         <AxButton icon={Download} busy={downloading} disabled={downloading} onClick={download}>

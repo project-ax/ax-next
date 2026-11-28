@@ -1,7 +1,7 @@
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, InsetBlock, Stack, StatusMark } from '@project-ax/ui';
 import { useAgentRail } from '@/lib/workspace-rail';
 import type { AgentDetail, AgentRailData } from '@/lib/workspace-api';
-import { Elapsed, SectionLabel, StateDot, stateWord } from './bits';
+import { Elapsed, SectionLabel, STATE_TONE, stateWord } from './bits';
 
 /**
  * The side panel's Activity view: what the agent is doing right now, and the
@@ -63,10 +63,10 @@ function RightNow({
     agent.state === 'resting' && line !== null ? 'working' : agent.state;
   return (
     <>
-      <Card className="rounded-md bg-muted shadow-none">
-        <CardContent className="flex flex-col gap-2 p-3.5">
+      <InsetBlock>
+        <Stack gap="xs">
           <div className="flex items-center gap-2 text-[12.5px] font-medium">
-            <StateDot state={word} />
+            <StatusMark tone={STATE_TONE[word]} />
             {stateWord(word)}
           </div>
           <div className="text-[13px]">{line?.phrase ?? ''}</div>
@@ -92,8 +92,8 @@ function RightNow({
                 We couldn&apos;t read what it&apos;s doing just now.
               </p>
             )}
-        </CardContent>
-      </Card>
+        </Stack>
+      </InsetBlock>
     </>
   );
 }
@@ -151,8 +151,8 @@ function ThisWeek({
   return (
     <>
       <SectionLabel>This week</SectionLabel>
-      <Card className="shadow-sm">
-        <CardContent className="flex flex-col gap-2.5 p-3.5">
+      <Card>
+        <Stack gap="sm">
           {rows.map((row) => (
             <div key={row.id} className="flex flex-col gap-0.5">
               <div className="flex items-baseline justify-between gap-2">
@@ -169,7 +169,7 @@ function ThisWeek({
               </p>
             </div>
           ))}
-        </CardContent>
+        </Stack>
       </Card>
     </>
   );

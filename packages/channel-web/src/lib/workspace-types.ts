@@ -1053,8 +1053,8 @@ export interface PastConversation {
    * `meta`, a `relativeDay(...)` string the SERVER computed in its own
    * timezone. Same defect and same fix as `ThreadMessage.at` above — see
    * `ActivityEvent`'s doc comment for the rule both are following. The
-   * renderer turns this into "today" / "3 days ago" via `relativeDay` in
-   * `lib/workspace-time.ts`, now run on the reader's clock.
+   * renderer turns this into "Today 10:02 AM" / "Mon 10:02 AM" through
+   * `formatTimestamp` (`@project-ax/ui`), run on the reader's clock.
    */
   lastActivityAt: string;
 }

@@ -16,8 +16,7 @@ import { ChevronRight } from 'lucide-react';
  * `useConversationMemory`, owned by `AgentView` (see that hook for why).
  */
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { Text } from '@project-ax/ui';
-import { Badge } from '@/components/ui/badge';
+import { Text, StatusBadge, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
@@ -54,7 +53,6 @@ import {
   MEMORY_FIX_UNDONE,
   MEMORY_FORGET,
   MEMORY_RESTORED,
-  learnedAgo,
   learnedHelper,
   learnedMore,
   learnedNewBadge,
@@ -235,9 +233,7 @@ export function LearnedInChat({
             <span id="learned-in-chat-title">{LEARNED_TITLE}</span>
             {memory.status === 'ready' && <span className="text-muted-foreground">· {memory.rows.length}</span>}
             {unseen > 0 && (
-              <Badge variant="secondary" className="ml-auto px-1.5 py-0 text-xs">
-                {learnedNewBadge(unseen)}
-              </Badge>
+              <StatusBadge tone="neutral">{learnedNewBadge(unseen)}</StatusBadge>
             )}
           </Button>
         </CollapsibleTrigger>
@@ -498,7 +494,11 @@ function LearnedLine({
           </Button>
         )}
         {turnId !== undefined && source !== undefined && arrivedAt !== null && <span aria-hidden="true">·</span>}
-        {arrivedAt !== null && <span>{learnedAgo(Math.max(0, now - arrivedAt))}</span>}
+        {arrivedAt !== null && (
+          <span>
+            <Timestamp value={arrivedAt} now={new Date(now)} />
+          </span>
+        )}
         {/* Said out loud by the receipt's announcer, not here (TASK-651). */}
         {note !== null && <span>{note}</span>}
         <span className="ml-auto flex gap-0.5">

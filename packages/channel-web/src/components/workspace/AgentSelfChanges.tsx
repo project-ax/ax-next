@@ -16,10 +16,9 @@
  * Built from the installed shadcn `Card` and `Button` and semantic tokens only
  * (invariant 6).
  */
+import { Card, Timestamp } from '@project-ax/ui';
 import { useId } from 'react';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { timeAgo } from '@/lib/workspace-time';
 import type { SelfChangeRow } from '@/lib/workspace-self-changes';
 
 export const SELF_CHANGES_HEADING = 'Changes your agents made to themselves';
@@ -42,10 +41,9 @@ export function AgentSelfChanges({ rows, onReview }: Props) {
         {SELF_CHANGES_HEADING}
       </h2>
       <p className="mb-1.5 text-[12.5px] text-muted-foreground">{SELF_CHANGES_NOTE}</p>
-      <Card className="overflow-hidden p-0 shadow-none">
+      <Card flush>
         <ul className="divide-y divide-border">
           {rows.map((row) => {
-            const when = timeAgo(row.changedAt);
             return (
               <li
                 key={row.key}
@@ -54,9 +52,9 @@ export function AgentSelfChanges({ rows, onReview }: Props) {
                 <span className="min-w-0 flex-1">
                   <span className="font-medium">{row.agentName}</span> {row.words}
                 </span>
-                {when !== null && (
-                  <span className="shrink-0 text-[12.5px] text-muted-foreground">{when}</span>
-                )}
+                <span className="shrink-0 text-[12.5px] text-muted-foreground">
+                  <Timestamp value={row.changedAt} />
+                </span>
                 {onReview !== undefined && (
                   <Button
                     type="button"

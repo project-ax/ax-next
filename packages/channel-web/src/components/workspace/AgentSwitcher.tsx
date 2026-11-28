@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, ChevronsUpDown, EllipsisVertical, Plus, Settings, Trash2 } from 'lucide-react';
-import { ConfirmAction, Stack, Text } from '@project-ax/ui';
+import { Avatar, ConfirmAction, Stack, StatusMark, Text } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -17,7 +17,7 @@ import { personLabel, SHARING_COPY } from '@/lib/sharing-copy';
 import { NEW_AGENT_OPENER_ATTR } from '@/lib/new-agent-return-focus';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
-import { AgentTile, StateDot, StateDotSlot, stateWord } from './bits';
+import { STATE_TONE, stateWord } from './bits';
 import { IconTooltip } from './IconTooltip';
 
 interface Props {
@@ -100,7 +100,7 @@ export function AgentSwitcher({
   // Someone an agent is only shared with just chats; a co-owner can't delete.
   const canSettings = onOpenSettings !== undefined && canManageAgent(selected);
   const canDelete = onDeleted !== undefined && canDeleteAgent(selected);
-  const switcherLabel = `${selected.name}, ${stateWord(selected.state).toLowerCase()}. Switch agent`;
+  const switcherLabel = `${selected.name}, ${stateWord(selected.state).toLowerCase()}${othersWaiting ? `, another agent is ${stateWord('waiting').toLowerCase()}` : ''}. Switch agent`;
 
   const trigger = collapsed ? (
     <Button
@@ -110,12 +110,11 @@ export function AgentSwitcher({
       className="relative rounded-sm"
       {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
     >
-      <AgentTile agent={selected} size={24} />
+      <Avatar name={selected.name} size="md" />
       {othersWaiting && (
-        <span
-          aria-hidden="true"
-          className="absolute right-1 top-1 size-1.5 rounded-full bg-warning"
-        />
+        <span className="absolute right-1 top-1">
+          <StatusMark tone="warning" />
+        </span>
       )}
     </Button>
   ) : (
@@ -128,15 +127,12 @@ export function AgentSwitcher({
       // that leads back to it.
       {...{ [NEW_AGENT_OPENER_ATTR]: '' }}
     >
-      <AgentTile agent={selected} size={24} />
+      <Avatar name={selected.name} size="md" />
       <span className="min-w-0 flex-1 truncate text-left text-[14px] font-medium" title={selected.name}>
         {selected.name}
       </span>
       {othersWaiting && (
-        <span
-          aria-hidden="true"
-          className="size-1.5 shrink-0 rounded-full bg-warning"
-        />
+        <StatusMark tone="warning" />
       )}
       <ChevronsUpDown aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
     </Button>
@@ -166,9 +162,7 @@ export function AgentSwitcher({
                   onSelect={go(() => onSelect(a.id))}
                   className="min-h-9 gap-2.5 px-2 text-[13.5px]"
                 >
-                  <StateDotSlot>
-                    <StateDot state={a.state} />
-                  </StateDotSlot>
+                  <StatusMark tone={STATE_TONE[a.state]} />
                   {/* A div, not a span: the shared-by row stacks block elements inside it. */}
                   <div className="min-w-0 flex-1 truncate" title={a.name}>
                     {a.sharedBy === undefined ? (
