@@ -1,6 +1,6 @@
 /**
  * TASK-1101 — one listing in Admin › Connectors › Find in directory: a
- * settings row (its title, who published it, its description and chips)
+ * list row (its title, who published it, its description and chips)
  * whose sheet holds the details and "Set it up".
  *
  * Registry text is untrusted: text nodes only, the URL shown only as its
@@ -18,15 +18,15 @@
  * declares no key, not that nobody signs in, so it gets no chip and never
  * "No sign-in".
  *
- * shadcn primitives and semantic tokens only (invariant 6). The chips are
- * `StatusBadge`s, which render a `span`, so they are valid inside the row's
- * `button`.
+ * One design language (invariant 6): a `ListRow` through `SheetRow`. The chips
+ * are `StatusBadge`s in the row's trailing slot, so they sit beside the title
+ * button, not inside it.
  */
 import { ShieldCheck } from 'lucide-react';
 import { formatTimestamp, KeyValueList, Notice, Stack, StatusBadge } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { directoryHost, type DirectoryAuth, type DirectoryEntry } from '@/lib/connector-directory';
-import { SettingsDetailRow } from './SettingsLayout';
+import { SheetRow } from './SettingsLayout';
 
 const NO_DESCRIPTION = 'The publisher didn’t add a description.';
 const DEPRECATED_NOTE = 'This listing is marked deprecated, so it may stop working.';
@@ -97,24 +97,16 @@ export function DirectoryListingRow({
   const hasChips = added || entry.deprecated === true || authChip !== null;
 
   return (
-    <SettingsDetailRow
-      label={entry.title}
-      detail={
-        <>
-          <ProofLine entry={entry} />
-          {hasDescription && <span className="block truncate">{entry.description}</span>}
-        </>
-      }
-      value={
-        hasChips ? (
-          <span className="flex items-center gap-1.5">
-            {added && <StatusBadge tone="info" size="sm">Added</StatusBadge>}
-            {entry.deprecated && <StatusBadge tone="warning" size="sm">Deprecated</StatusBadge>}
-            {authChip !== null && <StatusBadge tone="neutral" size="sm">{authChip}</StatusBadge>}
-          </span>
-        ) : undefined
-      }
-      description={<span className="break-words">{hasDescription ? entry.description : NO_DESCRIPTION}</span>}
+    <SheetRow
+      title={entry.title}
+      meta={<ProofLine entry={entry} />}
+      {...(hasDescription ? { description: entry.description } : {})}
+      {...(hasChips ? { trailing: <>
+        {added && <StatusBadge tone="info" size="sm">Added</StatusBadge>}
+        {entry.deprecated && <StatusBadge tone="warning" size="sm">Deprecated</StatusBadge>}
+        {authChip !== null && <StatusBadge tone="neutral" size="sm">{authChip}</StatusBadge>}
+      </> } : {})}
+      sheetDescription={<span className="break-words">{hasDescription ? entry.description : NO_DESCRIPTION}</span>}
     >
       {(close) => (
         <>
@@ -164,6 +156,6 @@ export function DirectoryListingRow({
           </div>
         </>
       )}
-    </SettingsDetailRow>
+    </SheetRow>
   );
 }

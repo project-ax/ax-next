@@ -28,7 +28,7 @@
  * to ask an admin for more room (the sentences live in `lib/storage-copy.ts`).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AsyncState, Card, EmptyState, Heading, KeyValueList, Notice, Stack, StatusBadge, type StatusTone, Text } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, formatFileSize, Heading, KeyValueList, List, ListRow, Notice, Stack, StatusBadge, type StatusTone, Text } from '@project-ax/ui';
 import { Progress } from '@/components/ui/progress';
 import {
   Table,
@@ -59,7 +59,6 @@ import {
   UNUSED_FILES_FAILED,
   breakdownRows,
   failureMessage,
-  formatBytes,
   ownerBreakdown,
   ownerLabel,
   ownerSubline,
@@ -69,7 +68,6 @@ import {
   unusedFilesLine,
   usageLine,
 } from '@/lib/storage-copy';
-import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { StorageLimitsCard } from './StorageLimitsCard';
 
 // ---------------------------------------------------------------------------
@@ -233,7 +231,7 @@ function OwnerRow({ owner, limitBytes }: { owner: StorageOwner; limitBytes: numb
         )}
       </TableCell>
       <TableCell className="align-top">
-        <div>{formatBytes(owner.usedBytes)}</div>
+        <div>{formatFileSize(owner.usedBytes)}</div>
         {share !== null && <div className="text-xs text-muted-foreground">{share}</div>}
         <div className="text-xs text-muted-foreground">{ownerBreakdown(owner)}</div>
       </TableCell>
@@ -362,12 +360,14 @@ function AdminStorageSection({ onLimitsSaved }: { onLimitsSaved: () => void }) {
     <>
       <section className="flex flex-col gap-2">
         <h2 className="mb-4 text-sm font-medium">Workspace</h2>
-        <SettingsDisclosure title="Storage limits" value={admin ? `${formatBytes(admin.limits.limitMb * BYTES_PER_MB)} per person` : 'Loading…'}>
+        <List label="Workspace">
+        <ListRow title="Storage limits" meta={admin ? `${formatFileSize(admin.limits.limitMb * BYTES_PER_MB)} per person` : 'Loading…'} expandable={{ content: (<>
           <StorageLimitsCard limits={admin?.limits ?? null} onSaved={saved} />
-        </SettingsDisclosure>
-        <SettingsDisclosure title="Everyone’s storage" value={admin ? `${admin.ownerCount} people or teams` : 'Loading…'}>
+        </>) }} />
+        <ListRow title="Everyone’s storage" meta={admin ? `${admin.ownerCount} people or teams` : 'Loading…'} expandable={{ content: (<>
           <EveryoneCard admin={admin} />
-        </SettingsDisclosure>
+        </>) }} />
+        </List>
         <UnusedFilesLine />
       </section>
     </>

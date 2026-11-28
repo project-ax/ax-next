@@ -87,7 +87,7 @@ async function ready() {
 function catalogTab() { fireEvent.mouseDown(screen.getByRole('tab', { name: 'Catalog' })); }
 function enabledTab() { fireEvent.mouseDown(screen.getByRole('tab', { name: 'Enabled' })); }
 function removeSelectedModel(label: string) {
-  fireEvent.click(screen.getByRole('button', { name: `Details for ${label}` }));
+  fireEvent.click(screen.getByRole('button', { name: `${label}` }));
   fireEvent.click(screen.getByRole('button', { name: `Remove ${label}` }));
 }
 const save = () => screen.getByRole('button', { name: 'Save changes' });
@@ -96,7 +96,7 @@ describe('ModelsTab — loading', () => {
   it('shows both panes with the saved selection and Default', async () => {
     await ready();
     expect(screen.getByRole('heading', { name: 'Available to users (2)', hidden: true })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
+    expect(screen.getByRole('button', { name: 'Claude Sonnet 4.6' }).closest('li')).toHaveTextContent('Default');
     catalogTab();
     expect(screen.getByRole('checkbox', { name: /Kimi K3/ })).toBeChecked();
     catalogTab();
@@ -143,14 +143,14 @@ describe('ModelsTab — loading', () => {
 describe('ModelsTab — saving', () => {
   it('keeps a default change in the draft until Save, and Cancel restores the saved default', async () => {
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Details for Kimi K3' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Kimi K3' }));
     fireEvent.click(screen.getByRole('button', { name: 'Make Kimi K3 the Default' }));
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    expect(screen.getByRole('button', { name: 'Details for Kimi K3' })).toHaveTextContent('Default');
+    expect(screen.getByRole('button', { name: 'Kimi K3' }).closest('li')).toHaveTextContent('Default');
     expect(save()).toBeEnabled();
     expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.getByRole('button', { name: 'Details for Claude Sonnet 4.6' })).toHaveTextContent('Default');
+    expect(screen.getByRole('button', { name: 'Claude Sonnet 4.6' }).closest('li')).toHaveTextContent('Default');
     expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
     expect(callsTo('PUT', '/admin/models/policy')).toHaveLength(0);
   });

@@ -61,7 +61,8 @@ describe('renderUiCss', () => {
       selectors.push(r.selector);
     });
     expect(selectors.length).toBeGreaterThan(0);
-    for (const sel of selectors) expect(sel, sel).toMatch(/^\.(?:[a-z-]+\\:)?ax-/);
+    // Variants may stack (ListRow's `focus-visible:after:` focus ring), but every selector still starts with an ax- class.
+    for (const sel of selectors) expect(sel, sel).toMatch(/^\.(?:[a-z-]+\\:)*ax-/);
     expect(selectors).toContain('.ax-m-none');
   });
 });

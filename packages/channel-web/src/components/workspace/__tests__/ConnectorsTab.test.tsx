@@ -193,14 +193,12 @@ describe('Other abilities', () => {
     const read = await sw('Read web pages');
     // The built-in rule is Ask first; the switch can only turn it off.
     expectDescribedBy(read, 'Asks you before opening a new site');
-    // The visible "· asks first" stays out of the name (aria-hidden).
+    // The visible "· asks first" stays out of the name (the switch is named by its label alone).
     expect(read).toHaveAccessibleName('Read web pages');
     const hint = screen.getByText('· asks first');
-    expect(hint).toHaveClass('text-muted-foreground');
-    // Same row as the label, not a subtitle line under it.
-    expect(hint.closest('label')).toBe(
-      document.querySelector('label[for="ability-readPages"]'),
-    );
+    expect(hint).toHaveClass('ax-text-fg-muted');
+    // On the same row (list item) as the switch it describes.
+    expect(hint.closest('li')).toBe(read.closest('li'));
     // The hint is the only one — the other rows carry no such claim.
     expect(screen.getAllByText(/asks first/)).toHaveLength(1);
     expectNoDescription(await sw('Web search'));
@@ -276,16 +274,14 @@ describe('Other abilities', () => {
         expect(s).toHaveAttribute('aria-checked', String(v));
         // The hint never leaks into the switch's name.
         expect(s).toHaveAccessibleName(label);
-        const hint = document
-          .querySelector(`label[for="${s.id}"]`)!
-          .querySelector('[aria-hidden="true"]');
+        const hint = s.closest('li')!.querySelector('[data-part="meta"]');
         const want = notes[state];
         if (want === null) {
           expect(hint).toBeNull();
           expectNoDescription(s);
         } else {
           expect(hint?.textContent).toBe(want[0]);
-          expect(hint).toHaveClass('text-muted-foreground');
+          expect(hint).toHaveClass('ax-text-fg-muted');
           expectDescribedBy(s, want[1]);
         }
       }

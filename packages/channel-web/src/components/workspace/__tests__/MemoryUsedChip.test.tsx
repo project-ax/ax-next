@@ -110,6 +110,27 @@ describe('MemoryUsedChip', () => {
     expect(trigger().textContent).toContain('Used 1 memory');
   });
 
+  it('lists the memories as one named list, a row each, with Fix beside the one it fixes', () => {
+    render(<MemoryUsedChip used={used([boston, tea])} agentId="a1" />);
+    open();
+    const list = screen.getByRole('list', { name: memoryUsedLabel(2) });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByRole('group', { name: memoryStatementText(boston) })).toBeTruthy();
+    expect(within(rows[0]!).getByRole('button', { name: memoryFixLabel('Boston') })).toBeTruthy();
+    expect(within(rows[1]!).getByRole('button', { name: memoryFixLabel('tea') })).toBeTruthy();
+  });
+
+  it('shows a long memory in full, as wrapping text, not cut to one line', () => {
+    const long = { ...boston, value: 'a very long value that a person said '.repeat(6).trim() };
+    render(<MemoryUsedChip used={used([long])} agentId="a1" />);
+    open();
+    const line = screen.getByText(memoryStatementText(long));
+    expect(line.textContent).toBe(memoryStatementText(long));
+    expect(line.className).not.toContain('truncate');
+    expect(line.className).toContain('break-words');
+  });
+
   it('counts several memories in the plural', () => {
     render(<MemoryUsedChip used={used([boston, tea])} agentId="a1" />);
     expect(trigger().textContent).toContain('Used 2 memories');
@@ -306,7 +327,7 @@ describe('MemoryUsedChip — where focus goes after Undo or when the receipt run
     press(screen.getByRole('button', { name: memoryUndoFixLabel('Cambridge') }));
 
     const fix = await screen.findByRole('button', { name: memoryFixLabel('Boston') });
-    const row = screen.getByText(memoryStatementText(boston));
+    const row = screen.getByRole('group', { name: memoryStatementText(boston) });
     await waitFor(() => expect(document.activeElement).toBe(row));
     expect(row.compareDocumentPosition(fix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
@@ -320,7 +341,7 @@ describe('MemoryUsedChip — where focus goes after Undo or when the receipt run
       await vi.advanceTimersByTimeAsync(11_000);
     });
     await waitFor(() => expect(screen.queryByText(MEMORY_UPDATED)).toBeNull());
-    expect(document.activeElement).toBe(screen.getByText(memoryStatementText(boston)));
+    expect(document.activeElement).toBe(screen.getByRole('group', { name: memoryStatementText(boston) }));
   });
 
   it('a receipt that runs out while focus is elsewhere leaves focus alone', async () => {

@@ -29,7 +29,7 @@ import { CHAT_CONTENT_CLASS } from './ChatComposer';
  *      failure already stops the empty sentence.
  */
 import { CheckCircle2 } from 'lucide-react';
-import { Notice, Stack, StatusMark } from '@project-ax/ui';
+import { Card, List, ListRow, Notice, Stack, StatusMark } from '@project-ax/ui';
 import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
@@ -550,10 +550,12 @@ export function TodayView({
         : readable ||
           filter === 'working' ||
           (filter === 'needs' && (grants.length > 0 || groups.length > 0))) && (
-        <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+        <Card flush>
           {filter === 'needs' ? (
             <>
               {/*
+                One list for the whole queue, so the list owns the dividers between its rows whatever kind they are.
+
                 Grants sit above the decisions. A held action is waiting; an
                 agent that hit the wall is STOPPED until this is answered, so it
                 is the more urgent of the two and goes where the eye lands
@@ -561,39 +563,43 @@ export function TodayView({
                 burying an unfamiliar row under familiar ones is how it goes
                 unread.
               */}
-              {grants.map((g) => (
-                <GrantRow
-                  key={g.key}
-                  grant={g}
-                  onResolved={onGrantResolved}
-                  onGranted={onGranted}
-                />
-              ))}
-              {/*
-                Tasks that need you, then tasks there for their approvals
-                (TASK-933). A task's approvals render as ONE array in queue
-                order, so an answer turns a question into its receipt in place,
-                under the same instance, and the receipt keeps focus.
-              */}
-              {groups.map((g) => (
-                <TodayTaskGroup
-                  key={g.key}
-                  group={g}
-                  onNavigate={onNavigate}
-                  onReplied={onReplied}
-                  onCheckInStarted={() => replyPoll.start('reply')}
-                >
-                  {g.decisions.map((d) => renderRow(d, isOpenDecision(d), { inBlock: true }))}
-                </TodayTaskGroup>
-              ))}
-              {/*
-                The other approvals, also as ONE array in queue order. They used
-                to be open rows then receipts, two sibling arrays: an answer
-                moved the row from one to the other, React mounted a new one,
-                and focus fell to `<body>` with Undo out of reach (TASK-933,
-                pinned in `consent-focus.test.tsx`).
-              */}
-              {loose.map((d) => renderRow(d, isOpenDecision(d)))}
+              {(grants.length > 0 || groups.length > 0 || loose.length > 0) && (
+                <List label="Waiting on you">
+                  {grants.map((g) => (
+                    <GrantRow
+                      key={g.key}
+                      grant={g}
+                      onResolved={onGrantResolved}
+                      onGranted={onGranted}
+                    />
+                  ))}
+                  {/*
+                    Tasks that need you, then tasks there for their approvals
+                    (TASK-933). A task's approvals render as ONE array in queue
+                    order, so an answer turns a question into its receipt in place,
+                    under the same instance, and the receipt keeps focus.
+                  */}
+                  {groups.map((g) => (
+                    <TodayTaskGroup
+                      key={g.key}
+                      group={g}
+                      onNavigate={onNavigate}
+                      onReplied={onReplied}
+                      onCheckInStarted={() => replyPoll.start('reply')}
+                    >
+                      {g.decisions.map((d) => renderRow(d, isOpenDecision(d), { inBlock: true }))}
+                    </TodayTaskGroup>
+                  ))}
+                  {/*
+                    The other approvals, also as ONE array in queue order. They used
+                    to be open rows then receipts, two sibling arrays: an answer
+                    moved the row from one to the other, React mounted a new one,
+                    and focus fell to `<body>` with Undo out of reach (TASK-933,
+                    pinned in `consent-focus.test.tsx`).
+                  */}
+                  {loose.map((d) => renderRow(d, isOpenDecision(d)))}
+                </List>
+              )}
               {readable &&
                 nothingListed &&
                 !checking && (
@@ -618,40 +624,28 @@ export function TodayView({
               Nobody is mid-task right now.
             </div>
           ) : (
-            working.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => onOpenAgent(a.id)}
-                className="flex w-full items-center gap-3 border-b border-rule-soft px-5 py-3.5 text-left last:border-b-0"
-              >
-                <StatusMark tone="info" />
-                <span className="shrink-0 text-[13px] font-medium">{a.name}</span>
-                {/*
-                  `now` is null until something real produces the activity line
-                  (AW-8/AW-14). The name and the state dot already say "working";
-                  a placeholder phrase here would read as a report.
-                */}
-                <span
-                  className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground"
-                  /* No empty `title`: a tooltip with nothing in it is a tooltip
-                     that fires on an empty line (TASK-436). */
-                  {...(a.now ? { title: a.now } : {})}
-                >
-                  {a.now ?? ''}
-                </span>
-                <span className="shrink-0 text-[12.5px] text-muted-foreground">
-                  {a.counter
-                    ? `${a.counter.done} of ${a.counter.total} ${a.counter.unit}`
-                    : ''}
-                </span>
-                <span className="shrink-0 text-[12.5px] text-muted-foreground">
-                  <Elapsed since={a.startedAt} />
-                </span>
-              </button>
-            ))
+            <List label="Working now">
+              {working.map((a) => (
+                <ListRow
+                  key={a.id}
+                  title={a.name}
+                  leading={<StatusMark tone="info" />}
+                  // `now` is null until something real produces the activity line
+                  // (AW-8/AW-14). The name and the state dot already say "working";
+                  // a placeholder phrase here would read as a report.
+                  {...(a.now ? { description: a.now } : {})}
+                  meta={
+                    <>
+                      {a.counter ? `${a.counter.done} of ${a.counter.total} ${a.counter.unit} · ` : ''}
+                      <Elapsed since={a.startedAt} />
+                    </>
+                  }
+                  onOpen={() => onOpenAgent(a.id)}
+                />
+              ))}
+            </List>
           )}
-        </div>
+        </Card>
       )}
       </div>
 

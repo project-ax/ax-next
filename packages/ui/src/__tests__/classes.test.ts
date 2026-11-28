@@ -10,7 +10,9 @@ function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((n) => {
     const p = join(dir, n);
     if (statSync(p).isDirectory()) return n === '__tests__' ? [] : walk(p);
-    return p.endsWith('.tsx') && !p.endsWith('.stories.tsx') ? [p] : [];
+    if (p.endsWith('.tsx')) return p.endsWith('.stories.tsx') ? [] : [p];
+    // internal/*.ts too: class constants there (click-layer.ts, maps.ts) reach components through cx.
+    return p.endsWith('.ts') && p.startsWith(join(src, 'internal')) ? [p] : [];
   });
 }
 

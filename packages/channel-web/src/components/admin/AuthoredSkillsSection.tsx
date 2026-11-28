@@ -28,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { AsyncState, Card, ConfirmAction, EmptyState, Notice, Stack, StatusBadge, Text } from '@project-ax/ui';
+import { AsyncState, Card, ConfirmAction, EmptyState, List, ListRow, Notice, Stack, StatusBadge, Text } from '@project-ax/ui';
 import { focusAfterRemoval } from '@/lib/focus-after-removal';
 import {
   listAuthoredSkills,
@@ -293,29 +293,21 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
           )}
 
           {!loading && !error && skills.length > 0 && (
-            <ul className="flex flex-col gap-3 list-none m-0 p-0">
+            <List label="Authored skills">
               {skills.map((skill) => (
-                <li
+                <ListRow
                   key={skill.id}
-                  className="flex items-start justify-between gap-3 rounded-md border border-border p-3"
-                >
-                  <div className="flex flex-col gap-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-mono truncate">{skill.id}</span>
-                      <span className="text-xs text-muted-foreground">v{skill.version}</span>
-                      {skill.hasForbiddenCapabilities && (
-                        <StatusBadge tone="danger" dot>
-                          declares capabilities — remove from SKILL.md before promoting
-                        </StatusBadge>
-                      )}
-                    </div>
-                    {skill.description && (
-                      <span className="text-xs text-muted-foreground">
-                        {skill.description}
-                      </span>
+                  title={skill.id}
+                  meta={<>
+                    v{skill.version}
+                    {skill.hasForbiddenCapabilities && (
+                      <>{' '}<StatusBadge tone="danger" dot>
+                        declares capabilities — remove from SKILL.md before promoting
+                      </StatusBadge></>
                     )}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  </>}
+                  {...(skill.description ? { description: skill.description } : {})}
+                  trailing={<>
                     <Button
                       size="sm"
                       variant="outline"
@@ -338,10 +330,10 @@ export function AuthoredSkillsSection({ agentId }: AuthoredSkillsSectionProps) {
                         focusAfterRemoval('[data-return-focus="authored-skills"]');
                       }}
                     />
-                  </div>
-                </li>
+                  </>}
+                />
               ))}
-            </ul>
+            </List>
           )}
         </Stack>
       </Stack>

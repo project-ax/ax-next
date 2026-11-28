@@ -24,6 +24,13 @@ import { UserProvider } from '@/lib/user-context';
 import { AgentSettings } from '../AgentSettings';
 import { rail } from './rail-fixture';
 
+/** The title of the row an icon sits in, only if the icon comes after it: the icon is "right after its name". */
+function rowTitleBefore(icon: HTMLElement): string | null | undefined {
+  const title = icon.closest('li')?.querySelector('button');
+  if (title == null) return undefined;
+  return title.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING ? title.textContent : undefined;
+}
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('@/lib/workspace-api');
   return {
@@ -111,8 +118,11 @@ describe('connector list', () => {
     const heading = screen.getByRole('heading', { level: 1, name: 'Connectors' });
     expect(heading.textContent).toBe('Connectors');
     expect(screen.getAllByText('Ready to use')).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'Edit Linear' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Edit Gmail' })).toBeTruthy();
+    // One named list; each row's single primary action (its title) opens the details view.
+    const list = screen.getByRole('list', { name: 'Quill’s connectors' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(list).getByRole('button', { name: 'Linear' })).toBeTruthy();
+    expect(within(list).getByRole('button', { name: 'Gmail' })).toBeTruthy();
     expect(connectorsMock).toHaveBeenCalledWith('a-quill');
   });
 
@@ -529,7 +539,7 @@ describe('a member on a team agent', () => {
     asMember();
     renderTab();
     const icon = await screen.findByRole('button', { name: ASK_OWNER });
-    expect(icon.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe('Gmail');
+    expect(rowTitleBefore(icon)).toBe('Gmail');
     expect(icon.className).toContain('text-muted-foreground');
     expect(icon.className).not.toContain('text-destructive');
     act(() => icon.focus());
@@ -540,7 +550,7 @@ describe('a member on a team agent', () => {
     asMember();
     renderTab();
     const icons = await screen.findAllByRole('button', { name: EXPIRED_ASK_OWNER });
-    expect(icons.map((i) => i.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent)).toEqual(['Notion', 'Jira']);
+    expect(icons.map((i) => rowTitleBefore(i))).toEqual(['Notion', 'Jira']);
   });
 
   it('Edit opens the details view, with no setup button', async () => {
@@ -620,8 +630,8 @@ describe('connector health (TASK-741)', () => {
     const expired = await screen.findByRole('button', { name: 'Sign-in expired' });
     const unreachable = screen.getByRole('button', { name: 'Can’t reach it' });
     // Right after the name, inside the same row.
-    expect(expired.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe('Gmail');
-    expect(unreachable.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent).toBe('Slack');
+    expect(rowTitleBefore(expired)).toBe('Gmail');
+    expect(rowTitleBefore(unreachable)).toBe('Slack');
     expect(expired.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     expect(expired.className).toContain('text-destructive');
     // The healthy row has no icon, and the reason appears in the row status.
@@ -671,7 +681,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   it('wears the error icon after its name; someone who isn’t an admin is told to ask one — even for a connector they may edit', async () => {
     renderTab();
     const icons = await screen.findAllByRole('button', { name: ASK_ADMIN });
-    expect(icons.map((i) => i.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent)).toEqual(['Linear', 'Gmail']);
+    expect(icons.map((i) => rowTitleBefore(i))).toEqual(['Linear', 'Gmail']);
     expect(icons[0]!.querySelector('svg.lucide-circle-alert')).not.toBeNull();
     // The old advice pointed at a menu item the rail no longer has.
     expect(screen.queryByRole('button', { name: /Edit connector/ })).toBeNull();
@@ -682,7 +692,7 @@ describe("a connector a session can't fully load (TASK-745)", () => {
   it('a workspace admin is pointed at Admin › Connectors, whether or not the row is editable', async () => {
     renderTab(ADMIN);
     const icons = await screen.findAllByRole('button', { name: FIX_IN_SETTINGS });
-    expect(icons.map((i) => i.previousElementSibling?.querySelector('[data-testid^=connector-name]')?.textContent)).toEqual(['Linear', 'Gmail']);
+    expect(icons.map((i) => rowTitleBefore(i))).toEqual(['Linear', 'Gmail']);
     expect(screen.queryByRole('button', { name: ASK_ADMIN })).toBeNull();
   });
 

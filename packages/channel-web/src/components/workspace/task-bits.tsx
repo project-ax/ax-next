@@ -24,7 +24,6 @@
  */
 import type { ComponentProps, ReactNode, Ref } from 'react';
 import { ListChecks, RefreshCw, Repeat2, type LucideIcon } from 'lucide-react';
-import { Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { TASK_KIND_LABELS } from '@/lib/task-kinds';
@@ -60,19 +59,6 @@ function Tip({ label, reason, children }: { label: string; reason?: string | und
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
-  );
-}
-
-/** The kind's icon alone, named for screen readers and in a tooltip. */
-export function TaskKindIcon({ kind, className }: { kind: Kind; className?: string }) {
-  const Icon = TASK_KIND_ICONS[kind];
-  return (
-    <Tip label={TASK_KIND_LABELS[kind]}>
-      <span className={cn('inline-flex shrink-0 text-muted-foreground', className)}>
-        <Icon aria-hidden="true" className="size-3.5" />
-        <span className="sr-only">{TASK_KIND_LABELS[kind]}</span>
-      </span>
-    </Tip>
   );
 }
 
@@ -160,6 +146,11 @@ export function IconAction({
   );
 }
 
+/** The name of an entry's "See what it did" link: carries the entry's moment so a list of them says which is which. */
+export function seeWhatItDidLabel(stamp: string | null): string {
+  return stamp !== null ? `See what it did, ${stamp}` : 'See what it did';
+}
+
 /**
  * A link drawn as an icon-only button (ArrowUpRight "See what it did"): a real
  * `<a>`, so it opens in a new tab too. Its name is `label` in hidden text,
@@ -183,14 +174,5 @@ export function IconLink({
         </a>
       </Button>
     </Tip>
-  );
-}
-
-/** A compact row's time: the shared `Timestamp` ("5 min ago", "Yesterday 7:13 PM", "Oct 23"), laid out as the row's muted trailing column. */
-export function RowTime({ at, now }: { at: string; now: Date }) {
-  return (
-    <span className="shrink-0 whitespace-nowrap pt-0.5 text-[12px] leading-5 tabular-nums text-muted-foreground">
-      <Timestamp value={at} now={now} />
-    </span>
   );
 }

@@ -15,8 +15,12 @@ export { toast, ToastRegion, type ToastInput, type ToastTone } from './component
 export { StatusMark, type StatusMarkProps, type StatusTone } from './components/StatusMark.js';
 export { StatusBadge, type StatusBadgeProps } from './components/StatusBadge.js';
 export { Timestamp, type TimestampProps, type TimestampFormat } from './components/Timestamp.js';
-export { formatTimestamp, formatFullTimestamp } from './internal/time.js';
+export { formatTimestamp, formatFullTimestamp, type FormatTimestampOptions, type FormatFullTimestampOptions } from './internal/time.js';
 export { Avatar, type AvatarProps } from './components/Avatar.js';
 export { KeyValueList, type KeyValueListProps } from './components/KeyValueList.js';
 export { Card, type CardProps } from './components/Card.js';
 export { InsetBlock, type InsetBlockProps } from './components/InsetBlock.js';
+export { List, ListRow, type ListProps, type ListRowProps, type ListDensity } from './components/List.js';
+export { Timeline, TimelineEntry, type TimelineProps, type TimelineEntryProps, type TimelineEntryAction } from './components/Timeline.js';
+export { FileTile, type FileTileProps, type FileTileVariant, type FileTileStatus } from './components/FileTile.js';
+export { fileIcon, formatFileSize } from './internal/file.js';

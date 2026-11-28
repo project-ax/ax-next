@@ -33,7 +33,7 @@ import {
   Square,
   type LucideIcon,
 } from 'lucide-react';
-import { Avatar, AsyncState, EmptyState, formatTimestamp, Inline, Notice, Stack, Timestamp } from '@project-ax/ui';
+import { Avatar, AsyncState, EmptyState, fileIcon, formatTimestamp, Inline, List, Notice, Stack, Timestamp } from '@project-ax/ui';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -84,7 +84,6 @@ import {
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
 import { ArtifactCard } from './ArtifactCard';
-import { KIND_ICONS } from './AgentArtifacts';
 import { Markdown } from '@/components/Markdown';
 import { WorkspaceAttachmentChip } from './WorkspaceAttachmentChip';
 import { ChatComposer, CHAT_CONTENT_CLASS } from './ChatComposer';
@@ -855,14 +854,16 @@ export function AgentConversation({
         {grants.length > 0 && (
           <div className={cn(CHAT_CONTENT_CLASS, "pt-4")} data-testid="thread-grants">
             <div className="max-h-[50vh] max-w-[720px] overflow-y-auto rounded-lg border border-border bg-card shadow-sm [scrollbar-gutter:stable]">
-              {grants.map((g) => (
-                <GrantRow
-                  key={g.key}
-                  grant={g}
-                  onResolved={onGrantResolved}
-                  onGranted={onGranted}
-                />
-              ))}
+              <List label="Waiting on you in this chat">
+                {grants.map((g) => (
+                  <GrantRow
+                    key={g.key}
+                    grant={g}
+                    onResolved={onGrantResolved}
+                    onGranted={onGranted}
+                  />
+                ))}
+              </List>
             </div>
           </div>
         )}
@@ -1839,9 +1840,12 @@ function StillWorking({ text }: { text: string }) {
   );
 }
 
-/** The finished title's file icon: the kind of the last card the reply published. */
+/**
+ * The finished title's file icon: the last card the reply published, picked
+ * by `fileIcon` from its extension, exactly as `FileTile` picks that card's.
+ */
 function PublishedMark({ artifacts }: { artifacts: readonly ThreadArtifact[] }) {
-  const Icon = KIND_ICONS[artifacts[artifacts.length - 1]!.kind];
+  const Icon = fileIcon(artifacts[artifacts.length - 1]!.extension);
   return <Icon size={13} aria-hidden="true" className="shrink-0" />;
 }
 

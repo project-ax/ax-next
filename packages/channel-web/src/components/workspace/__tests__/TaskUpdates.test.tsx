@@ -8,7 +8,7 @@
  * 13 and 14). Its apostrophe is U+2019, not the ASCII one.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { WorkspaceRoute } from '@/lib/workspace-route';
 import { formatFullTimestamp, formatTimestamp } from '@project-ax/ui';
 import type { TaskReply, TaskUpdate } from '@/lib/workspace-types';
@@ -82,16 +82,16 @@ describe('TaskUpdates (TASK-910)', () => {
     expect(within(section).getByRole('heading', { level: 2, name: 'Updates' })).toBeInTheDocument();
     const items = within(section).getAllByRole('listitem');
     expect(items).toHaveLength(2);
-    // One line each: the mark's word (hidden), what it said, then its time.
+    // One line each: what it said, then its time (the mark's word is its accessible name, below).
     expect(items[0]!.textContent).toBe(
-      `Needs youThree invoices are overdue.${stampText('2026-10-22T14:00:00.000Z')}`,
+      `Three invoices are overdue.${stampText('2026-10-22T14:00:00.000Z')}`,
     );
     expect(items[1]!.textContent).toBe(
-      `Off trackThe queue is backing up.${stampText('2026-10-21T14:00:00.000Z')}`,
+      `The queue is backing up.${stampText('2026-10-21T14:00:00.000Z')}`,
     );
-    // The mark is a shape, so each entry says its state in words too.
-    expect(within(items[0]!).getByText('Needs you')).toHaveClass('sr-only');
-    expect(within(items[1]!).getByText('Off track')).toHaveClass('sr-only');
+    // The mark is a shape, so each entry says its state in words too: the mark is an image named by the word.
+    expect(within(items[0]!).getByRole('img', { name: 'Needs you' })).toBeInTheDocument();
+    expect(within(items[1]!).getByRole('img', { name: 'Off track' })).toBeInTheDocument();
   });
 
   it('a check-in that left no update says so', () => {
@@ -104,9 +104,9 @@ describe('TaskUpdates (TASK-910)', () => {
     ]);
     const items = screen.getAllByRole('listitem');
     expect(within(items[0]!).getByText('Checked in but didn’t leave an update')).toBeInTheDocument();
-    expect(within(items[0]!).getByText('No recent update')).toHaveClass('sr-only');
+    expect(within(items[0]!).getByRole('img', { name: 'No recent update' })).toBeInTheDocument();
     expect(within(items[1]!).getByText('It left an update we can’t show.')).toBeInTheDocument();
-    expect(within(items[1]!).getByText('Needs you')).toHaveClass('sr-only');
+    expect(within(items[1]!).getByRole('img', { name: 'Needs you' })).toBeInTheDocument();
   });
 
   it('a failed check-in says it didn’t finish, with the reason it recorded', () => {
@@ -122,9 +122,9 @@ describe('TaskUpdates (TASK-910)', () => {
     ]);
     const items = screen.getAllByRole('listitem');
     expect(within(items[0]!).getByText('This check-in didn’t finish.')).toBeInTheDocument();
-    expect(within(items[0]!).getByText('The mailbox said no.')).toHaveClass('text-muted-foreground');
+    expect(within(items[0]!).getByText('The mailbox said no.')).toHaveClass('ax-text-fg-muted');
     expect(within(items[1]!).getByText('This check-in didn’t finish.')).toBeInTheDocument();
-    expect(within(items[0]!).getByText('No recent update')).toHaveClass('sr-only');
+    expect(within(items[0]!).getByRole('img', { name: 'No recent update' })).toBeInTheDocument();
     expect(within(items[1]!).getByText('No reason was recorded.')).toBeInTheDocument();
     // A report that landed before the failure is still shown, with the reason under it.
     expect(within(items[2]!).getByText('Got partway through the inbox.')).toBeInTheDocument();
@@ -193,14 +193,11 @@ describe('TaskUpdates (TASK-910)', () => {
     const { onNavigate } = renderThread([update({ conversationId: 'c1' })]);
     const stamp = formatTimestamp('2026-10-22T14:00:00.000Z', { now: NOW });
     // The name carries the entry's time, so a list of these still says which is
-    // which. jsdom puts a space before the visually hidden span when it
-    // computes the name (a real browser doesn't), so the exact words are
-    // pinned on the text and the name is matched around that space.
-    const link = screen.getByRole('link', {
-      name: new RegExp(`^See what it did ?, ${stamp}$`),
-    });
-    expect(link.textContent).toBe(`See what it did, ${stamp}`);
-    expect(within(link).getByText(`, ${stamp}`)).toHaveClass('sr-only');
+    // which. It is the link's own label, so the name is exact (no hidden span to
+    // pin around), and the icon-only link has no text of its own to say it twice.
+    const link = screen.getByRole('link', { name: `See what it did, ${stamp}` });
+    expect(link).toHaveAccessibleName(`See what it did, ${stamp}`);
+    expect(link.textContent).toBe('');
     expect(link).toHaveAttribute('href', '/workspace/tasks/a1/t1/checkins/c1');
     // A modified click is the browser's (a new tab), not a route change.
     // jsdom can't navigate, so the click the link leaves to the browser is
@@ -218,6 +215,26 @@ describe('TaskUpdates (TASK-910)', () => {
       routineId: 't1',
       conversationId: 'c1',
     });
+  });
+
+  it('the head list and the “N earlier” list have different names', () => {
+    renderThread([onTrack(1)]);
+    expect(screen.getByRole('list', { name: 'Updates' })).toBeInTheDocument();
+    cleanup();
+    render(
+      <TaskUpdates
+        updates={[onTrack(1), { ...onTrack(2), report: { status: 'off-track', update: 'Report 2', reading: null } }]}
+        replies={[]}
+        now={NOW}
+        agentId="a1"
+        routineId="t1"
+        onNavigate={vi.fn()}
+        shown={1}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '1 earlier' }));
+    expect(screen.getByRole('list', { name: 'Updates' })).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Earlier updates' })).toBeInTheDocument();
   });
 
   it('a check-in that recorded no conversation has no link', () => {
@@ -297,7 +314,7 @@ describe('TaskUpdates (TASK-910)', () => {
       const text = '**bold** <img src=x onerror=alert(1)>\nsecond line';
       const { container } = renderThread([], [reply({ text })]);
       const p = container.querySelector('li p') as HTMLElement;
-      expect(p).toHaveClass('whitespace-pre-wrap');
+      expect(p).toHaveClass('ax-whitespace-pre-wrap');
       expect(p.textContent).toBe(text);
       expect(container.querySelector('img, strong')).toBeNull();
     });
@@ -327,7 +344,7 @@ describe('TaskUpdates (TASK-910)', () => {
       ]);
       const line = screen.getByText('Answered two.');
       expect(line.textContent).toBe('Answered two. · Open tickets: 3');
-      expect(within(line).getByText('· Open tickets: 3')).toHaveClass('text-muted-foreground');
+      expect(within(line).getByText('· Open tickets: 3')).toHaveClass('ax-text-fg-muted');
     });
 
     it('an entry without a reading adds nothing', () => {
@@ -350,8 +367,8 @@ describe('TaskUpdates (TASK-910)', () => {
   it('a check-in from over a week ago names its time of day in the link, not just the date', () => {
     // NOW is Thu Oct 22 11:00 AM New York; Oct 12 10:00 AM New York is ten days back.
     renderThread([update({ firedAt: '2026-10-12T14:00:00.000Z', conversationId: 'c1' })]);
-    const link = screen.getByRole('link', { name: /^See what it did/ });
-    expect(link.textContent).toBe('See what it did, Mon, Oct 12, 2026, 10:00 AM');
+    const link = screen.getByRole('link', { name: 'See what it did, Mon, Oct 12, 2026, 10:00 AM' });
+    expect(link).toHaveAccessibleName('See what it did, Mon, Oct 12, 2026, 10:00 AM');
   });
 
   describe('on the task page (2026-10-29)', () => {
@@ -411,7 +428,7 @@ describe('TaskUpdates (TASK-910)', () => {
       ['The mailbox said no.', 'The mailbox said no.'],
     ])('a failed check-in’s reason reads plainly: %s', (error, said) => {
       renderThread([update({ status: 'error', error, report: null })]);
-      expect(screen.getByText(said)).toHaveClass('text-muted-foreground');
+      expect(screen.getByText(said)).toHaveClass('ax-text-fg-muted');
       expect(screen.queryByText(/routine run/)).toBeNull();
     });
   });
@@ -427,7 +444,7 @@ describe('TaskUpdates (TASK-910)', () => {
     ]);
     const line = screen.getByText(reason);
     expect(line.closest('[class*="line-clamp"]')).toBeNull();
-    expect(line).toHaveClass('whitespace-pre-wrap', 'break-words');
+    expect(line).toHaveClass('ax-whitespace-pre-wrap', 'ax-break-words');
     // The update it came with is still the clamped line.
     expect(screen.getByText('Got partway through the inbox.').closest('[class*="line-clamp"]')).not.toBeNull();
   });

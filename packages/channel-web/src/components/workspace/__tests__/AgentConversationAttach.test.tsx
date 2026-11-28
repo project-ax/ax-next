@@ -167,7 +167,7 @@ describe('AgentConversation — attaching a file', () => {
     expect(filePicker().accept).toBe(ATTACHMENT_ACCEPT);
 
     pickFile();
-    expect(await screen.findByText('notes.pdf')).toBeTruthy();
+    expect(await screen.findByTitle('notes.pdf')).toBeTruthy();
     await screen.findByText('Ready to send');
 
     fireEvent.change(box(), { target: { value: 'have a look at this' } });
@@ -176,7 +176,7 @@ describe('AgentConversation — attaching a file', () => {
     expect(onSend).toHaveBeenCalledWith('have a look at this', [SENT_FILE]);
     // The chips go with the words: leaving them would put the same file on the
     // next message too.
-    await waitFor(() => expect(screen.queryByText('notes.pdf')).toBeNull());
+    await waitFor(() => expect(screen.queryByTitle('notes.pdf')).toBeNull());
   });
 
   it('lets the approval hold speak first, and does not lose the file hold behind it', async () => {
@@ -263,7 +263,7 @@ describe('AgentConversation — attaching a file', () => {
 
     pickFile();
     await screen.findByText(ATTACHMENT_FAILED_UNSUPPORTED);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove notes.pdf' }));
 
     fireEvent.change(box(), { target: { value: 'never mind the file' } });
     fireEvent.keyDown(box(), { key: 'Enter' });

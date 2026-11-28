@@ -160,7 +160,7 @@ describe('opening and closing', () => {
 
   it('opens details directly from the full-width connector row', async () => {
     renderTab();
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Linear' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Linear' }));
     expect(await screen.findByRole('heading', { level: 3, name: 'Linear' })).toBeTruthy();
     expect(toolsMock).toHaveBeenCalledWith('a-quill', 'linear', false);
     expect(screen.queryByText('What Quill can do')).toBeNull();
@@ -283,6 +283,18 @@ describe('grouping', () => {
     expect(within(makes).getByText('Create issue')).toBeTruthy();
     expect(within(makes).getByText('Delete issue')).toBeTruthy();
     expect(within(makes).getByText('Others may see these')).toBeTruthy();
+  });
+
+  it('draws each group as one named list, a row per tool with its choice beside it', async () => {
+    renderTab();
+    await openDetails();
+    const looks = await screen.findByRole('list', { name: 'Tools: looks things up' });
+    const makes = screen.getByRole('list', { name: 'Tools: makes changes' });
+    expect(within(looks).getAllByRole('listitem')).toHaveLength(1);
+    expect(within(makes).getAllByRole('listitem')).toHaveLength(2);
+    const row = within(makes).getByText('Create issue').closest('li')!;
+    // The choice is the row's trailing control: it names the tool it changes.
+    expect(within(row).getByRole('group', { name: 'What it may do with Create issue' })).toBeTruthy();
   });
 
   it('a tool that never said what it does sits under "Makes changes", without the caption', async () => {

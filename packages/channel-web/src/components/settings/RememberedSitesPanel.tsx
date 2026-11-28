@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { AsyncState, Card, EmptyState, formatTimestamp, StatusBadge, Timestamp } from '@project-ax/ui';
+import { AsyncState, Card, EmptyState, formatTimestamp, List, ListRow, StatusBadge, Timestamp } from '@project-ax/ui';
 import { logRequestFailure } from '@/lib/http';
 import {
   listRememberedSites,
@@ -166,46 +166,43 @@ export function RememberedSitesPanel() {
             description="We’ll ask the first time your assistant wants to read a new site."
           />
         )}
-        {(list.status === 'ok' ? list.sites : []).map((site) => {
-          const remembered = formatTimestamp(site.rememberedAt) !== null;
-          return (
-            <div
-              // scope+host, not host alone. @ax/tool-policy dedupes this list
-              // to one row per host (global wins) and that rule lives there,
-              // not here — but a key that CANNOT collide costs one word, and
-              // the failure it rules out is undefined React reconciliation
-              // rather than a visibly wrong row.
-              key={`${site.scope}:${site.host}`}
-              data-testid={`remembered-site-${site.host}`}
-              className="flex items-center gap-3 px-2 py-3 min-h-[72px] flex-wrap"
-            >
-              <span className="flex-1 min-w-0 break-all text-sm text-foreground">
-                {site.host}
-              </span>
-              {remembered && (
-                <span className="text-xs text-muted-foreground">
-                  <Timestamp value={site.rememberedAt} />
-                </span>
-              )}
-              {site.scope === 'global' ? (
-                <StatusBadge tone="neutral">Set by your admin</StatusBadge>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={revoking.has(site.host)}
-                  onClick={() => void askAgain(site.host)}
-                >
-                  {/* "Ask again" is deliberate, not "Remove": revoking this
-                      entry doesn't block the site, it just restores the
-                      ask-first prompt — "Remove" would suggest the site is
-                      now off-limits, which is the wrong mental model. */}
-                  Ask again
-                </Button>
-              )}
-            </div>
-          );
-        })}
+        {list.status === 'ok' && list.sites.length > 0 && (
+          <List label="Sites we read without asking">
+            {list.sites.map((site) => {
+              const remembered = formatTimestamp(site.rememberedAt) !== null;
+              return (
+                <ListRow
+                  // scope+host, not host alone. @ax/tool-policy dedupes this list
+                  // to one row per host (global wins) and that rule lives there,
+                  // not here — but a key that CANNOT collide costs one word, and
+                  // the failure it rules out is undefined React reconciliation
+                  // rather than a visibly wrong row.
+                  key={`${site.scope}:${site.host}`}
+                  title={site.host}
+                  {...(remembered ? { meta: <Timestamp value={site.rememberedAt} /> } : {})}
+                  trailing={
+                    site.scope === 'global' ? (
+                      <StatusBadge tone="neutral">Set by your admin</StatusBadge>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={revoking.has(site.host)}
+                        onClick={() => void askAgain(site.host)}
+                      >
+                        {/* "Ask again" is deliberate, not "Remove": revoking this
+                            entry doesn't block the site, it just restores the
+                            ask-first prompt — "Remove" would suggest the site is
+                            now off-limits, which is the wrong mental model. */}
+                        Ask again
+                      </Button>
+                    )
+                  }
+                />
+              );
+            })}
+          </List>
+        )}
       </Card>
       )}
 

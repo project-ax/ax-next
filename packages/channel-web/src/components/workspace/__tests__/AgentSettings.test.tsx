@@ -224,7 +224,8 @@ describe('AgentSettings — phone', () => {
     const list = screen.getByRole('list', { name: 'Settings sections' });
     const rows = within(list).getAllByRole('button');
     expect(rows).toHaveLength(AGENT_SETTINGS_SECTIONS.length);
-    expect(within(list).getByRole('button', { name: /Skills\s*Instructions this agent can reuse/u })).toBeTruthy();
+    const skills = within(list).getByRole('button', { name: 'Skills' });
+    expect(within(skills.closest('li')!).getByText('Instructions this agent can reuse')).toBeTruthy();
     expect(headingOutline()).toEqual(['h1: Quill settings']);
 
     fireEvent.click(within(list).getByRole('button', { name: /^Model/u }));
@@ -247,11 +248,11 @@ describe('AgentSettings — phone', () => {
   });
 
   it('keeps every row at least 44px tall', () => {
-    // jsdom has no layout; this pins the class that sets the target size.
+    // jsdom has no layout; this pins the touch-target class on the row box (ListRow's min-h-touch).
     render(<Harness compact />);
     const list = screen.getByRole('list', { name: 'Settings sections' });
     for (const row of within(list).getAllByRole('button')) {
-      expect(row.className).toContain('min-h-11');
+      expect(row.closest('li')!.firstElementChild!.className).toContain('ax-min-h-touch');
     }
   });
 });

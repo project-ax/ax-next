@@ -9,12 +9,11 @@
  * `limits === null` means "still loading": the card keeps its place and shows
  * skeletons, so the page does not jump when the numbers arrive.
  */
-import { SettingsDisclosure } from '../settings/SettingsLayout';
 import { useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { AsyncState, Card, Heading, Inline, Notice, Stack, toast } from '@project-ax/ui';
+import { AsyncState, Card, Heading, Inline, List, ListRow, Notice, Stack, toast } from '@project-ax/ui';
 import { USAGE_LIMIT_BOUNDS, putUsageLimits, type UsageLimits } from '@/lib/usage-admin';
 import { DAILY_LIMIT_INVALID, TURNS_LIMIT_INVALID, failureMessage } from '@/lib/usage-copy';
 
@@ -146,8 +145,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
           {limits === null ? (
             <AsyncState status="loading" skeleton="rows" loadingLabel="Loading usage limits" />
           ) : (
-            <FieldGroup className="gap-0">
-              <SettingsDisclosure title="Workspace per day" value={`$${fleetValue}`}>
+            <List label="Limits">
+              <ListRow title="Workspace per day" meta={`$${fleetValue}`} expandable={{ content: (<>
               <Field
                 className="max-w-sm"
                 data-invalid={(draft !== null && !fleetValid) || undefined}
@@ -175,8 +174,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError>Enter an amount between $0.01 and $1,000,000.</FieldError>
                 )}
               </Field>
-              </SettingsDisclosure>
-              <SettingsDisclosure title="Per person per day" value={`$${dailyValue}`}>
+              </>) }} />
+              <ListRow title="Per person per day" meta={`$${dailyValue}`} expandable={{ content: (<>
               <Field className="max-w-sm" data-invalid={dailyInvalid || undefined}>
                 <FieldLabel htmlFor="usage-daily-limit">
                   Daily spend limit per person (USD)
@@ -208,9 +207,9 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError id="usage-daily-limit-error">{DAILY_LIMIT_INVALID}</FieldError>
                 )}
               </Field>
-              </SettingsDisclosure>
+              </>) }} />
 
-              <SettingsDisclosure title="Messages per person per hour" value={turnsValue}>
+              <ListRow title="Messages per person per hour" meta={turnsValue} expandable={{ content: (<>
               <Field className="max-w-sm" data-invalid={turnsInvalid || undefined}>
                 <FieldLabel htmlFor="usage-turns-limit">Messages per person per hour</FieldLabel>
                 <Input
@@ -236,8 +235,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError id="usage-turns-limit-error">{TURNS_LIMIT_INVALID}</FieldError>
                 )}
               </Field>
-              </SettingsDisclosure>
-              <SettingsDisclosure title="Unreported usage estimate" value={`$${assumedValue}`}>
+              </>) }} />
+              <ListRow title="Unreported usage estimate" meta={`$${assumedValue}`} expandable={{ content: (<>
               <Field
                 className="max-w-sm"
                 data-invalid={(draft !== null && !assumedValid) || undefined}
@@ -265,8 +264,8 @@ export function UsageLimitsCard({ limits, onSaved }: UsageLimitsCardProps) {
                   <FieldError>Enter an amount between $0 and $100.</FieldError>
                 )}
               </Field>
-              </SettingsDisclosure>
-            </FieldGroup>
+              </>) }} />
+            </List>
           )}
           {saveError !== null && (
             <Notice tone="danger">{saveError}</Notice>

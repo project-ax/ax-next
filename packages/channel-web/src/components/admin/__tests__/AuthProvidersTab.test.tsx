@@ -4,6 +4,7 @@ import {
   screen,
   fireEvent,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { AuthProvidersTab } from '../AuthProvidersTab';
 import type { AuthProviderEntry } from '@/lib/auth-providers';
@@ -17,7 +18,7 @@ vi.mock('@/lib/auth-providers', () => ({
 // AddProviderForm only renders in the add flow; stub it out.
 vi.mock('../AddProviderForm', () => ({ AddProviderForm: () => null }));
 
-import { listAuthProviders, deleteAuthProvider } from '@/lib/auth-providers';
+import { listAuthProviders, deleteAuthProvider, setAuthProviderEnabled } from '@/lib/auth-providers';
 
 const mockList = vi.mocked(listAuthProviders);
 const mockDelete = vi.mocked(deleteAuthProvider);
@@ -47,7 +48,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Google')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Google' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Google' }));
 
     await waitFor(() => {
@@ -65,7 +66,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Google')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Google' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Google' }));
     await waitFor(() => {
       expect(screen.getByText('Remove provider?')).toBeTruthy();
@@ -84,7 +85,7 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.getByText('Google')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Details for Google' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Google' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove Google' }));
     await waitFor(() => {
       expect(screen.getByText('Remove provider?')).toBeTruthy();
@@ -96,5 +97,30 @@ describe('AuthProvidersTab — styled delete confirm', () => {
       expect(screen.queryByText('Remove provider?')).toBeNull();
     });
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthProvidersTab — sign-in methods list', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockList.mockResolvedValue([PROVIDER, { ...PROVIDER, kind: 'github', clientId: 'gh-1' }]);
+    vi.mocked(setAuthProviderEnabled).mockResolvedValue(undefined);
+  });
+
+  it('is one named list with a row per method, each with a details button and a switch', async () => {
+    render(<AuthProvidersTab />);
+    const list = await screen.findByRole('list', { name: 'Sign-in methods' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByRole('button', { name: 'Google' })).toBeInTheDocument();
+    expect(within(rows[0]!).getByRole('switch', { name: 'Disable Google' })).toBeInTheDocument();
+  });
+
+  it('flipping the switch toggles the method and never opens its details', async () => {
+    render(<AuthProvidersTab />);
+    const list = await screen.findByRole('list', { name: 'Sign-in methods' });
+    fireEvent.click(within(list).getByRole('switch', { name: 'Disable Google' }));
+    await waitFor(() => expect(vi.mocked(setAuthProviderEnabled)).toHaveBeenCalledWith('google', false));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

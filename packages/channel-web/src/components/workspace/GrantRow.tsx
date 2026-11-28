@@ -8,8 +8,8 @@
  * lives in `@/lib/grant-copy` and `@/lib/grant-destinations`, which this file
  * still imports.
  *
- * WHY IT IS A ROW AND NOT A CARD. It sits inside Today's existing bordered
- * list, next to `DecisionRow`. A `Card` inside that list would read as a
+ * WHY IT IS A ROW AND NOT A CARD. It is a `ListRow` in Today's list (its title is the row, the rest sits under it),
+ * next to `DecisionRow`. A `Card` inside that list would read as a
  * different kind of object; it is the same kind of object — something waiting
  * on a person — so it gets the same frame.
  *
@@ -84,7 +84,7 @@ import { accountOrSkillDestination, connectorServiceOf } from '@/lib/grant-desti
 import { slotAccount } from '@/lib/grant-shape';
 import { humanizeId, humanizeSlotLabel } from '@/lib/humanize';
 import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
-import { Notice, toast, StatusBadge } from '@project-ax/ui';
+import { ListRow, Notice, toast, StatusBadge } from '@project-ax/ui';
 import { cn } from '@/lib/utils';
 import { workspaceApi } from '@/lib/workspace-api';
 import type { WorkspaceGrant } from '@/lib/workspace-grant-store';
@@ -414,15 +414,11 @@ export function GrantRow({
 
   if (request.kind === 'host') {
     return (
-      <div
-        ref={rowRef}
-        className="border-b border-rule-soft p-4 last:border-b-0"
-        data-testid={`grant-${grant.key}`}
-      >
-        <p className="text-[14px] font-medium">
-          {grantTitle(request)}
-        </p>
-        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+      <ListRow
+        title={grantTitle(request)}
+        below={
+      <div ref={rowRef} className="px-3 pb-4" data-testid={`grant-${grant.key}`}>
+        <p className="text-[13px] leading-relaxed text-muted-foreground">
           {HOST_WALL_EXPLANATION}
         </p>
         <div className={cn('mt-3 flex flex-wrap gap-1.5', error !== null && 'mb-3')}>
@@ -471,6 +467,8 @@ export function GrantRow({
         {/* True here too — see `GRANT_REJECT_HINT`. */}
         <p className="mt-2 text-[11.5px] text-muted-foreground">{GRANT_REJECT_HINT}</p>
       </div>
+        }
+      />
     );
   }
 
@@ -526,18 +524,14 @@ export function GrantRow({
   */
   if (stalled) {
     return (
-      <div
-        ref={rowRef}
-        className="border-b border-rule-soft p-4 last:border-b-0"
-        data-testid={`grant-${grant.key}`}
-      >
-        <p className="text-[14px] font-medium">
-          {title}
-        </p>
+      <ListRow
+        title={title}
+        below={
+      <div ref={rowRef} className="px-3 pb-4" data-testid={`grant-${grant.key}`}>
         <p
           ref={answerRef}
           tabIndex={-1}
-          className={`mt-1 max-w-[660px] text-[13px] leading-relaxed text-muted-foreground ${RESOLUTION_FOCUS_RING}`}
+          className={`max-w-[660px] text-[13px] leading-relaxed text-muted-foreground ${RESOLUTION_FOCUS_RING}`}
           data-testid="grant-not-resumed"
         >
           {stalled === 'elsewhere'
@@ -552,6 +546,8 @@ export function GrantRow({
           </Button>
         </div>
       </div>
+        }
+      />
     );
   }
 
@@ -562,20 +558,16 @@ export function GrantRow({
   const textGap = request.authored === true || (hasSetupHint && !hasHosts);
   const hostsGap = request.authored !== true && hasSetupHint && hasHosts;
   return (
-    <div
-      ref={rowRef}
-      className="border-b border-rule-soft p-4 last:border-b-0"
-      data-testid={`grant-${grant.key}`}
-    >
+    <ListRow
+      title={title}
+      below={
+    <div ref={rowRef} className="px-3 pb-4" data-testid={`grant-${grant.key}`}>
       {/*
         A Notice has no margin of its own, so the element above it carries the gap: the last of
-        title / description (/ hosts) takes `mb-3` when a notice follows.
+        description (/ hosts) takes `mb-3` when a notice follows.
       */}
-      <p className={cn('text-[14px] font-medium', description.length === 0 && textGap && 'mb-3')}>
-        {title}
-      </p>
       {description.length > 0 && (
-        <p className={cn('mt-1 text-[13px] leading-relaxed text-muted-foreground', textGap && 'mb-3')}>
+        <p className={cn('text-[13px] leading-relaxed text-muted-foreground', textGap && 'mb-3')}>
           {description}
         </p>
       )}
@@ -742,5 +734,7 @@ export function GrantRow({
       */}
       <p className="mt-2 text-[11.5px] text-muted-foreground">{GRANT_REJECT_HINT}</p>
     </div>
+      }
+    />
   );
 }
